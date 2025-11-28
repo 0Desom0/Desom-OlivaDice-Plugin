@@ -10,16 +10,16 @@ import OlivaDiceTA
 dictStrCustomDict = {}
 
 dictStrCustom = {
-    'strTAResult': '[{tName}]进行三角机构检定\n骰子: {tDiceResult}\n{tBurnout} {tSkillCheckReasult}{tChaosChange}',
-    'strTAResultMulti': '[{tName}]进行{tRollTimes}次三角机构检定\n{tMultiResults}{tChaosChange}',
-    'strTAResultAtOther': '[{tUserName}]帮[{tName}]进行三角机构检定\n骰子: {tDiceResult}\n{tBurnout} {tSkillCheckReasult}{tChaosChange}',
-    'strTAResultMultiAtOther': '[{tUserName}]帮[{tName}]进行{tRollTimes}次三角机构检定\n{tMultiResults}{tChaosChange}',
+    'strTAResult': '[{tName}]进行三角机构检定\n骰子: {tDiceResult}\n{tBurnout}{tSkillCheckReasult}\n{tChaosChange}',
+    'strTAResultMulti': '[{tName}]进行{tRollTimes}次三角机构检定\n{tMultiResults}\n{tChaosChange}',
+    'strTAResultAtOther': '[{tUserName}]帮[{tName}]进行三角机构检定\n骰子: {tDiceResult}\n{tBurnout}{tSkillCheckReasult}\n{tChaosChange}',
+    'strTAResultMultiAtOther': '[{tUserName}]帮[{tName}]进行{tRollTimes}次三角机构检定\n{tMultiResults}\n{tChaosChange}',
     'strTAError': '三角机构检定错误: {tResult}\n请通过.help ta查看正确检定格式',
     'strTAInvalidSelection': '输入了无效的选项或超时，请重新投掷',
     'strCSShow': '当前群组混沌值: {tChaosValue}',
-    'strCSChange': '混沌值: {tOldChaos} → {tNewChaos}{tExprDetail}',
+    'strCSChange': '混沌值: {tOldChaos} -> {tNewChaos}{tExprDetail}',
     'strFSShow': '当前群组现实改写失败次数: {tFailValue}',
-    'strFSChange': '现实改写失败次数: {tOldFail} → {tNewFail}{tExprDetail}',
+    'strFSChange': '现实改写失败次数: {tOldFail} -> {tNewFail}{tExprDetail}',
 }
 
 dictStrConst = {

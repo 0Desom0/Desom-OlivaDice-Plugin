@@ -21,12 +21,12 @@ import copy
 
 def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skipSpaceStart, parse_m_h=True):
     """
-    解析 sh 命令中的参数 b/p、m、x、h、s
+    解析 sh 命令中的参数 b/p、m、x、h、s、kh/kl、a
     可以无视参数位置顺序
     参数:
         expr_str: 要解析的表达式字符串
         parse_m_h: 是否解析 m 和 h 参数（默认 True）。后式调用时设为 False
-    返回: cleaned_expr, b_count, p_count, m_flag, x_value, x_flag, h_flag, x_modifier, s_count, s_fixed_values
+    返回: cleaned_expr, b_count, p_count, m_flag, x_value, x_flag, h_flag, x_modifier, s_count, s_fixed_values, kh_kl_type, kh_kl_num, a_flag
     """
     b_count = 0  # b参数（奖励等级）
     p_count = 0  # p参数（惩罚等级）
@@ -37,6 +37,9 @@ def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
     h_flag = False  # h参数（暗骰）
     s_count = 1  # s参数（d20数量，默认为1）
     s_fixed_values = []  # s参数中的固定值列表
+    kh_kl_type = None  # kh/kl类型：None/'kh'/'kl'
+    kh_kl_num = None  # kh/kl的数字，如kh2中的2
+    a_flag = False  # a参数（1和2都视为大失败）
     tmp_reast_str = expr_str
     
     # 循环处理所有参数
@@ -47,6 +50,15 @@ def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
         if parse_m_h and isMatchWordStart(tmp_reast_str, 'h'):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'h')
             h_flag = True
+            # 移除可能的+号
+            if len(tmp_reast_str) > 0 and tmp_reast_str[0] == '+':
+                tmp_reast_str = tmp_reast_str[1:]
+            continue
+        
+        # 处理a参数（1和2都视为大失败）
+        elif isMatchWordStart(tmp_reast_str, 'a'):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'a')
+            a_flag = True
             # 移除可能的+号
             if len(tmp_reast_str) > 0 and tmp_reast_str[0] == '+':
                 tmp_reast_str = tmp_reast_str[1:]
@@ -89,7 +101,7 @@ def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
                 tmp_reast_str = tmp_reast_str[1:]
             continue
         
-        # 处理s参数（d20数量，支持固定值）
+        # 处理s参数（d20数量，支持固定值和kh/kl）
         elif isMatchWordStart(tmp_reast_str, 's'):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 's')
             # s参数后必须跟数字
@@ -104,8 +116,23 @@ def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
                 s_count = max(1, s_count)  # 最小为1
                 tmp_reast_str = tmp_reast_str[len(num_str):]
                 
+                # 检查是否有kh或kl
+                if len(tmp_reast_str) >= 2 and tmp_reast_str[0:2].lower() in ['kh', 'kl']:
+                    kh_kl_type = tmp_reast_str[0:2].lower()
+                    tmp_reast_str = tmp_reast_str[2:]
+                    
+                    # 检查kh/kl后是否有数字
+                    if len(tmp_reast_str) > 0 and tmp_reast_str[0].isdigit():
+                        kh_kl_num_str = ''
+                        j = 0
+                        while j < len(tmp_reast_str) and tmp_reast_str[j].isdigit():
+                            kh_kl_num_str += tmp_reast_str[j]
+                            j += 1
+                        kh_kl_num = int(kh_kl_num_str)
+                        tmp_reast_str = tmp_reast_str[len(kh_kl_num_str):]
+                
                 # 检查是否有固定值括号
-                if len(tmp_reast_str) > 0 and tmp_reast_str[0] == '(':
+                elif len(tmp_reast_str) > 0 and tmp_reast_str[0] == '(':
                     # 找到匹配的右括号
                     paren_count = 1
                     j = 1
@@ -182,7 +209,7 @@ def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
     # 跳过空格并返回清理后的表达式
     cleaned_expr = skipSpaceStart(tmp_reast_str)
     
-    return cleaned_expr, b_count, p_count, m_flag, x_value, x_flag, h_flag, x_modifier, s_count, s_fixed_values
+    return cleaned_expr, b_count, p_count, m_flag, x_value, x_flag, h_flag, x_modifier, s_count, s_fixed_values, kh_kl_type, kh_kl_num, a_flag
 
 def unity_init(plugin_event, Proc):
     pass
@@ -357,7 +384,10 @@ def unity_reply(plugin_event, Proc):
             if is_at and not at_user_id:
                 return
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'sh')
-            # 默认tName是人物卡名
+        else:
+            return
+        # 默认tName是人物卡名
+        if True:
             tmp_pc_id = at_user_id if at_user_id else plugin_event.data.user_id
             tmp_pc_platform = plugin_event.platform['platform']
             tmp_pcHash = OlivaDiceCore.pcCard.getPcHash(
@@ -397,8 +427,8 @@ def unity_reply(plugin_event, Proc):
             front_part = parts[0].strip() if len(parts) > 0 else ''
             back_part = parts[1].strip() if len(parts) > 1 else '10'
             
-            # 使用新的参数解析函数处理前式（包括h参数）
-            front_part, flag_bp_count, flag_p_count, flag_no_default_d20, x_dice_value, is_x, flag_hide, x_modifier, s_count, s_fixed_values = parse_sh_parameters(
+            # 使用新的参数解析函数处理前式（包括h参数和kh/kl参数）
+            front_part, flag_bp_count, flag_p_count, flag_no_default_d20, x_dice_value, is_x, flag_hide, x_modifier, s_count, s_fixed_values, kh_kl_type, kh_kl_num, a_flag = parse_sh_parameters(
                 front_part, isMatchWordStart, getMatchWordStartRight, skipSpaceStart
             )
             
@@ -421,8 +451,8 @@ def unity_reply(plugin_event, Proc):
                 flag_bp_type = 2
                 flag_bp_count = flag_p_count
             
-            # 使用新的参数解析函数处理后式（后式不解析 m 和 h 参数）
-            back_part, back_flag_bp_count, back_flag_p_count, _, back_x_dice_value, is_back_x, _, back_x_modifier, _, _ = parse_sh_parameters(
+            # 使用新的参数解析函数处理后式（后式不解析 m 和 h 参数，也不解析kh/kl）
+            back_part, back_flag_bp_count, back_flag_p_count, _, back_x_dice_value, is_back_x, _, back_x_modifier, _, _, _, _, back_a_flag = parse_sh_parameters(
                 back_part, isMatchWordStart, getMatchWordStartRight, skipSpaceStart, parse_m_h=False
             )
             
@@ -462,8 +492,18 @@ def unity_reply(plugin_event, Proc):
                     # 技能替换
                     shm_add_expr, _ = replace_skills(shm_add_expr_str.replace('=', '').replace(' ', ''), skill_valueTable, tmp_pcCardRule)
             
+            # 确定 dice_20 的值（考虑kh/kl参数）
+            force_dice_expr = None
+            if kh_kl_type:
+                # 有kh/kl参数，构造完整的骰子表达式
+                if kh_kl_num is not None:
+                    force_dice_expr = f"{s_count}d20{kh_kl_type}{kh_kl_num}"
+                else:
+                    force_dice_expr = f"{s_count}d20{kh_kl_type}"
+            
             # 确定 dice_20 的值
             dice_20 = '1D20'  # 默认值
+            has_kh_kl = False  # 标记是否有kh/kl修饰符
             
             # s参数优先级高于x但低于m
             if not flag_no_default_d20:  # m参数优先级最高
@@ -485,11 +525,33 @@ def unity_reply(plugin_event, Proc):
             
             # 出值解析
             if front_expr:
-                # 处理表达式中的 Xd20（只有在没有s参数且没有x参数时才处理）
-                if s_count == 1 and not is_x:
+                # 处理表达式中的 Xd20kh/kl（只有在没有s参数且没有x参数且没有force_dice_expr时才处理）
+                if s_count == 1 and not is_x and not force_dice_expr:
+                    # 0. 优先匹配 Xd20kh/kl 格式
+                    match_xd20_kh_kl = re.match(r'^(\d*)[dD]20(kh|kl)(\d*)', front_expr, re.IGNORECASE)
+                    if match_xd20_kh_kl:
+                        # 提取完整的骰子表达式（如 6d20kh2, 3d20kl）
+                        x_str = match_xd20_kh_kl.group(1)
+                        kh_or_kl = match_xd20_kh_kl.group(2).lower()
+                        kh_kl_count_str = match_xd20_kh_kl.group(3)
+                        x = int(x_str) if x_str else 1
+                        
+                        # 设置force_dice_expr和相关参数
+                        s_count = x
+                        kh_kl_type = kh_or_kl
+                        kh_kl_num = int(kh_kl_count_str) if kh_kl_count_str else None
+                        
+                        if kh_kl_num is not None:
+                            force_dice_expr = f"{x}d20{kh_or_kl}{kh_kl_num}"
+                        else:
+                            force_dice_expr = f"{x}d20{kh_or_kl}"
+                        
+                        # 移除这部分，保留后续表达式
+                        front_expr = front_expr[len(match_xd20_kh_kl.group(0)):].strip()
+                        front_expr_str = front_expr if front_expr else None
                     # 1. 匹配 Xd20+任何符号（包括+-*/）
-                    match_xd20_plus = re.match(r'^(\d*)[dD]20\s*[+\-*/]\s*', front_expr, re.IGNORECASE)
-                    if match_xd20_plus:
+                    elif re.match(r'^(\d*)[dD]20\s*[+\-*/]\s*', front_expr, re.IGNORECASE):
+                        match_xd20_plus = re.match(r'^(\d*)[dD]20\s*[+\-*/]\s*', front_expr, re.IGNORECASE)
                         # 处理 X（D20 视为 1D20）
                         x_str = match_xd20_plus.group(1)
                         x = int(x_str) if x_str else 1  # 无数字时默认为1
@@ -546,7 +608,54 @@ def unity_reply(plugin_event, Proc):
             
             # 计算前项 (1D20 + 前项表达式)
             # D20 或指定点数（现在总是需要掷骰，除非m参数）
-            if s_count > 1:
+            # 如果有kh/kl修饰符，手动处理骰子并构建详细显示
+            if force_dice_expr:
+                # 手动骰多个d20并处理kh/kl
+                all_d20_rolls = []
+                for i in range(s_count):
+                    rd_single = OlivaDiceCore.onedice.RD('1D20', tmp_template_customDefault)
+                    rd_single.roll()
+                    if rd_single.resError != None:
+                        dictTValue['tRollPara'] = '1D20'
+                        error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_single.resError, dictStrCustom, dictTValue)
+                        dictTValue['tResult'] = f"错误的骰子：{error_msg}"
+                        tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShError'], dictTValue)
+                        replyMsg(plugin_event, tmp_reply_str.strip())
+                        return
+                    all_d20_rolls.append(rd_single.resInt)
+                
+                # 根据kh/kl类型选择骰子
+                sorted_rolls = sorted(all_d20_rolls, reverse=(kh_kl_type == 'kh'))
+                keep_count = kh_kl_num if kh_kl_num else 1
+                keep_count = min(keep_count, len(sorted_rolls))
+                
+                selected_rolls = sorted_rolls[:keep_count]
+                discarded_rolls = sorted_rolls[keep_count:]
+                
+                # 计算结果（求和）
+                result_sum = sum(selected_rolls)
+                
+                # 构建显示字符串 {选中的 <| 丢弃的}
+                selected_str = ', '.join(map(str, selected_rolls))
+                if discarded_rolls:
+                    discarded_str = ', '.join(map(str, discarded_rolls))
+                    detail_display = f"{{{selected_str} <| {discarded_str}}}"
+                else:
+                    detail_display = f"{{{selected_str}}}"
+                
+                # 创建模拟的rd_d20对象
+                rd_d20 = type('obj', (object,), {})()
+                rd_d20.resInt = result_sum
+                rd_d20.resError = None
+                rd_d20.resDetailData = None
+                rd_d20.resDetail = None
+                
+                # 保存结果
+                original_d20 = result_sum
+                # 对于kh/kl，只用选中的结果来判断大成功/大失败
+                d20_results = selected_rolls
+                d20_detail_str = f"{force_dice_expr}={detail_display}({result_sum})"
+            elif s_count > 1:
                 # 多个d20的情况
                 d20_results = []
                 d20_details = []
@@ -679,6 +788,9 @@ def unity_reply(plugin_event, Proc):
                             front_detail = f"1D20+{base_front_str}"
                     elif is_x:
                         front_detail = f"1D20+{base_front_str}" if 1 <= rd_d20.resInt <= 20 else f"固定值({dice_20})+{base_front_str}"
+                    elif force_dice_expr:
+                        # 有kh/kl的情况，使用force_dice_expr的显示
+                        front_detail = f"{d20_detail_str}+{base_front_str}"
                     elif s_count > 1:
                         # 多个d20的情况
                         front_detail = f"{d20_detail_str}+{base_front_str}"
@@ -699,6 +811,9 @@ def unity_reply(plugin_event, Proc):
                         front_detail = f"1D20={front_result}"
                 elif is_x:
                     front_detail = f"1D20={front_result}" if 1 <= rd_d20.resInt <= 20 else f"固定值({dice_20})={front_result}"
+                elif force_dice_expr:
+                    # 有kh/kl的情况，使用force_dice_expr的显示
+                    front_detail = f"{d20_detail_str}={front_result}"
                 elif s_count > 1:
                     # 多个d20的情况
                     front_detail = f"{d20_detail_str}={front_result}"
@@ -783,11 +898,11 @@ def unity_reply(plugin_event, Proc):
             back_great_fail = 0
 
             # 调用d20计算函数来计算成功等级奖励
-            d20_challenge_bonus, back_great_success, back_great_fail, back_d20_time = calculate_d20_success_level(rd_back)
+            d20_challenge_bonus, back_great_success, back_great_fail, back_d20_time, _ = calculate_d20_success_level(rd_back, a_flag)
             
             # 固定值的成功等级判断
             if is_back_x:
-                if back_fixed_d20 <= 1:
+                if back_fixed_d20 <= (2 if a_flag else 1):
                     d20_challenge_bonus += 1
                     back_great_fail += 1
                 elif back_fixed_d20 >= 20:
@@ -824,7 +939,7 @@ def unity_reply(plugin_event, Proc):
                         for i, d20_val in enumerate(d20_results):
                             if d20_val >= 20:
                                 front_great_success += 1
-                            elif d20_val <= 1:
+                            elif d20_val <= (2 if a_flag else 1):
                                 front_great_fail += 1
                         
                         # 新的显示逻辑：比较大成功和大失败的数量
@@ -840,7 +955,7 @@ def unity_reply(plugin_event, Proc):
                         if rd_d20.resInt >= 20:
                             tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
                             front_great_success = 1
-                        elif rd_d20.resInt <= 1:
+                        elif rd_d20.resInt <= (2 if a_flag else 1):
                             tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_FAIL
                             front_great_fail = 1
                 
@@ -855,7 +970,7 @@ def unity_reply(plugin_event, Proc):
                         for i, d20_val in enumerate(d20_results):
                             if d20_val >= 20:
                                 front_great_success += 1
-                            elif d20_val <= 1:
+                            elif d20_val <= (2 if a_flag else 1):
                                 front_great_fail += 1
                         
                         # 如果有大失败，设为大失败
@@ -866,7 +981,7 @@ def unity_reply(plugin_event, Proc):
                             pass
                     else:
                         # 单个d20的情况
-                        if rd_d20.resInt <= 1:
+                        if rd_d20.resInt <= (2 if a_flag else 1):
                             tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_FAIL
                             front_great_fail = 1
                         elif rd_d20.resInt >= 20:
@@ -1141,17 +1256,21 @@ def handle_negative_dice(expr_str):
     expr_str = re.sub(r'(?:\b0|\(0\))[dD]\d+\b', '0', expr_str)
     return expr_str
 
-def calculate_d20_success_level(rd_object):
+def calculate_d20_success_level(rd_object, a_flag=False):
     """
     计算挑战值中d20的大成功/大失败：大成功-1，大失败+1
+    同时返回所有d20的骰点值列表
+    a_flag: 是否将1和2都视为大失败
     """
     if not rd_object or not rd_object.resDetailData:
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, []
 
     bonus = 0
     great_success = 0
     great_fail = 0
     d20_time = 0
+    d20_rolls = []  # 存储所有d20的骰点值
+    
     # 使用一个栈(list)来进行深度优先遍历，以处理复杂的嵌套表达式
     nodes_to_visit = list(rd_object.resDetailData)
 
@@ -1176,7 +1295,8 @@ def calculate_d20_success_level(rd_object):
                             for roll in dice_rolls:
                                 if isinstance(roll, int):
                                     d20_time += 1
-                                    if roll <= 1:
+                                    d20_rolls.append(roll)  # 保存骰点值
+                                    if roll <= (2 if a_flag else 1):
                                         bonus += 1
                                         great_fail += 1
                                     elif roll >= 20:
@@ -1187,4 +1307,4 @@ def calculate_d20_success_level(rd_object):
             for value in node.values():
                 if isinstance(value, (dict, list)):
                     nodes_to_visit.append(value)
-    return bonus, great_success, great_fail, d20_time
+    return bonus, great_success, great_fail, d20_time, d20_rolls

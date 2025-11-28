@@ -1,0 +1,5 @@
+使用方法详见：https://forum.olivos.run/d/849-triangle-agency
+或者阅读压缩包里的.md文件（使用txt打开就行），md文件中所提到的东西本压缩包里都给了
+记住，本插件一定要使用最新构建的OlivaDiceCore（也就是群文件里提供的），否则会报错！！！
+压缩包里面的ovo_all.zip可能不是最新构建版，若刚需最新构建版请在这里获取，分享码oliv
+https://www.123865.com/s/RmRmjv-rTqW?pwd=oliv

@@ -292,15 +292,15 @@ def handle_negative_dice(expr_str):
 
 def calculate_burnout(skill_value, reality_fail_count, is_reality_alter):
     """
-    计算燃尽值
+    计算过载值
     skill_value: 技能值
     reality_fail_count: 现实改写失败次数
     is_reality_alter: 是否为现实改写检定(.tr)
     """
-    # 技能燃尽：技能值<=0时产生燃尽
+    # 技能过载：技能值<=0时产生过载
     skill_burnout = 0 if skill_value > 0 else 1
     
-    # 现实改写失败燃尽：只在.tr检定时生效
+    # 现实改写失败过载：只在.tr检定时生效
     fail_burnout = reality_fail_count if is_reality_alter else 0
     
     total_burnout = skill_burnout + fail_burnout
@@ -371,8 +371,8 @@ def roll_ta_dice(bonus_dice=0, penalty_dice=0, tmp_template_customDefault=None):
 
 def apply_burnout(dice_results, burnout_count):
     """
-    应用燃尽效果：将指定数量的3改为非3
-    返回: (修改后的骰子结果, 被燃尽的数量, 燃尽产生的混沌值)
+    应用过载效果：将指定数量的3改为非3
+    返回: (修改后的骰子结果, 被过载的数量, 过载产生的混沌值)
     """
     if burnout_count <= 0:
         return dice_results, 0, 0
@@ -386,7 +386,7 @@ def apply_burnout(dice_results, burnout_count):
         # 随机选择一个1-6但不是3的数字
         modified_dice[idx] = random.choice([1, 2, 4, 5, 6])
     
-    # 燃尽产生混沌值：每个被燃尽的骰子产生1点混沌值
+    # 过载产生混沌值：每个被过载的骰子产生1点混沌值
     burnout_chaos = burned_count
     
     return modified_dice, burned_count, burnout_chaos
@@ -406,8 +406,8 @@ def calculate_chaos_generation(three_count_original, three_count_before_burnout,
     """
     计算混沌值生成
     three_count_original: 初始骰子的3的个数
-    three_count_before_burnout: 燃尽前（b/p修改后）骰子的3的个数
-    burnout_count: 燃尽次数（无论是否燃掉3，每个燃尽都加1点）
+    three_count_before_burnout: 过载前（b/p修改后）骰子的3的个数
+    burnout_count: 过载次数（无论是否燃掉3，每个过载都加1点）
     penalty_count: p参数次数
     is_true_triple_ascension: 是否为真正的三重升华（初始骰子就有三个3）
     is_triangle_stability: 是否为三角稳定（最终刚好是3个3但初始不是）
@@ -420,8 +420,8 @@ def calculate_chaos_generation(three_count_original, three_count_before_burnout,
     if is_triangle_stability:
         return 0
     
-    # 其他情况：混沌值 = 6 - 燃尽前3的个数 + 燃尽次数 + p参数次数
-    # 注意：燃尽次数无论是否真的燃掉3，每个燃尽都加1点
+    # 其他情况：混沌值 = 6 - 过载前3的个数 + 过载次数 + p参数次数
+    # 注意：过载次数无论是否真的燃掉3，每个过载都加1点
     chaos_value = 6 - three_count_before_burnout + burnout_count + penalty_count
     return max(0, chaos_value)
 
@@ -701,7 +701,7 @@ def unity_reply(plugin_event, Proc):
                 if tmp_template != None and 'customDefault' in tmp_template:
                     tmp_template_customDefault = tmp_template['customDefault']
                 
-                # 计算技能值（为1就代表裸放无燃尽）
+                # 计算技能值（为1就代表裸放无过载）
                 skill_value = 1
                 skill_detail = "1"
                 if cleaned_expr:
@@ -751,7 +751,7 @@ def unity_reply(plugin_event, Proc):
                 # 执行检定
                 if roll_times == 1:
                     # 单次检定
-                    # 计算燃尽
+                    # 计算过载
                     total_burnout, skill_burnout, fail_burnout = calculate_burnout(
                         skill_value, 
                         group_data['reality_fail'], 
@@ -763,35 +763,35 @@ def unity_reply(plugin_event, Proc):
                         bonus_dice, penalty_dice, tmp_template_customDefault
                     )
                     
-                    # three_count_raw 是 b/p 修改后、燃尽前的3的个数
+                    # three_count_raw 是 b/p 修改后、过载前的3的个数
                     three_count_before_burnout = three_count_raw
                     
-                    # 应用燃尽
+                    # 应用过载
                     final_dice, burned_count, burnout_chaos = apply_burnout(modified_dice, total_burnout)
                     three_count_final = sum(1 for val in final_dice if val == 3)
                     
-                    # 燃尽次数：无论是否真的燃掉3，每个燃尽都加1点混沌值
+                    # 过载次数：无论是否真的燃掉3，每个过载都加1点混沌值
                     # 所以使用 total_burnout 而不是 burned_count
                     actual_burnout_count = total_burnout
                     
                     # 更新骰子显示
-                    # 检查是否有任何修改（b/p/燃尽）
+                    # 检查是否有任何修改（b/p/过载）
                     has_modifications = (bonus_dice > 0 or penalty_dice > 0 or burned_count > 0)
                     
                     if has_modifications:
                         # 有修改时显示：原始值 → 最终值
                         original_display = '[' + ', '.join(map(str, original_dice)) + ']'
                         
-                        # 生成最终值显示（包含燃尽标记）
+                        # 生成最终值显示（包含过载标记）
                         final_parts = []
                         for i, (orig_val, mod_val, final_val) in enumerate(zip(original_dice, modified_dice, final_dice)):
-                            if mod_val == 3 and final_val != 3:  # 被燃尽的
-                                final_parts.append(f"{final_val}(3:燃尽)")
+                            if mod_val == 3 and final_val != 3:  # 被过载的
+                                final_parts.append(f"{final_val}(3:过载)")
                             elif orig_val != mod_val:  # 被b/p修改的
                                 if mod_val == 3:  # b参数
                                     final_parts.append(f"3({orig_val})")
                                 else:  # p参数
-                                    final_parts.append(f"{mod_val}(3:燃尽)")
+                                    final_parts.append(f"{mod_val}(3:过载)")
                             else:
                                 final_parts.append(str(final_val))
                         
@@ -815,11 +815,11 @@ def unity_reply(plugin_event, Proc):
                         result_type = determine_ta_result(three_count_final)  # 其他情况按正常规则
                     
                     # 计算混沌值变化
-                    # 使用燃尽前的3的个数来计算混沌值，燃尽次数无论是否燃掉3都加1点
+                    # 使用过载前的3的个数来计算混沌值，过载次数无论是否燃掉3都加1点
                     chaos_generation = calculate_chaos_generation(
                         three_count_original,
-                        three_count_before_burnout,  # 燃尽前（b/p修改后）的3的个数
-                        actual_burnout_count,  # 燃尽次数（无论是否燃掉3，每个燃尽都加1点）
+                        three_count_before_burnout,  # 过载前（b/p修改后）的3的个数
+                        actual_burnout_count,  # 过载次数（无论是否燃掉3，每个过载都加1点）
                         penalty_dice,  # p参数次数
                         is_true_triple_ascension, 
                         is_triangle_stability
@@ -844,8 +844,8 @@ def unity_reply(plugin_event, Proc):
                     
                     # 设置回复变量
                     dictTValue['tDiceResult'] = dice_display
-                    display_burnout = total_burnout + penalty_dice  # 将p参数也算入燃尽显示
-                    dictTValue['tBurnout'] = f"燃尽: {display_burnout}次" if display_burnout > 0 else ""
+                    display_burnout = total_burnout + penalty_dice  # 将p参数也算入过载显示
+                    dictTValue['tBurnout'] = f"过载: {display_burnout}次" if display_burnout > 0 else ""
                     
                     # 获取技能检定结果文案
                     tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
@@ -871,9 +871,9 @@ def unity_reply(plugin_event, Proc):
                     # 混沌值变化信息
                     chaos_change_info = ""
                     if chaos_generation > 0:
-                        chaos_change_info += f"\n混沌值+{chaos_generation}: {old_chaos}→{group_data['chaos']}"
+                        chaos_change_info += f"混沌值+{chaos_generation}: {old_chaos}->{group_data['chaos']}"
                     if fail_generation > 0:
-                        chaos_change_info += f"\n现实改写失败+{fail_generation}: {old_fail}→{group_data['reality_fail']}"
+                        chaos_change_info += f"现实改写失败+{fail_generation}: {old_fail}->{group_data['reality_fail']}"
                     dictTValue['tChaosChange'] = chaos_change_info
                     
                     # 发送回复
@@ -893,7 +893,7 @@ def unity_reply(plugin_event, Proc):
                         # 重新获取群组数据（因为可能在循环中发生变化）
                         group_data = load_group_data(bot_hash, group_hash)
                         
-                        # 计算燃尽
+                        # 计算过载
                         total_burnout, skill_burnout, fail_burnout = calculate_burnout(
                             skill_value, 
                             group_data['reality_fail'], 
@@ -905,40 +905,40 @@ def unity_reply(plugin_event, Proc):
                             bonus_dice, penalty_dice, tmp_template_customDefault
                         )
                         
-                        # three_count_raw 是 b/p 修改后、燃尽前的3的个数
+                        # three_count_raw 是 b/p 修改后、过载前的3的个数
                         three_count_before_burnout = three_count_raw
                         
-                        # 应用燃尽
+                        # 应用过载
                         final_dice, burned_count, burnout_chaos = apply_burnout(modified_dice, total_burnout)
                         three_count_final = sum(1 for val in final_dice if val == 3)
                         
-                        # 燃尽次数：无论是否真的燃掉3，每个燃尽都加1点混沌值
+                        # 过载次数：无论是否真的燃掉3，每个过载都加1点混沌值
                         # 所以使用 total_burnout 而不是 burned_count
                         actual_burnout_count = total_burnout
                         
                         # 更新骰子显示
-                        # 检查是否有任何修改（b/p/燃尽）
+                        # 检查是否有任何修改（b/p/过载）
                         has_modifications = (bonus_dice > 0 or penalty_dice > 0 or burned_count > 0)
                         
                         if has_modifications:
                             # 有修改时显示：原始值 → 最终值
                             original_display = '[' + ', '.join(map(str, original_dice)) + ']'
                             
-                            # 生成最终值显示（包含燃尽标记）
+                            # 生成最终值显示（包含过载标记）
                             final_parts = []
                             for j, (orig_val, mod_val, final_val) in enumerate(zip(original_dice, modified_dice, final_dice)):
-                                if mod_val == 3 and final_val != 3:  # 被燃尽的
-                                    final_parts.append(f"{final_val}(3:燃尽)")
+                                if mod_val == 3 and final_val != 3:  # 被过载的
+                                    final_parts.append(f"{final_val}(3:过载)")
                                 elif orig_val != mod_val:  # 被b/p修改的
                                     if mod_val == 3:  # b参数
                                         final_parts.append(f"3({orig_val})")
                                     else:  # p参数
-                                        final_parts.append(f"{mod_val}(3:燃尽)")
+                                        final_parts.append(f"{mod_val}(3:过载)")
                                 else:
                                     final_parts.append(str(final_val))
                             
                             final_display = '[' + ', '.join(final_parts) + ']'
-                            dice_display = f"{original_display} → {final_display}"
+                            dice_display = f"{original_display} -> {final_display}"
                         else:
                             # 无修改时只显示原始结果
                             dice_display = '[' + ', '.join(map(str, original_dice)) + ']'
@@ -957,11 +957,11 @@ def unity_reply(plugin_event, Proc):
                             result_type = determine_ta_result(three_count_final)  # 其他情况按正常规则
                         
                         # 计算混沌值变化
-                        # 使用燃尽前的3的个数来计算混沌值，燃尽次数无论是否燃掉3都加1点
+                        # 使用过载前的3的个数来计算混沌值，过载次数无论是否燃掉3都加1点
                         chaos_generation = calculate_chaos_generation(
                             three_count_original,
-                            three_count_before_burnout,  # 燃尽前（b/p修改后）的3的个数
-                            actual_burnout_count,  # 燃尽次数（无论是否燃掉3，每个燃尽都加1点）
+                            three_count_before_burnout,  # 过载前（b/p修改后）的3的个数
+                            actual_burnout_count,  # 过载次数（无论是否燃掉3，每个过载都加1点）
                             penalty_dice,  # p参数次数
                             is_true_triple_ascension, 
                             is_triangle_stability
@@ -1004,8 +1004,8 @@ def unity_reply(plugin_event, Proc):
                         elif result_type == 'triangle_stability':
                             result_text += "【三角稳定】"
                         
-                        display_burnout = total_burnout + penalty_dice  # 将p参数也算入燃尽显示
-                        burnout_text = f"燃尽{display_burnout}" if display_burnout > 0 else "无燃尽"
+                        display_burnout = total_burnout + penalty_dice  # 将p参数也算入过载显示
+                        burnout_text = f"过载{display_burnout}" if display_burnout > 0 else "无过载"
                         results.append(f"第{i+1}次: {dice_display} {burnout_text} {result_text}")
                     
                     # 设置多次检定回复变量
@@ -1020,9 +1020,9 @@ def unity_reply(plugin_event, Proc):
                         old_fail = final_group_data['reality_fail'] - total_fail_generation
                         
                         if total_chaos_generation > 0:
-                            chaos_change_info += f"\n总混沌值+{total_chaos_generation}: {old_chaos}→{final_group_data['chaos']}"
+                            chaos_change_info += f"总混沌值+{total_chaos_generation}: {old_chaos}→{final_group_data['chaos']}"
                         if total_fail_generation > 0:
-                            chaos_change_info += f"\n总现实改写失败+{total_fail_generation}: {old_fail}→{final_group_data['reality_fail']}"
+                            chaos_change_info += f"总现实改写失败+{total_fail_generation}: {old_fail}→{final_group_data['reality_fail']}"
                     
                     dictTValue['tChaosChange'] = chaos_change_info
                     
