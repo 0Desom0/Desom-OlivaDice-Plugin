@@ -845,7 +845,7 @@ def unity_reply(plugin_event, Proc):
                     # 设置回复变量
                     dictTValue['tDiceResult'] = dice_display
                     display_burnout = total_burnout + penalty_dice  # 将p参数也算入过载显示
-                    dictTValue['tBurnout'] = f"过载: {display_burnout}次" if display_burnout > 0 else ""
+                    dictTValue['tBurnout'] = f"过载: {display_burnout}次\n" if display_burnout > 0 else ""
                     
                     # 获取技能检定结果文案
                     tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
@@ -1031,7 +1031,7 @@ def unity_reply(plugin_event, Proc):
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResultMultiAtOther'], dictTValue)
                     else:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResultMulti'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str)
+                    replyMsg(plugin_event, tmp_reply_str.strip())
                 
             except Exception as e:
                 dictTValue['tResult'] = str(e)
