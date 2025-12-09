@@ -111,13 +111,15 @@ def parse_at_user(plugin_event, tmp_reast_str, valDict, flag_is_from_group_admin
 
 def parse_ta_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skipSpaceStart):
     """
-    解析TA检定参数: c, f, b数字, p数字
-    返回: cleaned_expr, no_chaos, no_fail, bonus_dice, penalty_dice
+    解析TA检定参数: c, f, g, s, b数字, p数字
+    返回: cleaned_expr, no_chaos, no_fail, bonus_dice, penalty_dice, use_d6_bonus, use_simple_mode
     """
     no_chaos = False  # c参数
     no_fail = False   # f参数
     bonus_dice = 0    # b参数，强制改为3的骰子数
     penalty_dice = 0  # p参数，强制改为非3的骰子数
+    use_d6_bonus = False  # g参数，使用D6增益骰
+    use_simple_mode = False  # s参数，使用D10模式
     tmp_reast_str = expr_str
     
     # 循环处理所有参数
@@ -135,6 +137,20 @@ def parse_ta_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
         elif isMatchWordStart(tmp_reast_str, 'f'):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'f')
             no_fail = True
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
+            continue
+        
+        # 处理g参数（D6增益骰 gain）
+        elif isMatchWordStart(tmp_reast_str, 'g'):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'g')
+            use_d6_bonus = True
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
+            continue
+        
+        # 处理s参数（D10模式）
+        elif isMatchWordStart(tmp_reast_str, 's'):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 's')
+            use_simple_mode = True
             tmp_reast_str = skipSpaceStart(tmp_reast_str)
             continue
         
@@ -169,15 +185,20 @@ def parse_ta_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
     # 跳过空格并返回清理后的表达式
     cleaned_expr = skipSpaceStart(tmp_reast_str)
     
-    return cleaned_expr, no_chaos, no_fail, bonus_dice, penalty_dice
+    return cleaned_expr, no_chaos, no_fail, bonus_dice, penalty_dice, use_d6_bonus, use_simple_mode
 
 def replace_skills(expr_str, skill_valueTable, tmp_pcCardRule):
     """
     使用 getExpression 函数替换技能名，并将 0dX 替换为 0
     处理括号内结果≤0的情况，如 (力量-5)d4 当力量≤5时
+    返回值: (替换后的表达式, 显示详情, 被替换的技能列表[{name, old_value}])
     """
     if not expr_str:
-        return expr_str, expr_str
+        return expr_str, expr_str, []
+    
+    # 记录被替换的技能
+    replaced_skills = []
+    
     # 使用 getExpression 处理表达式
     [processed_expr, expr_show] = OlivaDiceCore.msgReply.getExpression(
         data=expr_str,
@@ -205,6 +226,8 @@ def replace_skills(expr_str, skill_valueTable, tmp_pcCardRule):
         vars = re.findall(r'\{([^}]+)\}', replaced_detail)
         for var in vars:
             if var in skill_valueTable:
+                # 记录被替换的技能
+                replaced_skills.append({'name': var, 'old_value': skill_valueTable[var]})
                 # 替换为技能名(值)格式
                 replaced_detail = replaced_detail.replace(
                     f'{{{var}}}',
@@ -212,7 +235,7 @@ def replace_skills(expr_str, skill_valueTable, tmp_pcCardRule):
                 )
     # 处理括号内结果≤0的情况，如 (力量-5)d4
     replaced_expr = handle_negative_dice(replaced_expr)
-    return replaced_expr, replaced_detail
+    return replaced_expr, replaced_detail, replaced_skills
 
 def handle_negative_dice(expr_str):
     """
@@ -369,27 +392,44 @@ def roll_ta_dice(bonus_dice=0, penalty_dice=0, tmp_template_customDefault=None):
     
     return original_dice, modified_dice, display_detail, three_count, penalty_chaos
 
-def apply_burnout(dice_results, burnout_count):
+def apply_burnout(dice_results, burnout_count, d6_bonus_threes=0):
     """
     应用过载效果：将指定数量的3改为非3
-    返回: (修改后的骰子结果, 被过载的数量, 过载产生的混沌值)
+    d6_bonus_threes: D6增益带来的3的数量，虚拟骰池的最后几个3来自D6增益
+    返回: (修改后的骰子结果, 被过载的数量, 过载产生的混沌值, D6增益的3被过载的数量)
     """
     if burnout_count <= 0:
-        return dice_results, 0, 0
+        return dice_results, 0, 0, 0
     
     modified_dice = dice_results.copy()
     three_indices = [i for i, val in enumerate(modified_dice) if val == 3]
     burned_count = min(burnout_count, len(three_indices))
     
+    # 追踪D6增益的3被燃掉的数量
+    # 虚拟骰池的最后d6_bonus_threes个3来自D6增益
+    d6_burned = 0
+    total_threes = len(three_indices)
+    d6_start_index = total_threes - d6_bonus_threes if d6_bonus_threes > 0 else total_threes
+    
+    # 随机打乱three_indices以实现随机过载
+    import random
+    shuffled_indices = three_indices.copy()
+    random.shuffle(shuffled_indices)
+    
     for i in range(burned_count):
-        idx = three_indices[i]
+        idx = shuffled_indices[i]
+        # 判断这个3是否来自D6增益（在原three_indices中的位置）
+        original_position = three_indices.index(idx)
+        if original_position >= d6_start_index:
+            d6_burned += 1
+        
         # 随机选择一个1-6但不是3的数字
         modified_dice[idx] = random.choice([1, 2, 4, 5, 6])
     
     # 过载产生混沌值：每个被过载的骰子产生1点混沌值
     burnout_chaos = burned_count
     
-    return modified_dice, burned_count, burnout_chaos
+    return modified_dice, burned_count, burnout_chaos, d6_burned
 
 def determine_ta_result(three_count):
     """
@@ -424,6 +464,50 @@ def calculate_chaos_generation(three_count_original, three_count_before_burnout,
     # 注意：过载次数无论是否真的燃掉3，每个过载都加1点
     chaos_value = 6 - three_count_before_burnout + burnout_count + penalty_count
     return max(0, chaos_value)
+
+def roll_d6_bonus(tmp_template_customDefault=None):
+    """
+    投掷D6增益骰
+    返回: (d6结果, 增加的3的数量, 增加的混沌值, 效果描述)
+    D6=3: 增加1个3，0点混沌
+    D6=6: 增加2个3，0点混沌
+    其他: 增加0个3，1点混沌
+    """
+    rd_d6 = OlivaDiceCore.onedice.RD('1d6', tmp_template_customDefault)
+    rd_d6.roll()
+    d6_result = rd_d6.resInt
+    
+    if d6_result == 3:
+        return d6_result, 1, 0, " -> +1个3"
+    elif d6_result == 6:
+        return d6_result, 2, 0, " -> +2个3"
+    else:
+        return d6_result, 0, 1, " -> +1混沌"
+
+def roll_d10_simple(tmp_template_customDefault=None):
+    """
+    投掷D10检定
+    返回: (d10结果, 3的数量, 混沌值, 结果类型)
+    D10=3时为失败，0个3，3点混沌
+    其他情况：D10结果 = 3的数量 = 产生的混沌值
+    没有三重升华
+    """
+    rd_d10 = OlivaDiceCore.onedice.RD('1d10', tmp_template_customDefault)
+    rd_d10.roll()
+    d10_result = rd_d10.resInt
+    
+    if d10_result == 3:
+        # D10=3时是失败，0个3，但产生3点混沌
+        three_count = 0
+        chaos_value = 3
+        result_type = 'failure'
+    else:
+        # 其他情况：结果 = 3的数量 = 混沌值
+        three_count = d10_result
+        chaos_value = d10_result
+        result_type = 'success'
+    
+    return d10_result, three_count, chaos_value, result_type
 
 def unity_init(plugin_event, Proc):
     # 这里是插件初始化，通常用于加载配置等
@@ -605,6 +689,375 @@ def unity_reply(plugin_event, Proc):
         #此群关闭时中断处理
         if not flag_groupEnable and not flag_force_reply:
             return
+        
+        # TRA D20检定命令（必须放在 ta/tr 之前，因为 tra 匹配会优先于 ta/tr）
+        if isMatchWordStart(tmp_reast_str, 'tra', isCommand = True):
+            try:
+                # 解析@用户
+                is_at, at_user_id, tmp_reast_str = parse_at_user(plugin_event, tmp_reast_str, valDict, flag_is_from_group_admin)
+                if is_at and not at_user_id:
+                    return
+                
+                # 移除命令前缀
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'tra')
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                tmp_reast_str = tmp_reast_str.rstrip(' ')
+                
+                # 检查是否为多次投掷格式
+                roll_times = 1
+                if '#' in tmp_reast_str:
+                    parts = tmp_reast_str.split('#', 1)
+                    front_part = parts[0].strip()
+                    skill_part = parts[1].strip() if len(parts) > 1 else ''
+                    
+                    match = re.match(r'^(\d+)(.*)$', front_part)
+                    if match:
+                        roll_times = int(match.group(1))
+                        roll_times = max(1, min(10, roll_times))
+                        remaining_params = match.group(2).strip()
+                        tmp_reast_str = remaining_params + ' ' + skill_part if remaining_params else skill_part
+                    else:
+                        tmp_reast_str = front_part + ' ' + skill_part
+                
+                # 解析c参数（失败不增加混沌）
+                no_chaos_on_fail = False
+                if isMatchWordStart(tmp_reast_str, 'c'):
+                    tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'c')
+                    no_chaos_on_fail = True
+                    tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                
+                # 确定检定用户
+                target_user_id = at_user_id if is_at else plugin_event.data.user_id
+                
+                # 获取人物卡信息
+                tmp_pcHash = OlivaDiceCore.pcCard.getPcHash(target_user_id, plugin_event.platform['platform'])
+                tmp_pc_name = OlivaDiceCore.pcCard.pcCardDataGetSelectionKey(tmp_pcHash, tmp_hagID)
+                
+                if tmp_pc_name:
+                    dictTValue['tName'] = tmp_pc_name
+                else:
+                    res = plugin_event.get_stranger_info(user_id = target_user_id)
+                    if res != None and res['active']:
+                        dictTValue['tName'] = res['data']['name']
+                    else:
+                        dictTValue['tName'] = f'用户{target_user_id}'
+                
+                # 获取技能数据
+                pc_skills = OlivaDiceCore.pcCard.pcCardDataGetByPcName(tmp_pcHash, hagId=tmp_hagID) if tmp_pc_name else {}
+                skill_valueTable = pc_skills.copy()
+                
+                tmp_pcCardRule = 'default'
+                tmp_pcCardRule_new = OlivaDiceCore.pcCard.pcCardDataGetTemplateKey(tmp_pcHash, tmp_pc_name)
+                if tmp_pcCardRule_new != None:
+                    tmp_pcCardRule = tmp_pcCardRule_new
+                
+                # 添加映射记录
+                if tmp_pc_name != None:
+                    skill_valueTable.update(
+                        OlivaDiceCore.pcCard.pcCardDataGetTemplateDataByKey(
+                            pcHash = tmp_pcHash,
+                            pcCardName = tmp_pc_name,
+                            dataKey = 'mappingRecord',
+                            resDefault = {}
+                        )
+                    )
+                
+                # 获取模板配置
+                tmp_template_name = 'default'
+                tmp_template_customDefault = None
+                if flag_is_from_group:
+                    tmp_groupTemplate = OlivaDiceCore.userConfig.getUserConfigByKey(
+                        userId = tmp_hagID,
+                        userType = 'group',
+                        platform = plugin_event.platform['platform'],
+                        userConfigKey = 'groupTemplate',
+                        botHash = plugin_event.bot_info.hash
+                    )
+                    if tmp_groupTemplate != None:
+                        tmp_template_name = tmp_groupTemplate
+                tmp_template = OlivaDiceCore.pcCard.pcCardDataGetTemplateByKey(tmp_template_name)
+                if tmp_template != None and 'customDefault' in tmp_template:
+                    tmp_template_customDefault = tmp_template['customDefault']
+                
+                # 计算资质值（默认为0）
+                aptitude_value = 0
+                skill_expr_display = ""  # 用于显示的表达式
+                skill_roll_detail = ""   # 骰子展开详情
+                replaced_skill_list = []  # 被替换的技能列表
+                cleaned_expr = tmp_reast_str.strip()
+                skill_expr = ""  # 技能表达式
+                if cleaned_expr:
+                    # 使用replace_skills处理技能替换（支持表达式如 专注+5, 1d6+专注 等）
+                    skill_expr, skill_detail, replaced_skill_list = replace_skills(
+                        cleaned_expr.replace('=', '').replace(' ', ''), 
+                        skill_valueTable, 
+                        tmp_pcCardRule
+                    )
+                    
+                    # skill_detail 是技能替换后的显示
+                    skill_expr_display = skill_detail if skill_detail else cleaned_expr
+                    
+                    # 使用RD处理技能表达式
+                    rd_skill = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
+                    rd_skill.roll()
+                    if rd_skill.resError is not None:
+                        dictTValue['tRollPara'] = cleaned_expr
+                        error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_skill.resError, dictStrCustom, dictTValue)
+                        dictTValue['tResult'] = f"错误的表达式：{error_msg}"
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAError'], dictTValue)
+                        replyMsg(plugin_event, tmp_reply_str)
+                        return
+                    aptitude_value = rd_skill.resInt
+                    
+                    # 生成骰子展开详情
+                    if rd_skill.resDetail and rd_skill.resDetail != str(rd_skill.resInt):
+                        skill_roll_detail = rd_skill.resDetail
+                    else:
+                        skill_roll_detail = str(aptitude_value)
+                
+                # 获取群组数据
+                bot_hash = plugin_event.bot_info.hash
+                if tmp_hagID:
+                    group_hash = OlivaDiceCore.userConfig.getUserHash(
+                        tmp_hagID,
+                        'group',
+                        plugin_event.platform['platform']
+                    )
+                else:
+                    group_hash = tmp_pcHash
+                group_data = load_group_data(bot_hash, group_hash)
+                old_chaos = group_data['chaos']
+                
+                if roll_times == 1:
+                    # 单次投掷
+                    # 投掷D20
+                    rd_d20 = OlivaDiceCore.onedice.RD('1d20', tmp_template_customDefault)
+                    rd_d20.roll()
+                    d20_result = rd_d20.resInt
+                    
+                    # 计算总结果
+                    total_result = d20_result + aptitude_value
+                    
+                    # 判断结果类型
+                    # 特殊规则：D20=3为三重升华（大成功），D20=7为必定失败
+                    if d20_result == 3:
+                        result_type = 'critical_success'  # 三重升华
+                        chaos_generation = 0
+                    elif d20_result == 7:
+                        result_type = 'failure'  # 必定失败
+                        chaos_generation = d20_result if not no_chaos_on_fail else 0
+                    elif total_result > 10:
+                        result_type = 'success'
+                        chaos_generation = 0
+                    else:
+                        result_type = 'failure'
+                        chaos_generation = d20_result if not no_chaos_on_fail else 0
+                    
+                    # 更新群组数据
+                    if chaos_generation > 0:
+                        group_data['chaos'] += chaos_generation
+                        save_group_data(bot_hash, group_hash, group_data)
+                    
+                    # 生成骰子表达式显示
+                    # 格式: 1D20+表达式=D20结果+展开详情=总结果
+                    if skill_expr_display:
+                        # 有资质表达式
+                        if skill_roll_detail != str(aptitude_value):
+                            # 表达式中有骰子，显示展开
+                            dice_expr_display = f"1D20+{skill_expr_display}={d20_result}+{skill_roll_detail}={total_result}"
+                        else:
+                            # 表达式只是数值，简化显示
+                            dice_expr_display = f"1D20+{skill_expr_display}={d20_result}+{aptitude_value}={total_result}"
+                    else:
+                        # 无资质表达式
+                        dice_expr_display = f"1D20={d20_result}"
+                    
+                    # 设置回复变量
+                    dictTValue['tDiceExpr'] = dice_expr_display
+                    dictTValue['tD20Result'] = str(d20_result)
+                    dictTValue['tAptitude'] = str(aptitude_value)
+                    dictTValue['tTotalResult'] = str(total_result)
+                    
+                    # 获取技能检定结果文案
+                    tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
+                    if result_type == 'critical_success':
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
+                    elif result_type == 'success':
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
+                    
+                    dictTValue['tSkillCheckReasult'] = OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
+                        tmpSkillCheckType, dictStrCustom, dictTValue, tmp_pcHash, tmp_pc_name
+                    )
+                    
+                    # 添加特殊说明
+                    if result_type == 'critical_success':
+                        dictTValue['tSkillCheckReasult'] += "【三重升华】"
+                    elif d20_result == 7:
+                        dictTValue['tSkillCheckReasult'] += "【命定失败】"
+                        # 骰出7时，将表达式中的技能归零
+                        if replaced_skill_list:
+                            skill_zero_texts = []
+                            for skill_info in replaced_skill_list:
+                                skill_name = skill_info['name']
+                                old_value = skill_info['old_value']
+                                # 将技能设为0
+                                OlivaDiceCore.pcCard.pcCardDataSetBySkillName(
+                                    pcHash=tmp_pcHash,
+                                    pcCardName=tmp_pc_name,
+                                    skillName=skill_name,
+                                    skillValue=0,
+                                    hagId=tmp_hagID
+                                )
+                                skill_zero_texts.append(f"{skill_name}: {old_value}->0")
+                            dictTValue['tSkillCheckReasult'] += "\n技能归零: " + ", ".join(skill_zero_texts)
+                    
+                    # 混沌值变化信息
+                    chaos_change_info = ""
+                    if chaos_generation > 0:
+                        dictTValue['tChaosGen'] = str(chaos_generation)
+                        dictTValue['tOldChaos'] = str(old_chaos)
+                        dictTValue['tNewChaos'] = str(group_data['chaos'])
+                        chaos_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strChaosChange'], dictTValue)
+                    dictTValue['tChaosChange'] = chaos_change_info
+                    
+                    # 发送回复
+                    if is_at:
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAResultAtOther'], dictTValue)
+                    else:
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAResult'], dictTValue)
+                    replyMsg(plugin_event, tmp_reply_str)
+                
+                else:
+                    # 多次投掷
+                    results = []
+                    total_chaos_generation = 0
+                    # 跟踪已归零的技能（避免重复归零）
+                    zeroed_skills = set()
+                    
+                    for i in range(roll_times):
+                        # 重新获取群组数据（因为可能在循环中发生变化）
+                        group_data = load_group_data(bot_hash, group_hash)
+                        
+                        # 每次投掷重新计算表达式（如果有骰子）
+                        if skill_expr:
+                            tmp_rd = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
+                            tmp_rd.roll()
+                            this_aptitude_value = tmp_rd.resInt
+                            this_skill_roll_detail = tmp_rd.resDetail
+                        else:
+                            this_aptitude_value = aptitude_value
+                            this_skill_roll_detail = str(aptitude_value)
+                        
+                        # 投掷D20
+                        rd_d20 = OlivaDiceCore.onedice.RD('1d20', tmp_template_customDefault)
+                        rd_d20.roll()
+                        d20_result = rd_d20.resInt
+                        
+                        # 计算总结果
+                        total_result = d20_result + this_aptitude_value
+                        
+                        # 判断结果类型
+                        if d20_result == 3:
+                            result_type = 'critical_success'
+                            chaos_generation = 0
+                        elif d20_result == 7:
+                            result_type = 'failure'
+                            chaos_generation = d20_result if not no_chaos_on_fail else 0
+                        elif total_result > 10:
+                            result_type = 'success'
+                            chaos_generation = 0
+                        else:
+                            result_type = 'failure'
+                            chaos_generation = d20_result if not no_chaos_on_fail else 0
+                        
+                        # 累计混沌值
+                        total_chaos_generation += chaos_generation
+                        
+                        # 更新群组数据
+                        if chaos_generation > 0:
+                            group_data['chaos'] += chaos_generation
+                            save_group_data(bot_hash, group_hash, group_data)
+                        
+                        # 获取结果文案
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
+                        if result_type == 'critical_success':
+                            tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
+                        elif result_type == 'success':
+                            tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
+                        
+                        result_text = OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
+                            tmpSkillCheckType, dictStrCustom, dictTValue, tmp_pcHash, tmp_pc_name
+                        )
+                        
+                        # 添加特殊说明和技能归零
+                        skill_zero_text = ""
+                        if result_type == 'critical_success':
+                            result_text += "【三重升华】"
+                        elif d20_result == 7:
+                            result_text += "【命定失败】"
+                            # 骰出7时，将还未归零的技能归零
+                            if replaced_skill_list:
+                                skill_zero_texts = []
+                                for skill_info in replaced_skill_list:
+                                    skill_name = skill_info['name']
+                                    if skill_name not in zeroed_skills:
+                                        old_value = skill_info['old_value']
+                                        # 将技能设为0
+                                        OlivaDiceCore.pcCard.pcCardDataSetBySkillName(
+                                            pcHash=tmp_pcHash,
+                                            pcCardName=tmp_pc_name,
+                                            skillName=skill_name,
+                                            skillValue=0,
+                                            hagId=tmp_hagID
+                                        )
+                                        skill_zero_texts.append(f"{skill_name}: {old_value}->0")
+                                        zeroed_skills.add(skill_name)
+                                if skill_zero_texts:
+                                    skill_zero_text = " 技能归零: " + ", ".join(skill_zero_texts)
+                        
+                        # 构建单次结果显示
+                        # 格式: 1D20+表达式=D20结果+展开详情=总结果
+                        chaos_text = f" 混沌+{chaos_generation}" if chaos_generation > 0 else ""
+                        if skill_expr_display:
+                            if this_skill_roll_detail != str(this_aptitude_value):
+                                # 表达式中有骰子，显示展开
+                                dice_display = f"1D20+{skill_expr_display}={d20_result}+{this_skill_roll_detail}={total_result}"
+                            else:
+                                # 表达式只是数值
+                                dice_display = f"1D20+{skill_expr_display}={d20_result}+{this_aptitude_value}={total_result}"
+                        else:
+                            dice_display = f"1D20={d20_result}"
+                        results.append(f"第{i+1}次: {dice_display} {result_text}{chaos_text}{skill_zero_text}")
+                    
+                    # 设置多次检定回复变量
+                    dictTValue['tRollTimes'] = str(roll_times)
+                    dictTValue['tMultiResults'] = '\n'.join(results)
+                    dictTValue['tSkillExpr'] = skill_expr_display if skill_expr_display else ""
+                    dictTValue['tAptitude'] = str(aptitude_value)
+                    
+                    # 总混沌变化信息
+                    chaos_change_info = ""
+                    if total_chaos_generation > 0:
+                        new_chaos = load_group_data(bot_hash, group_hash)['chaos']
+                        dictTValue['tChaosGen'] = str(total_chaos_generation)
+                        dictTValue['tOldChaos'] = str(old_chaos)
+                        dictTValue['tNewChaos'] = str(new_chaos)
+                        chaos_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strChaosChange'], dictTValue)
+                    dictTValue['tChaosChange'] = chaos_change_info
+                    
+                    # 发送回复
+                    if is_at:
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAResultMultiAtOther'], dictTValue)
+                    else:
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAResultMulti'], dictTValue)
+                    replyMsg(plugin_event, tmp_reply_str)
+                
+            except Exception as e:
+                dictTValue['tResult'] = str(e)
+                tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAError'], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str)
+            
+            return
             
         # TA/TR 检定命令
         if isMatchWordStart(tmp_reast_str, ['ta', 'tr'], isCommand = True):
@@ -644,7 +1097,7 @@ def unity_reply(plugin_event, Proc):
                         tmp_reast_str = front_part + ' ' + skill_part
                 
                 # 解析参数
-                cleaned_expr, no_chaos, no_fail, bonus_dice, penalty_dice = parse_ta_parameters(
+                cleaned_expr, no_chaos, no_fail, bonus_dice, penalty_dice, use_d6_bonus, use_simple_mode = parse_ta_parameters(
                     tmp_reast_str, isMatchWordStart, getMatchWordStartRight, skipSpaceStart
                 )
                 
@@ -706,7 +1159,7 @@ def unity_reply(plugin_event, Proc):
                 skill_detail = "1"
                 if cleaned_expr:
                     # 使用replace_skills处理技能替换
-                    skill_expr, skill_detail = replace_skills(
+                    skill_expr, skill_detail, _ = replace_skills(
                         cleaned_expr.replace('=', '').replace(' ', ''), 
                         skill_valueTable, 
                         tmp_pcCardRule
@@ -716,25 +1169,23 @@ def unity_reply(plugin_event, Proc):
                     rd_skill = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                     rd_skill.roll()
                     if rd_skill.resError is not None:
-                        dictTValue['tRollPara'] = cleaned_expr
-                        error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_skill.resError, dictStrCustom, dictTValue)
-                        dictTValue['tResult'] = f"错误的技能值：{error_msg}"
-                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
-                        replyMsg(plugin_event, tmp_reply_str)
-                        return
-                    skill_value = rd_skill.resInt
-                    
-                    # 显示处理
-                    if rd_skill.resDetail and rd_skill.resDetail != str(rd_skill.resInt):
-                        if skill_detail == rd_skill.resDetail:
-                            skill_detail = f"{skill_detail}={skill_value}"
-                        else:
-                            skill_detail = f"{skill_detail}={rd_skill.resDetail}={skill_value}"
+                        # 找不到技能或表达式错误时，按0处理
+                        skill_value = 0
+                        skill_detail = f"{cleaned_expr}(未找到对应资质，按0处理)"
                     else:
-                        if skill_detail != str(skill_value):
-                            skill_detail = f"{skill_detail}={skill_value}"
+                        skill_value = rd_skill.resInt
+                        
+                        # 显示处理
+                        if rd_skill.resDetail and rd_skill.resDetail != str(rd_skill.resInt):
+                            if skill_detail == rd_skill.resDetail:
+                                skill_detail = f"{skill_detail}={skill_value}"
+                            else:
+                                skill_detail = f"{skill_detail}={rd_skill.resDetail}={skill_value}"
                         else:
-                            skill_detail = str(skill_value)
+                            if skill_detail != str(skill_value):
+                                skill_detail = f"{skill_detail}={skill_value}"
+                            else:
+                                skill_detail = str(skill_value)
                 
                 # 获取群组数据
                 bot_hash = plugin_event.bot_info.hash
@@ -751,6 +1202,145 @@ def unity_reply(plugin_event, Proc):
                 # 执行检定
                 if roll_times == 1:
                     # 单次检定
+                    old_chaos = group_data['chaos']
+                    old_fail = group_data['reality_fail']
+                    
+                    # D10模式
+                    if use_simple_mode:
+                        # D10检定模式
+                        # 先计算过载（skill_value已经在上面计算好了）
+                        total_burnout, skill_burnout, fail_burnout = calculate_burnout(
+                            skill_value, 
+                            group_data['reality_fail'], 
+                            is_reality_alter
+                        )
+                        
+                        d10_result, three_count_d10, d10_chaos, result_type = roll_d10_simple(tmp_template_customDefault)
+                        
+                        # D6增益骰（可以与D10同时使用）
+                        d6_bonus_threes = 0
+                        d6_bonus_chaos = 0
+                        d6_display = ""
+                        if use_d6_bonus:
+                            d6_result, d6_threes, d6_chaos, d6_effect = roll_d6_bonus(tmp_template_customDefault)
+                            d6_bonus_threes = d6_threes
+                            d6_bonus_chaos = d6_chaos
+                            dictTValue['tD6Result'] = str(d6_result)
+                            dictTValue['tD6Effect'] = d6_effect
+                            d6_display = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strD6Bonus'], dictTValue)
+                        
+                        # D10的3 + D6增益的3，然后应用过载
+                        three_count_before_burnout = three_count_d10 + d6_bonus_threes
+                        # 过载燃掉3（包括D6增益的3）
+                        # 创建虚拟骰池来应用过载
+                        virtual_dice_d10 = [3] * three_count_d10 + [1] * (10 - three_count_d10)
+                        for _ in range(d6_bonus_threes):
+                            virtual_dice_d10.append(3)
+                        _, _, _, d6_burned = apply_burnout(virtual_dice_d10, total_burnout, d6_bonus_threes)
+                        three_count_final = max(0, three_count_before_burnout - total_burnout)
+                        
+                        # D10模式下没有三重升华，也没有三角稳定
+                        # 重新判断结果类型（基于过载后的3的数量）
+                        result_type = determine_ta_result(three_count_final)
+                        
+                        # 计算混沌值（D10产生的混沌 + D6产生的混沌 + 过载产生的混沌）
+                        chaos_generation = d10_chaos + d6_bonus_chaos + total_burnout
+                        
+                        # 应用参数限制
+                        if no_chaos:
+                            chaos_generation = 0
+                        
+                        # 计算现实改写失败变化
+                        fail_generation = 1 if (is_reality_alter and result_type == 'failure') else 0
+                        if no_fail:
+                            fail_generation = 0
+                        
+                        # 更新群组数据
+                        if chaos_generation > 0 or fail_generation > 0:
+                            group_data['chaos'] += chaos_generation
+                            group_data['reality_fail'] += fail_generation
+                            save_group_data(bot_hash, group_hash, group_data)
+                        
+                        # 设置回复变量
+                        dictTValue['tD10Result'] = str(d10_result)
+                        
+                        # 构建D10显示
+                        dice_display = f"D10: {d10_result}"
+                        
+                        # D10=3时是失败,不显示过载信息(因为本身就是0个3)
+                        if d10_result != 3:
+                            # 计算D10被过载的个数
+                            d10_burned = total_burnout - d6_burned
+                            if d10_burned < 0:
+                                d10_burned = 0
+                            
+                            if d10_burned > 0:
+                                # 显示D10被过载的情况
+                                final_d10_threes = three_count_d10 - d10_burned
+                                dice_display += f" (过载{d10_burned}->{final_d10_threes})"
+                        
+                        # 构建D6增益显示
+                        if d6_display:
+                            # D10=3时,D6增益无效
+                            if d10_result == 3 and d6_bonus_threes > 0:
+                                d6_display = d6_display.rstrip()
+                                d6_display += "(无效)"
+                            # D10不是3时,如果D6增益的3被过载了，添加过载提示
+                            elif d6_burned > 0:
+                                d6_display = d6_display.rstrip()  # 移除末尾空白
+                                # 计算D6增益被过载后剩余的3
+                                final_d6_threes = d6_bonus_threes - d6_burned
+                                d6_display += f"(过载{d6_burned}->{final_d6_threes})"
+                            dice_display += d6_display
+                        
+                        dictTValue['tDiceResult'] = dice_display
+                        display_burnout = total_burnout + penalty_dice
+                        dictTValue['tBurnout'] = f"过载: {display_burnout}次\n" if display_burnout > 0 else ""
+                        
+                        # 设置3的计数显示（D10模式显示详细的过载信息）
+                        if total_burnout > 0:
+                            # 显示: 本次投出了A个3，过载B个，剩下C个3
+                            dictTValue['tThreeBefore'] = str(three_count_before_burnout)
+                            dictTValue['tBurnoutNum'] = str(total_burnout)
+                            dictTValue['tThreeAfter'] = str(three_count_final)
+                            dictTValue['tThreeCount'] = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strThreeCountWithBurnout'], dictTValue)
+                        else:
+                            # 没有过载时使用原来的格式
+                            dictTValue['tThreeNum'] = str(three_count_final)
+                            dictTValue['tThreeCount'] = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strThreeCount'], dictTValue)
+                        
+                        # 获取技能检定结果文案（D10模式没有大成功、三重升华和三角稳定）
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
+                        if result_type == 'success':
+                            tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
+                        
+                        dictTValue['tSkillCheckReasult'] = OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
+                            tmpSkillCheckType, dictStrCustom, dictTValue, tmp_pcHash, tmp_pc_name
+                        )
+                        
+                        # 混沌值变化信息
+                        chaos_change_info = ""
+                        if chaos_generation > 0:
+                            dictTValue['tChaosGen'] = str(chaos_generation)
+                            dictTValue['tOldChaos'] = str(old_chaos)
+                            dictTValue['tNewChaos'] = str(group_data['chaos'])
+                            chaos_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strChaosChange'], dictTValue)
+                        if fail_generation > 0:
+                            dictTValue['tFailGen'] = str(fail_generation)
+                            dictTValue['tOldFail'] = str(old_fail)
+                            dictTValue['tNewFail'] = str(group_data['reality_fail'])
+                            chaos_change_info += OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFailChange'], dictTValue)
+                        dictTValue['tChaosChange'] = chaos_change_info
+                        
+                        # 发送回复
+                        if is_at:
+                            tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResultAtOther'], dictTValue)
+                        else:
+                            tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResult'], dictTValue)
+                        replyMsg(plugin_event, tmp_reply_str.strip())
+                        return
+                    
+                    # 普通模式
                     # 计算过载
                     total_burnout, skill_burnout, fail_burnout = calculate_burnout(
                         skill_value, 
@@ -763,69 +1353,99 @@ def unity_reply(plugin_event, Proc):
                         bonus_dice, penalty_dice, tmp_template_customDefault
                     )
                     
-                    # three_count_raw 是 b/p 修改后、过载前的3的个数
-                    three_count_before_burnout = three_count_raw
+                    # D6增益骰（在过载之前计入，这样过载可以燃掉D6增益的3）
+                    d6_bonus_threes = 0
+                    d6_bonus_chaos = 0
+                    d6_display = ""
+                    if use_d6_bonus:
+                        d6_result, d6_threes, d6_chaos, d6_effect = roll_d6_bonus(tmp_template_customDefault)
+                        d6_bonus_threes = d6_threes
+                        d6_bonus_chaos = d6_chaos
+                        dictTValue['tD6Result'] = str(d6_result)
+                        dictTValue['tD6Effect'] = d6_effect
+                        d6_display = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strD6Bonus'], dictTValue)
                     
-                    # 应用过载
-                    final_dice, burned_count, burnout_chaos = apply_burnout(modified_dice, total_burnout)
-                    three_count_final = sum(1 for val in final_dice if val == 3)
+                    # three_count_raw 是 b/p 修改后的3的个数，加上D6增益的3
+                    three_count_before_burnout = three_count_raw + d6_bonus_threes
+                    
+                    # 应用过载（可以燃掉D6增益的3）
+                    # 需要虚拟地将D6增益的3加入骰池，然后应用过载
+                    virtual_dice = list(modified_dice)
+                    for _ in range(d6_bonus_threes):
+                        virtual_dice.append(3)
+                    final_virtual_dice, burned_count, burnout_chaos, d6_burned = apply_burnout(virtual_dice, total_burnout, d6_bonus_threes)
+                    three_count_final = sum(1 for val in final_virtual_dice if val == 3)
+                    # 更新 final_dice 为虚拟骰池的前6个（原6D4部分）
+                    final_dice = final_virtual_dice[:6]
                     
                     # 过载次数：无论是否真的燃掉3，每个过载都加1点混沌值
-                    # 所以使用 total_burnout 而不是 burned_count
                     actual_burnout_count = total_burnout
                     
                     # 更新骰子显示
-                    # 检查是否有任何修改（b/p/过载）
                     has_modifications = (bonus_dice > 0 or penalty_dice > 0 or burned_count > 0)
                     
                     if has_modifications:
-                        # 有修改时显示：原始值 → 最终值
                         original_display = '[' + ', '.join(map(str, original_dice)) + ']'
-                        
-                        # 生成最终值显示（包含过载标记）
                         final_parts = []
                         for i, (orig_val, mod_val, final_val) in enumerate(zip(original_dice, modified_dice, final_dice)):
-                            if mod_val == 3 and final_val != 3:  # 被过载的
-                                final_parts.append(f"{final_val}(3:过载)")
-                            elif orig_val != mod_val:  # 被b/p修改的
-                                if mod_val == 3:  # b参数
+                            if mod_val == 3 and final_val != 3:
+                                # final_parts.append(f"{final_val}(3:过载)")
+                                final_parts.append(f"(3:过载)")
+                            elif orig_val != mod_val:
+                                if mod_val == 3:
                                     final_parts.append(f"3({orig_val})")
-                                else:  # p参数
-                                    final_parts.append(f"{mod_val}(3:过载)")
+                                else:
+                                    # final_parts.append(f"{mod_val}(3:过载)")
+                                    final_parts.append(f"(3:过载)")
                             else:
                                 final_parts.append(str(final_val))
-                        
                         final_display = '[' + ', '.join(final_parts) + ']'
-                        dice_display = f"{original_display} → {final_display}"
+                        dice_display = f"{original_display} -> {final_display}"
                     else:
-                        # 无修改时只显示原始结果
                         dice_display = '[' + ', '.join(map(str, original_dice)) + ']'
                     
+                    # 添加D6增益显示（包括过载信息）
+                    if d6_display:
+                        # 如果D6增益的3被过载了，添加过载提示
+                        if d6_burned > 0:
+                            d6_display = d6_display.rstrip()  # 移除末尾空白
+                            d6_display += f"(过载{d6_burned}个)"
+                        dice_display += d6_display
+                    
                     # 判断结果类型
+                    # 6D4中原始的3的个数
                     three_count_original = sum(1 for val in original_dice if val == 3)
-                    is_true_triple_ascension = (three_count_original == 3)
-                    is_triangle_stability = (three_count_final == 3 and not is_true_triple_ascension)  # 改写后刚好是3个3但初始不是
+                    
+                    # 三重升华判定：
+                    # 原始6D4的3 + D6增益的3 == 3（恰好等于3）
+                    # 注意：这个判定在过载之前，过载不影响三重升华的触发
+                    total_original_threes = three_count_original + d6_bonus_threes
+                    is_true_triple_ascension = (total_original_threes == 3)
+                    
+                    # 三角稳定判断：最终刚好3个3，但不是三重升华
+                    is_triangle_stability = (three_count_final == 3 and not is_true_triple_ascension)
                     
                     # 确定最终结果类型
                     if is_true_triple_ascension:
-                        result_type = 'critical_success'  # 三重升华 -> 大成功
+                        result_type = 'critical_success'
                     elif is_triangle_stability:
-                        result_type = 'triangle_stability'  # 三角稳定 -> 特殊成功
+                        result_type = 'triangle_stability'
                     else:
-                        result_type = determine_ta_result(three_count_final)  # 其他情况按正常规则
+                        result_type = determine_ta_result(three_count_final)
                     
                     # 计算混沌值变化
-                    # 使用过载前的3的个数来计算混沌值，过载次数无论是否燃掉3都加1点
                     chaos_generation = calculate_chaos_generation(
                         three_count_original,
-                        three_count_before_burnout,  # 过载前（b/p修改后）的3的个数
-                        actual_burnout_count,  # 过载次数（无论是否燃掉3，每个过载都加1点）
-                        penalty_dice,  # p参数次数
+                        three_count_before_burnout,
+                        actual_burnout_count,
+                        penalty_dice,
                         is_true_triple_ascension, 
                         is_triangle_stability
                     )
+                    # 加上D6增益产生的混沌值
+                    chaos_generation += d6_bonus_chaos
                     
-                    # 计算现实改写失败变化（只有.tr命令且失败时才会产生现实改写失败）
+                    # 计算现实改写失败变化
                     fail_generation = 1 if (is_reality_alter and result_type == 'failure') else 0
                     
                     # 应用参数限制
@@ -835,8 +1455,6 @@ def unity_reply(plugin_event, Proc):
                         fail_generation = 0
                     
                     # 更新群组数据
-                    old_chaos = group_data['chaos']
-                    old_fail = group_data['reality_fail']
                     if chaos_generation > 0 or fail_generation > 0:
                         group_data['chaos'] += chaos_generation
                         group_data['reality_fail'] += fail_generation
@@ -844,15 +1462,32 @@ def unity_reply(plugin_event, Proc):
                     
                     # 设置回复变量
                     dictTValue['tDiceResult'] = dice_display
-                    display_burnout = total_burnout + penalty_dice  # 将p参数也算入过载显示
+                    display_burnout = total_burnout + penalty_dice
                     dictTValue['tBurnout'] = f"过载: {display_burnout}次\n" if display_burnout > 0 else ""
+                    
+                    # 设置3的计数显示
+                    # 三重升华时显示原始3数量，其他情况根据是否有过载选择模板
+                    if is_true_triple_ascension:
+                        # 三重升华时显示原始3的数量
+                        dictTValue['tThreeNum'] = str(total_original_threes)
+                        dictTValue['tThreeCount'] = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strThreeCount'], dictTValue)
+                    elif total_burnout > 0:
+                        # 有过载时显示详细信息
+                        dictTValue['tThreeBefore'] = str(three_count_before_burnout)
+                        dictTValue['tBurnoutNum'] = str(total_burnout)
+                        dictTValue['tThreeAfter'] = str(three_count_final)
+                        dictTValue['tThreeCount'] = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strThreeCountWithBurnout'], dictTValue)
+                    else:
+                        # 没有过载时使用简单格式
+                        dictTValue['tThreeNum'] = str(three_count_final)
+                        dictTValue['tThreeCount'] = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strThreeCount'], dictTValue)
                     
                     # 获取技能检定结果文案
                     tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
                     if result_type == 'critical_success':
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
                     elif result_type == 'triangle_stability':
-                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS  # 三角稳定显示为成功
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
                     elif result_type == 'success':
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
                     else:
@@ -868,12 +1503,18 @@ def unity_reply(plugin_event, Proc):
                     elif result_type == 'triangle_stability':
                         dictTValue['tSkillCheckReasult'] += "【三角稳定】"
                     
-                    # 混沌值变化信息
+                    # 混沌值变化信息（使用自定义模板）
                     chaos_change_info = ""
                     if chaos_generation > 0:
-                        chaos_change_info += f"混沌值+{chaos_generation}: {old_chaos}->{group_data['chaos']}"
+                        dictTValue['tChaosGen'] = str(chaos_generation)
+                        dictTValue['tOldChaos'] = str(old_chaos)
+                        dictTValue['tNewChaos'] = str(group_data['chaos'])
+                        chaos_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strChaosChange'], dictTValue)
                     if fail_generation > 0:
-                        chaos_change_info += f"现实改写失败+{fail_generation}: {old_fail}->{group_data['reality_fail']}"
+                        dictTValue['tFailGen'] = str(fail_generation)
+                        dictTValue['tOldFail'] = str(old_fail)
+                        dictTValue['tNewFail'] = str(group_data['reality_fail'])
+                        chaos_change_info += OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFailChange'], dictTValue)
                     dictTValue['tChaosChange'] = chaos_change_info
                     
                     # 发送回复
@@ -1012,7 +1653,7 @@ def unity_reply(plugin_event, Proc):
                     dictTValue['tRollTimes'] = str(roll_times)
                     dictTValue['tMultiResults'] = '\n'.join(results)
                     
-                    # 总变化信息
+                    # 总变化信息（使用自定义模板）
                     chaos_change_info = ""
                     if total_chaos_generation > 0 or total_fail_generation > 0:
                         final_group_data = load_group_data(bot_hash, group_hash)
@@ -1020,9 +1661,15 @@ def unity_reply(plugin_event, Proc):
                         old_fail = final_group_data['reality_fail'] - total_fail_generation
                         
                         if total_chaos_generation > 0:
-                            chaos_change_info += f"总混沌值+{total_chaos_generation}: {old_chaos}→{final_group_data['chaos']}"
+                            dictTValue['tChaosGen'] = str(total_chaos_generation)
+                            dictTValue['tOldChaos'] = str(old_chaos)
+                            dictTValue['tNewChaos'] = str(final_group_data['chaos'])
+                            chaos_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strChaosChange'], dictTValue)
                         if total_fail_generation > 0:
-                            chaos_change_info += f"总现实改写失败+{total_fail_generation}: {old_fail}→{final_group_data['reality_fail']}"
+                            dictTValue['tFailGen'] = str(total_fail_generation)
+                            dictTValue['tOldFail'] = str(old_fail)
+                            dictTValue['tNewFail'] = str(final_group_data['reality_fail'])
+                            chaos_change_info += OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFailChange'], dictTValue)
                     
                     dictTValue['tChaosChange'] = chaos_change_info
                     
@@ -1126,7 +1773,7 @@ def unity_reply(plugin_event, Proc):
                                 expr_detail = tmp_reast_str
                             else:
                                 # 骰子表达式或技能引用
-                                skill_expr, skill_detail = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
+                                skill_expr, skill_detail, _ = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
                                 rd_chaos = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                 rd_chaos.roll()
                                 if rd_chaos.resError is not None:
@@ -1156,7 +1803,7 @@ def unity_reply(plugin_event, Proc):
                                     change_value = int(expr_str)
                                     expr_detail = f"+{expr_str}"
                                 else:
-                                    skill_expr, skill_detail = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
+                                    skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
                                     rd_chaos = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                     rd_chaos.roll()
                                     if rd_chaos.resError is not None:
@@ -1184,7 +1831,7 @@ def unity_reply(plugin_event, Proc):
                                     change_value = int(expr_str)
                                     expr_detail = f"-{expr_str}"
                                 else:
-                                    skill_expr, skill_detail = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
+                                    skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
                                     rd_chaos = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                     rd_chaos.roll()
                                     if rd_chaos.resError is not None:
@@ -1211,7 +1858,7 @@ def unity_reply(plugin_event, Proc):
                                     change_value = int(tmp_reast_str)
                                     expr_detail = tmp_reast_str
                                 else:
-                                    skill_expr, skill_detail = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
+                                    skill_expr, skill_detail, _ = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
                                     rd_chaos = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                     rd_chaos.roll()
                                     if rd_chaos.resError is not None:
@@ -1337,7 +1984,7 @@ def unity_reply(plugin_event, Proc):
                                 change_value = int(expr_str)
                                 expr_detail = f"+{expr_str}"
                             else:
-                                skill_expr, skill_detail = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
+                                skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
                                 rd_fail = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                 rd_fail.roll()
                                 if rd_fail.resError is not None:
@@ -1365,7 +2012,7 @@ def unity_reply(plugin_event, Proc):
                                 change_value = int(expr_str)
                                 expr_detail = f"-{expr_str}"
                             else:
-                                skill_expr, skill_detail = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
+                                skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
                                 rd_fail = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                 rd_fail.roll()
                                 if rd_fail.resError is not None:
@@ -1393,7 +2040,7 @@ def unity_reply(plugin_event, Proc):
                                 expr_detail = tmp_reast_str
                             else:
                                 # 骰子表达式或技能引用
-                                skill_expr, skill_detail = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
+                                skill_expr, skill_detail, _ = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
                                 rd_fail = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                 rd_fail.roll()
                                 if rd_fail.resError is not None:
@@ -1438,5 +2085,4 @@ def unity_reply(plugin_event, Proc):
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
                 replyMsg(plugin_event, tmp_reply_str)
-            
             return

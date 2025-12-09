@@ -51,7 +51,7 @@
             "专业": ["专业", "PRO", "PROFESSIONALISM", "敬业", "职业"],
             "诡秘": ["诡秘", "低调", "SUB", "SUBTLETY", "精微", "细致"],
             "嘉奖": ["嘉奖", "COMMEND", "COM"],
-            "申诫": ["申诫", "处分", "PUNISH", "PUN"]
+            "申诫": ["申诫", "处分", "PUNISH", "PUN", "申戒"]
         },
         "showName": {},
         "redirect": {},

@@ -4,7 +4,7 @@
     "namespace" : "OlivaDiceTA",
     "message_mode" : "old_string",
     "info" : "三角机构骰点插件",
-    "version" : "1.0.7",
+    "version" : "1.1.0",
     "svn" : 8,
     "compatible_svn" : 190,
     "priority" : 19990,
