@@ -48,16 +48,26 @@ def load_group_data(bot_hash, group_hash):
     file_path = get_chaos_file_path(bot_hash, group_hash)
     default_data = {
         'chaos': 0,
-        'reality_fail': 0
+        'reality_fail': 0,
+        # 追踪池（踪迹）与修正值
+        'trace': 0,
+        'modifier': 0
     }
     
     if os.path.exists(file_path):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # 确保数据格式正确
-                if isinstance(data, dict) and 'chaos' in data and 'reality_fail' in data:
-                    return data
+                # 确保数据格式正确（向后兼容旧版本）
+                if isinstance(data, dict):
+                    # 补齐缺失字段
+                    merged = default_data.copy()
+                    merged.update({k: v for k, v in data.items() if k in merged})
+                    # 兼容未知字段：保留到文件里（避免丢数据）
+                    for k, v in data.items():
+                        if k not in merged:
+                            merged[k] = v
+                    return merged
         except:
             pass
     
@@ -186,6 +196,56 @@ def parse_ta_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
     cleaned_expr = skipSpaceStart(tmp_reast_str)
     
     return cleaned_expr, no_chaos, no_fail, bonus_dice, penalty_dice, use_d6_bonus, use_simple_mode
+
+
+def parse_fr_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skipSpaceStart):
+    """
+    解析FR检定参数: c, b数字, p数字
+    返回: cleaned_expr, no_trace, bonus_dice, penalty_dice
+    说明：
+    - c：不增加踪迹
+    - b数字：强制将指定数量的非3改为3
+    - p数字：强制将指定数量的3改为非3
+    """
+    no_trace = False
+    bonus_dice = 0
+    penalty_dice = 0
+    tmp_reast_str = expr_str
+
+    while tmp_reast_str:
+        original_str = tmp_reast_str
+
+        if isMatchWordStart(tmp_reast_str, 'c'):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'c')
+            no_trace = True
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
+            continue
+
+        elif isMatchWordStart(tmp_reast_str, 'b'):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'b')
+            if len(tmp_reast_str) > 0 and tmp_reast_str[0].isdigit():
+                bonus_dice += int(tmp_reast_str[0])
+                tmp_reast_str = tmp_reast_str[1:]
+            else:
+                bonus_dice += 1
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
+            continue
+
+        elif isMatchWordStart(tmp_reast_str, 'p'):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'p')
+            if len(tmp_reast_str) > 0 and tmp_reast_str[0].isdigit():
+                penalty_dice += int(tmp_reast_str[0])
+                tmp_reast_str = tmp_reast_str[1:]
+            else:
+                penalty_dice += 1
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
+            continue
+
+        if tmp_reast_str == original_str:
+            break
+
+    cleaned_expr = skipSpaceStart(tmp_reast_str)
+    return cleaned_expr, no_trace, bonus_dice, penalty_dice
 
 def replace_skills(expr_str, skill_valueTable, tmp_pcCardRule):
     """
@@ -391,6 +451,78 @@ def roll_ta_dice(bonus_dice=0, penalty_dice=0, tmp_template_customDefault=None):
         display_detail = '[' + ', '.join(map(str, original_dice)) + ']'
     
     return original_dice, modified_dice, display_detail, three_count, penalty_chaos
+
+
+def roll_fr_dice(bonus_dice=0, penalty_dice=0, tmp_template_customDefault=None):
+    """投掷FR骰子(4D4)，并应用b/p参数修改。"""
+    original_dice = []
+    for _ in range(4):
+        rd = OlivaDiceCore.onedice.RD('1d4', tmp_template_customDefault)
+        rd.roll()
+        original_dice.append(int(rd.resInt) if rd.resError is None else 1)
+
+    modified_dice = original_dice.copy()
+    modifications = []
+
+    # b：非3 -> 3
+    non_three_indices = [i for i, val in enumerate(modified_dice) if val != 3]
+    bonus_applied = min(bonus_dice, len(non_three_indices))
+    for i in range(bonus_applied):
+        idx = non_three_indices[i]
+        original_val = modified_dice[idx]
+        modified_dice[idx] = 3
+        modifications.append((idx, f"3({original_val})"))
+
+    # p：3 -> 非3
+    three_indices = [i for i, val in enumerate(modified_dice) if val == 3]
+    penalty_applied = min(penalty_dice, len(three_indices))
+    for i in range(penalty_applied):
+        idx = three_indices[i]
+        new_val = random.choice([1, 2, 4])
+        modified_dice[idx] = new_val
+        modifications.append((idx, f"{new_val}(3)"))
+
+    # 显示
+    if modifications:
+        dice_display = []
+        mod_map = {idx: text for idx, text in modifications}
+        for i, (orig, mod) in enumerate(zip(original_dice, modified_dice)):
+            if orig != mod and i in mod_map:
+                dice_display.append(mod_map[i])
+            else:
+                dice_display.append(str(mod))
+        display_detail = '[' + ', '.join(dice_display) + ']'
+    else:
+        display_detail = '[' + ', '.join(map(str, original_dice)) + ']'
+
+    three_count = sum(1 for v in modified_dice if v == 3)
+    return original_dice, modified_dice, display_detail, three_count
+
+
+def apply_fr_overload(dice_results, overload_count):
+    """FR过载：将指定数量的“非3”改为3。返回(最终骰, 实际改动数量)。"""
+    if overload_count <= 0:
+        return dice_results, 0
+
+    modified = dice_results.copy()
+    non_three_indices = [i for i, val in enumerate(modified) if val != 3]
+    if not non_three_indices:
+        return modified, 0
+
+    random.shuffle(non_three_indices)
+    applied = min(overload_count, len(non_three_indices))
+    for i in range(applied):
+        modified[non_three_indices[i]] = 3
+    return modified, applied
+
+
+def is_perfect_freeze(original_dice):
+    """完美凝固判定：1个1+两个2，或4个4。"""
+    if not original_dice or len(original_dice) != 4:
+        return False
+    if all(v == 4 for v in original_dice):
+        return True
+    return (original_dice.count(1) == 1 and original_dice.count(2) == 2)
 
 def apply_burnout(dice_results, burnout_count, d6_bonus_threes=0):
     """
@@ -1058,6 +1190,297 @@ def unity_reply(plugin_event, Proc):
                 replyMsg(plugin_event, tmp_reply_str)
             
             return
+
+        # FR 踪迹检定命令
+        if isMatchWordStart(tmp_reast_str, ['fr'], isCommand = True):
+            try:
+                # 解析@用户
+                is_at, at_user_id, tmp_reast_str = parse_at_user(plugin_event, tmp_reast_str, valDict, flag_is_from_group_admin)
+                if is_at and not at_user_id:
+                    return
+
+                # 移除命令前缀
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'fr')
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                tmp_reast_str = tmp_reast_str.rstrip(' ')
+
+                # 检查是否为多次投掷格式 (.fr3#技能)
+                roll_times = 1
+                if '#' in tmp_reast_str:
+                    parts = tmp_reast_str.split('#', 1)
+                    front_part = parts[0].strip()
+                    skill_part = parts[1].strip() if len(parts) > 1 else ''
+                    match = re.match(r'^(\d+)(.*)$', front_part)
+                    if match:
+                        roll_times = int(match.group(1))
+                        roll_times = max(1, min(10, roll_times))
+                        remaining_params = match.group(2).strip()
+                        tmp_reast_str = remaining_params + ' ' + skill_part if remaining_params else skill_part
+                    else:
+                        tmp_reast_str = front_part + ' ' + skill_part
+
+                # 解析参数
+                cleaned_expr, no_trace, bonus_dice, penalty_dice = parse_fr_parameters(
+                    tmp_reast_str, isMatchWordStart, getMatchWordStartRight, skipSpaceStart
+                )
+
+                # 确定检定用户
+                target_user_id = at_user_id if is_at else plugin_event.data.user_id
+
+                # 获取人物卡信息
+                tmp_pcHash = OlivaDiceCore.pcCard.getPcHash(target_user_id, plugin_event.platform['platform'])
+                tmp_pc_name = OlivaDiceCore.pcCard.pcCardDataGetSelectionKey(tmp_pcHash, tmp_hagID)
+
+                if tmp_pc_name:
+                    dictTValue['tName'] = tmp_pc_name
+                else:
+                    res = plugin_event.get_stranger_info(user_id = target_user_id)
+                    if res != None and res['active']:
+                        dictTValue['tName'] = res['data']['name']
+                    else:
+                        dictTValue['tName'] = f'用户{target_user_id}'
+
+                # 获取技能数据
+                pc_skills = OlivaDiceCore.pcCard.pcCardDataGetByPcName(tmp_pcHash, hagId=tmp_hagID) if tmp_pc_name else {}
+                skill_valueTable = pc_skills.copy()
+
+                tmp_pcCardRule = 'default'
+                tmp_pcCardRule_new = OlivaDiceCore.pcCard.pcCardDataGetTemplateKey(tmp_pcHash, tmp_pc_name)
+                if tmp_pcCardRule_new != None:
+                    tmp_pcCardRule = tmp_pcCardRule_new
+
+                # 添加映射记录
+                if tmp_pc_name != None:
+                    skill_valueTable.update(
+                        OlivaDiceCore.pcCard.pcCardDataGetTemplateDataByKey(
+                            pcHash = tmp_pcHash,
+                            pcCardName = tmp_pc_name,
+                            dataKey = 'mappingRecord',
+                            resDefault = {}
+                        )
+                    )
+
+                # 获取模板配置
+                tmp_template_name = 'default'
+                tmp_template_customDefault = None
+                if flag_is_from_group:
+                    tmp_groupTemplate = OlivaDiceCore.userConfig.getUserConfigByKey(
+                        userId = tmp_hagID,
+                        userType = 'group',
+                        platform = plugin_event.platform['platform'],
+                        userConfigKey = 'groupTemplate',
+                        botHash = plugin_event.bot_info.hash
+                    )
+                    if tmp_groupTemplate != None:
+                        tmp_template_name = tmp_groupTemplate
+                tmp_template = OlivaDiceCore.pcCard.pcCardDataGetTemplateByKey(tmp_template_name)
+                if tmp_template != None and 'customDefault' in tmp_template:
+                    tmp_template_customDefault = tmp_template['customDefault']
+
+                # 计算技能值（为1就代表裸放无过载）
+                skill_value = 1
+                skill_detail = '1'
+                if cleaned_expr:
+                    skill_expr, skill_detail, _ = replace_skills(
+                        cleaned_expr.replace('=', '').replace(' ', ''),
+                        skill_valueTable,
+                        tmp_pcCardRule
+                    )
+                    rd_skill = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
+                    rd_skill.roll()
+                    if rd_skill.resError is not None:
+                        skill_value = 0
+                        skill_detail = f"{cleaned_expr}(未找到对应资质，按0处理)"
+                    else:
+                        skill_value = rd_skill.resInt
+                        if rd_skill.resDetail and rd_skill.resDetail != str(rd_skill.resInt):
+                            if skill_detail == rd_skill.resDetail:
+                                skill_detail = f"{skill_detail}={skill_value}"
+                            else:
+                                skill_detail = f"{skill_detail}={rd_skill.resDetail}={skill_value}"
+                        else:
+                            if skill_detail != str(skill_value):
+                                skill_detail = f"{skill_detail}={skill_value}"
+                            else:
+                                skill_detail = str(skill_value)
+
+                # 获取群组数据
+                bot_hash = plugin_event.bot_info.hash
+                if tmp_hagID:
+                    group_hash = OlivaDiceCore.userConfig.getUserHash(
+                        tmp_hagID,
+                        'group',
+                        plugin_event.platform['platform']
+                    )
+                else:
+                    group_hash = tmp_pcHash
+                group_data = load_group_data(bot_hash, group_hash)
+
+                def build_fr_single_result(group_data_local):
+                    # 计算过载：技能<=0 产生1过载；并额外叠加现实改写失败次数
+                    skill_burnout = 0 if skill_value > 0 else 1
+                    fail_burnout = int(group_data_local.get('reality_fail', 0))
+                    total_burnout = skill_burnout + fail_burnout
+
+                    original_dice, modified_dice, display_detail, three_before = roll_fr_dice(
+                        bonus_dice=bonus_dice,
+                        penalty_dice=penalty_dice,
+                        tmp_template_customDefault=tmp_template_customDefault
+                    )
+
+                    perfect_freeze = (bonus_dice == 0 and penalty_dice == 0 and is_perfect_freeze(original_dice))
+
+                    final_dice, overload_applied = apply_fr_overload(modified_dice, total_burnout)
+                    three_after = sum(1 for v in final_dice if v == 3)
+
+                    extra_d4 = None
+                    result_flag = 'failure'
+                    trace_gain = 0
+                    extra_tag = ''
+
+                    if perfect_freeze:
+                        result_flag = 'great_success'
+                        trace_gain = 0
+                        extra_tag = '【完美凝固】'
+                    else:
+                        if three_after == 2:
+                            rd_extra = OlivaDiceCore.onedice.RD('1d4', tmp_template_customDefault)
+                            rd_extra.roll()
+                            extra_d4 = int(rd_extra.resInt) if rd_extra.resError is None else 1
+                            if extra_d4 in [2, 4]:
+                                result_flag = 'success'
+                            else:
+                                result_flag = 'failure'
+                            trace_gain = 0
+                        elif three_after < 2:
+                            result_flag = 'success'
+                            trace_gain = three_after
+                        else:
+                            result_flag = 'failure'
+                            trace_gain = three_after
+                            if three_after == 4:
+                                trace_gain += 5
+                                extra_tag = '【大失败】'
+
+                    if no_trace:
+                        trace_gain = 0
+
+                    # 构建显示
+                    dice_display = display_detail
+                    if overload_applied > 0:
+                        dice_display += ' -> [' + ', '.join(map(str, final_dice)) + ']'
+
+                    tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
+                    if result_flag == 'great_success':
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
+                    elif result_flag == 'success':
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
+
+                    result_text = OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
+                        tmpSkillCheckType, dictStrCustom, dictTValue, tmp_pcHash, tmp_pc_name
+                    )
+                    if extra_tag:
+                        result_text += extra_tag
+
+                    return {
+                        'dice_display': dice_display,
+                        'total_burnout': total_burnout,
+                        'three_before': three_before,
+                        'three_after': three_after,
+                        'extra_d4': extra_d4,
+                        'result_text': result_text,
+                        'trace_gain': trace_gain,
+                    }
+
+                # 单次/多次
+                if roll_times == 1:
+                    old_trace = int(group_data.get('trace', 0))
+                    res_one = build_fr_single_result(group_data)
+
+                    # 更新踪迹
+                    if res_one['trace_gain'] != 0:
+                        group_data['trace'] = old_trace + res_one['trace_gain']
+                        save_group_data(bot_hash, group_hash, group_data)
+                    new_trace = int(group_data.get('trace', old_trace))
+
+                    # 回填模板变量
+                    dictTValue['tSkillDetail'] = skill_detail
+                    # 把补骰D4信息直接拼进骰子结果
+                    extra_d4_part = f"\n补骰D4={res_one['extra_d4']}(2/4成功)" if res_one['extra_d4'] is not None else ''
+                    dictTValue['tDiceResult'] = res_one['dice_display'] + extra_d4_part
+                    dictTValue['tBurnout'] = f"过载: {res_one['total_burnout']}次\n" if res_one['total_burnout'] > 0 else ''
+
+                    # 3计数显示
+                    if res_one['total_burnout'] > 0:
+                        dictTValue['tThreeBefore'] = str(res_one['three_before'])
+                        dictTValue['tBurnoutNum'] = str(res_one['total_burnout'])
+                        dictTValue['tThreeAfter'] = str(res_one['three_after'])
+                        dictTValue['tThreeCount'] = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strThreeCountWithBurnout'], dictTValue)
+                    else:
+                        dictTValue['tThreeNum'] = str(res_one['three_after'])
+                        dictTValue['tThreeCount'] = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strThreeCount'], dictTValue)
+
+                    dictTValue['tSkillCheckReasult'] = res_one['result_text']
+
+                    # 踪迹变化
+                    trace_change_info = ''
+                    if res_one['trace_gain'] != 0:
+                        dictTValue['tTraceGen'] = str(res_one['trace_gain'])
+                        dictTValue['tOldTrace'] = str(old_trace)
+                        dictTValue['tNewTrace'] = str(new_trace)
+                        trace_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTraceChange'], dictTValue)
+                    dictTValue['tTraceChange'] = trace_change_info
+
+                    if is_at:
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResultAtOther'], dictTValue)
+                    else:
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResult'], dictTValue)
+                    replyMsg(plugin_event, tmp_reply_str)
+                else:
+                    results = []
+                    total_trace_gain = 0
+                    old_trace = int(group_data.get('trace', 0))
+
+                    for i in range(roll_times):
+                        # 每次都读取最新trace，保证累计一致
+                        group_data_now = load_group_data(bot_hash, group_hash)
+                        res_one = build_fr_single_result(group_data_now)
+
+                        if res_one['trace_gain'] != 0:
+                            group_data_now['trace'] = int(group_data_now.get('trace', 0)) + res_one['trace_gain']
+                            save_group_data(bot_hash, group_hash, group_data_now)
+                            total_trace_gain += res_one['trace_gain']
+
+                        extra_part = f" 补骰D4={res_one['extra_d4']}" if res_one['extra_d4'] is not None else ''
+                        results.append(
+                            f"第{i+1}次: {res_one['dice_display']}{extra_part} {res_one['result_text']}"
+                        )
+
+                    new_trace = load_group_data(bot_hash, group_hash).get('trace', old_trace)
+
+                    dictTValue['tRollTimes'] = str(roll_times)
+                    dictTValue['tMultiResults'] = '\n'.join(results)
+                    dictTValue['tSkillDetail'] = skill_detail
+
+                    trace_change_info = ''
+                    if total_trace_gain != 0:
+                        dictTValue['tTraceGen'] = str(total_trace_gain)
+                        dictTValue['tOldTrace'] = str(old_trace)
+                        dictTValue['tNewTrace'] = str(new_trace)
+                        trace_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTraceChange'], dictTValue)
+                    dictTValue['tTraceChange'] = trace_change_info
+
+                    if is_at:
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResultMultiAtOther'], dictTValue)
+                    else:
+                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResultMulti'], dictTValue)
+                    replyMsg(plugin_event, tmp_reply_str)
+
+            except Exception as e:
+                dictTValue['tResult'] = str(e)
+                tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRError'], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str)
+            return
             
         # TA/TR 检定命令
         if isMatchWordStart(tmp_reast_str, ['ta', 'tr'], isCommand = True):
@@ -1688,222 +2111,241 @@ def unity_reply(plugin_event, Proc):
             return
         
         # CS/TCS 混沌值管理命令
-        if isMatchWordStart(tmp_reast_str, 'tcs', isCommand = True):
-            try:
-                # 获取用户hash用于私聊存储
-                tmp_pcHash = OlivaDiceCore.userConfig.getUserHash(
-                    plugin_event.data.user_id,
-                    'user',
+        def handle_numeric_pool_command(command_name, field_key, show_template_key, change_template_key,
+                                       show_value_tkey, old_value_tkey, new_value_tkey,
+                                       unsigned_mode='consume', clamp_min_zero=True, allow_negative_set=False):
+            """通用的群数据数值池管理：show / st / +/- / 无符号。
+            unsigned_mode:
+              - 'consume': 无符号表示减少（消耗）
+              - 'add': 无符号表示增加
+            """
+            # 获取用户hash用于私聊存储
+            tmp_pcHash_local = OlivaDiceCore.userConfig.getUserHash(
+                plugin_event.data.user_id,
+                'user',
+                plugin_event.platform['platform']
+            )
+
+            local_rest = getMatchWordStartRight(tmp_reast_str, command_name)
+            local_rest = skipSpaceStart(local_rest)
+
+            # st 子命令
+            is_set_command = False
+            if isMatchWordStart(local_rest, 'st'):
+                local_rest = getMatchWordStartRight(local_rest, 'st')
+                local_rest = skipSpaceStart(local_rest)
+                is_set_command = True
+
+            # 获取群组数据
+            bot_hash_local = plugin_event.bot_info.hash
+            if tmp_hagID:
+                group_hash_local = OlivaDiceCore.userConfig.getUserHash(
+                    tmp_hagID,
+                    'group',
                     plugin_event.platform['platform']
                 )
-                
-                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'tcs')
-                tmp_reast_str = skipSpaceStart(tmp_reast_str)
-                
-                # 检查是否有st子命令
-                is_set_command = False
-                if isMatchWordStart(tmp_reast_str, 'st'):
-                    tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'st')
-                    tmp_reast_str = skipSpaceStart(tmp_reast_str)
-                    is_set_command = True
-                
-                # 获取群组数据
-                bot_hash = plugin_event.bot_info.hash
-                if tmp_hagID:
-                    group_hash = OlivaDiceCore.userConfig.getUserHash(
-                        tmp_hagID,
-                        'group',
-                        plugin_event.platform['platform']
+            else:
+                group_hash_local = tmp_pcHash_local
+            group_data_local = load_group_data(bot_hash_local, group_hash_local)
+
+            # 获取人物卡信息用于表达式解析
+            tmp_pc_name_local = OlivaDiceCore.pcCard.pcCardDataGetSelectionKey(tmp_pcHash_local, tmp_hagID)
+            pc_skills_local = OlivaDiceCore.pcCard.pcCardDataGetByPcName(tmp_pcHash_local, hagId=tmp_hagID) if tmp_pc_name_local else {}
+            skill_valueTable_local = pc_skills_local.copy()
+
+            tmp_pcCardRule_local = 'default'
+            tmp_pcCardRule_new_local = OlivaDiceCore.pcCard.pcCardDataGetTemplateKey(tmp_pcHash_local, tmp_pc_name_local)
+            if tmp_pcCardRule_new_local != None:
+                tmp_pcCardRule_local = tmp_pcCardRule_new_local
+
+            if tmp_pc_name_local != None:
+                skill_valueTable_local.update(
+                    OlivaDiceCore.pcCard.pcCardDataGetTemplateDataByKey(
+                        pcHash = tmp_pcHash_local,
+                        pcCardName = tmp_pc_name_local,
+                        dataKey = 'mappingRecord',
+                        resDefault = {}
                     )
+                )
+
+            # 获取模板配置
+            tmp_template_name_local = 'default'
+            tmp_template_customDefault_local = None
+            if flag_is_from_group:
+                tmp_groupTemplate = OlivaDiceCore.userConfig.getUserConfigByKey(
+                    userId = tmp_hagID,
+                    userType = 'group',
+                    platform = plugin_event.platform['platform'],
+                    userConfigKey = 'groupTemplate',
+                    botHash = plugin_event.bot_info.hash
+                )
+                if tmp_groupTemplate != None:
+                    tmp_template_name_local = tmp_groupTemplate
+            tmp_template_local = OlivaDiceCore.pcCard.pcCardDataGetTemplateByKey(tmp_template_name_local)
+            if tmp_template_local != None and 'customDefault' in tmp_template_local:
+                tmp_template_customDefault_local = tmp_template_local['customDefault']
+
+            def eval_expr(expr_str):
+                expr_str = expr_str.strip()
+                if not expr_str:
+                    raise ValueError('空表达式')
+                if expr_str.lstrip('-').isdigit():
+                    return int(expr_str), expr_str, True
+                skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable_local, tmp_pcCardRule_local)
+                rd_val = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault_local)
+                rd_val.roll()
+                if rd_val.resError is not None:
+                    raise ValueError(f"无效的表达式: {expr_str}")
+                value = rd_val.resInt
+                if rd_val.resDetail and rd_val.resDetail != str(value):
+                    if skill_detail == rd_val.resDetail:
+                        detail = f"{skill_detail}={value}"
+                    else:
+                        detail = f"{skill_detail}={rd_val.resDetail}={value}"
                 else:
-                    group_hash = tmp_pcHash
-                group_data = load_group_data(bot_hash, group_hash)
-                
-                # 获取人物卡信息用于表达式解析
-                tmp_pc_name = OlivaDiceCore.pcCard.pcCardDataGetSelectionKey(tmp_pcHash, tmp_hagID)
-                pc_skills = OlivaDiceCore.pcCard.pcCardDataGetByPcName(tmp_pcHash, hagId=tmp_hagID) if tmp_pc_name else {}
-                skill_valueTable = pc_skills.copy()
-                
-                tmp_pcCardRule = 'default'
-                tmp_pcCardRule_new = OlivaDiceCore.pcCard.pcCardDataGetTemplateKey(tmp_pcHash, tmp_pc_name)
-                if tmp_pcCardRule_new != None:
-                    tmp_pcCardRule = tmp_pcCardRule_new
-                
-                # 添加映射记录
-                if tmp_pc_name != None:
-                    skill_valueTable.update(
-                        OlivaDiceCore.pcCard.pcCardDataGetTemplateDataByKey(
-                            pcHash = tmp_pcHash,
-                            pcCardName = tmp_pc_name,
-                            dataKey = 'mappingRecord',
-                            resDefault = {}
-                        )
-                    )
-                
-                # 获取模板配置
-                tmp_template_name = 'default'
-                tmp_template_customDefault = None
-                if flag_is_from_group:
-                    tmp_groupTemplate = OlivaDiceCore.userConfig.getUserConfigByKey(
-                        userId = tmp_hagID,
-                        userType = 'group',
-                        platform = plugin_event.platform['platform'],
-                        userConfigKey = 'groupTemplate',
-                        botHash = plugin_event.bot_info.hash
-                    )
-                    if tmp_groupTemplate != None:
-                        tmp_template_name = tmp_groupTemplate
-                tmp_template = OlivaDiceCore.pcCard.pcCardDataGetTemplateByKey(tmp_template_name)
-                if tmp_template != None and 'customDefault' in tmp_template:
-                    tmp_template_customDefault = tmp_template['customDefault']
-                
-                if not tmp_reast_str:
-                    # 显示当前混沌值
-                    dictTValue['tChaosValue'] = str(group_data['chaos'])
-                    tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strCSShow'], dictTValue)
+                    detail = str(value) if skill_detail == str(value) else f"{skill_detail}={value}"
+                return value, detail, False
+
+            def fmt_delta_detail(sign_char, detail):
+                # detail 形如 “技能=展开=值” 或 “值”
+                if detail.lstrip('-').isdigit():
+                    return f"{sign_char}{detail.lstrip('+')}"
+                # 为了尽量贴近旧输出，这里把每段都加同号
+                parts = detail.split('=')
+                if len(parts) == 1:
+                    return f"{sign_char}{parts[0]}"
+                return '='.join([f"{sign_char}{p}" for p in parts])
+
+            try:
+                if not local_rest:
+                    dictTValue[show_value_tkey] = str(group_data_local.get(field_key, 0))
+                    tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom[show_template_key], dictTValue)
                     replyMsg(plugin_event, tmp_reply_str)
+                    return
+
+                old_value = group_data_local.get(field_key, 0)
+                expr_detail = ''
+
+                if is_set_command:
+                    # st：设置
+                    new_value, expr_detail_raw, is_plain = eval_expr(local_rest)
+                    if (not allow_negative_set) and new_value < 0:
+                        new_value = 0
+                    if clamp_min_zero:
+                        new_value = max(0, new_value)
+                    expr_detail = expr_detail_raw
                 else:
-                    # 修改混沌值
-                    try:
-                        if is_set_command:
-                            # 设置混沌值 - 支持骰子表达式
-                            if tmp_reast_str.isdigit():
-                                # 纯数字
-                                new_value = int(tmp_reast_str)
-                                expr_detail = tmp_reast_str
-                            else:
-                                # 骰子表达式或技能引用
-                                skill_expr, skill_detail, _ = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
-                                rd_chaos = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
-                                rd_chaos.roll()
-                                if rd_chaos.resError is not None:
-                                    dictTValue['tResult'] = f"无效的表达式: {tmp_reast_str}"
-                                    tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
-                                    replyMsg(plugin_event, tmp_reply_str)
-                                    return
-                                new_value = rd_chaos.resInt
-                                # 生成表达式详情
-                                if rd_chaos.resDetail and rd_chaos.resDetail != str(new_value):
-                                    if skill_detail == rd_chaos.resDetail:
-                                        expr_detail = f"{skill_detail}={new_value}"
-                                    else:
-                                        expr_detail = f"{skill_detail}={rd_chaos.resDetail}={new_value}"
-                                else:
-                                    if skill_detail != str(new_value):
-                                        expr_detail = f"{skill_detail}={new_value}"
-                                    else:
-                                        expr_detail = str(new_value)
-                            new_value = max(0, new_value)  # 不允许负数
+                    # +/-/无符号：增减
+                    sign = None
+                    expr_part = local_rest
+                    if expr_part.startswith('+'):
+                        sign = '+'
+                        expr_part = expr_part[1:]
+                    elif expr_part.startswith('-'):
+                        sign = '-'
+                        expr_part = expr_part[1:]
+
+                    delta, delta_detail_raw, _ = eval_expr(expr_part)
+                    delta = abs(int(delta))
+
+                    if sign == '-':
+                        new_value = old_value - delta
+                        expr_detail = fmt_delta_detail('-', delta_detail_raw)
+                    elif sign == '+':
+                        new_value = old_value + delta
+                        expr_detail = fmt_delta_detail('+', delta_detail_raw)
+                    else:
+                        # 无符号
+                        if unsigned_mode == 'add':
+                            new_value = old_value + delta
+                            expr_detail = fmt_delta_detail('+', delta_detail_raw)
                         else:
-                            # 增减混沌值 (无符号/负号表示消耗，+号表示增加)
-                            if tmp_reast_str.startswith('+'):
-                                # +表达式表示增加
-                                expr_str = tmp_reast_str[1:]
-                                if expr_str.isdigit():
-                                    change_value = int(expr_str)
-                                    expr_detail = f"+{expr_str}"
-                                else:
-                                    skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
-                                    rd_chaos = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
-                                    rd_chaos.roll()
-                                    if rd_chaos.resError is not None:
-                                        dictTValue['tResult'] = f"无效的表达式: {tmp_reast_str}"
-                                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
-                                        replyMsg(plugin_event, tmp_reply_str)
-                                        return
-                                    change_value = rd_chaos.resInt
-                                    # 生成表达式详情
-                                    if rd_chaos.resDetail and rd_chaos.resDetail != str(change_value):
-                                        if skill_detail == rd_chaos.resDetail:
-                                            expr_detail = f"+{skill_detail}=+{change_value}"
-                                        else:
-                                            expr_detail = f"+{skill_detail}=+{rd_chaos.resDetail}=+{change_value}"
-                                    else:
-                                        if skill_detail != str(change_value):
-                                            expr_detail = f"+{skill_detail}=+{change_value}"
-                                        else:
-                                            expr_detail = f"+{change_value}"
-                                new_value = group_data['chaos'] + change_value
-                            elif tmp_reast_str.startswith('-'):
-                                # -表达式表示减少
-                                expr_str = tmp_reast_str[1:]
-                                if expr_str.isdigit():
-                                    change_value = int(expr_str)
-                                    expr_detail = f"-{expr_str}"
-                                else:
-                                    skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
-                                    rd_chaos = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
-                                    rd_chaos.roll()
-                                    if rd_chaos.resError is not None:
-                                        dictTValue['tResult'] = f"无效的表达式: {tmp_reast_str}"
-                                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
-                                        replyMsg(plugin_event, tmp_reply_str)
-                                        return
-                                    change_value = rd_chaos.resInt
-                                    # 生成表达式详情
-                                    if rd_chaos.resDetail and rd_chaos.resDetail != str(change_value):
-                                        if skill_detail == rd_chaos.resDetail:
-                                            expr_detail = f"-{skill_detail}=-{change_value}"
-                                        else:
-                                            expr_detail = f"-{skill_detail}=-{rd_chaos.resDetail}=-{change_value}"
-                                    else:
-                                        if skill_detail != str(change_value):
-                                            expr_detail = f"-{skill_detail}=-{change_value}"
-                                        else:
-                                            expr_detail = f"-{change_value}"
-                                new_value = max(0, group_data['chaos'] - change_value)
-                            else:
-                                # 无符号表达式表示减少（消耗）
-                                if tmp_reast_str.isdigit():
-                                    change_value = int(tmp_reast_str)
-                                    expr_detail = tmp_reast_str
-                                else:
-                                    skill_expr, skill_detail, _ = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
-                                    rd_chaos = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
-                                    rd_chaos.roll()
-                                    if rd_chaos.resError is not None:
-                                        dictTValue['tResult'] = f"无效的表达式: {tmp_reast_str}"
-                                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
-                                        replyMsg(plugin_event, tmp_reply_str)
-                                        return
-                                    change_value = rd_chaos.resInt
-                                    # 生成表达式详情
-                                    if rd_chaos.resDetail and rd_chaos.resDetail != str(change_value):
-                                        if skill_detail == rd_chaos.resDetail:
-                                            expr_detail = f"-{skill_detail}={change_value}"
-                                        else:
-                                            expr_detail = f"-{skill_detail}={rd_chaos.resDetail}={change_value}"
-                                    else:
-                                        if skill_detail != str(change_value):
-                                            expr_detail = f"-{skill_detail}={change_value}"
-                                        else:
-                                            expr_detail = str(change_value)
-                                new_value = max(0, group_data['chaos'] - change_value)
-                        
-                        old_value = group_data['chaos']
-                        group_data['chaos'] = new_value
-                        save_group_data(bot_hash, group_hash, group_data)
-                        
-                        dictTValue['tOldChaos'] = str(old_value)
-                        dictTValue['tNewChaos'] = str(new_value)
-                        # 添加表达式详情（如果有的话）
-                        if 'expr_detail' in locals() and expr_detail != str(new_value) and not tmp_reast_str.isdigit():
-                            dictTValue['tExprDetail'] = f" ({expr_detail})"
-                        else:
-                            dictTValue['tExprDetail'] = ""
-                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strCSChange'], dictTValue)
-                        replyMsg(plugin_event, tmp_reply_str)
-                        
-                    except ValueError:
-                        dictTValue['tResult'] = f"无效的数值: {tmp_reast_str}"
-                        tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
-                        replyMsg(plugin_event, tmp_reply_str)
-                        
+                            new_value = old_value - delta
+                            # 旧tcs/ms无符号的详情并不严格带“-=-”，这里用“-”前缀即可
+                            expr_detail = fmt_delta_detail('-', delta_detail_raw)
+
+                    if clamp_min_zero:
+                        new_value = max(0, new_value)
+
+                group_data_local[field_key] = new_value
+                save_group_data(bot_hash_local, group_hash_local, group_data_local)
+
+                dictTValue[old_value_tkey] = str(old_value)
+                dictTValue[new_value_tkey] = str(new_value)
+                # 表达式详情（仅在非纯数字、且确实有意义时显示）
+                if expr_detail and not local_rest.lstrip('-').isdigit() and expr_detail != str(new_value):
+                    dictTValue['tExprDetail'] = f" ({expr_detail})"
+                else:
+                    dictTValue['tExprDetail'] = ""
+
+                tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom[change_template_key], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str)
+
+            except ValueError as ve:
+                dictTValue['tResult'] = str(ve)
+                tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str)
+
+        if isMatchWordStart(tmp_reast_str, 'tcs', isCommand = True):
+            try:
+                handle_numeric_pool_command(
+                    command_name='tcs',
+                    field_key='chaos',
+                    show_template_key='strCSShow',
+                    change_template_key='strCSChange',
+                    show_value_tkey='tChaosValue',
+                    old_value_tkey='tOldChaos',
+                    new_value_tkey='tNewChaos',
+                    unsigned_mode='consume',
+                    clamp_min_zero=True,
+                    allow_negative_set=False
+                )
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
                 replyMsg(plugin_event, tmp_reply_str)
-            
+            return
+
+        # MS 踪迹值管理命令
+        if isMatchWordStart(tmp_reast_str, 'ms', isCommand = True):
+            try:
+                handle_numeric_pool_command(
+                    command_name='ms',
+                    field_key='trace',
+                    show_template_key='strMSShow',
+                    change_template_key='strMSChange',
+                    show_value_tkey='tTraceValue',
+                    old_value_tkey='tOldTrace',
+                    new_value_tkey='tNewTrace',
+                    unsigned_mode='consume',
+                    clamp_min_zero=True,
+                    allow_negative_set=False
+                )
+            except Exception as e:
+                dictTValue['tResult'] = str(e)
+                tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str)
+            return
+
+        # MB 修正值管理命令（与tcs一致，但“无符号输入”表示增加，且允许设置为负数）
+        if isMatchWordStart(tmp_reast_str, 'mb', isCommand = True):
+            try:
+                handle_numeric_pool_command(
+                    command_name='mb',
+                    field_key='modifier',
+                    show_template_key='strMBShow',
+                    change_template_key='strMBChange',
+                    show_value_tkey='tModValue',
+                    old_value_tkey='tOldMod',
+                    new_value_tkey='tNewMod',
+                    unsigned_mode='add',
+                    clamp_min_zero=False,
+                    allow_negative_set=True
+                )
+            except Exception as e:
+                dictTValue['tResult'] = str(e)
+                tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str)
             return
         
         # TFS 现实改写失败管理命令

@@ -24,6 +24,7 @@ dictStrCustom = {
     'strThreeCountWithBurnout': '本次投出了{tThreeBefore}个3，过载{tBurnoutNum}个，剩下{tThreeAfter}个3\n',
     'strChaosChange': '\n混沌值+{tChaosGen}: {tOldChaos}->{tNewChaos}',
     'strFailChange': '\n现实改写失败+{tFailGen}: {tOldFail}->{tNewFail}',
+    'strTraceChange': '\n踪迹+{tTraceGen}: {tOldTrace}->{tNewTrace}',
     'strD6Bonus': '\nD6增益: {tD6Result}{tD6Effect}',
     'strTAResultSimple': '[{tName}]进行D10三角检定\nD10: {tD10Result}\n{tSkillCheckReasult}{tChaosChange}',
     'strTAResultSimpleAtOther': '[{tUserName}]帮[{tName}]进行D10三角检定\nD10: {tD10Result}\n{tSkillCheckReasult}{tChaosChange}',
@@ -32,6 +33,15 @@ dictStrCustom = {
     'strTRAResultMulti': '[{tName}]进行{tRollTimes}次D20资质检定: {tSkillName}\n{tMultiResults}{tChaosChange}',
     'strTRAResultMultiAtOther': '[{tUserName}]帮[{tName}]进行{tRollTimes}次D20资质检定: {tSkillName}\n{tMultiResults}{tChaosChange}',
     'strTRAError': 'D20检定错误: {tResult}\n请通过.help tra查看正确检定格式',
+    'strMSShow': '当前群组踪迹值: {tTraceValue}',
+    'strMSChange': '踪迹值: {tOldTrace} -> {tNewTrace}{tExprDetail}',
+    'strMBShow': '当前群组修正值: {tModValue}',
+    'strMBChange': '修正值: {tOldMod} -> {tNewMod}{tExprDetail}',
+    'strFRResult': '[{tName}]进行知情人检定\n骰子: {tDiceResult}\n{tBurnout}{tThreeCount}{tSkillCheckReasult}{tTraceChange}',
+    'strFRResultAtOther': '[{tUserName}]帮[{tName}]进行知情人检定\n骰子: {tDiceResult}\n{tBurnout}{tThreeCount}{tSkillCheckReasult}{tTraceChange}',
+    'strFRResultMulti': '[{tName}]进行{tRollTimes}次知情人检定\n{tMultiResults}{tTraceChange}',
+    'strFRResultMultiAtOther': '[{tUserName}]帮[{tName}]进行{tRollTimes}次知情人检定\n{tMultiResults}{tTraceChange}',
+    'strFRError': '知情人检定错误: {tResult}\n请通过.help fr查看正确检定格式',
 }
 
 dictStrConst = {
@@ -59,6 +69,15 @@ dictTValue = {
     'tThreeNum': '0',
     'tChaosGen': '0',
     'tFailGen': '0',
+    'tTraceValue': '0',
+    'tOldTrace': '0',
+    'tNewTrace': '0',
+    'tTraceGen': '0',
+    'tTraceChange': '',
+    'tModValue': '0',
+    'tOldMod': '0',
+    'tNewMod': '0',
+    'tSkillDetail': '',
     'tD6Result': '',
     'tD6Effect': '',
     'tD10Result': '',
@@ -83,6 +102,7 @@ dictStrCustomNote = {
     'strThreeCountWithBurnout': '【.ta/.tr】指令\n显示本次投出的3、过载和剩余的3的数量(有过载时)',
     'strChaosChange': '【.ta/.tr/.tra】指令\n混沌值变化提示',
     'strFailChange': '【.tr】指令\n现实改写失败变化提示',
+    'strTraceChange': '【民间扩展：知情人】\n【.fr】指令\n踪迹变化提示',
     'strD6Bonus': '【.ta/.tr】指令\ng参数D6增益显示',
     'strTAResultSimple': '【.ta/.tr】指令\ns参数D10检定结果',
     'strTAResultSimpleAtOther': '【.ta/.tr】指令\ns参数代骰D10检定结果',
@@ -90,7 +110,18 @@ dictStrCustomNote = {
     'strTRAResultAtOther': '【.tra】指令\n代骰D20检定结果',
     'strTRAResultMulti': '【.tra】指令\n多次D20检定结果',
     'strTRAResultMultiAtOther': '【.tra】指令\n代骰多次D20检定结果',
-    'strTRAError': '【.tra】指令\nD20检定错误提示'
+    'strTRAError': '【.tra】指令\nD20检定错误提示',
+
+    'strMSShow': '【民间扩展：知情人】\n【.ms】指令\n显示踪迹值',
+    'strMSChange': '【民间扩展：知情人】\n【.ms】指令\n踪迹值变化',
+    'strMBShow': '【民间扩展：知情人】\n【.mb】指令\n显示修正值',
+    'strMBChange': '【民间扩展：知情人】\n【.mb】指令\n修正值变化',
+
+    'strFRResult': '【民间扩展：知情人】\n【.fr】指令\n知情人检定结果',
+    'strFRResultAtOther': '【民间扩展：知情人】\n【.fr】指令\n代骰知情人检定结果',
+    'strFRResultMulti': '【民间扩展：知情人】\n【.fr】指令\n多次知情人检定结果',
+    'strFRResultMultiAtOther': '【民间扩展：知情人】\n【.fr】指令\n代骰多次知情人检定结果',
+    'strFRError': '【民间扩展：知情人】\n【.fr】指令\n知情人检定错误提示',
 }
 
 dictHelpDocTemp = {
@@ -134,6 +165,46 @@ dictHelpDocTemp = {
 .tfs - 查看当前现实改写失败次数
 .tfs +/-数值 - 增减失败次数''',
 
+    'ms': '''【民间扩展：知情人】
+【踪迹管理】
+.ms - 查看当前踪迹
+.ms 数值 - 消耗指定数值的踪迹
+.ms +/-数值 - 增减踪迹
+.ms st 数值 - 设置踪迹''',
+
+    'mb': '''【民间扩展：知情人】
+【修正值管理】
+.mb - 查看当前修正值
+.mb 数值 - 增加指定数值的修正值
+.mb +/-数值 - 增减修正值
+.mb st 数值 - 设置修正值''',
+
+    'fr': '''【民间扩展：知情人】
+【知情人检定】
+.fr(c)(b数字)(p数字)(资质/数值) (@其他人)
+.fr数字#(c)(b数字)(p数字)(资质/数值) (@其他人) - 多次投掷
+
+检定规则：
+- 投掷4D4，按“3”的数量判定
+- <2：成功，获得等于3数量的踪迹
+- =2：额外投掷1D4，2/4成功，1/3失败；不增加踪迹
+- >2：失败，获得等于3数量的踪迹
+- 过载：将任意不是3的骰子转化为3
+- 完美凝固：原始骰子为“1个1+两个2”或“4个4”，且无b/p修改时，直接大成功，不增加踪迹
+- 4个3：触发大失败，额外+5踪迹
+
+参数说明：
+- c：不增加踪迹
+- b数字：强制将数字个非3的骰子改为3
+- p数字：强制将数字个3的骰子改为非3
+- 资质/数值：资质称或数值，默认为0（裸放无过载）
+
+例子：
+.fr 专注
+.fr c 专注
+.fr b2p1 专注
+.fr3#专注@张三''',
+
     'tra': '''【D20检定】
 .tra(c)(资质/数值) (@其他人)
 .tra数字#(c)(资质/数值) (@其他人) - 多次投掷
@@ -169,6 +240,8 @@ dictHelpDocTemp = {
 数据管理：
 .tcs - 混沌值管理（查看/消耗/修改）
 .tfs - 现实改写失败管理
+.ms - 踪迹管理（查看/消耗/修改）【民间扩展：知情人】
+.mb - 修正值管理（查看/增加/修改）【民间扩展：知情人】
 .tcsst 数值 - 设置混沌值
 
 参数说明：
@@ -181,6 +254,7 @@ dictHelpDocTemp = {
 
 详细帮助：
 .help ta - 查看检定详细说明
+.help fr - 查看知情人检定说明
 .help tra - 查看D20检定说明
 .help tcs - 查看混沌值消耗说明
 .help tfs - 查看现实改写失败说明''',

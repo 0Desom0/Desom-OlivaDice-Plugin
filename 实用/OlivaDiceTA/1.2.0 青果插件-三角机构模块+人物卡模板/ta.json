@@ -72,5 +72,58 @@
                 "checkList": []
             }
         }
+    },
+    "知情人": {
+        "mainDice": "4D4",
+        "customDefault": {
+            "d": {
+                "leftD": 4,
+                "rightD": 4,
+                "sub": {
+                    "k": null,
+                    "q": null,
+                    "p": null,
+                    "b": null
+                },
+                "subD": {
+                    "p": 1,
+                    "b": 1
+                }
+            }
+        },
+        "skill": {
+            "储蓄": [
+                "变化",
+                "创造",
+                "氛围", 
+                "激活"
+            ]
+        },
+        "skillConfig": {
+            "skipEnhance": [],
+            "forceMapping": []
+        },
+        "mapping": {},
+        "init": {},
+        "synonyms": {
+            "变化": ["变化", "VAR", "VARIATION", "变动", "CHANGE"],
+            "创造": ["创造", "CRE", "CREATION", "创作", "MAKE"],
+            "氛围": ["氛围", "AMBI", "AMBIANCE", "气氛", "环境"],
+            "激活": ["激活", "ACT", "ACTIVATION", "启动", "启动"]
+        },
+        "showName": {},
+        "redirect": {},
+        "defaultSkillValue": {
+            "变化": 0,
+            "创造": 0,
+            "氛围": 0,
+            "激活": 0
+        },
+        "snTitle": "{tName}",
+        "checkRules": {
+            "default": {
+                "checkList": []
+            }
+        }
     }
 }
