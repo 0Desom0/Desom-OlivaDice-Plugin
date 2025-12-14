@@ -381,7 +381,11 @@ def calculate_burnout(skill_value, reality_fail_count, is_reality_alter):
     is_reality_alter: 是否为现实改写检定(.tr)
     """
     # 技能过载：技能值<=0时产生过载
-    skill_burnout = 0 if skill_value > 0 else 1
+    # 0是1个过载，-1是2个过载，-2是3个过载，以此类推
+    if skill_value > 0:
+        skill_burnout = 0
+    else:
+        skill_burnout = 1 - skill_value  # 0->1, -1->2, -2->3
     
     # 现实改写失败过载：只在.tr检定时生效
     fail_burnout = reality_fail_count if is_reality_alter else 0
@@ -566,11 +570,11 @@ def apply_burnout(dice_results, burnout_count, d6_bonus_threes=0):
 def determine_ta_result(three_count):
     """
     根据3的数量确定检定结果（仅用于非特殊情况）
-    返回: 结果类型 ('failure', 'success')
+    返回: 结果类型 ('fail', 'success')
     注意：真正的大成功（三重升华）需要在调用处单独判断
     """
     if three_count == 0:
-        return 'failure'
+        return 'fail'
     else:
         return 'success'
 
@@ -632,7 +636,7 @@ def roll_d10_simple(tmp_template_customDefault=None):
         # D10=3时是失败，0个3，但产生3点混沌
         three_count = 0
         chaos_value = 3
-        result_type = 'failure'
+        result_type = 'fail'
     else:
         # 其他情况：结果 = 3的数量 = 混沌值
         three_count = d10_result
@@ -971,18 +975,18 @@ def unity_reply(plugin_event, Proc):
                     total_result = d20_result + aptitude_value
                     
                     # 判断结果类型
-                    # 特殊规则：D20=3为三重升华（大成功），D20=7为必定失败
+                    # 特殊规则：D20=3为三重升华（大成功），D20=7为大失败
                     if d20_result == 3:
-                        result_type = 'critical_success'  # 三重升华
+                        result_type = 'great_success'  # 三重升华
                         chaos_generation = 0
                     elif d20_result == 7:
-                        result_type = 'failure'  # 必定失败
+                        result_type = 'great_fail'  # 大失败
                         chaos_generation = d20_result if not no_chaos_on_fail else 0
                     elif total_result > 10:
                         result_type = 'success'
                         chaos_generation = 0
                     else:
-                        result_type = 'failure'
+                        result_type = 'fail'
                         chaos_generation = d20_result if not no_chaos_on_fail else 0
                     
                     # 更新群组数据
@@ -1012,17 +1016,19 @@ def unity_reply(plugin_event, Proc):
                     
                     # 获取技能检定结果文案
                     tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
-                    if result_type == 'critical_success':
+                    if result_type == 'great_success':
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
                     elif result_type == 'success':
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
+                    elif result_type == 'great_fail':
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_FAIL
                     
                     dictTValue['tSkillCheckReasult'] = OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
                         tmpSkillCheckType, dictStrCustom, dictTValue, tmp_pcHash, tmp_pc_name
                     )
                     
                     # 添加特殊说明
-                    if result_type == 'critical_success':
+                    if result_type == 'great_success':
                         dictTValue['tSkillCheckReasult'] += "【三重升华】"
                     elif d20_result == 7:
                         dictTValue['tSkillCheckReasult'] += "【命定失败】"
@@ -1090,16 +1096,16 @@ def unity_reply(plugin_event, Proc):
                         
                         # 判断结果类型
                         if d20_result == 3:
-                            result_type = 'critical_success'
+                            result_type = 'great_success'
                             chaos_generation = 0
                         elif d20_result == 7:
-                            result_type = 'failure'
+                            result_type = 'great_fail'
                             chaos_generation = d20_result if not no_chaos_on_fail else 0
                         elif total_result > 10:
                             result_type = 'success'
                             chaos_generation = 0
                         else:
-                            result_type = 'failure'
+                            result_type = 'fail'
                             chaos_generation = d20_result if not no_chaos_on_fail else 0
                         
                         # 累计混沌值
@@ -1112,10 +1118,12 @@ def unity_reply(plugin_event, Proc):
                         
                         # 获取结果文案
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
-                        if result_type == 'critical_success':
+                        if result_type == 'great_success':
                             tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
                         elif result_type == 'success':
                             tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
+                        elif result_type == 'great_fail':
+                            tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_FAIL
                         
                         result_text = OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
                             tmpSkillCheckType, dictStrCustom, dictTValue, tmp_pcHash, tmp_pc_name
@@ -1123,7 +1131,7 @@ def unity_reply(plugin_event, Proc):
                         
                         # 添加特殊说明和技能归零
                         skill_zero_text = ""
-                        if result_type == 'critical_success':
+                        if result_type == 'great_success':
                             result_text += "【三重升华】"
                         elif d20_result == 7:
                             result_text += "【命定失败】"
@@ -1317,10 +1325,14 @@ def unity_reply(plugin_event, Proc):
                 group_data = load_group_data(bot_hash, group_hash)
 
                 def build_fr_single_result(group_data_local):
-                    # 计算过载：技能<=0 产生1过载；并额外叠加现实改写失败次数
-                    skill_burnout = 0 if skill_value > 0 else 1
-                    fail_burnout = int(group_data_local.get('reality_fail', 0))
-                    total_burnout = skill_burnout + fail_burnout
+                    # 计算过载：技能<=0 产生过载
+                    # 0是1个过载，-1是2个过载，-2是3个过载，以此类推
+                    # FR命令不叠加现实改写失败次数
+                    if skill_value > 0:
+                        skill_burnout = 0
+                    else:
+                        skill_burnout = 1 - skill_value  # 0->1, -1->2, -2->3
+                    total_burnout = skill_burnout
 
                     original_dice, modified_dice, display_detail, three_before = roll_fr_dice(
                         bonus_dice=bonus_dice,
@@ -1334,7 +1346,7 @@ def unity_reply(plugin_event, Proc):
                     three_after = sum(1 for v in final_dice if v == 3)
 
                     extra_d4 = None
-                    result_flag = 'failure'
+                    result_flag = 'fail'
                     trace_gain = 0
                     extra_tag = ''
 
@@ -1350,17 +1362,20 @@ def unity_reply(plugin_event, Proc):
                             if extra_d4 in [2, 4]:
                                 result_flag = 'success'
                             else:
-                                result_flag = 'failure'
+                                result_flag = 'fail'
                             trace_gain = 0
                         elif three_after < 2:
                             result_flag = 'success'
                             trace_gain = three_after
                         else:
-                            result_flag = 'failure'
-                            trace_gain = three_after
+                            # 3个3是失败，4个3是大失败
                             if three_after == 4:
-                                trace_gain += 5
+                                result_flag = 'great_fail'
+                                trace_gain = three_after + 5
                                 extra_tag = '【大失败】'
+                            else:  # three_after == 3
+                                result_flag = 'fail'
+                                trace_gain = three_after
 
                     if no_trace:
                         trace_gain = 0
@@ -1368,13 +1383,23 @@ def unity_reply(plugin_event, Proc):
                     # 构建显示
                     dice_display = display_detail
                     if overload_applied > 0:
-                        dice_display += ' -> [' + ', '.join(map(str, final_dice)) + ']'
+                        # 构建过载后的显示，标记被过载的骰子
+                        final_parts = []
+                        for i, (mod_val, final_val) in enumerate(zip(modified_dice, final_dice)):
+                            if mod_val != 3 and final_val == 3:
+                                # 被过载改成3的
+                                final_parts.append(f"3({mod_val}:过载)")
+                            else:
+                                final_parts.append(str(final_val))
+                        dice_display += ' -> [' + ', '.join(final_parts) + ']'
 
                     tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
                     if result_flag == 'great_success':
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
                     elif result_flag == 'success':
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
+                    elif result_flag == 'great_fail':
+                        tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_FAIL
 
                     result_text = OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
                         tmpSkillCheckType, dictStrCustom, dictTValue, tmp_pcHash, tmp_pc_name
@@ -1406,7 +1431,14 @@ def unity_reply(plugin_event, Proc):
                     # 回填模板变量
                     dictTValue['tSkillDetail'] = skill_detail
                     # 把补骰D4信息直接拼进骰子结果
-                    extra_d4_part = f"\n补骰D4={res_one['extra_d4']}(2/4成功)" if res_one['extra_d4'] is not None else ''
+                    if res_one['extra_d4'] is not None:
+                        d4_val = res_one['extra_d4']
+                        if d4_val in [2, 4]:
+                            extra_d4_part = f"\n补骰D4={d4_val}(2/4成功)"
+                        else:
+                            extra_d4_part = f"\n补骰D4={d4_val}(1/3失败)"
+                    else:
+                        extra_d4_part = ''
                     dictTValue['tDiceResult'] = res_one['dice_display'] + extra_d4_part
                     dictTValue['tBurnout'] = f"过载: {res_one['total_burnout']}次\n" if res_one['total_burnout'] > 0 else ''
 
@@ -1674,7 +1706,7 @@ def unity_reply(plugin_event, Proc):
                             chaos_generation = 0
                         
                         # 计算现实改写失败变化
-                        fail_generation = 1 if (is_reality_alter and result_type == 'failure') else 0
+                        fail_generation = 1 if (is_reality_alter and result_type == 'fail') else 0
                         if no_fail:
                             fail_generation = 0
                         
@@ -1850,7 +1882,7 @@ def unity_reply(plugin_event, Proc):
                     
                     # 确定最终结果类型
                     if is_true_triple_ascension:
-                        result_type = 'critical_success'
+                        result_type = 'great_success'
                     elif is_triangle_stability:
                         result_type = 'triangle_stability'
                     else:
@@ -1869,7 +1901,7 @@ def unity_reply(plugin_event, Proc):
                     chaos_generation += d6_bonus_chaos
                     
                     # 计算现实改写失败变化
-                    fail_generation = 1 if (is_reality_alter and result_type == 'failure') else 0
+                    fail_generation = 1 if (is_reality_alter and result_type == 'fail') else 0
                     
                     # 应用参数限制
                     if no_chaos:
@@ -1907,7 +1939,7 @@ def unity_reply(plugin_event, Proc):
                     
                     # 获取技能检定结果文案
                     tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
-                    if result_type == 'critical_success':
+                    if result_type == 'great_success':
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
                     elif result_type == 'triangle_stability':
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS
@@ -1921,7 +1953,7 @@ def unity_reply(plugin_event, Proc):
                     )
                     
                     # 添加特殊说明
-                    if result_type == 'critical_success' and is_true_triple_ascension:
+                    if result_type == 'great_success' and is_true_triple_ascension:
                         dictTValue['tSkillCheckReasult'] += "【三重升华】"
                     elif result_type == 'triangle_stability':
                         dictTValue['tSkillCheckReasult'] += "【三角稳定】"
@@ -2014,7 +2046,7 @@ def unity_reply(plugin_event, Proc):
                         
                         # 确定最终结果类型
                         if is_true_triple_ascension:
-                            result_type = 'critical_success'  # 三重升华 -> 大成功
+                            result_type = 'great_success'  # 三重升华 -> 大成功
                         elif is_triangle_stability:
                             result_type = 'triangle_stability'  # 三角稳定 -> 特殊成功
                         else:
@@ -2032,7 +2064,7 @@ def unity_reply(plugin_event, Proc):
                         )
                         
                         # 计算现实改写失败变化（只有.tr命令且失败时才会产生现实改写失败）
-                        fail_generation = 1 if (is_reality_alter and result_type == 'failure') else 0
+                        fail_generation = 1 if (is_reality_alter and result_type == 'fail') else 0
                         
                         # 应用参数限制
                         if no_chaos:
@@ -2052,7 +2084,7 @@ def unity_reply(plugin_event, Proc):
                         
                         # 获取结果文案
                         tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_FAIL
-                        if result_type == 'critical_success':
+                        if result_type == 'great_success':
                             tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS
                         elif result_type == 'triangle_stability':
                             tmpSkillCheckType = OlivaDiceCore.skillCheck.resultType.SKILLCHECK_SUCCESS  # 三角稳定显示为成功
@@ -2063,7 +2095,7 @@ def unity_reply(plugin_event, Proc):
                             tmpSkillCheckType, dictStrCustom, dictTValue, tmp_pcHash, tmp_pc_name
                         )
                         
-                        if result_type == 'critical_success' and is_true_triple_ascension:
+                        if result_type == 'great_success' and is_true_triple_ascension:
                             result_text += "【三重升华】"
                         elif result_type == 'triangle_stability':
                             result_text += "【三角稳定】"
