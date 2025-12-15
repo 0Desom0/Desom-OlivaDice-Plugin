@@ -23,7 +23,7 @@
 ## 下载
 
 - ###### ​**插件包（记得解压！）** ​:
-[upl-file uuid=899b4230-ca84-4354-bca3-db1bc24a79af size=25kB]olivadiceta.zip[/upl-file]
+[upl-file uuid=f2f2d34d-2a09-4d77-a06b-f74dc29673ca size=25kB]olivadiceta.zip[/upl-file]
 
 - ###### **三角机构青果专用人物卡模板（解压！）** :
 [upl-file uuid=49a7abe0-727a-4637-9279-40e5d88040be size=1kB]ta.zip[/upl-file]
