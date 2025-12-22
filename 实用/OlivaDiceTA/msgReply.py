@@ -1845,27 +1845,19 @@ def unity_reply(plugin_event, Proc):
                         for i, (orig_val, mod_val, final_val) in enumerate(zip(original_dice, modified_dice, final_dice)):
                             if mod_val == 3 and final_val != 3:
                                 # final_parts.append(f"{final_val}(3:过载)")
-                                final_parts.append(f"(3:过载)")
+                                final_parts.append(f"X(3:过载)")
                             elif orig_val != mod_val:
                                 if mod_val == 3:
                                     final_parts.append(f"3({orig_val})")
                                 else:
                                     # final_parts.append(f"{mod_val}(3:过载)")
-                                    final_parts.append(f"(3:过载)")
+                                    final_parts.append(f"X(3:过载)")
                             else:
                                 final_parts.append(str(final_val))
                         final_display = '[' + ', '.join(final_parts) + ']'
                         dice_display = f"{original_display} -> {final_display}"
                     else:
                         dice_display = '[' + ', '.join(map(str, original_dice)) + ']'
-                    
-                    # 添加D6增益显示（包括过载信息）
-                    if d6_display:
-                        # 如果D6增益的3被过载了，添加过载提示
-                        if d6_burned > 0:
-                            d6_display = d6_display.rstrip()  # 移除末尾空白
-                            d6_display += f"(过载{d6_burned}个)"
-                        dice_display += d6_display
                     
                     # 判断结果类型
                     # 6D4中原始的3的个数
@@ -1879,6 +1871,18 @@ def unity_reply(plugin_event, Proc):
                     
                     # 三角稳定判断：最终刚好3个3，但不是三重升华
                     is_triangle_stability = (three_count_final == 3 and not is_true_triple_ascension)
+                    
+                    # 添加D6增益显示（包括过载信息和三重升华/三角稳定标注）
+                    if d6_display:
+                        # 如果D6增益的3被过载了，添加过载提示
+                        if d6_burned > 0:
+                            d6_display = d6_display.rstrip()  # 移除末尾空白
+                            d6_display += f"(过载{d6_burned}个)"
+                        # 如果是三重升华或三角稳定，且D6产生了混沌，标注未加
+                        elif d6_bonus_chaos > 0 and (is_true_triple_ascension or is_triangle_stability):
+                            d6_display = d6_display.rstrip()  # 移除末尾空白
+                            d6_display += "(未加)"
+                        dice_display += d6_display
                     
                     # 确定最终结果类型
                     if is_true_triple_ascension:
@@ -1897,8 +1901,9 @@ def unity_reply(plugin_event, Proc):
                         is_true_triple_ascension, 
                         is_triangle_stability
                     )
-                    # 加上D6增益产生的混沌值
-                    chaos_generation += d6_bonus_chaos
+                    # 加上D6增益产生的混沌值（三重升华和三角稳定不加D6混沌）
+                    if not is_true_triple_ascension and not is_triangle_stability:
+                        chaos_generation += d6_bonus_chaos
                     
                     # 计算现实改写失败变化
                     fail_generation = 1 if (is_reality_alter and result_type == 'fail') else 0
@@ -2001,12 +2006,30 @@ def unity_reply(plugin_event, Proc):
                             bonus_dice, penalty_dice, tmp_template_customDefault
                         )
                         
-                        # three_count_raw 是 b/p 修改后、过载前的3的个数
-                        three_count_before_burnout = three_count_raw
+                        # D6增益骰（在过载之前计入，这样过载可以燃掉D6增益的3）
+                        d6_bonus_threes = 0
+                        d6_bonus_chaos = 0
+                        d6_display = ""
+                        if use_d6_bonus:
+                            d6_result, d6_threes, d6_chaos, d6_effect = roll_d6_bonus(tmp_template_customDefault)
+                            d6_bonus_threes = d6_threes
+                            d6_bonus_chaos = d6_chaos
+                            dictTValue['tD6Result'] = str(d6_result)
+                            dictTValue['tD6Effect'] = d6_effect
+                            d6_display = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strD6Bonus'], dictTValue)
                         
-                        # 应用过载
-                        final_dice, burned_count, burnout_chaos = apply_burnout(modified_dice, total_burnout)
-                        three_count_final = sum(1 for val in final_dice if val == 3)
+                        # three_count_raw 是 b/p 修改后的3的个数，加上D6增益的3
+                        three_count_before_burnout = three_count_raw + d6_bonus_threes
+                        
+                        # 应用过载（可以燃掉D6增益的3）
+                        # 需要虚拟地将D6增益的3加入骰池，然后应用过载
+                        virtual_dice = list(modified_dice)
+                        for _ in range(d6_bonus_threes):
+                            virtual_dice.append(3)
+                        final_virtual_dice, burned_count, burnout_chaos, d6_burned = apply_burnout(virtual_dice, total_burnout, d6_bonus_threes)
+                        three_count_final = sum(1 for val in final_virtual_dice if val == 3)
+                        # 更新 final_dice 为虚拟骰池的前6个（原6D4部分）
+                        final_dice = final_virtual_dice[:6]
                         
                         # 过载次数：无论是否真的燃掉3，每个过载都加1点混沌值
                         # 所以使用 total_burnout 而不是 burned_count
@@ -2024,12 +2047,12 @@ def unity_reply(plugin_event, Proc):
                             final_parts = []
                             for j, (orig_val, mod_val, final_val) in enumerate(zip(original_dice, modified_dice, final_dice)):
                                 if mod_val == 3 and final_val != 3:  # 被过载的
-                                    final_parts.append(f"{final_val}(3:过载)")
+                                    final_parts.append(f"X(3:过载)")
                                 elif orig_val != mod_val:  # 被b/p修改的
                                     if mod_val == 3:  # b参数
                                         final_parts.append(f"3({orig_val})")
                                     else:  # p参数
-                                        final_parts.append(f"{mod_val}(3:过载)")
+                                        final_parts.append(f"X(3:过载)")
                                 else:
                                     final_parts.append(str(final_val))
                             
@@ -2041,8 +2064,27 @@ def unity_reply(plugin_event, Proc):
                         
                         # 判断结果类型
                         three_count_original = sum(1 for val in original_dice if val == 3)
-                        is_true_triple_ascension = (three_count_original == 3)  # 初始就是3个3
-                        is_triangle_stability = (three_count_final == 3 and not is_true_triple_ascension)  # 改写后刚好是3个3但初始不是
+                        
+                        # 三重升华判定：
+                        # 原始6D4的3 + D6增益的3 == 3（恰好等于3）
+                        # 注意：这个判定在过载之前，过载不影响三重升华的触发
+                        total_original_threes = three_count_original + d6_bonus_threes
+                        is_true_triple_ascension = (total_original_threes == 3)
+                        
+                        # 三角稳定判断：最终刚好3个3，但不是三重升华
+                        is_triangle_stability = (three_count_final == 3 and not is_true_triple_ascension)
+                        
+                        # 添加D6增益显示（包括过载信息和三重升华/三角稳定标注）
+                        if d6_display:
+                            # 如果D6增益的3被过载了，添加过载提示
+                            if d6_burned > 0:
+                                d6_display = d6_display.rstrip()  # 移除末尾空白
+                                d6_display += f"(过载{d6_burned}个)"
+                            # 如果是三重升华或三角稳定，且D6产生了混沌，标注未加
+                            elif d6_bonus_chaos > 0 and (is_true_triple_ascension or is_triangle_stability):
+                                d6_display = d6_display.rstrip()  # 移除末尾空白
+                                d6_display += "(未加)"
+                            dice_display += d6_display
                         
                         # 确定最终结果类型
                         if is_true_triple_ascension:
@@ -2062,6 +2104,9 @@ def unity_reply(plugin_event, Proc):
                             is_true_triple_ascension, 
                             is_triangle_stability
                         )
+                        # 加上D6增益产生的混沌值（三重升华和三角稳定不加D6混沌）
+                        if not is_true_triple_ascension and not is_triangle_stability:
+                            chaos_generation += d6_bonus_chaos
                         
                         # 计算现实改写失败变化（只有.tr命令且失败时才会产生现实改写失败）
                         fail_generation = 1 if (is_reality_alter and result_type == 'fail') else 0
@@ -2075,6 +2120,9 @@ def unity_reply(plugin_event, Proc):
                         # 累计变化
                         total_chaos_generation += chaos_generation
                         total_fail_generation += fail_generation
+                        
+                        # 记录更新前的混沌值（用于显示）
+                        chaos_before_update = group_data['chaos']
                         
                         # 立即更新群组数据（为下次检定做准备）
                         if chaos_generation > 0 or fail_generation > 0:
@@ -2100,9 +2148,27 @@ def unity_reply(plugin_event, Proc):
                         elif result_type == 'triangle_stability':
                             result_text += "【三角稳定】"
                         
+                        # 构建3的数量显示（和单次检定相同的格式）
+                        three_count_text = ""
+                        if is_true_triple_ascension:
+                            # 三重升华时显示原始3的数量
+                            three_count_text = f"本次骰出了{total_original_threes}个3"
+                        elif total_burnout > 0:
+                            # 有过载时显示详细信息
+                            three_count_text = f"本次骰出了{three_count_before_burnout}个3，过载{total_burnout}个，剩下{three_count_final}个3"
+                        else:
+                            # 没有过载时使用简单格式
+                            three_count_text = f"本次骰出了{three_count_final}个3"
+                        
+                        # 构建混沌值变化显示
+                        if chaos_generation > 0:
+                            chaos_text = f" 混沌+{chaos_generation} ({chaos_before_update}->{group_data['chaos']})"
+                        else:
+                            chaos_text = ""
+                        
                         display_burnout = total_burnout + penalty_dice  # 将p参数也算入过载显示
-                        burnout_text = f"过载{display_burnout}" if display_burnout > 0 else "无过载"
-                        results.append(f"第{i+1}次: {dice_display} {burnout_text} {result_text}")
+                        burnout_text = f"过载{display_burnout}" if display_burnout > 0 else ""
+                        results.append(f"第{i+1}次: {dice_display} {three_count_text} {result_text}{chaos_text}")
                     
                     # 设置多次检定回复变量
                     dictTValue['tRollTimes'] = str(roll_times)
