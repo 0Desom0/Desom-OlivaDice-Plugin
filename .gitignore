@@ -4,3 +4,5 @@
 # 屏蔽核心本体，方便开发
 /OlivaDiceCore
 /OlivaDiceMaster
+# 测试用文件
+/测试
