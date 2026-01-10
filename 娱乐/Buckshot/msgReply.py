@@ -228,6 +228,10 @@ def unity_reply(plugin_event, Proc):
                         plugin_event.platform['platform']
                     )
         group_id = group_hash
+        if not isMatchWordStart(tmp_reast_str, ['bs'], isCommand=True):
+            return
+        tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['bs'])
+        tmp_reast_str = skipSpaceStart(tmp_reast_str)
         if isMatchWordStart(tmp_reast_str, ['加入赌局','参加赌局'], isCommand = True):
             if not flag_is_from_group:
                 return

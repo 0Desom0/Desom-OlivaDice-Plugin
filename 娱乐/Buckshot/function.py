@@ -293,9 +293,21 @@ def get_buckshot_data_path():
         os.makedirs(buckshot_data_path)
     return buckshot_data_path
 
+
+def get_redirected_bot_hash(bot_hash: str) -> str:
+    """遵循 OlivaDiceCore 主从账号链接：从账号读写主账号目录。"""
+    try:
+        master = OlivaDiceCore.console.getMasterBotHash(bot_hash)
+        if master:
+            return str(master)
+    except Exception:
+        pass
+    return bot_hash
+
 def get_demon_file_path(bot_hash, group_hash):
     """获取群组恶魔轮盘赌路径"""
     buckshot_data_path = get_buckshot_data_path()
+    bot_hash = get_redirected_bot_hash(str(bot_hash))
     bot_path = os.path.join(buckshot_data_path, bot_hash, 'group')
     if not os.path.exists(bot_path):
         os.makedirs(bot_path)
@@ -304,6 +316,7 @@ def get_demon_file_path(bot_hash, group_hash):
 def get_user_path(bot_hash, user_hash):
     """获取用户路径"""
     buckshot_data_path = get_buckshot_data_path()
+    bot_hash = get_redirected_bot_hash(str(bot_hash))
     bot_path = os.path.join(buckshot_data_path, bot_hash, 'user')
     if not os.path.exists(bot_path):
         os.makedirs(bot_path)
@@ -312,6 +325,14 @@ def load_group_data(bot_hash, group_hash):
     """加载群组数据"""
     file_path = get_demon_file_path(bot_hash, group_hash)
     default_data = demon_default()
+
+    redirected_bot_hash = get_redirected_bot_hash(str(bot_hash))
+    if redirected_bot_hash != str(bot_hash) and not os.path.exists(file_path):
+        buckshot_data_path = get_buckshot_data_path()
+        legacy_bot_path = os.path.join(buckshot_data_path, str(bot_hash), 'group')
+        legacy_path = os.path.join(legacy_bot_path, f"{group_hash}.json")
+        if os.path.exists(legacy_path):
+            file_path = legacy_path
     
     if os.path.exists(file_path):
         try:
@@ -339,6 +360,14 @@ def load_user_data(bot_hash, user_hash):
     """加载用户数据"""
     file_path = get_user_path(bot_hash, user_hash)
     default_data = user_default()
+
+    redirected_bot_hash = get_redirected_bot_hash(str(bot_hash))
+    if redirected_bot_hash != str(bot_hash) and not os.path.exists(file_path):
+        buckshot_data_path = get_buckshot_data_path()
+        legacy_bot_path = os.path.join(buckshot_data_path, str(bot_hash), 'user')
+        legacy_path = os.path.join(legacy_bot_path, f"{user_hash}.json")
+        if os.path.exists(legacy_path):
+            file_path = legacy_path
     
     if os.path.exists(file_path):
         try:
@@ -972,8 +1001,21 @@ def send_forward_text(plugin_event, user_ids, message, at_users=True, additional
     :param at_users: 是否@用户
     :param additional_msg: 附加消息
     """
-    # 检查平台，如果不是QQ平台且不是转发则正常发送
-    if plugin_event.platform['platform'] != 'qq' or not is_forward:
+    # QQ 转发开关（来自自定义回复 dictStrCustom）：'0'=开启合并转发；'1'=非转发；其他=按0处理
+    is_forward_effective = is_forward
+    if plugin_event.platform.get('platform') == 'qq':
+        try:
+            mode_raw = OlivaDiceCore.msgCustom.dictStrCustomDict[plugin_event.bot_info.hash].get('strBSQQForwardDetect', '0')
+            mode = int(str(mode_raw).strip())
+        except Exception:
+            mode = 0
+        if mode == 1:
+            is_forward_effective = False
+        else:
+            is_forward_effective = True
+
+    # 检查平台，如果不是QQ平台或未启用转发则正常发送
+    if plugin_event.platform.get('platform') != 'qq' or not is_forward_effective:
         # 构建@用户的消息
         at_msg = ""
         if at_users and user_ids:

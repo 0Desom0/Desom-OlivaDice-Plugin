@@ -4,7 +4,7 @@
     "namespace" : "Buckshot",
     "message_mode" : "old_string",
     "info" : "恶魔轮盘超级加强版 OlivOS 版移植自我用 NoneBot 平台开发的插件。该 NoneBot 插件最初移植自 [樱井咲夜]（QQ：1394232566）开发的 OlivOS 原版插件，在此对原作者表示特别感谢。",
-    "version" : "1.0.3",
+    "version" : "1.0.4",
     "svn" : 1,
     "compatible_svn" : 190,
     "priority" : 19990,

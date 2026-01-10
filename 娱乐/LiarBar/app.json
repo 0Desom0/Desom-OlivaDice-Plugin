@@ -1,0 +1,23 @@
+{
+    "name" : "骗子酒馆",
+    "author" : "Desom-fu",
+    "namespace" : "LiarBar",
+    "message_mode" : "old_string",
+    "info" : "LiarBar骗子酒馆插件",
+    "version" : "1.0.0",
+    "svn" : 1,
+    "compatible_svn" : 190,
+    "priority" : 21000,
+    "support" : [
+        {
+            "sdk" : "onebot",
+            "platform" : "qq",
+            "model" : "all"
+        },
+        {
+            "sdk" : "all",
+            "platform" : "all",
+            "model" : "all"
+        }
+    ]
+}
