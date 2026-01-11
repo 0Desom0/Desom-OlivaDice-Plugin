@@ -13,7 +13,7 @@
 👇以下是插件列表👇
 
 ### 🧩娱乐
- * `LiarBar` -- 骗子酒馆，多人回合制纸牌游戏。论坛发布地址：https://forum.olivos.run/d/881-liarbar
+ * `LiarBar` -- 骗子酒馆，多人回合制纸牌游戏。论坛发布地址：https://forum.olivos.run/d/881-liars-bar
  * `TexasHoldem` -- 德州扑克，多人德州扑克模拟器。论坛发布地址：https://forum.olivos.run/d/882-texas-holdem
  * `Buckshot` -- 超级牛逼的26道具3模式恶魔轮盘赌！论坛发布地址：https://forum.olivos.run/d/858-26-3
  * `echo` -- 让你的骰娘echo你的内容！论坛发布地址：不会发布
