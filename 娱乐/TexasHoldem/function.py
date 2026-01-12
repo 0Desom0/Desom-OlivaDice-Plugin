@@ -24,6 +24,7 @@ def texas_default() -> dict:
         'sb': 5,
         'players': [],  # 玩家列表（list[Player]）
         'join_order': [],  # 按加入顺序记录 seat_id（用于 quit/leave 兜底）
+        'user_nicknames': {},  # 用户自定义昵称字典 {user_id: nickname}
 
         # 单手状态
         'hand_no': 0,
@@ -120,20 +121,39 @@ def get_nickname(
     user_id: str,
     tmp_hagID: Optional[str] = None,
     fallback_prefix: str = '',
+    bot_hash: Optional[str] = None,
+    group_hash: Optional[str] = None,
 ) -> str:
+    """
+    获取用户昵称，优先级：文件中记录的昵称 -> 人物卡名称 -> QQ昵称
+    """
     try:
         fallback_prefix = fallback_prefix or ''
         default_name = f"{fallback_prefix}{user_id}" if fallback_prefix else str(user_id)
-        # 优先使用人物卡名称
+        
+        # 1. 优先尝试从文件中记录的昵称获取
+        if bot_hash and group_hash:
+            try:
+                game_data = load_group_data(bot_hash, group_hash)
+                user_nicknames = game_data.get('user_nicknames', {})
+                if str(user_id) in user_nicknames:
+                    stored_nickname = user_nicknames.get(str(user_id))
+                    if stored_nickname and stored_nickname.strip():
+                        return str(stored_nickname)
+            except Exception:
+                pass
+        
+        # 2. 其次使用人物卡名称
         tmp_pcHash = OlivaDiceCore.pcCard.getPcHash(user_id, plugin_event.platform['platform'])
         tmp_pcName = OlivaDiceCore.pcCard.pcCardDataGetSelectionKey(tmp_pcHash, tmp_hagID)
         if tmp_pcName:
             return tmp_pcName
 
-        # QQ频道：若无人物卡名，则回退到人物卡hash
+        # 3. QQ频道：若无人物卡名，则回退到人物卡hash
         if plugin_event.platform['platform'] == 'qqGuild':
             return f"{fallback_prefix}{tmp_pcHash}" if fallback_prefix else str(tmp_pcHash)
 
+        # 4. 尝试从用户配置获取QQ昵称
         pid_nickname = OlivaDiceCore.userConfig.getUserConfigByKey(
             userId=user_id,
             userType='user',
@@ -145,6 +165,7 @@ def get_nickname(
         if pid_nickname and pid_nickname != default_name and pid_nickname != fallback_prefix:
             return pid_nickname
 
+        # 5. 尝试从平台API获取昵称
         plres = plugin_event.get_stranger_info(user_id)
         if plres.get('active'):
             pid_nickname = plres['data']['name']
@@ -156,6 +177,20 @@ def get_nickname(
         return default_name
     except Exception:
         return f"{fallback_prefix}{user_id}" if fallback_prefix else str(user_id)
+
+
+def set_user_nickname(bot_hash: str, group_hash: str, user_id: str, nickname: str) -> None:
+    """
+    在群组文件中设置用户自定义昵称
+    """
+    try:
+        game_data = load_group_data(bot_hash, group_hash)
+        if 'user_nicknames' not in game_data:
+            game_data['user_nicknames'] = {}
+        game_data['user_nicknames'][str(user_id)] = str(nickname)
+        save_group_data(bot_hash, group_hash, game_data)
+    except Exception:
+        pass
 
 
 def compute_blinds(base_stake: int) -> Tuple[int, int]:
@@ -963,6 +998,22 @@ def advance_street(game: dict) -> None:
     game['need_action_seat_ids'] = need
 
 
+def fast_forward_to_showdown(game: dict) -> None:
+    """按正常发牌流程将公共牌补齐到摊牌（最多 5 张）。
+
+    用于“提前弃牌/只剩一人”等场景：虽然无需继续行动，但结算展示仍希望
+    公共牌完整到 5 张。
+    """
+    max_steps = 10
+    steps = 0
+    while steps < max_steps and game.get('street') != 'showdown':
+        st = game.get('street')
+        if st not in ('preflop', 'flop', 'turn', 'river'):
+            break
+        advance_street(game)
+        steps += 1
+
+
 def award_single_winner(game: dict, winner_seat_id: int) -> None:
     p = find_player(game['players'], winner_seat_id)
     if not p:
@@ -1013,18 +1064,32 @@ def build_side_pots(players: List[dict], dead_money: int = 0) -> List[dict]:
 def settle_showdown(game: dict) -> dict:
     """进行摊牌结算并返回结算结果（用于渲染）。"""
     eligible = in_showdown_eligible(game['players'])
+    board = list(game.get('community_cards', []))
+    
     if len(eligible) == 1:
         winner = int(eligible[0]['seat_id'])
         pot_amount = int(game.get('pot', 0))
         award_single_winner(game, winner)
+        
+        # 即使只有一个人赢，也要返回showdown类型以显示详细结算
+        # 构建eval_map，包含所有有手牌的玩家（包括已弃牌的）
+        eval_map: Dict[int, Tuple[int, Tuple[int, ...], List[str]]] = {}
+        for p in game['players']:
+            if p.get('hand_cards') and p.get('status') != 'out' and not p.get('left'):
+                sid = int(p['seat_id'])
+                cards7 = board + list(p.get('hand_cards', []))
+                eval_map[sid] = evaluate_7(cards7)
+        
+        # 构建单赢家的分配结果
+        distribution = [{'pot': pot_amount, 'winners': [winner]}]
+        
         return {
-            'type': 'single',
-            'winner_seat_ids': [winner],
-            'amount': pot_amount,
-            'pots': [],
+            'type': 'showdown',
+            'distribution': distribution,
+            'eval': {str(sid): {'cat': eval_map[sid][0], 'best5': eval_map[sid][2]} for sid in eval_map},
+            'refunds': [],
+            'single_winner': True,  # 标记这是单赢家情况
         }
-
-    board = list(game.get('community_cards', []))
 
     eval_map: Dict[int, Tuple[int, Tuple[int, ...], List[str]]] = {}
     for p in eligible:
@@ -1143,6 +1208,92 @@ def qq_is_friend(plugin_event, user_id: str) -> bool:
         return False
     except Exception:
         return False
+
+
+# ----------------------------
+# 字符串解析辅助函数
+# ----------------------------
+
+
+def getNumberPara(data, reverse=False):
+    """
+    从字符串中分离出数字和非数字部分。
+    
+    Args:
+        data: 输入字符串
+        reverse: False时从左往右找数字，True时从右往左找数字
+        
+    Returns:
+        [非数字部分, 数字部分] (当reverse=False)
+        或 [数字部分, 非数字部分] (当reverse=True)
+    """
+    tmp_output_str_1 = ''
+    tmp_output_str_2 = ''
+    if len(data) > 0:
+        flag_have_para = False
+        tmp_offset = 0
+        tmp_total_offset = 0
+        while True:
+            tmp_offset += 1
+            if reverse:
+                tmp_total_offset = len(data) - tmp_offset
+            else:
+                tmp_total_offset = tmp_offset - 1
+            if not reverse and tmp_total_offset >= len(data):
+                flag_have_para = True
+                break
+            if reverse and tmp_total_offset < 0:
+                tmp_total_offset = 0
+                flag_have_para = True
+                break
+            if data[tmp_total_offset].isdecimal():
+                pass
+            else:
+                flag_have_para = True
+                if reverse:
+                    tmp_total_offset += 1
+                break
+        if flag_have_para:
+            tmp_output_str_1 = data[:tmp_total_offset]
+            tmp_output_str_2 = data[tmp_total_offset:]
+    return [tmp_output_str_1, tmp_output_str_2]
+
+
+def getToNumberPara(data):
+    """
+    从字符串中找到第一个数字或空格的位置，并分割字符串。
+    
+    Args:
+        data: 输入字符串
+        
+    Returns:
+        [数字/空格之前的部分, 数字/空格及之后的部分]
+    """
+    tmp_output_str_1 = ''
+    tmp_output_str_2 = ''
+    if len(data) > 0:
+        flag_have_para = False
+        tmp_offset = 0
+        tmp_total_offset = 0
+        while True:
+            tmp_offset += 1
+            tmp_total_offset = tmp_offset - 1
+            if tmp_total_offset >= len(data):
+                flag_have_para = True
+                break
+            if data[tmp_total_offset].isdecimal():
+                flag_have_para = True
+                break
+            if data[tmp_total_offset] == ' ':
+                flag_have_para = True
+                break
+
+        if flag_have_para:
+            tmp_output_str_1 = data[:tmp_total_offset]
+            tmp_output_str_2 = data[tmp_total_offset:]
+        else:
+            tmp_output_str_2 = data
+    return [tmp_output_str_1, tmp_output_str_2]
 
 
 # ----------------------------

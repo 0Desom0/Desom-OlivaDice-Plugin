@@ -26,7 +26,7 @@ dictStrCustom = {
     'strTHErrBetTooSmall': '下注金额不足，最小下注为[{tBB}]。',
 
     # 建局/入场
-    'strTHCreateSuccess': '已创建德州扑克房间，底注[{tBaseStake}]，小盲注[{tSB}]，大盲注[{tBB}]。\n使用 .dz 加入 [筹码] 加入游戏。',
+    'strTHCreateSuccess': '已创建德州扑克房间，底注[{tBaseStake}]，小盲注[{tSB}]，大盲注[{tBB}]。\n使用 .dz 加入 [人物名] [筹码] 加入游戏。',
     'strTHCreateFailStake': '创建失败：底注必须是[1000]的倍数，且 >= 1000。',
     'strTHJoinSuccess': '玩家[{tName}]加入游戏：<座位{tSeatId}>，携带筹码 {tChips}。',
     'strTHJoinFailChips': '加入失败：入场筹码必须 >= 底注，且为[1000]的倍数。',
@@ -39,7 +39,7 @@ dictStrCustom = {
 
     # 私聊看牌
     'strTHPrivateCardsHeader': '来自群: [{tGroupId}]',
-    'strTHPrivateCardsSeatLine': '座位: {tSeatId}号 ({tRoleText})',
+    'strTHPrivateCardsSeatLine': '座位: {tSeatId}号 - {tSeatName}（{tRoleText}）',
     'strTHPrivateCardsCardsLine': '底牌: {tHandCards}',
     'strTHPrivateCardsFooter': '请在群内进行操作。',
     'strTHCardsFailNotDealt': '看牌失败：当前未发牌或本局未开始。',
@@ -50,7 +50,7 @@ dictStrCustom = {
     'strTHKickSuccess': '已踢出：座位{tSeatId}: {tSeatName}（{tSeatRoleText}）{tSeatTurnMark}，筹码[{tForfeit}]充公进入底池。',
     'strTHStopSuccess': '已强制结束并销毁本群德州扑克数据（不结算）。',
     'strTHEndFlagSet': '已开启结束开关：本手在“最后仅剩一人（其余弃牌）”或“摊牌比牌”结算后，将进行最终结算并结束游戏（不会自动开始下一手）。',
-
+    'strTHEndFlagUnset': '已关闭结束开关：游戏将继续进行，本手结束后会自动开始下一手。',
     # 局势面板
     'strTHStatusHeader': '底池: {tPot} ‖ 最小加注: {tMinRaise} ‖ 最小下注/跟注：{tMinCall}',
     'strTHStatusCommunity': '公共牌: {tCommunityCards} {tStreetText}',
@@ -253,6 +253,7 @@ dictStrCustomNote = {
     'strTHKickSuccess': '【德州扑克】管理\n踢人成功提示（含座位详情/罚没筹码）',
     'strTHStopSuccess': '【德州扑克】管理\n强制结束成功提示（不结算）',
     'strTHEndFlagSet': '【德州扑克】全局\n开启结束开关提示',
+    'strTHEndFlagUnset': '【德州扑克】全局\n关闭结束开关提示',
 
     # 局势面板（使用标记语法的文本）
     'strTHStatusHeader': '【德州扑克】局势面板\n顶部信息（底池/最小加注/最小下注或跟注）',
@@ -351,7 +352,7 @@ dictHelpDocTemp = {
 前缀：.dz 或 .th
 【建局/入场】
 .dz 创建 [底注]（默认1000，必须为1000倍数）
-.dz 加入 [携带筹码]（默认=底注，必须>=底注且为1000倍数；允许同一QQ多次加入占不同座位）
+.dz 加入 [人物名] [携带筹码]（默认=底注，必须>=底注且为1000倍数；允许同一QQ多次加入占不同座位）（若没有人物名为空，则优先使用人物卡名称，再使用QQ昵称）
 .dz 退出（仅开局前；若同一QQ多个座位，按后加入先退出）
 .dz 开始（至少2人；发牌并扣盲注，进入游戏）
 .dz 解散（仅开局前；权限：座位1玩家/管理员/群主/骰主）

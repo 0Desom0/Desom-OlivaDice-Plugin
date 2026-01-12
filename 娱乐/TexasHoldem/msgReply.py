@@ -187,6 +187,7 @@ def unity_reply(plugin_event, Proc):
         texas_default = TexasHoldem.function.texas_default
         compute_blinds = TexasHoldem.function.compute_blinds
         get_nickname = TexasHoldem.function.get_nickname
+        set_user_nickname = TexasHoldem.function.set_user_nickname
         cards_to_text = TexasHoldem.function.cards_to_text
         hand_type_text = TexasHoldem.function.hand_type_text
         evaluate_7 = TexasHoldem.function.evaluate_7
@@ -201,6 +202,7 @@ def unity_reply(plugin_event, Proc):
         apply_allin = TexasHoldem.function.apply_allin
         is_betting_round_over = TexasHoldem.function.is_betting_round_over
         advance_street = TexasHoldem.function.advance_street
+        fast_forward_to_showdown = TexasHoldem.function.fast_forward_to_showdown
         settle_showdown = TexasHoldem.function.settle_showdown
         rotate_dealer = TexasHoldem.function.rotate_dealer
         remove_broke_players = TexasHoldem.function.remove_broke_players
@@ -209,12 +211,25 @@ def unity_reply(plugin_event, Proc):
         find_player = TexasHoldem.function.find_player
         next_pending_actor = TexasHoldem.function.next_pending_actor
         sendMsgByEvent = TexasHoldem.function.sendMsgByEvent
-
+        
+        # 定义辅助函数
+        def group_hash_from_hag(tmp_hag: str) -> str:
+            return OlivaDiceCore.userConfig.getUserHash(
+                tmp_hag,
+                'group',
+                plugin_event.platform['platform']
+            )
+        
+        bot_hash = plugin_event.bot_info.hash
+        group_hash = group_hash_from_hag(tmp_hagID) if tmp_hagID else None
+        
         sender_name = get_nickname(
             plugin_event,
             str(plugin_event.data.user_id),
             tmp_hagID,
             dictStrCustom.get('strTHUserFallbackPrefix', ''),
+            bot_hash,
+            group_hash,
         )
         dictTValue['tName'] = sender_name
 
@@ -228,13 +243,6 @@ def unity_reply(plugin_event, Proc):
             msg = fmt(key, extra)
             if msg is not None:
                 replyMsg(plugin_event, msg, at_user)
-
-        def group_hash_from_hag(tmp_hag: str) -> str:
-            return OlivaDiceCore.userConfig.getUserHash(
-                tmp_hag,
-                'group',
-                plugin_event.platform['platform']
-            )
 
         def street_text(game: dict) -> str:
             st = game.get('street')
@@ -444,7 +452,12 @@ def unity_reply(plugin_event, Proc):
         def send_private_cards_for_user(game: dict, tmp_hag: str, user_id: str) -> None:
             # 可能对应多个座位（例如多开/同群多号等）
             lines = []
-            header = fmt('strTHPrivateCardsHeader', {'tGroupId': str(plugin_event.data.group_id)})
+            group_id_text = ''
+            try:
+                group_id_text = str(plugin_event.data.group_id)
+            except Exception:
+                group_id_text = ''
+            header = fmt('strTHPrivateCardsHeader', {'tGroupId': group_id_text})
             lines.append(header)
 
             seat_blocks = []
@@ -456,8 +469,25 @@ def unity_reply(plugin_event, Proc):
                 sid = int(p['seat_id'])
                 role_code = role_name_for_seat(game, sid)
                 role_text = role_text_from_code(role_code)
+
+                # 私聊看牌也要显示座位玩家名：优先用座位记录昵称，不足时再走统一昵称获取逻辑
+                seat_name = str(p.get('nickname') or '')
+                if not seat_name:
+                    try:
+                        tmp_group_hash = group_hash_from_hag(tmp_hag) if tmp_hag else group_hash
+                    except Exception:
+                        tmp_group_hash = group_hash
+                    seat_name = get_nickname(
+                        plugin_event,
+                        str(user_id),
+                        tmp_hag,
+                        dictStrCustom.get('strTHUserFallbackPrefix', ''),
+                        bot_hash,
+                        tmp_group_hash,
+                    )
                 seat_line = fmt('strTHPrivateCardsSeatLine', {
                     'tSeatId': str(sid),
+                    'tSeatName': seat_name,
                     'tRoleText': role_text,
                 })
                 cards_line = fmt('strTHPrivateCardsCardsLine', {
@@ -503,7 +533,13 @@ def unity_reply(plugin_event, Proc):
                         'tWinAmount': str(settlement.get('amount', 0)),
                     }))
             else:
-                lines.append(fmt('strTHHandEndShowdownHeader'))
+                # 判断是否为单赢家情况（其他人都fold了）
+                is_single_winner = settlement.get('single_winner', False)
+                
+                if is_single_winner:
+                    lines.append(fmt('strTHHandEndShowdownHeader') + ' - 其他玩家弃牌')
+                else:
+                    lines.append(fmt('strTHHandEndShowdownHeader'))
 
                 # 摊牌明细：按需求顺序输出
                 # 1) 先显示公共牌
@@ -701,11 +737,9 @@ def unity_reply(plugin_event, Proc):
         tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['dz', 'th'])
         tmp_reast_str = skipSpaceStart(tmp_reast_str)
 
-        bot_hash = plugin_event.bot_info.hash
         if not flag_is_from_group:
             reply_custom('strTHErrNotInGroup')
             return
-        group_hash = group_hash_from_hag(tmp_hagID)
         game = load_group_data(bot_hash, group_hash)
 
         # ----------------------------
@@ -769,17 +803,37 @@ def unity_reply(plugin_event, Proc):
                 reply_custom('strTHErrNeedFriendForPrivate')
                 return
 
+            # 解析参数：.th join [名称] [筹码数量]
+            # 使用辅助函数分离名称和筹码
+            custom_name = None
+            chips = None
             base = int(game.get('base_stake', 1000))
-            chips = base
+            
             if tmp_reast_str:
-                try:
-                    chips = int(tmp_reast_str.split()[0])
-                except Exception:
-                    reply_custom('strTHErrInvalidNumber')
+                # 尝试从右往左找数字（筹码）
+                parts = TexasHoldem.function.getNumberPara(tmp_reast_str, reverse=True)
+                name_part = parts[0].strip()  # 数字前面的部分（可能是名称）
+                chip_part = parts[1].strip()  # 数字部分
+                
+                # 如果有数字部分，解析为筹码
+                if chip_part:
+                    try:
+                        chips = int(chip_part)
+                    except Exception:
+                        reply_custom('strTHErrInvalidNumber')
+                        return
+                
+                # 如果有名称部分，使用自定义名称
+                if name_part:
+                    custom_name = name_part
+            
+            # 设置筹码数量（如果没有指定则使用默认值）
+            if chips is None:
+                chips = base
+            else:
+                if chips < base or chips % 1000 != 0:
+                    reply_custom('strTHJoinFailChips')
                     return
-            if chips < base or chips % 1000 != 0:
-                reply_custom('strTHJoinFailChips')
-                return
 
             used = set(int(p['seat_id']) for p in game.get('players', []))
             seat_id = None
@@ -791,12 +845,23 @@ def unity_reply(plugin_event, Proc):
                 reply_custom('strTHJoinFailFull')
                 return
 
-            nickname = get_nickname(
-                plugin_event,
-                user_id,
-                tmp_hagID,
-                dictStrCustom.get('strTHUserFallbackPrefix', ''),
-            )
+            # 获取昵称：
+            # 1. 如果指定了自定义名称，使用并保存它
+            # 2. 否则使用统一的nickname获取函数（会按优先级获取）
+            if custom_name:
+                nickname = custom_name
+                # 保存用户自定义昵称到文件
+                TexasHoldem.function.set_user_nickname(bot_hash, group_hash, user_id, custom_name)
+            else:
+                nickname = get_nickname(
+                    plugin_event,
+                    user_id,
+                    tmp_hagID,
+                    dictStrCustom.get('strTHUserFallbackPrefix', ''),
+                    bot_hash,
+                    group_hash,
+                )
+            
             game['players'].append({
                 'seat_id': int(seat_id),
                 'user_id': user_id,
@@ -949,9 +1014,15 @@ def unity_reply(plugin_event, Proc):
             if game.get('state') != 'playing':
                 reply_custom('strTHErrNotPlaying')
                 return
-            game['end_flag'] = True
-            save_group_data(bot_hash, group_hash, game)
-            reply_custom('strTHEndFlagSet')
+            # 切换end_flag状态：如果已经是True则改为False，否则改为True
+            if game.get('end_flag'):
+                game['end_flag'] = False
+                save_group_data(bot_hash, group_hash, game)
+                reply_custom('strTHEndFlagUnset')
+            else:
+                game['end_flag'] = True
+                save_group_data(bot_hash, group_hash, game)
+                reply_custom('strTHEndFlagSet')
             return
 
         if isMatchWordStart(tmp_reast_str, ['stop', 'halt', '强制结束'], isCommand=True):
@@ -1159,6 +1230,7 @@ def unity_reply(plugin_event, Proc):
             })
             # 离场后可能立刻满足结束条件
             if len([p for p in game.get('players', []) if p.get('status') in ('active', 'allin')]) <= 1:
+                fast_forward_to_showdown(game)
                 settlement = settle_showdown(game)
                 handle_hand_end_and_maybe_continue(game, bot_hash, group_hash, tmp_hagID, settlement)
                 return
@@ -1172,6 +1244,7 @@ def unity_reply(plugin_event, Proc):
         if is_betting_round_over(game):
             # 若仅剩 1 名仍在争夺底池的玩家，则立刻结算
             if len([p for p in game.get('players', []) if p.get('status') in ('active', 'allin')]) <= 1:
+                fast_forward_to_showdown(game)
                 settlement = settle_showdown(game)
                 handle_hand_end_and_maybe_continue(game, bot_hash, group_hash, tmp_hagID, settlement)
                 return
