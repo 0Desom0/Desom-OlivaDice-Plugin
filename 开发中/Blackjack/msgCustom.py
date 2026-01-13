@@ -74,6 +74,7 @@ dictStrCustom = {
     'strBJPrivateCardsCardsLine': '手牌: {tHandCards}',
     'strBJPrivateCardsValueLine': '点数: {tHandValue}',
     'strBJPrivateCardsFooter': '请在群内进行操作。',
+    'strBJErrCannotPM': '无法私聊发送手牌，请先添加机器人为好友或允许私聊。',
 
     'strBJSetChipsSuccess': '已设置默认入局筹码为 {tChips}。下次加入游戏时将使用此筹码。',
     'strBJMyChipsInfo': '你的筹码信息：\n默认入局筹码：{tDefaultChips}',

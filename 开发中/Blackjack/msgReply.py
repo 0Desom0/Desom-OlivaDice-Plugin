@@ -179,7 +179,7 @@ def unity_reply(plugin_event, Proc):
         if not flag_groupEnable and not flag_force_reply:
             return
         '''到这里为止，前面的都不动，下面处理 .bj (21点) 命令'''
-        # 引入 Blackjack 核心函数
+            # 引入 Blackjack 核心函数
         load_group_data = Blackjack.function.load_group_data
         save_group_data = Blackjack.function.save_group_data
         blackjack_default = Blackjack.function.blackjack_default
@@ -197,6 +197,7 @@ def unity_reply(plugin_event, Proc):
         apply_split = Blackjack.function.apply_split
         apply_surrender = Blackjack.function.apply_surrender
         apply_insurance = Blackjack.function.apply_insurance
+        qq_is_friend = Blackjack.function.qq_is_friend
         settle_round = Blackjack.function.settle_round
         settle_insurance = Blackjack.function.settle_insurance
         check_21_3 = Blackjack.function.check_21_3
@@ -233,24 +234,25 @@ def unity_reply(plugin_event, Proc):
             if msg is not None:
                 replyMsg(plugin_event, msg, at_user)
 
-        # 处理 .bj / .21 命令
-        if isMatchWordStart(tmp_reast_str, ['bj', '21', '21点'], isCommand=True):
-            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['bj', '21', '21点'])
+            # 处理 .bj / .21 命令（逐层匹配，支持 '分'+'牌' 等形式）
+        if isMatchWordStart(tmp_reast_str, ['bj', '21点', '21'], isCommand=True):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['bj', '21点', '21'])
             tmp_reast_str = skipSpaceStart(tmp_reast_str)
-            parts = tmp_reast_str.strip().split()
-            cmd = parts[0] if parts else ''
 
-            # 创建房间: .bj 创建 [底注] [模式]
-            if cmd in ['创建', 'create']:
+            # 创建房间：.bj 创建 [底注] [模式]
+            if isMatchWordStart(tmp_reast_str, ['创建', 'create'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['创建', 'create'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                parts = tmp_reast_str.strip().split()
                 base = 100
                 mode = 'open'
-                if len(parts) >= 2:
+                if len(parts) >= 1:
                     try:
-                        base = int(parts[1])
+                        base = int(parts[0])
                     except Exception:
                         base = 100
-                if len(parts) >= 3:
-                    if parts[2] in ['hidden', '手持']:
+                if len(parts) >= 2:
+                    if parts[1] in ['hidden', '手持']:
                         mode = 'hidden'
                 game = blackjack_default()
                 game['base_stake'] = int(base)
@@ -261,25 +263,28 @@ def unity_reply(plugin_event, Proc):
                 reply_custom('strBJCreateSuccess', {'tBaseStake': str(game['base_stake']), 'tMinStake': str(game['min_stake']), 'tMaxStake': str(game['max_stake']), 'tGameMode': game['game_mode']})
                 return
 
-            # 加入: .bj 加入 [名称] [筹码]
-            if cmd in ['加入', 'join']:
+            # 加入：.bj 加入 [名称] [筹码]
+            if isMatchWordStart(tmp_reast_str, ['加入', 'join'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['加入', 'join'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                parts = tmp_reast_str.strip().split()
                 game = load_group_data(bot_hash, group_hash)
                 if game is None:
                     reply_custom('strBJErrRoomNotFound')
                     return
                 name = sender_name
                 chips = None
+                if len(parts) >= 1:
+                    name = parts[0]
                 if len(parts) >= 2:
-                    name = parts[1]
-                if len(parts) >= 3:
                     try:
-                        chips = int(parts[2])
+                        chips = int(parts[1])
                     except Exception:
                         chips = None
                 if chips is None:
                     userhash = OlivaDiceCore.userConfig.getUserHash(plugin_event.data.user_id, 'user', plugin_event.platform['platform'])
                     chips = get_user_default_chips(userhash)
-                # assign seat id
+                # 分配座位号
                 seat_id = 1
                 existing = [int(p['seat_id']) for p in game.get('players', [])]
                 while seat_id in existing:
@@ -298,7 +303,7 @@ def unity_reply(plugin_event, Proc):
                     'bet_21_3_type': None,
                 }
                 if not game.get('players'):
-                    # first joiner becomes dealer
+                    # 第一个加入的玩家成为庄家
                     player['is_dealer'] = True
                     game['dealer_seat_id'] = None
                 game.setdefault('players', []).append(player)
@@ -306,13 +311,15 @@ def unity_reply(plugin_event, Proc):
                 reply_custom('strBJJoinSuccess', {'tName': name, 'tSeatId': str(seat_id), 'tChips': str(chips), 'tIsDealer': (dictStrCustom.get('strBJJoinAsDealer') if player['is_dealer'] else '')})
                 return
 
-            # 开始: .bj 开始
-            if cmd in ['开始', 'start']:
+            # 开始：.bj 开始
+            if isMatchWordStart(tmp_reast_str, ['开始', 'start'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['开始', 'start'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
                 game = load_group_data(bot_hash, group_hash)
                 if not game or not game.get('players'):
                     reply_custom('strBJErrRoomNotFound')
                     return
-                # init deck and deal
+                # 初始化牌堆并发牌
                 reset_for_new_round(game)
                 deal_initial_cards(game)
                 game['state'] = 'playing'
@@ -320,13 +327,18 @@ def unity_reply(plugin_event, Proc):
                 reply_custom('strBJStartSuccess', {'tAtAll': ''})
                 return
 
-            # 下注: .bj 下注 [金额] [21+3类型] [21+3金额]
-            if cmd in ['下注', '下']:
+            # 下注：.bj 下注 [金额] [21+3类型] [21+3金额]
+            if isMatchWordStart(tmp_reast_str, ['下注', '下'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['下注', '下'])
+                if isMatchWordStart(tmp_reast_str, ['注'], isCommand=True):
+                    tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['注'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                parts = tmp_reast_str.strip().split()
                 game = load_group_data(bot_hash, group_hash)
                 if not game:
                     reply_custom('strBJErrRoomNotFound')
                     return
-                # find player
+                # 查找玩家
                 p = None
                 for pl in game.get('players', []):
                     if str(pl.get('user_id')) == str(plugin_event.data.user_id):
@@ -335,26 +347,52 @@ def unity_reply(plugin_event, Proc):
                 if not p:
                     reply_custom('strBJErrNotInGroup')
                     return
-                if len(parts) >= 2:
+                if len(parts) >= 1:
                     try:
-                        amt = int(parts[1])
+                        amt = int(parts[0])
                     except Exception:
                         reply_custom('strBJErrInvalidNumber')
                         return
-                    p['current_bet'] = amt
-                # optional 21+3
-                if len(parts) >= 4:
-                    p['bet_21_3_type'] = parts[2]
+                    # 校验下注金额
+                    if amt < int(game.get('min_stake', 10)):
+                        reply_custom('strBJErrBetTooSmall', {'tMinStake': str(game.get('min_stake'))})
+                        return
+                    if amt > int(game.get('max_stake', 10000)):
+                        reply_custom('strBJErrBetTooLarge', {'tMaxStake': str(game.get('max_stake'))})
+                    if int(p.get('chips', 0)) < amt:
+                        reply_custom('strBJErrNotEnoughChips')
+                        return
+                    # 立即扣除玩家筹码
+                    p['chips'] = int(p.get('chips', 0)) - int(amt)
+                    p['current_bet'] = int(amt)
+                # 可选的 21+3 下注
+                if len(parts) >= 2:
+                    # 标准化 21+3 类型输入
+                    norm = Blackjack.function.normalize_21_3_type(parts[1])
+                    if not norm:
+                        reply_custom('strBJErrInvalid21_3Type')
+                        return
+                    p['bet_21_3_type'] = norm
                     try:
-                        p['bet_21_3'] = int(parts[3])
+                        bet21 = int(parts[2]) if len(parts) >= 3 else 0
                     except Exception:
-                        p['bet_21_3'] = 0
+                        bet21 = 0
+                    if bet21 > 0:
+                        if int(p.get('chips', 0)) < bet21:
+                            reply_custom('strBJErrNotEnoughChips')
+                            return
+                        p['chips'] = int(p.get('chips', 0)) - int(bet21)
+                        p['bet_21_3'] = int(bet21)
                 save_group_data(bot_hash, group_hash, game)
                 reply_custom('strBJStatusBoard')
                 return
 
-            # 看牌: .bj 看牌
-            if cmd in ['看牌', 'cards']:
+            # 看牌：.bj 看牌 或 .bj 看 牌
+            if isMatchWordStart(tmp_reast_str, ['看牌', '看', 'cards'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['看牌', '看', 'cards'])
+                if isMatchWordStart(tmp_reast_str, ['牌'], isCommand=True):
+                    tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['牌'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
                 game = load_group_data(bot_hash, group_hash)
                 if not game:
                     reply_custom('strBJErrRoomNotFound')
@@ -374,15 +412,22 @@ def unity_reply(plugin_event, Proc):
                 hv, sv, hv2 = calculate_hand_value(p.get('hand_cards', []))
                 msg += fmt('strBJPrivateCardsValueLine', {'tHandValue': str(hv)}) + '\n'
                 msg += fmt('strBJPrivateCardsFooter')
-                # send private
+                # 发送私聊（在 QQ 平台先检查是否为好友）
                 try:
+                    platform = plugin_event.platform.get('platform', '')
+                    if platform.startswith('qq'):
+                        if not qq_is_friend(plugin_event, str(plugin_event.data.user_id)):
+                            reply_custom('strBJErrCannotPM')
+                            return
                     sendMsgByEvent(plugin_event, msg, plugin_event.data.user_id, 'private')
                 except Exception:
                     reply_custom('strBJErrNotInGroup')
                 return
 
-            # 局势: .bj 局势
-            if cmd in ['局势', 'status']:
+            # 局势：.bj 局势
+            if isMatchWordStart(tmp_reast_str, ['局势', 'status'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['局势', 'status'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
                 game = load_group_data(bot_hash, group_hash)
                 if not game:
                     reply_custom('strBJErrRoomNotFound')
@@ -402,6 +447,255 @@ def unity_reply(plugin_event, Proc):
                     seat_lines.append(line1 + '\n' + line2)
                 board = fmt('strBJStatusBoard', {'tHeader': header, 'tDealer': fmt('strBJStatusDealer', {'tDealerName': '', 'tDealerCards': dealer, 'tDealerValue': dealer_value}), 'tSep': fmt('strBJStatusSeparator'), 'tSeatLines': '\n'.join(seat_lines), 'tTurnLine': '', 'tCmdLine': fmt('strBJStatusCmdHint', {'tCmdHint': ''})})
                 replyMsg(plugin_event, board)
+                return
+
+            # 加注：.bj 加注 [金额] 或 .bj 加 注
+            if isMatchWordStart(tmp_reast_str, ['加注', '加'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['加注', '加'])
+                if isMatchWordStart(tmp_reast_str, ['注'], isCommand=True):
+                    tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['注'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                parts = tmp_reast_str.strip().split()
+                game = load_group_data(bot_hash, group_hash)
+                if not game:
+                    reply_custom('strBJErrRoomNotFound')
+                    return
+                p = None
+                for pl in game.get('players', []):
+                    if str(pl.get('user_id')) == str(plugin_event.data.user_id):
+                        p = pl
+                        break
+                if not p:
+                    reply_custom('strBJErrNotInGroup')
+                    return
+                if len(parts) < 1:
+                    reply_custom('strBJErrInvalidNumber')
+                    return
+                try:
+                    add = int(parts[0])
+                except Exception:
+                    reply_custom('strBJErrInvalidNumber')
+                    return
+                if int(p.get('chips', 0)) < add:
+                    reply_custom('strBJErrNotEnoughChips')
+                    return
+                p['chips'] = int(p.get('chips', 0)) - add
+                p['current_bet'] = int(p.get('current_bet', 0)) + add
+                save_group_data(bot_hash, group_hash, game)
+                reply_custom('strBJStatusBoard')
+                return
+
+            # 双倍：.bj 双倍
+            if isMatchWordStart(tmp_reast_str, ['双倍', 'double'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['双倍', 'double'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                game = load_group_data(bot_hash, group_hash)
+                if not game:
+                    reply_custom('strBJErrRoomNotFound')
+                    return
+                p = None
+                for pl in game.get('players', []):
+                    if str(pl.get('user_id')) == str(plugin_event.data.user_id):
+                        p = pl
+                        break
+                if not p:
+                    reply_custom('strBJErrNotInGroup')
+                    return
+                # 仅在玩家首轮且手牌为两张时允许双倍
+                if int(p.get('current_bet', 0)) <= 0:
+                    reply_custom('strBJErrActionNotAllowed')
+                    return
+                if p.get('acted'):
+                    reply_custom('strBJErrCannotDouble')
+                    return
+                hand = p.get('hand_cards', [])
+                if len(hand) != 2:
+                    reply_custom('strBJErrCannotDouble')
+                    return
+                orig = int(p.get('current_bet', 0))
+                if int(p.get('chips', 0)) < orig:
+                    reply_custom('strBJErrNotEnoughChips')
+                    return
+                # 扣除等额筹码（作为翻倍第二份下注）
+                p['chips'] = int(p.get('chips', 0)) - orig
+                ok, reason = apply_double_down(game, p.get('seat_id'))
+                if not ok:
+                    # 回滚（操作失败时退回筹码）
+                    p['chips'] = int(p.get('chips', 0)) + orig
+                    reply_custom('strBJErrActionNotAllowed')
+                    return
+                save_group_data(bot_hash, group_hash, game)
+                reply_custom('strBJDoubleSuccess', {'tSeatId': str(p.get('seat_id')), 'tSeatName': p.get('nickname'), 'tNewCard': cards_to_text([p.get('hand_cards')[-1]]) if p.get('hand_cards') else '', 'tHandValue': str(p.get('hand_value', ''))})
+                return
+
+            # 分牌：.bj 分牌 或 .bj 分 牌
+            if isMatchWordStart(tmp_reast_str, ['分牌', '分', 'split'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['分牌', '分', 'split'])
+                if isMatchWordStart(tmp_reast_str, ['牌'], isCommand=True):
+                    tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['牌'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                game = load_group_data(bot_hash, group_hash)
+                if not game:
+                    reply_custom('strBJErrRoomNotFound')
+                    return
+                p = None
+                for pl in game.get('players', []):
+                    if str(pl.get('user_id')) == str(plugin_event.data.user_id):
+                        p = pl
+                        break
+                if not p:
+                    reply_custom('strBJErrNotInGroup')
+                    return
+                bet = int(p.get('current_bet', 0))
+                if bet <= 0:
+                    reply_custom('strBJErrCannotSplit')
+                    return
+                if int(p.get('chips', 0)) < bet:
+                    reply_custom('strBJErrNotEnoughChips')
+                    return
+                # 仅在未执行过动作且手牌为两张且点数相同的情况下允许分牌
+                if p.get('acted'):
+                    reply_custom('strBJErrCannotSplit')
+                    return
+                hc = p.get('hand_cards', [])
+                if len(hc) != 2:
+                    reply_custom('strBJErrCannotSplit')
+                    return
+                v1 = Blackjack.function.get_card_value(hc[0], ace_as_eleven=False)
+                v2 = Blackjack.function.get_card_value(hc[1], ace_as_eleven=False)
+                if v1 != v2:
+                    reply_custom('strBJErrCannotSplit')
+                    return
+                ok, reason = apply_split(game, p.get('seat_id'))
+                if not ok:
+                    reply_custom('strBJErrCannotSplit')
+                    return
+                # 为新手牌扣除相同的主注（失败时上文已回滚）
+                p['chips'] = int(p.get('chips', 0)) - bet
+                save_group_data(bot_hash, group_hash, game)
+                reply_custom('strBJSplitSuccess', {'tSeatId': str(p.get('seat_id')), 'tSeatName': p.get('nickname'), 'tHand1Cards': cards_to_text(p.get('split_hands', [])[0]), 'tHand2Cards': cards_to_text(p.get('split_hands', [])[1])})
+                return
+
+            # 投降：.bj 投降
+            if isMatchWordStart(tmp_reast_str, ['投降', 'surrender'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['投降', 'surrender'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                game = load_group_data(bot_hash, group_hash)
+                if not game:
+                    reply_custom('strBJErrRoomNotFound')
+                    return
+                p = None
+                for pl in game.get('players', []):
+                    if str(pl.get('user_id')) == str(plugin_event.data.user_id):
+                        p = pl
+                        break
+                if not p:
+                    reply_custom('strBJErrNotInGroup')
+                    return
+                # 仅允许在玩家首轮动作之前投降
+                if p.get('acted'):
+                    reply_custom('strBJErrCannotSurrender')
+                    return
+                ok, reason = apply_surrender(game, p.get('seat_id'))
+                if not ok:
+                    reply_custom('strBJErrCannotSurrender')
+                    return
+                # 立即退还一半下注
+                refund = int(p.get('refund', 0))
+                p['chips'] = int(p.get('chips', 0)) + int(refund)
+                save_group_data(bot_hash, group_hash, game)
+                reply_custom('strBJSurrenderSuccess', {'tSeatId': str(p.get('seat_id')), 'tSeatName': p.get('nickname'), 'tRefund': str(refund)})
+                return
+
+            # 保险：.bj 保险 [金额]
+            if isMatchWordStart(tmp_reast_str, ['保险', 'insurance'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['保险', 'insurance'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                parts = tmp_reast_str.strip().split()
+                game = load_group_data(bot_hash, group_hash)
+                if not game:
+                    reply_custom('strBJErrRoomNotFound')
+                    return
+                p = None
+                for pl in game.get('players', []):
+                    if str(pl.get('user_id')) == str(plugin_event.data.user_id):
+                        p = pl
+                        break
+                if not p:
+                    reply_custom('strBJErrNotInGroup')
+                    return
+                dealer_cards = game.get('dealer_cards', [])
+                if not dealer_cards or len(dealer_cards) < 1 or dealer_cards[0][1] != 'A':
+                    reply_custom('strBJErrCannotInsurance')
+                    return
+                amt = None
+                if len(parts) >= 1:
+                    try:
+                        amt = int(parts[0])
+                    except Exception:
+                        amt = None
+                if amt is None:
+                    amt = int(p.get('current_bet', 0)) // 2
+                if amt > int(p.get('current_bet', 0)) // 2:
+                    reply_custom('strBJErrInsuranceTooLarge')
+                    return
+                if int(p.get('chips', 0)) < amt:
+                    reply_custom('strBJErrNotEnoughChips')
+                    return
+                p['chips'] = int(p.get('chips', 0)) - int(amt)
+                apply_insurance(game, p.get('seat_id'), amt)
+                save_group_data(bot_hash, group_hash, game)
+                reply_custom('strBJInsuranceSuccess', {'tSeatId': str(p.get('seat_id')), 'tSeatName': p.get('nickname'), 'tInsuranceAmount': str(amt)})
+                return
+
+            # 退出：.bj 退出（仅开局前）
+            if isMatchWordStart(tmp_reast_str, ['退出', 'quit'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['退出', 'quit'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                game = load_group_data(bot_hash, group_hash)
+                if not game:
+                    reply_custom('strBJErrRoomNotFound')
+                    return
+                if game.get('state') == 'playing':
+                    reply_custom('strBJErrAlreadyPlaying')
+                    return
+                # 将玩家从房间移除
+                new_players = [pl for pl in game.get('players', []) if str(pl.get('user_id')) != str(plugin_event.data.user_id)]
+                game['players'] = new_players
+                save_group_data(bot_hash, group_hash, game)
+                reply_custom('strBJQuitSuccess', {'tName': sender_name, 'tSeatId': ''})
+                return
+
+            # 解散：.bj 解散（庄家或管理员）
+            if isMatchWordStart(tmp_reast_str, ['解散', 'dismiss'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['解散', 'dismiss'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                game = load_group_data(bot_hash, group_hash)
+                if not game:
+                    reply_custom('strBJErrRoomNotFound')
+                    return
+                # 权限：仅允许首位加入者或群/机器人管理员操作
+                allowed = False
+                if game.get('players'):
+                    first = game['players'][0]
+                    if str(first.get('user_id')) == str(plugin_event.data.user_id):
+                        allowed = True
+                if not allowed and not flag_is_from_master and not flag_is_from_group_admin:
+                    reply_custom('strBJErrNoPermission')
+                    return
+                save_group_data(bot_hash, group_hash, blackjack_default())
+                reply_custom('strBJDismissSuccess')
+                return
+
+            # 强制结束：.bj 强制结束（管理员）
+            if isMatchWordStart(tmp_reast_str, ['强制结束', 'stop', 'halt'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['强制结束', 'stop', 'halt'])
+                tmp_reast_str = skipSpaceStart(tmp_reast_str)
+                if not flag_is_from_master and not flag_is_from_group_admin:
+                    reply_custom('strBJErrNoPermission')
+                    return
+                save_group_data(bot_hash, group_hash, blackjack_default())
+                reply_custom('strBJDismissSuccess')
                 return
 
             # 未识别子命令

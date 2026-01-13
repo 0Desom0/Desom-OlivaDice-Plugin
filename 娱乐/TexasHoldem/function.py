@@ -922,6 +922,7 @@ def apply_allin(game: dict, seat_id: int) -> Tuple[bool, str, int]:
         min_raise = int(game.get('min_raise', 0))
         game['current_high'] = new_high
         if actual_delta >= min_raise:
+            # 完整加注：重新设置所有 active 玩家的待行动列表
             game['min_raise'] = actual_delta
             need = []
             for sid in list_seat_ids(game['players'], include_out=False):
@@ -932,8 +933,20 @@ def apply_allin(game: dict, seat_id: int) -> Tuple[bool, str, int]:
                     need.append(int(sid))
             game['need_action_seat_ids'] = need
         else:
+            # 不足最小加注（The Full Bet Rule）：锁定之前已经行动过的玩家
+            # 只保留那些还没有行动过的玩家（current_bet < current_high）在待行动列表中
             if seat_id in game['need_action_seat_ids']:
                 game['need_action_seat_ids'].remove(seat_id)
+            # 移除所有已经行动过的玩家（current_bet >= current_high）
+            need_action = []
+            for sid in game.get('need_action_seat_ids', []):
+                q = find_player(game['players'], int(sid))
+                if q and q.get('status') == 'active':
+                    current_bet = int(q.get('current_bet', 0))
+                    if current_bet < int(game['current_high']):
+                        # 还没有行动过，保留在待行动列表中
+                        need_action.append(int(sid))
+            game['need_action_seat_ids'] = need_action
     else:
         if seat_id in game['need_action_seat_ids']:
             game['need_action_seat_ids'].remove(seat_id)
@@ -1129,8 +1142,26 @@ def settle_showdown(game: dict) -> dict:
         for sid in winners:
             find_player(game['players'], sid)['chips'] += share
         if rem > 0:
-            # 余数给座位号最小的赢家（保证确定性）
-            sid0 = sorted(winners)[0]
+            # 余数给庄位左手边第一个在赢家列表中的玩家（标准规则）
+            # 即从 SB 位置开始，按顺时针顺序找到第一个在赢家列表中的玩家
+            pos = compute_positions(game)
+            sb_seat = pos.get('sb')
+            seats = list_seat_ids(game['players'], include_out=False)
+            winner_set = set(winners)
+            sid0 = None
+            if sb_seat and sb_seat in winner_set:
+                sid0 = sb_seat
+            else:
+                # 从 SB 位置开始，按顺时针顺序查找
+                cur = sb_seat if sb_seat else seats[0]
+                for _ in range(len(seats)):
+                    if cur in winner_set:
+                        sid0 = cur
+                        break
+                    cur = next_seat_in_order(seats, cur)
+            # 如果还是没找到（理论上不应该发生），则使用座位号最小的作为兜底
+            if sid0 is None:
+                sid0 = sorted(winners)[0]
             find_player(game['players'], sid0)['chips'] += rem
 
         distribution.append({'pot': amt, 'winners': sorted(winners)})

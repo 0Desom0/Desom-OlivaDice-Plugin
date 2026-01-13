@@ -151,6 +151,29 @@ RANKS = '23456789TJQKA'
 SUITS = 'SHDC'
 SUIT_ICON = {'S': '♠', 'H': '♥️', 'D': '♦️', 'C': '♣️'}
 
+# 21+3 赔率映射（可配置）
+BJ_21_3_CONFIG = {
+    'straight': 10,
+    'flush': 5,
+    'three_kind': 25,
+    'straight_flush': 25,
+    'flush_three': 50,
+}
+
+def normalize_21_3_type(t: str) -> Optional[str]:
+    """将用户输入的 21+3 类型（中/英）规范化为内部 key"""
+    if not t:
+        return None
+    s = str(t).strip().lower()
+    map_table = {
+        '顺': 'straight', 'straight': 'straight','顺子': 'straight',
+        '同花': 'flush', 'flush': 'flush',
+        '三条': 'three_kind', '三张': 'three_kind', 'three_kind': 'three_kind',
+        '同花顺': 'straight_flush', 'straight_flush': 'straight_flush',
+        '同花三条': 'flush_three', 'flush_three': 'flush_three',
+    }
+    return map_table.get(s, None)
+
 
 def new_deck(num_decks: int = 4) -> List[str]:
     return [s + r for _ in range(num_decks) for s in SUITS for r in RANKS]
@@ -243,13 +266,13 @@ def calculate_hand_value(cards: List[str]) -> Tuple[int, int, int]:
             hard += v
             soft += v
 
-    # adjust soft if >21
+    # 如果软点数超过21，则将A从11调整为1
     value = soft
     while value > 21 and aces > 0:
         value -= 10
         aces -= 1
 
-    # hard value: all aces as 1
+    # 计算硬点数：把所有 A 作为 1 计算
     hard_value = 0
     for c in (cards or []):
         try:
@@ -313,6 +336,16 @@ def deal_card(game: dict, target: str, seat_id: int = None) -> Optional[str]:
     return card
 
 
+def draw_from_deck(game: dict) -> Optional[str]:
+    # 从牌堆抽一张牌，但不追加到任何玩家手牌中
+    if not game.get('deck'):
+        game['deck'] = new_deck()
+        shuffle_deck(game['deck'])
+    if not game.get('deck'):
+        return None
+    return game['deck'].pop(0)
+
+
 def deal_initial_cards(game: dict) -> None:
     # 按文档顺序发牌：玩家1第一张...庄家第二张暗牌
     players = [p for p in game.get('players', []) if p.get('status') != 'out']
@@ -334,6 +367,8 @@ def apply_hit(game: dict, seat_id: int) -> Tuple[bool, str]:
         return False, 'no_card'
     v, sv, hv = calculate_hand_value(p.get('hand_cards', []))
     p['hand_value'] = v
+    # 标记玩家已执行动作（用于限制双倍/投降等仅首次动作）
+    p['acted'] = True
     if is_bust(v):
         p['status'] = 'bust'
         return True, 'bust'
@@ -348,6 +383,7 @@ def apply_stand(game: dict, seat_id: int) -> Tuple[bool, str]:
     if not p:
         return False, 'seat_not_found'
     p['status'] = 'stand'
+    p['acted'] = True
     return True, 'stand'
 
 
@@ -360,10 +396,12 @@ def apply_double_down(game: dict, seat_id: int) -> Tuple[bool, str]:
         p['current_bet'] = int(p.get('current_bet', 0)) * 2
     except Exception:
         p['current_bet'] = int(p.get('current_bet', 0))
+    # 抽取一张牌后自动停牌
     card = deal_card(game, 'player', seat_id)
     v, sv, hv = calculate_hand_value(p.get('hand_cards', []))
     p['hand_value'] = v
     p['status'] = 'stand' if not is_bust(v) else 'bust'
+    p['acted'] = True
     return True, 'double'
 
 
@@ -380,13 +418,17 @@ def apply_split(game: dict, seat_id: int) -> Tuple[bool, str]:
     v2 = get_card_value(hc[1], ace_as_eleven=False)
     if v1 != v2:
         return False, 'cannot_split'
-    # 创建两个手牌结构
+    # 创建两个手牌结构（不使用 deal_card，以免重复写入主手）
     p['is_split'] = True
     p['split_hands'] = [[hc[0]], [hc[1]]]
-    # 每手再发一张
+    # 每手再发一张（直接从牌堆抽取）
     for hand in p['split_hands']:
-        hand.append(deal_card(game, 'player', seat_id))
+        card = draw_from_deck(game)
+        if card:
+            hand.append(card)
+    # 将当前手牌设置为第一手用于后续动作
     p['hand_cards'] = p['split_hands'][0]
+    p['acted'] = True
     return True, 'split'
 
 
@@ -397,6 +439,7 @@ def apply_surrender(game: dict, seat_id: int) -> Tuple[bool, str]:
     p['status'] = 'out'
     refund = int(p.get('current_bet', 0)) // 2
     p['refund'] = refund
+    p['acted'] = True
     return True, 'surrender'
 
 
@@ -433,8 +476,8 @@ def is_straight_21_3(cards: List[str]) -> bool:
             vals.append(14)
         else:
             vals.append(v)
-    # we need to check any combination of one value per ace mapping
-    # brute-force: try all choices for aces
+    # 需要检查王牌可能的所有取值组合
+    # 暴力穷举：尝试所有 A 的取值组合
     from itertools import product
     ranks_options = []
     for c in cards:
@@ -519,49 +562,150 @@ def settle_round(game: dict) -> dict:
 
     results = []
     for p in game.get('players', []):
-        hand = p.get('hand_cards', [])
-        hv, sv, hv2 = calculate_hand_value(hand)
-        status = p.get('status', '')
-        bet = int(p.get('current_bet', 0))
-        res = 'lose'
-        payout = 0
-        if status == 'bust':
-            res = 'lose'
-        elif status == 'blackjack':
-            if not is_blackjack(dealer_cards[:2]):
-                res = 'win'
-                payout = int(bet * 1.5)
-            else:
-                res = 'push'
-        else:
-            if is_bust(dealer_value):
-                res = 'win'
-                payout = bet
-            else:
-                if hv > dealer_value:
-                    res = 'win'
-                    payout = bet
-                elif hv < dealer_value:
+        # 处理分牌后的多手牌结算
+        if p.get('is_split'):
+            split_results = []
+            total_payout = 0
+            bet_per_hand = int(p.get('current_bet', 0))
+            for hand in p.get('split_hands', []):
+                hv, sv, hv2 = calculate_hand_value(hand)
+                status = 'bust' if is_bust(hv) else ('blackjack' if is_blackjack(hand) else p.get('status', ''))
+                res = 'lose'
+                payout = 0
+                if status == 'bust':
                     res = 'lose'
+                elif status == 'blackjack':
+                    if not is_blackjack(dealer_cards[:2]):
+                        res = 'win'
+                        payout = int(bet_per_hand * 1.5)
+                    else:
+                        res = 'push'
+                else:
+                    if is_bust(dealer_value):
+                        res = 'win'
+                        payout = bet_per_hand
+                    else:
+                        if hv > dealer_value:
+                            res = 'win'
+                            payout = bet_per_hand
+                        elif hv < dealer_value:
+                            res = 'lose'
+                        else:
+                            res = 'push'
+
+                # 平局（push）应退还该手的主注
+                if res == 'push':
+                    total_payout += int(bet_per_hand)
+                else:
+                    total_payout += int(payout)
+
+                # 同时为此分牌手判断 21+3（基于其前两张牌）
+                try:
+                    player_first_two = hand[:2]
+                    res21 = settle_21_3(dealer_first, hand, p.get('bet_21_3_type'), int(p.get('bet_21_3', 0))) if int(p.get('bet_21_3', 0)) > 0 else {'matched': False, 'payout': 0}
+                except Exception:
+                    res21 = {'matched': False, 'payout': 0}
+                if res21.get('matched'):
+                    total_payout += int(res21.get('payout', 0))
+
+                split_results.append({'hand_cards': hand, 'hand_value': hv, 'status': status, 'result': res, 'payout': payout, '21_3_result': res21})
+
+            # 更新筹码：假设主注在下注/分牌时已被扣除
+            try:
+                cur_chips = int(p.get('chips', 0))
+            except Exception:
+                cur_chips = 0
+            cur_chips += int(total_payout)
+            p['chips'] = cur_chips
+
+            results.append({
+                'seat_id': p.get('seat_id'),
+                'is_split': True,
+                'split_results': split_results,
+                'bet_per_hand': bet_per_hand,
+                'total_payout': total_payout,
+                'bet_21_3': int(p.get('bet_21_3', 0)),
+                'bet_21_3_type': p.get('bet_21_3_type'),
+            })
+        else:
+            hand = p.get('hand_cards', [])
+            hv, sv, hv2 = calculate_hand_value(hand)
+            status = p.get('status', '')
+            bet = int(p.get('current_bet', 0))
+            res = 'lose'
+            payout = 0
+            if status == 'bust':
+                res = 'lose'
+            elif status == 'blackjack':
+                if not is_blackjack(dealer_cards[:2]):
+                    res = 'win'
+                    payout = int(bet * 1.5)
                 else:
                     res = 'push'
-        # 21+3
-        bet_21 = int(p.get('bet_21_3', 0))
-        bet_21_type = p.get('bet_21_3_type')
-        res_21 = settle_21_3(dealer_first, hand, bet_21_type, bet_21) if bet_21 and bet_21_type else {'matched': False, 'payout': 0}
+            else:
+                if is_bust(dealer_value):
+                    res = 'win'
+                    payout = bet
+                else:
+                    if hv > dealer_value:
+                        res = 'win'
+                        payout = bet
+                    elif hv < dealer_value:
+                        res = 'lose'
+                    else:
+                        res = 'push'
 
-        results.append({
-            'seat_id': p.get('seat_id'),
-            'hand_cards': hand,
-            'hand_value': hv,
-            'status': status,
-            'bet': bet,
-            'result': res,
-            'payout': payout,
-            'bet_21_3': bet_21,
-            'bet_21_3_type': bet_21_type,
-            '21_3_result': res_21,
-        })
+            # 21+3
+            bet_21 = int(p.get('bet_21_3', 0))
+            bet_21_type = p.get('bet_21_3_type')
+            res_21 = settle_21_3(dealer_first, hand, bet_21_type, bet_21) if bet_21 and bet_21_type else {'matched': False, 'payout': 0}
+
+            # 应用筹码变化：假设主注在下注时已扣除
+            try:
+                cur_chips = int(p.get('chips', 0))
+            except Exception:
+                cur_chips = 0
+            if res == 'push':
+                cur_chips += int(bet)
+            else:
+                cur_chips += int(payout)
+            p['chips'] = cur_chips
+
+            results.append({
+                'seat_id': p.get('seat_id'),
+                'hand_cards': hand,
+                'hand_value': hv,
+                'status': status,
+                'bet': bet,
+                'result': res,
+                'payout': payout,
+                'bet_21_3': bet_21,
+                'bet_21_3_type': bet_21_type,
+                '21_3_result': res_21,
+            })
+
+    # 将保险赔付计入玩家筹码
+    try:
+        for ins in insurance_results:
+            sid = ins.get('seat_id')
+            payout = int(ins.get('payout', 0))
+            for p in game.get('players', []):
+                if int(p.get('seat_id')) == int(sid):
+                    try:
+                        p['chips'] = int(p.get('chips', 0)) + int(payout)
+                    except Exception:
+                        pass
+                    break
+    except Exception:
+        pass
+
+    # 更新玩家数据文件（default_chips）
+    for p in game.get('players', []):
+        try:
+            user_hash = str(p.get('user_id'))
+            update_user_chips(user_hash, int(p.get('chips', 0)))
+        except Exception:
+            pass
 
     return {
         'type': 'round_end',

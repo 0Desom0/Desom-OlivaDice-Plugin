@@ -35,6 +35,9 @@ class Event(object):
     def menu(plugin_event, Proc):
         # 菜单事件处理
         # 这里可以添加菜单事件的处理逻辑
+        # 如果需要处理来自界面或菜单的事件，可在此处根据 namespace/event 进行分发
+        # 例如：
+        # 示例（如果需要处理来自界面或菜单的事件，可取消注释并在此处分发）：
         # if plugin_event.data.namespace == 'Blackjack':
         #     if plugin_event.data.event == 'Blackjack_Menu_001':
         #         pass

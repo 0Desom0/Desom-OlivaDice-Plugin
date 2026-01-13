@@ -1114,8 +1114,8 @@ def unity_reply(plugin_event, Proc):
         # 弃牌
         if isMatchWordStart(tmp_reast_str, ['fold', '弃', '弃牌'], isCommand=True):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['fold', '弃', '弃牌'])
-            if isMatchWordStart(tmp_reast_str, ['弃'], isCommand=True):
-                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['弃'])
+            if isMatchWordStart(tmp_reast_str, ['牌'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['牌'])
             apply_fold(game, int(acting))
 
             # 弃牌公开底牌
@@ -1132,15 +1132,15 @@ def unity_reply(plugin_event, Proc):
         # 跟注
         elif isMatchWordStart(tmp_reast_str, ['call', '跟', '跟注'], isCommand=True):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['call', '跟', '跟注'])
-            if isMatchWordStart(tmp_reast_str, ['跟'], isCommand=True):
-                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['跟'])
+            if isMatchWordStart(tmp_reast_str, ['注'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['注'])
             apply_call_or_check(game, int(acting))
 
         # 过牌
         elif isMatchWordStart(tmp_reast_str, ['check', '过', '过牌'], isCommand=True):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['check', '过', '过牌'])
-            if isMatchWordStart(tmp_reast_str, ['过'], isCommand=True):
-                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['过'])
+            if isMatchWordStart(tmp_reast_str, ['牌'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['牌'])
             # 需要跟注为 0 时，过牌与跟注等价
             apply_call_or_check(game, int(acting))
 
@@ -1148,8 +1148,8 @@ def unity_reply(plugin_event, Proc):
         elif isMatchWordStart(tmp_reast_str, ['bet', '下', '下注'], isCommand=True):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['bet', '下', '下注'])
             tmp_reast_str = skipSpaceStart(tmp_reast_str).strip()
-            if isMatchWordStart(tmp_reast_str, ['下'], isCommand=True):
-                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['下'])
+            if isMatchWordStart(tmp_reast_str, ['注'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['注'])
                 tmp_reast_str = skipSpaceStart(tmp_reast_str).strip()
             try:
                 amt = int(tmp_reast_str.split()[0])
@@ -1168,8 +1168,8 @@ def unity_reply(plugin_event, Proc):
         elif isMatchWordStart(tmp_reast_str, ['raise', '加', '加注'], isCommand=True):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['raise', '加', '加注'])
             tmp_reast_str = skipSpaceStart(tmp_reast_str).strip()
-            if isMatchWordStart(tmp_reast_str, ['加'], isCommand=True):
-                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['加'])
+            if isMatchWordStart(tmp_reast_str, ['注'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['注'])
                 tmp_reast_str = skipSpaceStart(tmp_reast_str).strip()
             delta = None
             if tmp_reast_str:
@@ -1191,8 +1191,8 @@ def unity_reply(plugin_event, Proc):
         # 全压
         elif isMatchWordStart(tmp_reast_str, ['allin', '全压', '梭哈', '全', 'all in'], isCommand=True):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['allin', '全压', '梭哈', '全', 'all in'])
-            if isMatchWordStart(tmp_reast_str, ['全'], isCommand=True):
-                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['全'])
+            if isMatchWordStart(tmp_reast_str, ['压'], isCommand=True):
+                tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['压'])
             apply_allin(game, int(acting))
 
         # 离场（本手弃掉剩余筹码并离开）
