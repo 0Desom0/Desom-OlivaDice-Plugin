@@ -729,6 +729,21 @@ def start_hand(game: dict) -> dict:
     game['bb_seat_id'] = pos['bb']
 
     deal_hole_cards(game)
+    
+    # 一开始就发好5张公共牌
+    cc = game.get('community_cards', [])
+    if len(cc) < 5:
+        needed = 5 - len(cc)
+        for _ in range(needed):
+            if len(game['deck']) > 0:
+                game['community_cards'].append(game['deck'].pop())
+    # 如果牌数超过5张，把多余的牌放回牌堆（按原顺序放回到堆顶）
+    elif len(cc) > 5:
+        extras = cc[5:]
+        game['community_cards'] = cc[:5]
+        # 还回到牌堆的顺序：把 extras 按原序追加到 deck（deck.pop() 从末尾取牌）
+        for card in extras:
+            game['deck'].append(card)
 
     # 盲注
     sb_paid = post_blind(game, pos['sb'], int(game['sb']))
@@ -967,18 +982,42 @@ def is_betting_round_over(game: dict) -> bool:
 
 def advance_street(game: dict) -> None:
     street = game.get('street')
+    cc = game.get('community_cards', [])
+    
     if street == 'preflop':
-        # 翻牌
-        game['community_cards'] += [game['deck'].pop(), game['deck'].pop(), game['deck'].pop()]
+        # 翻牌：需要3张，如果不够则补发
         game['street'] = 'flop'
+        if len(cc) < 3:
+            needed = 3 - len(cc)
+            for _ in range(needed):
+                if len(game['deck']) > 0:
+                    game['community_cards'].append(game['deck'].pop())
     elif street == 'flop':
-        game['community_cards'].append(game['deck'].pop())
+        # 转牌：需要4张，如果不够则补发
         game['street'] = 'turn'
+        if len(cc) < 4:
+            needed = 4 - len(cc)
+            for _ in range(needed):
+                if len(game['deck']) > 0:
+                    game['community_cards'].append(game['deck'].pop())
     elif street == 'turn':
-        game['community_cards'].append(game['deck'].pop())
+        # 河牌：需要5张，如果不够则补发
         game['street'] = 'river'
+        if len(cc) < 5:
+            needed = 5 - len(cc)
+            for _ in range(needed):
+                if len(game['deck']) > 0:
+                    game['community_cards'].append(game['deck'].pop())
     elif street == 'river':
         game['street'] = 'showdown'
+
+    # 若 community_cards 超过 5 张，多余的应退回牌堆以保持牌堆一致性
+    cc_now = game.get('community_cards', [])
+    if len(cc_now) > 5:
+        extras = cc_now[5:]
+        game['community_cards'] = cc_now[:5]
+        for card in extras:
+            game['deck'].append(card)
 
     # 重置本街下注
     for p in game['players']:
@@ -1077,7 +1116,18 @@ def build_side_pots(players: List[dict], dead_money: int = 0) -> List[dict]:
 def settle_showdown(game: dict) -> dict:
     """进行摊牌结算并返回结算结果（用于渲染）。"""
     eligible = in_showdown_eligible(game['players'])
-    board = list(game.get('community_cards', []))
+    # 确保有完整的5张公共牌（兜底逻辑）
+    cc = game.get('community_cards', [])
+    if len(cc) < 5:
+        needed = 5 - len(cc)
+        for _ in range(needed):
+            if len(game.get('deck', [])) > 0:
+                game['community_cards'].append(game['deck'].pop())
+    # 如果牌数超过5张，只保留前5张（保护机制，确保只用5张公共牌）
+    elif len(cc) > 5:
+        game['community_cards'] = cc[:5]
+    # 结算时只使用前5张公共牌
+    board = list(game.get('community_cards', []))[:5]
     
     if len(eligible) == 1:
         winner = int(eligible[0]['seat_id'])

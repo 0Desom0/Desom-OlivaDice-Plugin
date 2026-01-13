@@ -326,8 +326,20 @@ def unity_reply(plugin_event, Proc):
             })
 
             cc = game.get('community_cards', [])
+            # 根据当前轮数只展示对应的牌数
+            street = game.get('street', 'preflop')
+            if street == 'preflop':
+                visible_cards = []
+            elif street == 'flop':
+                visible_cards = cc[:3] if len(cc) >= 3 else cc
+            elif street == 'turn':
+                visible_cards = cc[:4] if len(cc) >= 4 else cc
+            elif street in ('river', 'showdown'):
+                visible_cards = cc[:5] if len(cc) >= 5 else cc
+            else:
+                visible_cards = cc
             community = fmt('strTHStatusCommunity', {
-                'tCommunityCards': cards_to_text(cc) if cc else '',
+                'tCommunityCards': cards_to_text(visible_cards) if visible_cards else '',
                 'tStreetText': street_text(game),
             })
 
