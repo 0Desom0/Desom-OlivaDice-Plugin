@@ -1,11 +1,11 @@
 {
-    "name" : "德州扑克",
+    "name" : "21点插件",
     "author" : "Desom-fu",
-    "namespace" : "TexasHoldem",
+    "namespace" : "Blackjack",
     "message_mode" : "old_string",
-    "info" : "德州扑克 Texas Hold'em Poker 插件",
-    "version" : "1.0.2",
-    "svn" : 3,
+    "info" : "21点 Blackjack 插件",
+    "version" : "1.0.0",
+    "svn" : 1,
     "compatible_svn" : 190,
     "priority" : 21000,
     "support" : [

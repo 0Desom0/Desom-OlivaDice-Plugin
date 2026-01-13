@@ -260,7 +260,7 @@ SUITS = 'SHDC'
 RANK_TO_VAL = {r: i + 2 for i, r in enumerate(RANKS)}
 VAL_TO_RANK = {v: r for r, v in RANK_TO_VAL.items()}
 SUIT_TO_ICON = {
-    'S': '♠',
+    'S': '♠️',
     'H': '♥️',
     'D': '♦️',
     'C': '♣️',

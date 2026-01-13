@@ -757,8 +757,8 @@ def unity_reply(plugin_event, Proc):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['create', '建局', '创建'])
             tmp_reast_str = skipSpaceStart(tmp_reast_str).strip()
 
-            if game.get('state') == 'playing':
-                reply_custom('strTHErrAlreadyPlaying')
+            if game.get('state') != 'idle':
+                reply_custom('strTHCreateFailRoomExists')
                 return
 
             base = 1000
@@ -808,6 +808,7 @@ def unity_reply(plugin_event, Proc):
             custom_name = None
             chips = None
             base = int(game.get('base_stake', 1000))
+            bb = int(game.get('bb', 0))
             
             if tmp_reast_str:
                 # 尝试从右往左找数字（筹码）
@@ -831,8 +832,8 @@ def unity_reply(plugin_event, Proc):
             if chips is None:
                 chips = base
             else:
-                if chips < base or chips % 1000 != 0:
-                    reply_custom('strTHJoinFailChips')
+                if chips <= bb:
+                    reply_custom('strTHJoinFailChips', {'tBB': str(bb)})
                     return
 
             used = set(int(p['seat_id']) for p in game.get('players', []))
@@ -942,7 +943,7 @@ def unity_reply(plugin_event, Proc):
                 reply_custom('strTHStartFailNeedPlayers')
                 return
 
-            # 确保盲注与底注对应
+            # 确保盲注与基础筹码对应
             bb, sb = compute_blinds(int(game.get('base_stake', 1000)))
             game['bb'] = int(bb)
             game['sb'] = int(sb)

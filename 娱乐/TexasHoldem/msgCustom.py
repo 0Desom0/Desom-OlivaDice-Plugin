@@ -13,7 +13,7 @@ dictStrCustomDict = {}
 dictStrCustom = {
     # 通用/错误
     'strTHErrNotInGroup': '该指令仅支持在群聊中使用。',
-    'strTHErrRoomNotFound': '本群未建局，请先使用：.dz 创建 [底注]（默认1000）。',
+    'strTHErrRoomNotFound': '本群未建局，请先使用：.dz 创建 [基础筹码]（默认1000）。',
     'strTHErrAlreadyPlaying': '游戏已开始，无法进行该操作。',
     'strTHErrNotPlaying': '当前未在进行德州扑克对局。',
     'strTHErrNoPermission': '权限不足，无法执行该操作。',
@@ -26,10 +26,11 @@ dictStrCustom = {
     'strTHErrBetTooSmall': '下注金额不足，最小下注为[{tBB}]。',
 
     # 建局/入场
-    'strTHCreateSuccess': '已创建德州扑克房间，底注[{tBaseStake}]，小盲注[{tSB}]，大盲注[{tBB}]。\n使用 .dz 加入 [人物名] [筹码] 加入游戏。',
-    'strTHCreateFailStake': '创建失败：底注必须是[1000]的倍数，且 >= 1000。',
+    'strTHCreateSuccess': '已创建德州扑克房间，基础筹码[{tBaseStake}]，小盲注[{tSB}]，大盲注[{tBB}]。\n使用 .dz 加入 [人物名] [筹码] 加入游戏。',
+    'strTHCreateFailStake': '创建失败：基础筹码必须是[1000]的倍数，且 >= 1000。',
+    'strTHCreateFailRoomExists': '创建失败：本群已有房间，请先解散或等待游戏结束。',
     'strTHJoinSuccess': '玩家[{tName}]加入游戏：<座位{tSeatId}>，携带筹码 {tChips}。',
-    'strTHJoinFailChips': '加入失败：入场筹码必须 >= 底注，且为[1000]的倍数。',
+    'strTHJoinFailChips': '加入失败：入场筹码必须 > 大盲注[{tBB}]。',
     'strTHJoinFailFull': '加入失败：座位已满（最多10人）。',
     'strTHQuitSuccess': '玩家[{tName}]已退出：<座位{tSeatId}>。',
     'strTHQuitFailNoSeat': '玩家[{tName}]退出失败：你没有可退出的座位。',
@@ -230,7 +231,8 @@ dictStrCustomNote = {
 
     # 建局/入场
     'strTHCreateSuccess': '【德州扑克】建局\n创建房间成功提示',
-    'strTHCreateFailStake': '【德州扑克】建局\n创建房间失败（底注不合法）',
+    'strTHCreateFailStake': '【德州扑克】建局\n创建房间失败（基础筹码不合法）',
+    'strTHCreateFailRoomExists': '【德州扑克】建局\n创建房间失败（房间已存在）',
     'strTHJoinSuccess': '【德州扑克】入场\n加入游戏成功提示',
     'strTHJoinFailChips': '【德州扑克】入场\n加入失败（入场筹码不合法）',
     'strTHJoinFailFull': '【德州扑克】入场\n加入失败（座位已满）',
@@ -293,7 +295,7 @@ dictStrCustomNote = {
     'strTHSeatActionNoneBlind': '【德州扑克】动作显示\n仅投盲注但尚未行动（例如小盲/大盲刚扣盲注）',
     'strTHSeatActionFolded': '【德州扑克】动作显示\n已弃牌',
     'strTHSeatActionAllin': '【德州扑克】动作显示\n全压',
-    'strTHSeatActionText': '【德州扑克】动作显示\n动作模板（使用 {tActionText}）',
+    'strTHSeatActionText': '【德州扑克】动作显示\n动作模板',
 
     # 待行动选项
     'strTHPendingOptCheckOK': '【德州扑克】待行动选项\n过牌（可用）',
@@ -351,28 +353,28 @@ dictHelpDocTemp = {
     'texas': '''【德州扑克】
 前缀：.dz 或 .th
 【建局/入场】
-.dz 创建 [底注]（默认1000，必须为1000倍数）
-.dz 加入 [人物名] [携带筹码]（默认=底注，必须>=底注且为1000倍数；允许同一QQ多次加入占不同座位）（若没有人物名为空，则优先使用人物卡名称，再使用QQ昵称）
+.dz 创建 [基础筹码]（默认1000，必须为1000倍数）
+.dz 加入 [人物名] [携带筹码]（默认=基础筹码，必须>大盲注；允许同一QQ多次加入占不同座位）（若没有人物名为空，则优先使用人物卡名称，再使用QQ昵称）
 .dz 退出（仅开局前；若同一QQ多个座位，按后加入先退出）
 .dz 开始（至少2人；发牌并扣盲注，进入游戏）
 .dz 解散（仅开局前；权限：座位1玩家/管理员/群主/骰主）
 
 【回合操作】
 .dz 看牌（群聊触发，Bot 私聊返回手牌）
-.dz 跟 / .dz 跟注
-.dz 过 / .dz 过牌
+.dz 跟
+.dz 过
 .dz 下 [数值]（翻牌后且无人下注时）
 .dz 加 [数值]（可不带数字，默认=最小加注）
-.dz 全压 / .dz 梭哈
-.dz 弃 / .dz 弃牌
+.dz 全压
+.dz 弃
 .dz 离场（强行弃牌+净身出户，筹码充公入池并移除座位）
 
 【全局】
-.dz list / .dz 玩家（查看当前玩家/座位；未开局也可用）
+.dz list（查看当前玩家/座位）
 .dz 局势（查看当前局面）
 .dz 结束（开启结束开关，本手结束后结算并结束）
 .dz 踢 [座位号]（权限：管理员/群主/骰主；逻辑同离场）
-.dz 强制结束 / .dz halt / .dz stop（权限：管理员/群主/骰主；立即销毁数据，不结算）
+.dz stop（权限：管理员/群主/骰主；立即停止，不结算）
 
 规则：使用 .help texas_rule 查看。
 牌型比较：使用 .help texas_rank 查看。''',
