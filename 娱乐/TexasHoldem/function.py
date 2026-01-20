@@ -4,6 +4,8 @@ import os
 import json
 import random
 import itertools
+import re
+import uuid
 from typing import Dict, List, Optional, Tuple
 
 import OlivaDiceCore
@@ -54,6 +56,846 @@ def get_texas_data_path() -> str:
     if not os.path.exists(texas_data_path):
         os.makedirs(texas_data_path)
     return texas_data_path
+
+
+def get_texas_images_path() -> str:
+    """图片缓存目录"""
+    img_path = os.path.join('data', 'images', 'TexasHoldem')
+    if not os.path.exists(img_path):
+        os.makedirs(img_path)
+    return img_path
+
+
+def _parse_hex_color(value: str, default=(247, 219, 255, 255)):
+    try:
+        if value is None:
+            return default
+        s = str(value).strip().lstrip('#')
+        if len(s) == 6:
+            r = int(s[0:2], 16)
+            g = int(s[2:4], 16)
+            b = int(s[4:6], 16)
+            return (r, g, b, 255)
+        if len(s) == 8:
+            r = int(s[0:2], 16)
+            g = int(s[2:4], 16)
+            b = int(s[4:6], 16)
+            a = int(s[6:8], 16)
+            return (r, g, b, a)
+    except Exception:
+        pass
+    return default
+
+
+def _color_brightness(rgba) -> float:
+    try:
+        r, g, b = int(rgba[0]), int(rgba[1]), int(rgba[2])
+        return 0.299 * r + 0.587 * g + 0.114 * b
+    except Exception:
+        return 255.0
+
+
+class TexasHoldemImageReply:
+    """把文本渲染为图片并通过 CQ 码发送的工具类。"""
+
+    DEFAULT_MAX_WIDTH = 860
+    DEFAULT_PADDING = 26
+    DEFAULT_LINE_SPACING = 10
+    DEFAULT_CACHE_LIMIT = 60
+
+    def __init__(self, dictStrCustom: dict):
+        self.dictStrCustom = dictStrCustom or {}
+
+        self.max_width = int(self.dictStrCustom.get('strTHImgMaxWidth', self.DEFAULT_MAX_WIDTH) or self.DEFAULT_MAX_WIDTH)
+        self.padding = int(self.dictStrCustom.get('strTHImgPadding', self.DEFAULT_PADDING) or self.DEFAULT_PADDING)
+        self.line_spacing = int(self.dictStrCustom.get('strTHImgLineSpacing', self.DEFAULT_LINE_SPACING) or self.DEFAULT_LINE_SPACING)
+        self.cache_limit = int(self.dictStrCustom.get('strTHImgCacheLimit', self.DEFAULT_CACHE_LIMIT) or self.DEFAULT_CACHE_LIMIT)
+
+        self.bg_start = _parse_hex_color(self.dictStrCustom.get('strTHImgBgStart', '#F7DBFF'))
+        self.bg_end = _parse_hex_color(self.dictStrCustom.get('strTHImgBgEnd', '#FFFFFF'), default=(255, 255, 255, 255))
+        self.panel = _parse_hex_color(self.dictStrCustom.get('strTHImgPanel', '#FFFFFFCC'), default=(255, 255, 255, 220))
+        self.border = _parse_hex_color(self.dictStrCustom.get('strTHImgBorder', '#E9D5FF'), default=(233, 213, 255, 255))
+
+        self.dark_text = _parse_hex_color(self.dictStrCustom.get('strTHImgTextDark', '#111827'), default=(17, 24, 39, 255))
+        self.light_text = _parse_hex_color(self.dictStrCustom.get('strTHImgTextLight', '#F9FAFB'), default=(249, 250, 251, 255))
+
+    def _cleanup_cache(self, folder: str) -> None:
+        try:
+            files = []
+            for name in os.listdir(folder):
+                if not name.startswith('send_'):
+                    continue
+                if not (name.endswith('.png') or name.endswith('.jpg') or name.endswith('.jpeg')):
+                    continue
+                path = os.path.join(folder, name)
+                try:
+                    files.append((os.path.getmtime(path), path))
+                except Exception:
+                    continue
+            files.sort(key=lambda x: x[0])
+            if len(files) <= self.cache_limit:
+                return
+            for _, path in files[:-self.cache_limit]:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _resolve_cjk_font_path(self) -> Optional[str]:
+        """尽量选择系统自带的中文字体，兼容 Windows/Linux/macOS。
+
+        可选：在 dictStrCustom 中配置 strTHImgFontPath 指定字体文件路径（ttf/otf/ttc）。
+        """
+        custom_path = self.dictStrCustom.get('strTHImgFontPath')
+        if custom_path:
+            p = str(custom_path).strip().strip('"').strip("'")
+            if p and os.path.isfile(p):
+                return p
+
+        # 常见中文字体文件名（优先无衬线）
+        candidate_files = [
+            # Windows 常见
+            'msyh.ttc', 'msyh.ttf',          # Microsoft YaHei
+            'msyhbd.ttc', 'msyhbd.ttf',
+            'simhei.ttf',                   # SimHei
+            'simsun.ttc', 'simsun.ttf',     # SimSun
+            'deng.ttf', 'dengb.ttf',        # DengXian
+            # macOS 常见
+            'PingFang.ttc',
+            'PingFang SC.ttc',
+            'PingFangHK.ttc',
+            'PingFangTC.ttc',
+            'STHeiti Medium.ttc',
+            'STHeiti Light.ttc',
+            'Hiragino Sans GB.ttc',
+            'Hiragino Sans GB W3.ttc',
+            'Songti.ttc',
+            # Linux 常见
+            'NotoSansCJK-Regular.ttc',
+            'NotoSansCJKsc-Regular.otf',
+            'NotoSansSC-Regular.otf',
+            'SourceHanSansSC-Regular.otf',
+            'WenQuanYiZenHei.ttf',
+            'wqy-zenhei.ttc',
+            'DroidSansFallback.ttf',
+            'AR PL UMing CN.ttf',
+            'AR PL UKai CN.ttf',
+        ]
+
+        search_dirs: List[str] = []
+
+        # Windows 字体目录
+        try:
+            windir = os.environ.get('WINDIR') or os.environ.get('SystemRoot')
+            if windir:
+                search_dirs.append(os.path.join(windir, 'Fonts'))
+        except Exception:
+            pass
+
+        # Linux 常见字体目录
+        search_dirs.extend([
+            '/usr/share/fonts',
+            '/usr/local/share/fonts',
+            os.path.expanduser('~/.fonts'),
+            os.path.expanduser('~/.local/share/fonts'),
+        ])
+
+        # macOS 常见字体目录
+        search_dirs.extend([
+            '/System/Library/Fonts',
+            '/System/Library/Fonts/Supplemental',
+            '/Library/Fonts',
+            os.path.expanduser('~/Library/Fonts'),
+        ])
+
+        # 先尝试“直接拼路径”的快速命中
+        for d in search_dirs:
+            if not d or not os.path.isdir(d):
+                continue
+            for fname in candidate_files:
+                p = os.path.join(d, fname)
+                if os.path.isfile(p):
+                    return p
+
+        # 再做一次有限的递归搜索（避免全盘扫描）
+        lower_candidates = {f.lower() for f in candidate_files}
+        for base in search_dirs:
+            if not base or not os.path.isdir(base):
+                continue
+            try:
+                for root, _, files in os.walk(base):
+                    # 小优化：文件名做一次 lower 映射
+                    file_map = {fn.lower(): fn for fn in files}
+                    hit = lower_candidates.intersection(file_map.keys())
+                    if hit:
+                        # 取第一个命中
+                        real = file_map[next(iter(hit))]
+                        return os.path.join(root, real)
+            except Exception:
+                continue
+
+        return None
+
+    def _resolve_emoji_font_path(self) -> Optional[str]:
+        """尽量选择系统 Emoji 字体（可选），兼容 Windows/Linux/macOS。
+
+        优先级：NotoEmoji（黑白、兼容性好）> NotoColorEmoji（彩色）> 平台默认。
+        """
+        custom_path = self.dictStrCustom.get('strTHImgEmojiFontPath')
+        if custom_path:
+            p = str(custom_path).strip().strip('"').strip("'")
+            if p and os.path.isfile(p):
+                return p
+
+        candidate_files = [
+            # Linux
+            'NotoEmoji-Regular.ttf',
+            'NotoEmoji.ttf',
+            'NotoColorEmoji.ttf',
+            # macOS
+            'Apple Color Emoji.ttc',
+            # Windows
+            'seguiemj.ttf',
+        ]
+
+        search_dirs: List[str] = []
+        try:
+            windir = os.environ.get('WINDIR') or os.environ.get('SystemRoot')
+            if windir:
+                search_dirs.append(os.path.join(windir, 'Fonts'))
+        except Exception:
+            pass
+
+        search_dirs.extend([
+            '/usr/share/fonts',
+            '/usr/local/share/fonts',
+            os.path.expanduser('~/.fonts'),
+            os.path.expanduser('~/.local/share/fonts'),
+            '/System/Library/Fonts',
+            '/System/Library/Fonts/Supplemental',
+            '/Library/Fonts',
+            os.path.expanduser('~/Library/Fonts'),
+        ])
+
+        for d in search_dirs:
+            if not d or not os.path.isdir(d):
+                continue
+            for fname in candidate_files:
+                p = os.path.join(d, fname)
+                if os.path.isfile(p):
+                    return p
+
+        lower_candidates = {f.lower() for f in candidate_files}
+        for base in search_dirs:
+            if not base or not os.path.isdir(base):
+                continue
+            try:
+                for root, _, files in os.walk(base):
+                    file_map = {fn.lower(): fn for fn in files}
+                    hit = lower_candidates.intersection(file_map.keys())
+                    if hit:
+                        real = file_map[next(iter(hit))]
+                        return os.path.join(root, real)
+            except Exception:
+                continue
+
+        return None
+
+    def _resolve_color_emoji_font_path(self) -> Optional[str]:
+        """选择“彩色 emoji”字体（可选），用于花色等需要 emoji 呈现时。
+
+        优先：NotoColorEmoji > Apple Color Emoji > Segoe UI Emoji
+        可选：dictStrCustom['strTHImgColorEmojiFontPath'] 指定路径
+        """
+        custom_path = self.dictStrCustom.get('strTHImgColorEmojiFontPath')
+        if custom_path:
+            p = str(custom_path).strip().strip('"').strip("'")
+            if p and os.path.isfile(p):
+                return p
+
+        candidate_files = [
+            'NotoColorEmoji.ttf',
+            'Apple Color Emoji.ttc',
+            'seguiemj.ttf',
+        ]
+
+        search_dirs: List[str] = []
+        try:
+            windir = os.environ.get('WINDIR') or os.environ.get('SystemRoot')
+            if windir:
+                search_dirs.append(os.path.join(windir, 'Fonts'))
+        except Exception:
+            pass
+
+        search_dirs.extend([
+            '/usr/share/fonts',
+            '/usr/local/share/fonts',
+            os.path.expanduser('~/.fonts'),
+            os.path.expanduser('~/.local/share/fonts'),
+            '/System/Library/Fonts',
+            '/System/Library/Fonts/Supplemental',
+            '/Library/Fonts',
+            os.path.expanduser('~/Library/Fonts'),
+        ])
+
+        for d in search_dirs:
+            if not d or not os.path.isdir(d):
+                continue
+            for fname in candidate_files:
+                p = os.path.join(d, fname)
+                if os.path.isfile(p):
+                    return p
+
+        lower_candidates = {f.lower() for f in candidate_files}
+        for base in search_dirs:
+            if not base or not os.path.isdir(base):
+                continue
+            try:
+                for root, _, files in os.walk(base):
+                    file_map = {fn.lower(): fn for fn in files}
+                    hit = lower_candidates.intersection(file_map.keys())
+                    if hit:
+                        real = file_map[next(iter(hit))]
+                        return os.path.join(root, real)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _is_emoji_char(ch: str) -> bool:
+        if not ch:
+            return False
+        cp = ord(ch)
+        # 常见 emoji / 符号范围（不追求 100% 完整，够用即可）
+        if 0x1F300 <= cp <= 0x1FAFF:
+            return True
+        if 0x2600 <= cp <= 0x27BF:
+            return True
+        # 变体选择符/连接符
+        if cp in (0xFE0F, 0x200D):
+            return True
+        return False
+
+    @staticmethod
+    def _is_suit_symbol(ch: str) -> bool:
+        if not ch:
+            return False
+        return ord(ch) in (0x2660, 0x2663, 0x2665, 0x2666)
+
+    @staticmethod
+    def _is_variation_selector(ch: str) -> bool:
+        return bool(ch) and ord(ch) == 0xFE0F
+
+    @staticmethod
+    def _is_zwj(ch: str) -> bool:
+        return bool(ch) and ord(ch) == 0x200D
+
+    @staticmethod
+    def _is_skin_tone(ch: str) -> bool:
+        if not ch:
+            return False
+        cp = ord(ch)
+        return 0x1F3FB <= cp <= 0x1F3FF
+
+    def _split_runs(self, s: str, emoji_font, color_emoji_font) -> List[Tuple[str, bool]]:
+        """把一行文本拆成 (run, is_emoji) 列表。
+
+        - 普通文本尽量合并为长 run，提升性能
+        - emoji run 会尽量把 VS16/肤色/ZWJ 组合并到同一 run，避免错位与宽度计算偏差
+        """
+        s = '' if s is None else str(s)
+        if not s:
+            return []
+        allow_emoji = (emoji_font is not None) or (color_emoji_font is not None)
+        # allow_color 仅表示“存在彩色 emoji 字体”，最终是否使用由渲染阶段决定
+        allow_color = color_emoji_font is not None
+
+        out: List[Tuple[str, bool]] = []
+        i = 0
+        while i < len(s):
+            ch = s[i]
+
+            if allow_emoji and self._is_emoji_char(ch):
+                run = ch
+                i += 1
+                # 变体选择符/肤色修饰
+                while i < len(s) and (self._is_variation_selector(s[i]) or self._is_skin_tone(s[i])):
+                    run += s[i]
+                    i += 1
+
+                # 约定：花色（♠♣♥♦）强制走“黑白 emoji/符号”风格，不额外补 VS16
+                # 其它 emoji 的彩色/黑白选择在渲染阶段处理
+                # ZWJ 组合：emoji + ZWJ + emoji (+ VS16/肤色) ...
+                while i < len(s) and self._is_zwj(s[i]):
+                    run += s[i]
+                    i += 1
+                    if i < len(s):
+                        run += s[i]
+                        i += 1
+                        while i < len(s) and (self._is_variation_selector(s[i]) or self._is_skin_tone(s[i])):
+                            run += s[i]
+                            i += 1
+                out.append((run, True))
+                continue
+
+            # 普通文本：尽量合并
+            j = i
+            while j < len(s):
+                if allow_emoji and self._is_emoji_char(s[j]):
+                    break
+                j += 1
+            out.append((s[i:j], False))
+            i = j
+
+        return out
+
+    @staticmethod
+    def _run_bbox(draw, text: str, font) -> Tuple[int, int, int, int]:
+        """返回 bbox=(x0,y0,x1,y1)，优先使用基线锚点，减少裁切。"""
+        t = text if text else ' '
+        try:
+            return tuple(draw.textbbox((0, 0), t, font=font, anchor='ls'))  # type: ignore
+        except Exception:
+            try:
+                return tuple(draw.textbbox((0, 0), t, font=font))
+            except Exception:
+                return (0, 0, 0, 0)
+
+    @staticmethod
+    def _run_advance(draw, text: str, font) -> int:
+        """返回 advance 宽度，优先 textlength，兜底 bbox 宽度。"""
+        t = text if text else ''
+        try:
+            return int(draw.textlength(t, font=font))
+        except Exception:
+            bbox = TexasHoldemImageReply._run_bbox(draw, t, font)
+            return int(bbox[2] - bbox[0])
+
+    @staticmethod
+    def _is_suit_only_run(run: str) -> bool:
+        if not run:
+            return False
+        # 去掉 VS16 变体选择符后，只剩一个花色符号
+        stripped = ''.join(ch for ch in run if ord(ch) != 0xFE0F)
+        return len(stripped) == 1 and TexasHoldemImageReply._is_suit_symbol(stripped)
+
+    @staticmethod
+    def _run_advance_effective(draw, text: str, font, *, tight_right: bool = False) -> int:
+        """返回用于排版的 advance。
+
+        对“单独花色 emoji”做紧凑处理：用 bbox 右边界替代 textlength，去掉 emoji 字体自带的右侧留白。
+        """
+        adv = TexasHoldemImageReply._run_advance(draw, text, font)
+        if not tight_right:
+            return adv
+        try:
+            bbox = TexasHoldemImageReply._run_bbox(draw, text, font)
+            tight = int(bbox[2])
+            if 0 < tight < adv:
+                return tight
+        except Exception:
+            pass
+        return adv
+
+    @staticmethod
+    def _text_width(draw, text: str, font) -> int:
+        try:
+            return int(draw.textlength(text, font=font))
+        except Exception:
+            try:
+                bbox = draw.textbbox((0, 0), text if text else ' ', font=font)
+                return int(bbox[2] - bbox[0])
+            except Exception:
+                return 0
+
+    @staticmethod
+    def _font_metrics(draw, font) -> Tuple[int, int, int]:
+        """返回 (ascent, descent, line_height)。"""
+        try:
+            a, d = font.getmetrics()
+            a = int(a)
+            d = int(d)
+            return a, d, max(1, a + d)
+        except Exception:
+            try:
+                bbox = draw.textbbox((0, 0), 'Hg', font=font)
+                h = int(bbox[3] - bbox[1])
+                a = int(h * 0.8)
+                d = max(0, h - a)
+                return a, d, max(1, h)
+            except Exception:
+                return 14, 4, 18
+
+    @staticmethod
+    def _char_size(draw, ch: str, font) -> Tuple[int, int]:
+        try:
+            bbox = draw.textbbox((0, 0), ch if ch else ' ', font=font)
+            return max(0, bbox[2] - bbox[0]), max(0, bbox[3] - bbox[1])
+        except Exception:
+            # 兜底：给一个近似值
+            return 0, 0
+
+    def _load_emoji_font(self):
+        try:
+            from PIL import ImageFont
+            size = int(self.dictStrCustom.get('strTHImgFontSize', 18) or 18)
+            font_path = self._resolve_emoji_font_path()
+            if not font_path:
+                return None
+            try:
+                return ImageFont.truetype(font_path, size=size)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def _load_color_emoji_font(self):
+        try:
+            from PIL import ImageFont
+            size = int(self.dictStrCustom.get('strTHImgFontSize', 18) or 18)
+            font_path = self._resolve_color_emoji_font_path()
+            if not font_path:
+                return None
+            try:
+                return ImageFont.truetype(font_path, size=size)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def _load_font(self):
+        """加载支持中文的字体（优先系统字体），保证 Win/Linux 显示正常。"""
+        try:
+            from PIL import ImageFont
+            size = int(self.dictStrCustom.get('strTHImgFontSize', 18) or 18)
+
+            font_path = self._resolve_cjk_font_path()
+            if font_path:
+                # ttc 可能需要 index 参数；不同系统字体集合索引可能不同
+                for idx in (0, 1, 2, 3):
+                    try:
+                        return ImageFont.truetype(font_path, size=size, index=idx)
+                    except Exception:
+                        continue
+                try:
+                    return ImageFont.truetype(font_path, size=size)
+                except Exception:
+                    pass
+
+            # 兜底：Pillow 默认字体（可能不含中文，但确保不报错）
+            try:
+                return ImageFont.load_default(size=size)
+            except Exception:
+                return ImageFont.load_default()
+        except Exception:
+            return None
+
+    def _wrap_lines_by_pixel(self, draw, text: str, base_font, emoji_font, color_emoji_font, max_pixel_width: int) -> List[str]:
+        text = '' if text is None else str(text)
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        out: List[str] = []
+
+        for para in text.split('\n'):
+            if para == '':
+                out.append('')
+                continue
+
+            cur = ''
+            cur_w = 0
+            tokens = self._split_runs(para, emoji_font, color_emoji_font)
+            for run, is_emoji in tokens:
+                has_suit = any(self._is_suit_symbol(c) for c in run)
+                is_suit_run = is_emoji and self._is_suit_only_run(run)
+                # 规则：花色强制黑白；其它 emoji 优先彩色
+                if is_emoji and has_suit:
+                    # 花色尽量用 emoji 字体显示，但不启用 embedded_color（黑白）
+                    f = emoji_font if (emoji_font is not None) else (color_emoji_font if (color_emoji_font is not None) else base_font)
+                elif is_emoji and (color_emoji_font is not None):
+                    f = color_emoji_font
+                elif is_emoji and (emoji_font is not None):
+                    f = emoji_font
+                else:
+                    f = base_font
+                run_w = self._run_advance_effective(draw, run, f, tight_right=is_suit_run)
+
+                # 若一个普通 run 太长，拆成单字符以便换行
+                if (not is_emoji) and run_w > max_pixel_width and len(run) > 1:
+                    for ch in run:
+                        ch_w = self._run_advance_effective(draw, ch, f, tight_right=False)
+                        if cur == '':
+                            cur = ch
+                            cur_w = ch_w
+                        elif cur_w + ch_w <= max_pixel_width:
+                            cur += ch
+                            cur_w += ch_w
+                        else:
+                            out.append(cur)
+                            cur = ch
+                            cur_w = ch_w
+                    continue
+
+                if cur == '':
+                    cur = run
+                    cur_w = run_w
+                    continue
+
+                if cur_w + run_w <= max_pixel_width:
+                    cur += run
+                    cur_w += run_w
+                else:
+                    out.append(cur)
+                    cur = run
+                    cur_w = run_w
+            if cur != '':
+                out.append(cur)
+        return out
+
+    def _make_vertical_gradient(self, width: int, height: int):
+        from PIL import Image
+
+        base = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        px = base.load()
+        for y in range(height):
+            t = y / max(1, height - 1)
+            r = int(self.bg_start[0] + (self.bg_end[0] - self.bg_start[0]) * t)
+            g = int(self.bg_start[1] + (self.bg_end[1] - self.bg_start[1]) * t)
+            b = int(self.bg_start[2] + (self.bg_end[2] - self.bg_start[2]) * t)
+            a = 255
+            for x in range(width):
+                px[x, y] = (r, g, b, a)
+        return base
+
+    def render_text_to_image(self, text: str) -> Optional[Tuple[str, str]]:
+        """返回 (abs_path, cq_file_path)。cq_file_path 以 TexasHoldem/ 开头。"""
+        try:
+            from PIL import Image, ImageDraw
+        except Exception:
+            return None
+
+        base_font = self._load_font()
+        if base_font is None:
+            return None
+        emoji_font = self._load_emoji_font()
+        color_emoji_font = self._load_color_emoji_font()
+
+        folder = get_texas_images_path()
+        self._cleanup_cache(folder)
+
+        dummy = Image.new('RGBA', (10, 10), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(dummy)
+
+        base_a, base_d, _ = self._font_metrics(draw, base_font)
+        if emoji_font is not None:
+            emoji_a, emoji_d, _ = self._font_metrics(draw, emoji_font)
+        else:
+            emoji_a, emoji_d = base_a, base_d
+        if color_emoji_font is not None:
+            color_a, color_d, _ = self._font_metrics(draw, color_emoji_font)
+        else:
+            color_a, color_d = emoji_a, emoji_d
+
+        content_max = max(200, self.max_width - self.padding * 2)
+        lines = self._wrap_lines_by_pixel(draw, str(text), base_font, emoji_font, color_emoji_font, content_max)
+
+        # 计算尺寸
+        max_w = 0
+        line_heights: List[int] = []
+        line_ascents: List[int] = []
+        line_min_lefts: List[int] = []
+        for line in lines:
+            s = line if line else ' '
+            x = 0
+            min_left = 0
+            max_right = 0
+            ascent = base_a
+            descent = base_d
+
+            tokens = self._split_runs(s, emoji_font, color_emoji_font)
+            for run, is_emoji in tokens:
+                has_suit = any(self._is_suit_symbol(c) for c in run)
+                is_suit_run = is_emoji and self._is_suit_only_run(run)
+                # 规则：花色强制黑白；其它 emoji 优先彩色
+                if is_emoji and has_suit:
+                    f = emoji_font if (emoji_font is not None) else (color_emoji_font if (color_emoji_font is not None) else base_font)
+                    a, d = (emoji_a, emoji_d) if (emoji_font is not None) else ((color_a, color_d) if (color_emoji_font is not None) else (base_a, base_d))
+                elif is_emoji and (color_emoji_font is not None):
+                    f = color_emoji_font
+                    a, d = color_a, color_d
+                elif is_emoji and (emoji_font is not None):
+                    f = emoji_font
+                    a, d = emoji_a, emoji_d
+                else:
+                    f = base_font
+                    a, d = base_a, base_d
+
+                bbox = self._run_bbox(draw, run, f)
+                min_left = min(min_left, x + int(bbox[0]))
+                max_right = max(max_right, x + int(bbox[2]))
+                ascent = max(ascent, -int(bbox[1]), a)
+                descent = max(descent, int(bbox[3]), d)
+                x += self._run_advance_effective(draw, run, f, tight_right=is_suit_run)
+
+            w = max_right - min_left
+            h = max(1, ascent + descent)
+            max_w = max(max_w, w)
+            line_heights.append(h)
+            line_ascents.append(ascent)
+            line_min_lefts.append(min_left)
+        # 给负 left bearing 留空间，防止“短一截/被裁切”
+        global_min_left = min(line_min_lefts) if line_min_lefts else 0
+        extra_left = max(0, -int(global_min_left))
+        canvas_w = max_w + self.padding * 2 + extra_left
+        # 允许为 extra_left 适度放宽，避免右侧被挤掉导致“短一截”
+        canvas_w = min(self.max_width + extra_left, canvas_w)
+        total_h = sum(line_heights) + self.line_spacing * max(0, len(lines) - 1)
+        canvas_h = total_h + self.padding * 2
+        canvas_h = max(canvas_h, 120)
+
+        bg = self._make_vertical_gradient(canvas_w, canvas_h)
+        canvas = bg.copy()
+        draw = ImageDraw.Draw(canvas)
+
+        # 文字颜色根据背景亮度自动切换（使用配置色）
+        dark_mode = _color_brightness(self.bg_start) < 128
+        text_color = self.light_text if dark_mode else self.dark_text
+        stroke_color = self.dark_text if dark_mode else self.light_text
+        try:
+            stroke_width = int(self.dictStrCustom.get('strTHImgStrokeWidth', 2) or 2)
+        except Exception:
+            stroke_width = 2
+        stroke_width = max(0, stroke_width)
+
+        x0 = self.padding + extra_left
+        y = self.padding
+        for idx, line in enumerate(lines):
+            x = x0
+            baseline_y = y + (line_ascents[idx] if idx < len(line_ascents) else base_a)
+            # 行级别再修正一次 left bearing
+            try:
+                x = x - int(line_min_lefts[idx])
+            except Exception:
+                pass
+
+            for run, is_emoji in self._split_runs(line, emoji_font, color_emoji_font):
+                has_suit = any(self._is_suit_symbol(c) for c in run)
+                is_suit_run = is_emoji and self._is_suit_only_run(run)
+                # 规则：花色强制黑白；其它 emoji 优先彩色
+                if is_emoji and has_suit:
+                    f = emoji_font if (emoji_font is not None) else (color_emoji_font if (color_emoji_font is not None) else base_font)
+                    a = emoji_a if (emoji_font is not None) else (color_a if (color_emoji_font is not None) else base_a)
+                    use_embedded_color = False
+                    draw_stroke = True
+                elif is_emoji and (color_emoji_font is not None):
+                    f = color_emoji_font
+                    a = color_a
+                    use_embedded_color = True
+                    draw_stroke = False
+                elif is_emoji and (emoji_font is not None):
+                    f = emoji_font
+                    a = emoji_a
+                    use_embedded_color = False
+                    draw_stroke = True
+                else:
+                    f = base_font
+                    a = base_a
+                    use_embedded_color = False
+                    draw_stroke = True
+                try:
+                    if use_embedded_color:
+                        draw.text((x, baseline_y), run, font=f, fill=text_color, embedded_color=True, anchor='ls')
+                    elif draw_stroke:
+                        draw.text(
+                            (x, baseline_y),
+                            run,
+                            font=f,
+                            fill=text_color,
+                            stroke_width=stroke_width,
+                            stroke_fill=stroke_color,
+                            anchor='ls',
+                        )
+                    else:
+                        draw.text((x, baseline_y), run, font=f, fill=text_color, anchor='ls')
+                except TypeError:
+                    # 兼容旧 Pillow：没有 anchor/embedded_color
+                    y_top = baseline_y - a
+                    try:
+                        draw.text((x, y_top), run, font=f, fill=text_color)
+                    except Exception:
+                        pass
+                x += self._run_advance_effective(draw, run, f, tight_right=is_suit_run)
+            y += line_heights[idx] + self.line_spacing
+
+        file_id = uuid.uuid4().hex[:10]
+        filename = f"send_{file_id}.png"
+        abs_path = os.path.join(folder, filename)
+        canvas.save(abs_path)
+
+        # CQ 码路径要求：从 TexasHoldem 开始
+        cq_path = f"TexasHoldem/{filename}"
+        return abs_path, cq_path
+
+
+_AT_RE = re.compile(r"\[CQ:at,[^\]]+\]")
+
+
+def _extract_at_segments(message: str) -> Tuple[str, str]:
+    """返回 (at_segments, message_without_at)。"""
+    msg = '' if message is None else str(message)
+    ats = _AT_RE.findall(msg)
+    if not ats:
+        return '', msg
+    msg_wo = _AT_RE.sub('', msg)
+    return ''.join(ats), msg_wo
+
+
+def replyMsg(plugin_event, message, at_user: bool = False):
+    """TexasHoldem 专用 replyMsg：支持按配置把文本转成图片发送。
+
+    - dictStrCustom['strTHSendMode'] == 1: 发送文本
+    - 其它值（含 0/2/...）: 发送图片
+    """
+    base_reply = OlivaDiceCore.msgReply.replyMsg
+    try:
+        dictStrCustom = OlivaDiceCore.msgCustom.dictStrCustomDict[plugin_event.bot_info.hash]
+    except Exception:
+        dictStrCustom = {}
+
+    try:
+        mode = int(dictStrCustom.get('strTHSendMode', 0))
+    except Exception:
+        mode = 0
+
+    # 文本模式：完全走原始 replyMsg
+    if mode == 1:
+        return base_reply(plugin_event, message, at_user)
+
+    # 图片模式：抽离 @，把剩余文本渲染成图片
+    at_in_msg, msg_wo_at = _extract_at_segments(message)
+
+    at_prefix = ''
+    if at_user:
+        try:
+            at_prefix = OlivOS.messageAPI.PARA.at(str(plugin_event.data.user_id)).get_string_by_key('CQ')
+        except Exception:
+            at_prefix = ''
+
+    text_for_image = (msg_wo_at or '').strip()
+    if not text_for_image:
+        # 只有 at 没有正文：直接发回
+        return base_reply(plugin_event, (at_prefix + at_in_msg).strip(), False)
+
+    renderer = TexasHoldemImageReply(dictStrCustom)
+    rendered = renderer.render_text_to_image(text_for_image)
+    if not rendered:
+        # 没有 Pillow 或渲染失败：兜底文本
+        return base_reply(plugin_event, message, at_user)
+
+    _, cq_path = rendered
+    cq_msg = f"[CQ:image,file={cq_path}]"
+    out = (at_prefix + at_in_msg + cq_msg).strip()
+    return base_reply(plugin_event, out, False)
 
 
 def get_redirected_bot_hash(bot_hash: str) -> str:
@@ -260,10 +1102,11 @@ SUITS = 'SHDC'
 RANK_TO_VAL = {r: i + 2 for i, r in enumerate(RANKS)}
 VAL_TO_RANK = {v: r for r, v in RANK_TO_VAL.items()}
 SUIT_TO_ICON = {
-    'S': '♠️',
-    'H': '♥️',
-    'D': '♦️',
-    'C': '♣️',
+    # 花色不使用 VS16（emoji 变体），以“文本符号”方式呈现，避免花色后出现明显空隙
+    'S': '♠黑桃',
+    'H': '♥红桃',
+    'D': '♦方片',
+    'C': '♣梅花',
 }
 
 

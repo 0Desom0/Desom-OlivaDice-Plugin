@@ -11,6 +11,21 @@ import TexasHoldem
 dictStrCustomDict = {}
 
 dictStrCustom = {
+    # 发送模式（防风控）：1=纯文本；0/其它=转图片发送
+    'strTHSendMode': '0',
+    # 图片样式（颜色使用十六进制 #RRGGBB 或 #RRGGBBAA）
+    'strTHImgBgStart': '#F7DBFF',
+    'strTHImgBgEnd': '#FFFFFF',
+    'strTHImgTextDark': '#111827',
+    'strTHImgTextLight': '#F9FAFB',
+    'strTHImgFontSize': '18',
+    'strTHImgMaxWidth': '860',
+    'strTHImgPadding': '26',
+    'strTHImgLineSpacing': '10',
+    # 文字描边宽度（像素）。建议 1-3；0 表示不描边
+    'strTHImgStrokeWidth': '2',
+    'strTHImgCacheLimit': '60',
+
     # 通用/错误
     'strTHErrNotInGroup': '该指令仅支持在群聊中使用。',
     'strTHErrRoomNotFound': '本群未建局，请先使用：.dz 创建 [基础筹码]（默认1000）。',
@@ -53,11 +68,11 @@ dictStrCustom = {
     'strTHEndFlagSet': '已开启结束开关：本手在“最后仅剩一人（其余弃牌）”或“摊牌比牌”结算后，将进行最终结算并结束游戏（不会自动开始下一手）。',
     'strTHEndFlagUnset': '已关闭结束开关：游戏将继续进行，本手结束后会自动开始下一手。',
     # 局势面板
-    'strTHStatusHeader': '底池: {tPot} ‖ 最小加注: {tMinRaise} ‖ 最小下注/跟注：{tMinCall}',
+    'strTHStatusHeader': '底池:{tPot} ‖ 最小加注:{tMinRaise} ‖ 最小下注/跟注:{tMinCall}',
     'strTHStatusCommunity': '公共牌: {tCommunityCards} {tStreetText}',
     'strTHStatusSeparator': '------------------------------',
     'strTHStatusSeatLine1': '座位{tSeatId}: {tSeatName}（{tSeatRoleText}）{tSeatTurnMark}',
-    'strTHStatusSeatLine2': '筹码: {tSeatChips} ‖ {tSeatActionText}',
+    'strTHStatusSeatLine2': '筹码:{tSeatChips} ‖ {tSeatActionText}',
     'strTHStatusTurnLine': '轮到[<座位{tTurnSeatId}>{tTurnName}]（{tTurnRoleText}）{tTurnAt}行动',
     'strTHStatusCmdHint': '指令: {tCmdHint}',
     'strTHStatusBoard': '{tHeader}\n{tCommunity}\n{tSep}\n{tSeatLines}\n{tSep}\n{tTurnLine}\n{tSep}\n{tCmdLine}',
@@ -85,10 +100,10 @@ dictStrCustom = {
     # 座位动作显示
     'strTHSeatActionPending': '⚪ 待行动（{tOptCheck} / {tOptBet} / {tOptCall}）',
     'strTHSeatActionPendingBlind': '⚪ 待行动（暂未行动；已投{tBlindText}；{tOptCheck} / {tOptBet} / {tOptCall}）',
-    'strTHSeatActionNone': '🟢 行动: 暂未行动',
-    'strTHSeatActionNoneBlind': '🟢 行动: 暂未行动（已投{tBlindText}）',
-    'strTHSeatActionFolded': '🚫 已弃牌',
-    'strTHSeatActionAllin': '🟣 全压（All-in）',
+    'strTHSeatActionNone': '⚪ 行动: 暂未行动',
+    'strTHSeatActionNoneBlind': '⚪ 行动: 暂未行动（已投{tBlindText}）',
+    'strTHSeatActionFolded': '🔴 已弃牌',
+    'strTHSeatActionAllin': '🔴 全压（All-in）',
     'strTHSeatActionText': '🔴 行动: {tActionText}',
 
     # 待行动选项
@@ -117,8 +132,8 @@ dictStrCustom = {
     'strTHHandEndSingle': '本局结束：[<座位{tWinSeatId}>{tWinName}]获胜，赢得底池{tWinAmount}。',
     'strTHHandEndShowdownHeader': '本局结束：进入摊牌结算。',
     'strTHShowdownRevealHeader': '摊牌明细：',
-    'strTHShowdownRevealLine': '[<座位{tSeatId}>{tSeatName}]（{tSeatRoleText}） 底牌:{tHandCards} | 牌型:{tHandType} | 最佳5张:{tBest5}',
-    'strTHShowdownRevealFoldedLine': '[<座位{tSeatId}>{tSeatName}]（{tSeatRoleText}） 弃牌 | 底牌:{tHandCards}',
+    'strTHShowdownRevealLine': '[<座位{tSeatId}>{tSeatName}]（{tSeatRoleText}）底牌:{tHandCards} ‖ 牌型:{tHandType} ‖ 最佳5张:{tBest5}',
+    'strTHShowdownRevealFoldedLine': '[<座位{tSeatId}>{tSeatName}]（{tSeatRoleText}）弃牌|底牌:{tHandCards}',
     'strTHShowdownBoardLine': '公共牌: {tBoardCards}',
     'strTHShowdownSeatHoleLine': '[<座位{tSeatId}>{tSeatName}]（{tSeatRoleText}）{tFoldMark} 底牌:{tHandCards}',
     'strTHShowdownSeatMadeLine': '凑牌:{tBest5}',
@@ -155,10 +170,10 @@ dictTValue = {
 
     'tGroupId': '0',
     'tRoleText': '庄家/BTN/D',
-    'tHandCards': '[♥️A] [♠️K]',
+    'tHandCards': '[♥️红桃A] [♠️黑桃K]',
     'tHandType': '同花顺（Straight Flush）',
-    'tBest5': '[♣️A] [♥️K] [♦️Q] [♠️J] [♠️10]',
-    'tBoardCards': '[♣️A] [♥️K] [♦️Q] [♠️J] [♠️10]',
+    'tBest5': '[♣️梅花A] [♥️红桃K] [♦️方片Q] [♠️黑桃J] [♠️黑桃10]',
+    'tBoardCards': '[♣️梅花A] [♥️红桃K] [♦️方片Q] [♠️黑桃J] [♠️黑桃10]',
     'tFoldMark': '（已弃牌）',
 
     'tPot': '0',
@@ -177,7 +192,7 @@ dictTValue = {
     'tSeatRoleText': '庄家/BTN/D',
     'tSeatTurnMark': '',
     'tSeatChips': '0',
-    'tSeatActionText': '🟢 行动: 暂未行动',
+    'tSeatActionText': '⚪ 行动: 暂未行动',
     'tNeedCall': '0',
     'tActionText': '下注 0',
     'tAmount': '0',
@@ -215,6 +230,18 @@ dictTValue = {
 
 
 dictStrCustomNote = {
+    'strTHSendMode': '【德州扑克】发送模式\n1=发送纯文本；0/其他=把文本渲染成图片并用CQ码发送（用于规避群风控）',
+    'strTHImgBgStart': '【德州扑克】图片\n渐变背景起始色（#RRGGBB 或 #RRGGBBAA）',
+    'strTHImgBgEnd': '【德州扑克】图片\n渐变背景结束色（#RRGGBB 或 #RRGGBBAA）',
+    'strTHImgTextDark': '【德州扑克】图片\n浅色背景下的文字颜色',
+    'strTHImgTextLight': '【德州扑克】图片\n深色背景下的文字颜色',
+    'strTHImgFontSize': '【德州扑克】图片\n默认字体字号',
+    'strTHImgMaxWidth': '【德州扑克】图片\n图片最大宽度（像素）',
+    'strTHImgPadding': '【德州扑克】图片\n内边距（像素）',
+    'strTHImgLineSpacing': '【德州扑克】图片\n行间距（像素）',
+    'strTHImgStrokeWidth': '【德州扑克】图片\n文字描边宽度（像素；0=不描边；建议 1-3）',
+    'strTHImgCacheLimit': '【德州扑克】图片\n缓存文件保留数量（超过会自动清理旧图）',
+
     # 通用/错误
     'strTHErrNotInGroup': '【德州扑克】错误提示\n该指令仅支持在群聊中使用',
     'strTHErrRoomNotFound': '【德州扑克】错误提示\n本群未建局/未找到房间',

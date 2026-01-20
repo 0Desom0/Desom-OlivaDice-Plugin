@@ -16,6 +16,7 @@ def unity_init(plugin_event, Proc):
 def data_init(plugin_event, Proc):
     # 这里是数据初始化，通常用于加载数据等
     TexasHoldem.function.get_texas_data_path()
+    TexasHoldem.function.get_texas_images_path()
     TexasHoldem.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
 
 def unity_reply(plugin_event, Proc):
@@ -33,7 +34,6 @@ def unity_reply(plugin_event, Proc):
     valDict['dictStrCustom'] = dictStrCustom
     valDict['tmp_platform'] = plugin_event.platform['platform']
 
-    replyMsg = OlivaDiceCore.msgReply.replyMsg
     isMatchWordStart = OlivaDiceCore.msgReply.isMatchWordStart
     getMatchWordStartRight = OlivaDiceCore.msgReply.getMatchWordStartRight
     skipSpaceStart = OlivaDiceCore.msgReply.skipSpaceStart
@@ -182,6 +182,7 @@ def unity_reply(plugin_event, Proc):
         '''命令部分'''
 
         # 引入核心逻辑模块里的函数
+        replyMsg = TexasHoldem.function.replyMsg
         load_group_data = TexasHoldem.function.load_group_data
         save_group_data = TexasHoldem.function.save_group_data
         texas_default = TexasHoldem.function.texas_default
