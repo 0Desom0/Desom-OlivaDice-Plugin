@@ -113,8 +113,6 @@ class TexasHoldemImageReply:
 
         self.bg_start = _parse_hex_color(self.dictStrCustom.get('strTHImgBgStart', '#F7DBFF'))
         self.bg_end = _parse_hex_color(self.dictStrCustom.get('strTHImgBgEnd', '#FFFFFF'), default=(255, 255, 255, 255))
-        self.panel = _parse_hex_color(self.dictStrCustom.get('strTHImgPanel', '#FFFFFFCC'), default=(255, 255, 255, 220))
-        self.border = _parse_hex_color(self.dictStrCustom.get('strTHImgBorder', '#E9D5FF'), default=(233, 213, 255, 255))
 
         self.dark_text = _parse_hex_color(self.dictStrCustom.get('strTHImgTextDark', '#111827'), default=(17, 24, 39, 255))
         self.light_text = _parse_hex_color(self.dictStrCustom.get('strTHImgTextLight', '#F9FAFB'), default=(249, 250, 251, 255))
