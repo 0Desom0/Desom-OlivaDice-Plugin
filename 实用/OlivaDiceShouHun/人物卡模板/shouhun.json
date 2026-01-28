@@ -137,7 +137,38 @@
         "snTitle": "{tName} hp{HP}/{HPMAX} mp{MP}/{MPMAX} shm{SHM}/{SHMMAX}",
         "checkRules": {
             "default": {
-                "checkList": []
+                "checkList": [
+                    "success",
+                    "greatSuccess",
+                    "fail",
+                    "greatFail"
+                ],
+                "success": {
+                    ".and": [
+                        {
+                            ".<=": ["$roll", "$skill"]
+                        },
+                        {
+                            ".>": ["$roll", 1]
+                        }
+                    ]
+                },
+                "fail": {
+                    ".and": [
+                        {
+                            ".>": ["$roll", "$skill"]
+                        },
+                        {
+                            ".<": ["$roll", 20]
+                        }
+                    ]
+                },
+                "greatSuccess": {
+                    ".<=": ["$roll", 1]
+                },
+                "greatFail": {
+                    ".>=": ["$roll", 20]
+                }
             }
         }
     },
@@ -285,7 +316,38 @@
         "snTitle": "{tName} hp{HP}/{HPMAX} mp{MP}/{MPMAX} shm{SHM}/{SHMMAX} 业力{业力}",
         "checkRules": {
             "default": {
-                "checkList": []
+                "checkList": [
+                    "success",
+                    "greatSuccess",
+                    "fail",
+                    "greatFail"
+                ],
+                "success": {
+                    ".and": [
+                        {
+                            ".<=": ["$roll", "$skill"]
+                        },
+                        {
+                            ".>": ["$roll", 1]
+                        }
+                    ]
+                },
+                "fail": {
+                    ".and": [
+                        {
+                            ".>": ["$roll", "$skill"]
+                        },
+                        {
+                            ".<": ["$roll", 20]
+                        }
+                    ]
+                },
+                "greatSuccess": {
+                    ".<=": ["$roll", 1]
+                },
+                "greatFail": {
+                    ".>=": ["$roll", 20]
+                }
             }
         }
 	},
