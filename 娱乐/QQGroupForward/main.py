@@ -346,6 +346,9 @@ def _get_user_display_name(plugin_event) -> str:
 
 
 def _format_forward_header(plugin_event, cfg: dict) -> str:
+    src_gid = _norm_gid(plugin_event.data.group_id)
+    src_name = _get_group_name(plugin_event, src_gid)
+
     uid = _norm_gid(plugin_event.data.user_id)
     uname = _get_user_display_name(plugin_event)
 
@@ -353,11 +356,9 @@ def _format_forward_header(plugin_event, cfg: dict) -> str:
     pc_enabled = bool(cfg.get('pc_card_enabled', True)) and oliva_dice_core_available
     if pc_enabled:
         pc_name = _get_pc_card_name(plugin_event) or uname
-        return f"{pc_name}[{uname}]({uid})"
+        return f"[{src_name}({src_gid}) - {pc_name}[{uname}]({uid})]"
 
     # 默认：群信息 + 昵称
-    src_gid = _norm_gid(plugin_event.data.group_id)
-    src_name = _get_group_name(plugin_event, src_gid)
     return f"[{src_name}({src_gid}) - {uname}({uid})]"
 
 
