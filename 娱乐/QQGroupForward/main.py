@@ -29,6 +29,8 @@ def _ensure_dirs() -> None:
 
 def _default_config() -> dict:
     return {
+        # 全局开关（仅骰主可改）：关闭后不进行任何消息转发
+        'global_enabled': True,
         # 有向边：src_group_id -> [dst_group_id, ...]
         'edges': {},
         # 配置master：权限等同骰主（可管理群链、开关防刷等）
@@ -384,6 +386,31 @@ class Event(object):
         if cmd is not None:
             action, args = cmd
 
+            # 全局开关（仅骰主可用）
+            if action in ['全局', 'global', '总开关', '开关']:
+                if not _is_dice_master(plugin_event, _norm_gid(plugin_event.data.user_id)):
+                    plugin_event.reply('权限不足：仅骰主可开关全局转发。')
+                    return
+                if not args:
+                    plugin_event.reply('用法：.群链 全局 开  /  .群链 全局 关  /  .群链 全局 状态')
+                    return
+                sub = str(args[0]).strip()
+                if sub in ['开', 'on', '开启']:
+                    cfg['global_enabled'] = True
+                    _save_config(cfg)
+                    plugin_event.reply('全局转发已开启。')
+                    return
+                if sub in ['关', 'off', '关闭']:
+                    cfg['global_enabled'] = False
+                    _save_config(cfg)
+                    plugin_event.reply('全局转发已关闭。')
+                    return
+                if sub in ['状态', 'status']:
+                    plugin_event.reply(f"全局转发状态：{'开启' if cfg.get('global_enabled', True) else '关闭'}")
+                    return
+                plugin_event.reply('未知参数，用法：.群链 全局 开/关/状态')
+                return
+
             # 防刷开关（仅骰主/配置master可用）
             if action in ['防刷', 'dedup', '去重']:
                 if not _is_privileged_master(plugin_event, cfg):
@@ -424,6 +451,7 @@ class Event(object):
                     '4) .群链 断开 双向 <对面群号>\n'
                     '5) .群链 列表\n'
                     '6) .群链 防刷 开/关/状态（仅骰主/配置master）\n'
+                    '7) .群链 全局 开/关/状态（仅骰主，全局转发开关）\n'
                     '说明：对面群必须在bot的群列表（bot已入群），且操作者本人也必须在对面群内。'
                 )
                 return
@@ -586,6 +614,10 @@ class Event(object):
                 return
 
             plugin_event.reply('未知子命令，发送“.群链”查看帮助。')
+            return
+
+        # 全局关闭时不进行转发（但仍允许使用命令开启）
+        if not cfg.get('global_enabled', True):
             return
 
         # 转发
