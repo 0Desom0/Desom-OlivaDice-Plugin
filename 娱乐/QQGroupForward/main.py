@@ -16,7 +16,7 @@ except Exception:
 DATA_PATH = os.path.join('plugin', 'data', 'QQGroupForward')
 DEFAULT_FILE = os.path.join(DATA_PATH, 'default.json')
 
-COMMAND_PREFIXES = ('.群链', '。群链', '/群链', '.群链接', '。群链接', '/群链接')
+COMMAND_PREFIXES = ('.群链', '。群链', '/群链')
 
 # bot_hash -> (timestamp, {group_id: group_name})
 _GROUP_LIST_CACHE: Dict[str, Tuple[float, Dict[str, str]]] = {}
