@@ -31,6 +31,9 @@ def _default_config() -> dict:
     return {
         # 全局开关（仅骰主可改）：关闭后不进行任何消息转发
         'global_enabled': True,
+        # 是否使用人物卡显示（仅骰主可改）。需要 OlivaDiceCore。
+        # 若未检测到 OlivaDiceCore，则即便为 True 也视为关闭。
+        'pc_card_enabled': True,
         # 有向边：src_group_id -> [dst_group_id, ...]
         'edges': {},
         # 配置master：权限等同骰主（可管理群链、开关防刷等）
@@ -287,6 +290,39 @@ def _get_group_name(plugin_event, group_id: str) -> str:
     return gid
 
 
+def _get_hag_id(plugin_event) -> str:
+    try:
+        host_id = getattr(plugin_event.data, 'host_id', None)
+    except Exception:
+        host_id = None
+    try:
+        group_id = getattr(plugin_event.data, 'group_id', None)
+    except Exception:
+        group_id = None
+
+    gid = _norm_gid(group_id)
+    hid = _norm_gid(host_id) if host_id is not None else ''
+    if hid:
+        return f"{hid}|{gid}"
+    return gid
+
+
+def _get_pc_card_name(plugin_event) -> Optional[str]:
+    if not oliva_dice_core_available:
+        return None
+    try:
+        uid = _norm_gid(plugin_event.data.user_id)
+        pc_hash = OlivaDiceCore.pcCard.getPcHash(uid, plugin_event.platform['platform'])
+        hag_id = _get_hag_id(plugin_event)
+        name = OlivaDiceCore.pcCard.pcCardDataGetSelectionKey(pc_hash, hag_id)
+        if name is None:
+            return None
+        name = str(name).strip()
+        return name if name else None
+    except Exception:
+        return None
+
+
 def _get_user_display_name(plugin_event) -> str:
     # 优先用事件里带的name；其次尝试拉群成员名片
     try:
@@ -309,11 +345,19 @@ def _get_user_display_name(plugin_event) -> str:
     return _norm_gid(getattr(plugin_event.data, 'user_id', ''))
 
 
-def _format_forward_header(plugin_event) -> str:
-    src_gid = _norm_gid(plugin_event.data.group_id)
-    src_name = _get_group_name(plugin_event, src_gid)
+def _format_forward_header(plugin_event, cfg: dict) -> str:
     uid = _norm_gid(plugin_event.data.user_id)
     uname = _get_user_display_name(plugin_event)
+
+    # 人物卡显示（需要 OlivaDiceCore）
+    pc_enabled = bool(cfg.get('pc_card_enabled', True)) and oliva_dice_core_available
+    if pc_enabled:
+        pc_name = _get_pc_card_name(plugin_event) or uname
+        return f"{pc_name}[{uname}]({uid})"
+
+    # 默认：群信息 + 昵称
+    src_gid = _norm_gid(plugin_event.data.group_id)
+    src_name = _get_group_name(plugin_event, src_gid)
     return f"[{src_name}({src_gid}) - {uname}({uid})]"
 
 
@@ -411,6 +455,34 @@ class Event(object):
                 plugin_event.reply('未知参数，用法：.群链 全局 开/关/状态')
                 return
 
+            # 人物卡显示开关（仅骰主可用；需要 OlivaDiceCore）
+            if action in ['人物卡', '卡', 'pc', 'pccard']:
+                if not _is_dice_master(plugin_event, _norm_gid(plugin_event.data.user_id)):
+                    plugin_event.reply('权限不足：仅骰主可开关人物卡显示。')
+                    return
+                if not oliva_dice_core_available:
+                    plugin_event.reply('无法使用：未检测到 OlivaDiceCore，人物卡显示不可用。')
+                    return
+                if not args:
+                    plugin_event.reply('用法：.群链 人物卡 开  /  .群链 人物卡 关  /  .群链 人物卡 状态')
+                    return
+                sub = str(args[0]).strip()
+                if sub in ['开', 'on', '开启']:
+                    cfg['pc_card_enabled'] = True
+                    _save_config(cfg)
+                    plugin_event.reply('人物卡显示已开启（全局）。')
+                    return
+                if sub in ['关', 'off', '关闭']:
+                    cfg['pc_card_enabled'] = False
+                    _save_config(cfg)
+                    plugin_event.reply('人物卡显示已关闭（全局）。')
+                    return
+                if sub in ['状态', 'status']:
+                    plugin_event.reply(f"人物卡显示状态：{'开启' if (cfg.get('pc_card_enabled', True) and oliva_dice_core_available) else '关闭'}")
+                    return
+                plugin_event.reply('未知参数，用法：.群链 人物卡 开/关/状态')
+                return
+
             # 防刷开关（仅骰主/配置master可用）
             if action in ['防刷', 'dedup', '去重']:
                 if not _is_privileged_master(plugin_event, cfg):
@@ -452,6 +524,7 @@ class Event(object):
                     '5) .群链 列表\n'
                     '6) .群链 防刷 开/关/状态（仅骰主/配置master）\n'
                     '7) .群链 全局 开/关/状态（仅骰主，全局转发开关）\n'
+                    '8) .群链 人物卡 开/关/状态（仅骰主，默认开；需OlivaDiceCore）\n'
                     '说明：对面群必须在bot的群列表（bot已入群），且操作者本人也必须在对面群内。'
                 )
                 return
@@ -626,7 +699,7 @@ class Event(object):
         if not targets:
             return
 
-        header = _format_forward_header(plugin_event)
+        header = _format_forward_header(plugin_event, cfg)
         forward_text = header + "\n" + msg
 
         for dst_gid in targets:
