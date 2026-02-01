@@ -4,6 +4,7 @@ import OlivOS
 import os
 import json
 import time
+import re
 from typing import Dict, List, Optional, Tuple
 
 oliva_dice_core_available = False
@@ -13,18 +14,108 @@ try:
 except Exception:
     oliva_dice_core_available = False
 
+def replyMsg(plugin_event, message, at_user = False):
+    if oliva_dice_core_available:
+        host_id = None
+        group_id = None
+        user_id = None
+        at_user_msg = ""
+        try:
+            tmp_name = OlivaDiceCore.msgCustom.dictStrCustomDict[plugin_event.bot_info.hash]['strBotName']
+        except:
+            tmp_name = "Bot"
+        tmp_self_id = plugin_event.bot_info.id
+        if 'host_id' in plugin_event.data.__dict__:
+            host_id = plugin_event.data.host_id
+        if 'group_id' in plugin_event.data.__dict__:
+            group_id = plugin_event.data.group_id
+        if 'user_id' in plugin_event.data.__dict__:
+            user_id = plugin_event.data.user_id
+        try:
+            OlivaDiceCore.crossHook.dictHookFunc['msgHook'](
+                plugin_event,
+                'reply',
+                {
+                    'name': tmp_name,
+                    'id': tmp_self_id
+                },
+                [host_id, group_id, user_id],
+                str(message)
+            )
+        except:
+            pass
+        if at_user:
+            at_para = OlivOS.messageAPI.PARA.at(str(user_id))
+            at_user_msg = at_para.get_string_by_key('OP')
+            return OlivaDiceCore.msgReply.pluginReply(plugin_event, f'{at_user_msg} ' + str(message))
+        else:
+            return OlivaDiceCore.msgReply.pluginReply(plugin_event, str(message))
+    else:
+        if at_user:
+            uid = getattr(plugin_event.data, 'user_id', None)
+            if uid:
+                at_para = OlivOS.messageAPI.PARA.at(str(uid))
+                return plugin_event.reply(at_para.get_string_by_key('OP') + " " + str(message))
+        return plugin_event.reply(str(message))
+
 DATA_PATH = os.path.join('plugin', 'data', 'QQGroupForward')
-DEFAULT_FILE = os.path.join(DATA_PATH, 'default.json')
+
+def get_redirected_bot_hash(bot_hash: str) -> str:
+    """遵循 OlivaDiceCore 主从账号链接：从账号读写主账号目录。"""
+    if oliva_dice_core_available:
+        try:
+            master = OlivaDiceCore.console.getMasterBotHash(bot_hash)
+            if master:
+                return str(master)
+        except Exception:
+            pass
+    return bot_hash
+
+def get_bot_conf_hash(bot_hash):
+    # 首先处理主从账号重定向
+    bot_hash = get_redirected_bot_hash(bot_hash)
+    if oliva_dice_core_available:
+        try:
+            return OlivaDiceCore.userConfig.getConfHash(bot_hash)
+        except:
+            pass
+    return bot_hash
+
+def get_conf_dir(bot_hash):
+    conf_hash = get_bot_conf_hash(bot_hash)
+    path = os.path.join(DATA_PATH, conf_hash)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def get_config_file(bot_hash):
+    return os.path.join(get_conf_dir(bot_hash), 'config.json')
+
+def get_edges_file(bot_hash):
+    return os.path.join(get_conf_dir(bot_hash), 'edges.json')
 
 COMMAND_PREFIXES = ('.群链', '。群链', '/群链')
+
+# 全局命令别名定义，避免重复
+COMMAND_ALIASES = {
+    'global': ['全局', 'global', '总开关', '开关'],
+    'pc_card': ['人物卡', '卡', 'pc', 'pccard'],
+    'dedup': ['防刷', 'dedup', '去重'],
+    'help': ['帮助', 'help'],
+    'list': ['列表', 'list'],
+    'oneway': ['单向', 'oneway', 'one'],
+    'bidirectional': ['双向', 'bidirectional', 'both', 'two'],
+    'disconnect': ['断开', '删除', 'remove', 'del']
+}
+
+# 反向映射：别名 -> 标准命令名
+_ALIAS_TO_CMD = {}
+for cmd_name, aliases in COMMAND_ALIASES.items():
+    for alias in aliases:
+        _ALIAS_TO_CMD[alias] = cmd_name
 
 # bot_hash -> (timestamp, {group_id: group_name})
 _GROUP_LIST_CACHE: Dict[str, Tuple[float, Dict[str, str]]] = {}
 _GROUP_LIST_TTL_SEC = 60
-
-
-def _ensure_dirs() -> None:
-    os.makedirs(DATA_PATH, exist_ok=True)
 
 
 def _default_config() -> dict:
@@ -34,8 +125,6 @@ def _default_config() -> dict:
         # 是否使用人物卡显示（仅骰主可改）。需要 OlivaDiceCore。
         # 若未检测到 OlivaDiceCore，则即便为 True 也视为关闭。
         'pc_card_enabled': True,
-        # 有向边：src_group_id -> [dst_group_id, ...]
-        'edges': {},
         # 配置master：权限等同骰主（可管理群链、开关防刷等）
         'masters': [],
         # 防刷：同一条消息ID在短时间内只处理一次
@@ -44,20 +133,28 @@ def _default_config() -> dict:
     }
 
 
-def _load_config() -> dict:
-    _ensure_dirs()
-    if not os.path.exists(DEFAULT_FILE):
+def _load_config(bot_hash: str) -> dict:
+    conf_file = get_config_file(bot_hash)
+
+    # 兜底：若当前 bot_hash 为从账号，且主账号目录里不存在配置，则尝试读取旧的从账号目录
+    redirected_hash = get_redirected_bot_hash(bot_hash)
+    if redirected_hash != bot_hash and not os.path.exists(conf_file):
+        legacy_conf = os.path.join(DATA_PATH, bot_hash, 'config.json')
+        if os.path.exists(legacy_conf):
+            conf_file = legacy_conf
+
+    if not os.path.exists(conf_file):
         cfg = _default_config()
-        _save_config(cfg)
+        _save_config(bot_hash, cfg)
         return cfg
     try:
-        with open(DEFAULT_FILE, 'r', encoding='utf-8') as f:
+        with open(conf_file, 'r', encoding='utf-8') as f:
             cfg = json.load(f)
         if not isinstance(cfg, dict):
             raise ValueError('config not dict')
     except Exception:
         cfg = _default_config()
-        _save_config(cfg)
+        _save_config(bot_hash, cfg)
         return cfg
 
     # 补默认字段
@@ -67,9 +164,6 @@ def _load_config() -> dict:
         if k not in cfg:
             cfg[k] = v
             changed = True
-    if 'edges' not in cfg or not isinstance(cfg.get('edges'), dict):
-        cfg['edges'] = {}
-        changed = True
 
     # 规范 masters
     if 'masters' not in cfg or not isinstance(cfg.get('masters'), list):
@@ -89,28 +183,55 @@ def _load_config() -> dict:
             changed = True
 
     # 清理历史字段（不再需要）
-    for legacy_key in ['version', 'enabled']:
+    for legacy_key in ['version', 'enabled', 'edges']:
         if legacy_key in cfg:
             cfg.pop(legacy_key, None)
             changed = True
 
     if changed:
-        _save_config(cfg)
+        _save_config(bot_hash, cfg)
     return cfg
 
 
-def _save_config(cfg: dict) -> None:
-    _ensure_dirs()
-    with open(DEFAULT_FILE, 'w', encoding='utf-8') as f:
+def _save_config(bot_hash: str, cfg: dict) -> None:
+    conf_file = get_config_file(bot_hash)
+    with open(conf_file, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def _load_edges(bot_hash: str) -> dict:
+    edges_file = get_edges_file(bot_hash)
+
+    # 兜底：若当前 bot_hash 为从账号，且主账号目录里不存在 edges，则尝试读取旧的从账号目录
+    redirected_hash = get_redirected_bot_hash(bot_hash)
+    if redirected_hash != bot_hash and not os.path.exists(edges_file):
+        legacy_edges = os.path.join(DATA_PATH, bot_hash, 'edges.json')
+        if os.path.exists(legacy_edges):
+            edges_file = legacy_edges
+
+    if not os.path.exists(edges_file):
+        return {}
+    try:
+        with open(edges_file, 'r', encoding='utf-8') as f:
+            edges = json.load(f)
+        if not isinstance(edges, dict):
+            return {}
+        return edges
+    except Exception:
+        return {}
+
+
+def _save_edges(bot_hash: str, edges: dict) -> None:
+    edges_file = get_edges_file(bot_hash)
+    with open(edges_file, 'w', encoding='utf-8') as f:
+        json.dump(edges, f, ensure_ascii=False, indent=2)
 
 
 def _norm_gid(gid) -> str:
     return str(gid).strip()
 
 
-def _edge_list(cfg: dict, src_gid: str) -> List[str]:
-    edges = cfg.get('edges', {})
+def _edge_list(edges: dict, src_gid: str) -> List[str]:
     lst = edges.get(src_gid, [])
     if not isinstance(lst, list):
         lst = []
@@ -127,28 +248,28 @@ def _edge_list(cfg: dict, src_gid: str) -> List[str]:
     return out
 
 
-def _add_edge(cfg: dict, src_gid: str, dst_gid: str) -> Tuple[bool, str]:
+def _add_edge(edges: dict, src_gid: str, dst_gid: str) -> Tuple[bool, str]:
     if src_gid == dst_gid:
         return False, '不能连接同一个群。'
-    out = _edge_list(cfg, src_gid)
+    out = _edge_list(edges, src_gid)
     if dst_gid in out:
         return False, '已存在该连接（不能重复连接）。'
     out.append(dst_gid)
-    cfg['edges'][src_gid] = out
+    edges[src_gid] = out
     return True, '连接已添加。'
 
 
-def _remove_edge(cfg: dict, src_gid: str, dst_gid: str) -> bool:
-    out = _edge_list(cfg, src_gid)
+def _remove_edge(edges: dict, src_gid: str, dst_gid: str) -> bool:
+    out = _edge_list(edges, src_gid)
     if dst_gid in out:
         out.remove(dst_gid)
-        cfg['edges'][src_gid] = out
+        edges[src_gid] = out
         return True
     return False
 
 
-def _is_bidirectional(cfg: dict, a: str, b: str) -> bool:
-    return b in _edge_list(cfg, a) and a in _edge_list(cfg, b)
+def _is_bidirectional(edges: dict, a: str, b: str) -> bool:
+    return b in _edge_list(edges, a) and a in _edge_list(edges, b)
 
 
 def _is_dice_master(plugin_event, user_id: str) -> bool:
@@ -323,6 +444,62 @@ def _get_pc_card_name(plugin_event) -> Optional[str]:
         return None
 
 
+def _get_member_name(plugin_event, group_id: str, user_id: str) -> str:
+    """获取指定群成员的显示名称（名片或昵称）。"""
+    try:
+        gid = _norm_gid(group_id)
+        uid = _norm_gid(user_id)
+        res = plugin_event.get_group_member_list(gid)
+        if res and isinstance(res, dict) and res.get('active') and 'data' in res:
+            for m in res['data']:
+                if str(m.get('id')) == uid:
+                    return str(m.get('card') or m.get('name') or uid)
+    except Exception:
+        pass
+    return str(user_id)
+
+def _replace_at_with_text(plugin_event, group_id: str, text: str) -> str:
+    """将文本中的 [OP:at,...] 或 [CQ:at,...] 替换为 @群名片。"""
+    if not isinstance(text, str):
+        return text
+    
+    # 支持 [OP:at,...] 和 [CQ:at,...] 两种格式
+    pattern = r'\[(?:OP|CQ):at,([^\]]+)\]'
+    
+    member_map = None
+
+    def do_replace(match):
+        nonlocal member_map
+        params_str = match.group(1)
+        params = {}
+        for pair in params_str.split(','):
+            if '=' in pair:
+                kv = pair.split('=', 1)
+                if len(kv) == 2:
+                    params[kv[0].strip()] = kv[1].strip()
+        
+        if 'name' in params and params['name']:
+            return f"@{params['name']}"
+        
+        uid = params.get('id') or params.get('qq')
+        if not uid:
+            return "" # 无法识别的AT直接抹掉
+        
+        if member_map is None:
+            member_map = {}
+            try:
+                res = plugin_event.get_group_member_list(_norm_gid(group_id))
+                if res and isinstance(res, dict) and res.get('active') and 'data' in res:
+                    for m in res['data']:
+                        member_map[str(m.get('id'))] = str(m.get('card') or m.get('name'))
+            except:
+                pass
+        
+        name = member_map.get(str(uid), str(uid))
+        return f"@{name}"
+
+    return re.sub(pattern, do_replace, text)
+
 def _get_user_display_name(plugin_event) -> str:
     # 优先用事件里带的name；其次尝试拉群成员名片
     try:
@@ -331,19 +508,63 @@ def _get_user_display_name(plugin_event) -> str:
     except Exception:
         pass
 
+    return _get_member_name(plugin_event, plugin_event.data.group_id, plugin_event.data.user_id)
+
+
+def _get_reply_context(plugin_event, msg: str) -> Tuple[str, str]:
+    """
+    解析消息中的回复 OP 码 [OP:reply,id=...]，并获取被回复的消息内容。
+    返回 (处理后的消息, 上下文文本)。
+    """
+    if not isinstance(msg, str):
+        return msg, ""
+    
+    src_gid = _norm_gid(plugin_event.data.group_id)
+    
+    # 匹配回复代码（支持 [OP:reply,...] 和 [CQ:reply,...] 两种格式）
+    reply_pattern = r'\[(?:OP|CQ):reply,([^\]]+)\]'
+    match = re.search(reply_pattern, msg)
+    if not match:
+        return msg, ""
+    
+    # 解析 reply_id
+    params_str = match.group(1)
+    reply_id = None
+    for pair in params_str.split(','):
+        if '=' in pair:
+            kv = pair.split('=', 1)
+            if kv[0].strip() == 'id':
+                reply_id = kv[1].strip()
+                break
+    
+    # 移除当前消息中的回复头
+    msg_without_reply = re.sub(reply_pattern, '', msg).strip()
+    
+    if not reply_id:
+        return msg_without_reply, ""
+
+    context_text = ""
     try:
-        gid = _norm_gid(plugin_event.data.group_id)
-        uid = _norm_gid(plugin_event.data.user_id)
-        res = plugin_event.get_group_member_list(gid)
-        if res and isinstance(res, dict) and res.get('active') and 'data' in res:
-            for m in res['data']:
-                if str(m.get('id')) == uid:
-                    return str(m.get('card') or m.get('name') or uid)
+        res = plugin_event.get_msg(reply_id)
+        if res and isinstance(res, dict) and res.get('active'):
+            data = res.get('data', {})
+            orig_raw = str(data.get('raw_message', ''))
+            orig_sender = data.get('sender', {})
+            orig_name = orig_sender.get('name') or orig_sender.get('id') or "未知"
+            
+            # 1. 彻底去掉原消息中的嵌套回复（回复中的回复）
+            orig_raw_clean = re.sub(reply_pattern, '', orig_raw).strip()
+            # 2. 将原消息中的 AT 替换为文本
+            orig_raw_clean = _replace_at_with_text(plugin_event, src_gid, orig_raw_clean)
+            
+            if len(orig_raw_clean) > 100:
+                orig_raw_clean = orig_raw_clean[:100] + "..."
+            
+            context_text = f"\n↳ 回复 {orig_name}: {orig_raw_clean}\n--------------------"
     except Exception:
         pass
-
-    return _norm_gid(getattr(plugin_event.data, 'user_id', ''))
-
+        
+    return msg_without_reply, context_text
 
 def _format_forward_header(plugin_event, cfg: dict) -> str:
     src_gid = _norm_gid(plugin_event.data.group_id)
@@ -362,21 +583,84 @@ def _format_forward_header(plugin_event, cfg: dict) -> str:
     return f"[{src_name}({src_gid}) - {uname}({uid})]"
 
 
+def isMatchWordStart(data, key, ignoreCase=True, fullMatch=False, isCommand=False):
+    tmp_output = False
+    flag_skip = False
+    tmp_data = data.strip()
+    tmp_keys = [key] if isinstance(key, str) else key
+    if isCommand and oliva_dice_core_available:
+        if 'replyContextFliter' in OlivaDiceCore.crossHook.dictHookList:
+            for k in tmp_keys:
+                if k in OlivaDiceCore.crossHook.dictHookList['replyContextFliter']:
+                    tmp_output = False
+                    flag_skip = True
+                    break
+    if not flag_skip:
+        if ignoreCase:
+            tmp_data = tmp_data.lower()
+            tmp_keys = [k.lower() for k in tmp_keys]
+        # 按长度从长到短排序
+        tmp_keys_sorted = sorted(tmp_keys, key=lambda x: len(x), reverse=True)
+        for tmp_key in tmp_keys_sorted:
+            if not fullMatch and len(tmp_data) >= len(tmp_key):
+                if tmp_data[:len(tmp_key)] == tmp_key:
+                    tmp_output = True
+                    break
+            elif fullMatch and tmp_data == tmp_key:
+                tmp_output = True
+                break
+    return tmp_output
+
+def getMatchWordStartRight(data, key, ignoreCase=True):
+    tmp_output_str = ''
+    tmp_data = data.strip()
+    tmp_keys = [key] if isinstance(key, str) else key
+    if ignoreCase:
+        tmp_data = tmp_data.lower()
+        tmp_keys = [k.lower() for k in tmp_keys]
+    # 按长度从长到短排序
+    tmp_keys_sorted = sorted(tmp_keys, key=lambda x: len(x), reverse=True)
+    for tmp_key in tmp_keys_sorted:
+        if len(tmp_data) >= len(tmp_key):
+            if tmp_data[:len(tmp_key)] == tmp_key:
+                tmp_output_str = data.strip()[len(tmp_key):]
+                break
+    return tmp_output_str
+
 def _parse_command(text: str) -> Optional[Tuple[str, List[str]]]:
     if not isinstance(text, str):
         return None
-    s = text.strip()
-    hit = None
-    for p in COMMAND_PREFIXES:
-        if s.startswith(p):
-            hit = p
-            break
-    if not hit:
+    
+    if not isMatchWordStart(text, COMMAND_PREFIXES, isCommand=True):
         return None
-    rest = s[len(hit):].strip()
+    
+    rest = getMatchWordStartRight(text, COMMAND_PREFIXES).strip()
     if not rest:
         return ('help', [])
+    
+    # 从 COMMAND_ALIASES 中提取所有别名，按长度倒序排列（优先匹配长词）
+    all_aliases = []
+    for cmd_name, aliases in COMMAND_ALIASES.items():
+        for alias in aliases:
+            all_aliases.append(alias)
+    
+    matched_action = None
+    # 找出匹配到的关键词（按长度倒序，以优先匹配如 "人物卡" 而非 "卡"）
+    for a in sorted(all_aliases, key=len, reverse=True):
+        if isMatchWordStart(rest, a):
+            matched_action = a
+            break
+            
+    if matched_action:
+        # 获取二级动作之后的内容作为参数
+        args_str = getMatchWordStartRight(rest, [matched_action]).strip()
+        args = args_str.split() if args_str else []
+        return (matched_action, args)
+    
+    # 如果没匹配到已知动作，回退到原有的空格分割逻辑
     parts = rest.split()
+    if not parts:
+        return ('help', [])
     return (parts[0], parts[1:])
 
 
@@ -384,13 +668,15 @@ class Event(object):
     _dedup_cache: Dict[str, float] = {}
 
     def init(plugin_event, Proc):
-        _load_config()
+        pass
 
     def group_message(plugin_event, Proc):
         if plugin_event.platform.get('platform') != 'qq':
             return
 
-        cfg = _load_config()
+        bot_hash = str(plugin_event.bot_info.hash)
+        cfg = _load_config(bot_hash)
+        edges = _load_edges(bot_hash)
 
         # 不转发bot自身消息
         try:
@@ -430,93 +716,96 @@ class Event(object):
         cmd = _parse_command(msg)
         if cmd is not None:
             action, args = cmd
+            
+            # 获取规范的命令名（通过反向映射）
+            cmd_name = _ALIAS_TO_CMD.get(action, action)
 
             # 全局开关（仅骰主可用）
-            if action in ['全局', 'global', '总开关', '开关']:
+            if cmd_name == 'global':
                 if not _is_dice_master(plugin_event, _norm_gid(plugin_event.data.user_id)):
-                    plugin_event.reply('权限不足：仅骰主可开关全局转发。')
+                    replyMsg(plugin_event, '权限不足：仅骰主可开关全局转发。')
                     return
                 if not args:
-                    plugin_event.reply('用法：.群链 全局 开  /  .群链 全局 关  /  .群链 全局 状态')
+                    replyMsg(plugin_event, '用法：.群链 全局 开  /  .群链 全局 关  /  .群链 全局 状态')
                     return
                 sub = str(args[0]).strip()
                 if sub in ['开', 'on', '开启']:
                     cfg['global_enabled'] = True
-                    _save_config(cfg)
-                    plugin_event.reply('全局转发已开启。')
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '全局转发已开启。')
                     return
                 if sub in ['关', 'off', '关闭']:
                     cfg['global_enabled'] = False
-                    _save_config(cfg)
-                    plugin_event.reply('全局转发已关闭。')
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '全局转发已关闭。')
                     return
                 if sub in ['状态', 'status']:
-                    plugin_event.reply(f"全局转发状态：{'开启' if cfg.get('global_enabled', True) else '关闭'}")
+                    replyMsg(plugin_event, f"全局转发状态：{'开启' if cfg.get('global_enabled', True) else '关闭'}")
                     return
-                plugin_event.reply('未知参数，用法：.群链 全局 开/关/状态')
+                replyMsg(plugin_event, '未知参数，用法：.群链 全局 开/关/状态')
                 return
 
             # 人物卡显示开关（仅骰主可用；需要 OlivaDiceCore）
-            if action in ['人物卡', '卡', 'pc', 'pccard']:
+            if cmd_name == 'pc_card':
                 if not _is_dice_master(plugin_event, _norm_gid(plugin_event.data.user_id)):
-                    plugin_event.reply('权限不足：仅骰主可开关人物卡显示。')
+                    replyMsg(plugin_event, '权限不足：仅骰主可开关人物卡显示。')
                     return
                 if not oliva_dice_core_available:
-                    plugin_event.reply('无法使用：未检测到 OlivaDiceCore，人物卡显示不可用。')
+                    replyMsg(plugin_event, '无法使用：未检测到 OlivaDiceCore，人物卡显示不可用。')
                     return
                 if not args:
-                    plugin_event.reply('用法：.群链 人物卡 开  /  .群链 人物卡 关  /  .群链 人物卡 状态')
+                    replyMsg(plugin_event, '用法：.群链 人物卡 开  /  .群链 人物卡 关  /  .群链 人物卡 状态')
                     return
                 sub = str(args[0]).strip()
                 if sub in ['开', 'on', '开启']:
                     cfg['pc_card_enabled'] = True
-                    _save_config(cfg)
-                    plugin_event.reply('人物卡显示已开启（全局）。')
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '人物卡显示已开启（全局）。')
                     return
                 if sub in ['关', 'off', '关闭']:
                     cfg['pc_card_enabled'] = False
-                    _save_config(cfg)
-                    plugin_event.reply('人物卡显示已关闭（全局）。')
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '人物卡显示已关闭（全局）。')
                     return
                 if sub in ['状态', 'status']:
-                    plugin_event.reply(f"人物卡显示状态：{'开启' if (cfg.get('pc_card_enabled', True) and oliva_dice_core_available) else '关闭'}")
+                    replyMsg(plugin_event, f"人物卡显示状态：{'开启' if (cfg.get('pc_card_enabled', True) and oliva_dice_core_available) else '关闭'}")
                     return
-                plugin_event.reply('未知参数，用法：.群链 人物卡 开/关/状态')
+                replyMsg(plugin_event, '未知参数，用法：.群链 人物卡 开/关/状态')
                 return
 
             # 防刷开关（仅骰主/配置master可用）
-            if action in ['防刷', 'dedup', '去重']:
+            if cmd_name == 'dedup':
                 if not _is_privileged_master(plugin_event, cfg):
-                    plugin_event.reply('权限不足：仅骰主/配置master可开关防刷。')
+                    replyMsg(plugin_event, '权限不足：仅骰主/配置master可开关防刷。')
                     return
                 if not args:
-                    plugin_event.reply('用法：.群链 防刷 开  /  .群链 防刷 关  /  .群链 防刷 状态')
+                    replyMsg(plugin_event, '用法：.群链 防刷 开  /  .群链 防刷 关  /  .群链 防刷 状态')
                     return
                 sub = str(args[0]).strip()
                 if sub in ['开', 'on', '开启']:
                     cfg['dedup_enabled'] = True
-                    _save_config(cfg)
-                    plugin_event.reply('防刷已开启。')
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '防刷已开启。')
                     return
                 if sub in ['关', 'off', '关闭']:
                     cfg['dedup_enabled'] = False
-                    _save_config(cfg)
-                    plugin_event.reply('防刷已关闭。')
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '防刷已关闭。')
                     return
                 if sub in ['状态', 'status']:
-                    plugin_event.reply(f"防刷状态：{'开启' if cfg.get('dedup_enabled', True) else '关闭'}（TTL={int(cfg.get('dedup_ttl_sec', 10) or 10)}秒）")
+                    replyMsg(plugin_event, f"防刷状态：{'开启' if cfg.get('dedup_enabled', True) else '关闭'}（TTL={int(cfg.get('dedup_ttl_sec', 10) or 10)}秒）")
                     return
-                plugin_event.reply('未知参数，用法：.群链 防刷 开/关/状态')
+                replyMsg(plugin_event, '未知参数，用法：.群链 防刷 开/关/状态')
                 return
 
             if not _can_manage(plugin_event, cfg):
-                plugin_event.reply('权限不足：仅群主/群管/骰主/配置master可管理群链。')
+                replyMsg(plugin_event, '权限不足：仅群主/群管/骰主/配置master可管理群链。')
                 return
 
             src_gid = _norm_gid(plugin_event.data.group_id)
 
-            if action in ['help', '帮助']:
-                plugin_event.reply(
+            if cmd_name == 'help':
+                replyMsg(plugin_event, 
                     '群链命令：\n'
                     '1) .群链 单向 [对面群号]  （对面 -> 本群）\n'
                     '2) .群链 双向 [对面群号]  （双向互转）\n'
@@ -530,31 +819,29 @@ class Event(object):
                 )
                 return
 
-            if action in ['列表', 'list']:
-                outgoing = _edge_list(cfg, src_gid)
+            if cmd_name == 'list':
+                outgoing = _edge_list(edges, src_gid)
 
                 incoming_srcs: List[str] = []
                 try:
-                    edges = cfg.get('edges', {})
-                    if isinstance(edges, dict):
-                        for s in list(edges.keys()):
-                            ss = _norm_gid(s)
-                            if not ss or ss == src_gid:
-                                continue
-                            if src_gid in _edge_list(cfg, ss):
-                                incoming_srcs.append(ss)
+                    for s in list(edges.keys()):
+                        ss = _norm_gid(s)
+                        if not ss or ss == src_gid:
+                            continue
+                        if src_gid in _edge_list(edges, ss):
+                            incoming_srcs.append(ss)
                 except Exception:
                     incoming_srcs = []
 
                 if not outgoing and not incoming_srcs:
-                    plugin_event.reply('本群暂无已配置的转发连接。')
+                    replyMsg(plugin_event, '本群暂无已配置的转发连接。')
                     return
 
                 lines: List[str] = []
                 if incoming_srcs:
                     lines.append('【转发到本群（接收）】')
                     for s in incoming_srcs:
-                        tag = '双向' if _is_bidirectional(cfg, src_gid, s) else '单向←'
+                        tag = '双向' if _is_bidirectional(edges, src_gid, s) else '单向←'
                         name = _get_group_name(plugin_event, s)
                         lines.append(f"- {tag} {name}({s})")
 
@@ -563,50 +850,50 @@ class Event(object):
                         lines.append('')
                     lines.append('【从本群转发出去（发送）】')
                     for dst in outgoing:
-                        tag = '双向' if _is_bidirectional(cfg, src_gid, dst) else '单向→'
+                        tag = '双向' if _is_bidirectional(edges, src_gid, dst) else '单向→'
                         dst_name = _get_group_name(plugin_event, dst)
                         lines.append(f"- {tag} {dst_name}({dst})")
 
-                plugin_event.reply('本群转发连接：\n' + '\n'.join(lines))
+                replyMsg(plugin_event, '本群转发连接：\n' + '\n'.join(lines))
                 return
 
-            if action in ['单向', 'oneway', 'one']:
+            if cmd_name == 'oneway':
                 if not args:
-                    plugin_event.reply('用法：.群链 单向 <对面群号>  （对面 -> 本群）')
+                    replyMsg(plugin_event, '用法：.群链 单向 [对面群号]  （对面 -> 本群）')
                     return
                 dst_gid = _norm_gid(args[0])
                 if not dst_gid.isdecimal():
-                    plugin_event.reply('对面群号格式不正确。')
+                    replyMsg(plugin_event, '对面群号格式不正确。')
                     return
                 if not _group_exists_for_bot(plugin_event, dst_gid):
-                    plugin_event.reply('连接失败：对面群不在bot的群列表（bot未入群或无法获取群成员）。')
+                    replyMsg(plugin_event, '连接失败：对面群不在bot的群列表（bot未入群或无法获取群成员）。')
                     return
                 if not _user_in_group(plugin_event, dst_gid, _norm_gid(plugin_event.data.user_id)):
-                    plugin_event.reply('连接失败：你本人不在对面群内（需要你也在对面群里）。')
+                    replyMsg(plugin_event, '连接失败：你本人不在对面群内（需要你也在对面群里）。')
                     return
 
                 # 单向：对面 -> 本群
-                ok, tip = _add_edge(cfg, dst_gid, src_gid)
+                ok, tip = _add_edge(edges, dst_gid, src_gid)
                 if ok:
-                    _save_config(cfg)
-                    plugin_event.reply(f"单向连接已配置：{dst_gid} -> {src_gid}")
+                    _save_edges(bot_hash, edges)
+                    replyMsg(plugin_event, f"单向连接已配置：{dst_gid} -> {src_gid}")
                 else:
-                    plugin_event.reply(tip)
+                    replyMsg(plugin_event, tip)
                 return
 
-            if action in ['双向', 'bidirectional', 'both', 'two']:
+            if cmd_name == 'bidirectional':
                 if not args:
-                    plugin_event.reply('用法：.群链 双向 <目标群号>')
+                    replyMsg(plugin_event, '用法：.群链 双向 [目标群号]')
                     return
                 dst_gid = _norm_gid(args[0])
                 if not dst_gid.isdecimal():
-                    plugin_event.reply('目标群号格式不正确。')
+                    replyMsg(plugin_event, '目标群号格式不正确。')
                     return
                 if not _group_exists_for_bot(plugin_event, dst_gid):
-                    plugin_event.reply('连接失败：目标群不在bot的群列表（bot未入群或无法获取群成员）。')
+                    replyMsg(plugin_event, '连接失败：目标群不在bot的群列表（bot未入群或无法获取群成员）。')
                     return
                 if not _user_in_group(plugin_event, dst_gid, _norm_gid(plugin_event.data.user_id)):
-                    plugin_event.reply('连接失败：你本人不在目标群内（需要你也在对面群里）。')
+                    replyMsg(plugin_event, '连接失败：你本人不在目标群内（需要你也在对面群里）。')
                     return
 
                 # 双向连接限制：非骰主/配置master必须在两边都是群主/管理员
@@ -616,49 +903,51 @@ class Event(object):
                     except Exception:
                         role_here = None
                     if role_here not in ['owner', 'admin']:
-                        plugin_event.reply('连接失败：双向链接要求你在本群是群主/管理员（骰主/配置master可无视）。')
+                        replyMsg(plugin_event, '连接失败：双向链接要求你在本群是群主/管理员（骰主/配置master可无视）。')
                         return
                     role_there = _get_user_role_in_group(plugin_event, dst_gid, _norm_gid(plugin_event.data.user_id))
                     if role_there not in ['owner', 'admin']:
-                        plugin_event.reply('连接失败：双向链接要求你在目标群也是群主/管理员（骰主/配置master可无视）。')
+                        replyMsg(plugin_event, '连接失败：双向链接要求你在目标群也是群主/管理员（骰主/配置master可无视）。')
                         return
 
                 changed = False
-                ok1, tip1 = _add_edge(cfg, src_gid, dst_gid)
+                ok1, tip1 = _add_edge(edges, src_gid, dst_gid)
                 if ok1:
                     changed = True
-                ok2, _ = _add_edge(cfg, dst_gid, src_gid)
+                ok2, _ = _add_edge(edges, dst_gid, src_gid)
                 if ok2:
                     changed = True
 
                 if changed:
-                    _save_config(cfg)
-                    plugin_event.reply('双向连接已配置。')
+                    _save_edges(bot_hash, edges)
+                    replyMsg(plugin_event, '双向连接已配置。')
                 else:
                     # 可能已存在双向或部分已存在
-                    if _is_bidirectional(cfg, src_gid, dst_gid):
-                        plugin_event.reply('已存在双向连接（不能重复连接）。')
+                    if _is_bidirectional(edges, src_gid, dst_gid):
+                        replyMsg(plugin_event, '已存在双向连接（不能重复连接）。')
                     else:
-                        plugin_event.reply('已存在单向连接，已补齐/或无需修改。')
+                        replyMsg(plugin_event, '已存在单向连接，已补齐/或无需修改。')
                 return
 
-            if action in ['断开', '删除', 'remove', 'del']:
-                # 默认按双向断开（兼容旧用法：.群链 断开 <群号>）
+            if cmd_name == 'disconnect':
+                # 默认按双向断开（兼容旧用法：.群链 断开 [群号]）
                 mode = '双向'
                 dst_gid = None
 
                 if not args:
-                    plugin_event.reply('用法：.群链 断开 单向 <目标群号>  或  .群链 断开 双向 <目标群号>')
+                    replyMsg(plugin_event, '用法：.群链 断开 单向 [目标群号]  或  .群链 断开 双向 [目标群号]')
                     return
 
                 if len(args) == 1:
                     dst_gid = _norm_gid(args[0])
                 else:
                     mode_arg = str(args[0]).strip()
-                    if mode_arg in ['单向', 'oneway', 'one']:
+                    # 使用反向映射检查二级命令
+                    mode_cmd = _ALIAS_TO_CMD.get(mode_arg, mode_arg)
+                    if mode_cmd == 'oneway':
                         mode = '单向'
                         dst_gid = _norm_gid(args[1])
-                    elif mode_arg in ['双向', 'bidirectional', 'both', 'two']:
+                    elif mode_cmd == 'bidirectional':
                         mode = '双向'
                         dst_gid = _norm_gid(args[1])
                     else:
@@ -666,28 +955,28 @@ class Event(object):
                         dst_gid = _norm_gid(args[0])
 
                 if not dst_gid or not dst_gid.isdecimal():
-                    plugin_event.reply('目标群号格式不正确。')
+                    replyMsg(plugin_event, '目标群号格式不正确。')
                     return
 
                 changed = False
                 if mode == '单向':
                     # 单向定义为：对面 -> 本群
-                    if _remove_edge(cfg, dst_gid, src_gid):
+                    if _remove_edge(edges, dst_gid, src_gid):
                         changed = True
                 else:
-                    if _remove_edge(cfg, src_gid, dst_gid):
+                    if _remove_edge(edges, src_gid, dst_gid):
                         changed = True
-                    if _remove_edge(cfg, dst_gid, src_gid):
+                    if _remove_edge(edges, dst_gid, src_gid):
                         changed = True
 
                 if changed:
-                    _save_config(cfg)
-                    plugin_event.reply('已断开连接。')
+                    _save_edges(bot_hash, edges)
+                    replyMsg(plugin_event, '已断开连接。')
                 else:
-                    plugin_event.reply('未找到该连接。')
+                    replyMsg(plugin_event, '未找到该连接。')
                 return
 
-            plugin_event.reply('未知子命令，发送“.群链”查看帮助。')
+            replyMsg(plugin_event, '未知子命令，发送“.群链”查看帮助。')
             return
 
         # 全局关闭时不进行转发（但仍允许使用命令开启）
@@ -696,12 +985,17 @@ class Event(object):
 
         # 转发
         src_gid = _norm_gid(plugin_event.data.group_id)
-        targets = _edge_list(cfg, src_gid)
+        targets = _edge_list(edges, src_gid)
         if not targets:
             return
 
         header = _format_forward_header(plugin_event, cfg)
-        forward_text = header + "\n" + msg
+        # 处理回复上下文
+        msg_to_forward, reply_context = _get_reply_context(plugin_event, msg)
+        # 将当前消息中的 AT 替换为文本
+        msg_to_forward = _replace_at_with_text(plugin_event, src_gid, msg_to_forward)
+        
+        forward_text = header + reply_context + "\n" + msg_to_forward
 
         for dst_gid in targets:
             # 发送到目标群
