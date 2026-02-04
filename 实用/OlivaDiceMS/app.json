@@ -1,0 +1,23 @@
+{
+    "name" : "OlivaDiceMS母舰规则检定插件",
+    "author" : "Desom-fu / 原海豹插件作者：叁崎",
+    "namespace" : "OlivaDiceMS",
+    "message_mode" : "old_string",
+    "info" : "母舰TRPG规则插件：人物作成、属性/豁免检定、压力、惊恐表",
+    "version" : "1.0.0",
+    "svn" : 3,
+    "compatible_svn" : 190,
+    "priority" : 19990,
+    "support" : [
+        {
+            "sdk" : "onebot",
+            "platform" : "qq",
+            "model" : "all"
+        },
+        {
+            "sdk" : "all",
+            "platform" : "all",
+            "model" : "all"
+        }
+    ]
+}

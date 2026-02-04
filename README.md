@@ -26,6 +26,9 @@
  * `jrlp` -- 抽取今日老婆喽~论坛发布地址：https://forum.olivos.run/d/856
  * `OlivaDiceLexNinjutsu` -- 语音释放忍术！论坛发布地址：https://forum.olivos.run/d/863
  * `OlivaDiceRAD` -- rad功能实现。论坛发布地址：https://forum.olivos.run/d/872-rad
+ * `QQGroupForward` -- QQ群转发插件。论坛发布地址：https://forum.olivos.run/d/884-qqqqgroupforward
+
+ 
 ### 💪实用
  * `OlivaDiceShouHun` -- 狩魂者插件，包含人物卡模板。论坛发布地址：https://forum.olivos.run/d/827
  * `OlivaDiceCats` -- 喵影奇谋插件，包含人物卡模板。论坛发布地址：https://forum.olivos.run/d/847
@@ -36,6 +39,7 @@
  * `SmartInterceptor` -- 拦截词系统，包含三种拦截方式。论坛发布地址：https://forum.olivos.run/d/707-smartinterceptor
  * `messageRecall` -- 撤回消息插件。论坛发布地址：https://forum.olivos.run/d/860
  * `OlivaDiceManager` -- 群管插件。论坛发布地址：https://forum.olivos.run/d/866-olivadicemanager
+ * `OlivaDiceMS` -- 母舰(Mothership)插件。论坛发布地址：https://forum.olivos.run/d/886-mothership
  
 
 ### 📚示例

@@ -100,6 +100,8 @@ COMMAND_ALIASES = {
     'global': ['全局', 'global', '总开关', '开关'],
     'pc_card': ['人物卡', '卡', 'pc', 'pccard'],
     'dedup': ['防刷', 'dedup', '去重'],
+    'filter_bracket': ['括号过滤', '括号', '左括号过滤', '左括号', 'bracket', 'paren', 'parenthesis'],
+    'filter_dot': ['句号过滤', '句号', '点过滤', '点', 'dot', 'prefix'],
     'help': ['帮助', 'help'],
     'list': ['列表', 'list'],
     'oneway': ['单向', 'oneway', 'one'],
@@ -130,7 +132,45 @@ def _default_config() -> dict:
         # 防刷：同一条消息ID在短时间内只处理一次
         'dedup_enabled': True,
         'dedup_ttl_sec': 10,
+        # 转发过滤：去除开头的 at 之后，以左括号开头的不转发（默认关闭；识别半角/全角）
+        'filter_skip_leading_bracket_after_at': False,
+        # 转发过滤：去除开头的 at 之后，以 . / 。 开头的不转发（默认关闭；识别半角/全角句号）
+        'filter_skip_leading_dot_after_at': False,
     }
+
+
+_LEADING_AT_CODE_RE = re.compile(r'^(?:\s*\[(?:OP|CQ):at,[^\]]+\]\s*)+', re.IGNORECASE)
+_LEADING_AT_TEXT_RE = re.compile(r'^(?:\s*@[^\s\r\n]+\s*)+', re.IGNORECASE)
+
+
+def _strip_leading_at(text: str) -> str:
+    """去掉消息开头连续出现的 at（OP/CQ at 码或 @昵称 文本），用于做前缀过滤判断。"""
+    if not isinstance(text, str):
+        return ''
+    s = text.lstrip()
+    # 先去掉 [OP:at,...]/[CQ:at,...]
+    s2 = _LEADING_AT_CODE_RE.sub('', s).lstrip()
+    # 再去掉替换成文本后的 @xxx（有些平台会直接给明文 @）
+    s3 = _LEADING_AT_TEXT_RE.sub('', s2).lstrip()
+    return s3
+
+
+def _should_skip_forward_by_prefix(cfg: dict, msg_text: str) -> bool:
+    """根据配置判断是否因前缀规则而跳过转发。"""
+    s = _strip_leading_at(msg_text)
+    if not s:
+        return False
+
+    if bool(cfg.get('filter_skip_leading_bracket_after_at', False)):
+        if s.startswith('(') or s.startswith('（'):
+            return True
+
+    if bool(cfg.get('filter_skip_leading_dot_after_at', False)):
+        # 兼容半角句号 '.'、中文句号 '。'，顺手兼容全角点 '．'
+        if s.startswith('.') or s.startswith('。') or s.startswith('．'):
+            return True
+
+    return False
 
 
 def _load_config(bot_hash: str) -> dict:
@@ -798,6 +838,56 @@ class Event(object):
                 replyMsg(plugin_event, '未知参数，用法：.群链 防刷 开/关/状态')
                 return
 
+            # 转发过滤：左括号前缀过滤（仅骰主/配置master可用）
+            if cmd_name == 'filter_bracket':
+                if not _is_privileged_master(plugin_event, cfg):
+                    replyMsg(plugin_event, '权限不足：仅骰主/配置master可开关括号过滤。')
+                    return
+                if not args:
+                    replyMsg(plugin_event, '用法：.群链 括号过滤 开  /  .群链 括号过滤 关  /  .群链 括号过滤 状态')
+                    return
+                sub = str(args[0]).strip()
+                if sub in ['开', 'on', '开启']:
+                    cfg['filter_skip_leading_bracket_after_at'] = True
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '括号过滤已开启：去除开头AT后，以（或(开头的消息不转发。')
+                    return
+                if sub in ['关', 'off', '关闭']:
+                    cfg['filter_skip_leading_bracket_after_at'] = False
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '括号过滤已关闭。')
+                    return
+                if sub in ['状态', 'status']:
+                    replyMsg(plugin_event, f"括号过滤状态：{'开启' if cfg.get('filter_skip_leading_bracket_after_at', False) else '关闭'}")
+                    return
+                replyMsg(plugin_event, '未知参数，用法：.群链 括号过滤 开/关/状态')
+                return
+
+            # 转发过滤：句号前缀过滤（仅骰主/配置master可用）
+            if cmd_name == 'filter_dot':
+                if not _is_privileged_master(plugin_event, cfg):
+                    replyMsg(plugin_event, '权限不足：仅骰主/配置master可开关句号过滤。')
+                    return
+                if not args:
+                    replyMsg(plugin_event, '用法：.群链 句号过滤 开  /  .群链 句号过滤 关  /  .群链 句号过滤 状态')
+                    return
+                sub = str(args[0]).strip()
+                if sub in ['开', 'on', '开启']:
+                    cfg['filter_skip_leading_dot_after_at'] = True
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '句号过滤已开启：去除开头AT后，以 . 或 。 开头的消息不转发。')
+                    return
+                if sub in ['关', 'off', '关闭']:
+                    cfg['filter_skip_leading_dot_after_at'] = False
+                    _save_config(bot_hash, cfg)
+                    replyMsg(plugin_event, '句号过滤已关闭。')
+                    return
+                if sub in ['状态', 'status']:
+                    replyMsg(plugin_event, f"句号过滤状态：{'开启' if cfg.get('filter_skip_leading_dot_after_at', False) else '关闭'}")
+                    return
+                replyMsg(plugin_event, '未知参数，用法：.群链 句号过滤 开/关/状态')
+                return
+
             if not _can_manage(plugin_event, cfg):
                 replyMsg(plugin_event, '权限不足：仅群主/群管/骰主/配置master可管理群链。')
                 return
@@ -815,6 +905,8 @@ class Event(object):
                     '6) .群链 防刷 开/关/状态（仅骰主/配置master）\n'
                     '7) .群链 全局 开/关/状态（仅骰主，全局转发开关）\n'
                     '8) .群链 人物卡 开/关/状态（仅骰主，默认开；需OlivaDiceCore）\n'
+                    '9) .群链 括号过滤 开/关/状态（仅骰主/配置master，默认关：去除开头AT后以（/(开头的不转发）\n'
+                    '10) .群链 句号过滤 开/关/状态（仅骰主/配置master，默认关：去除开头AT后以./。开头的不转发）\n'
                     '说明：对面群必须在bot的群列表（bot已入群），且操作者本人也必须在对面群内。'
                 )
                 return
@@ -992,6 +1084,11 @@ class Event(object):
         header = _format_forward_header(plugin_event, cfg)
         # 处理回复上下文
         msg_to_forward, reply_context = _get_reply_context(plugin_event, msg)
+
+        # 前缀过滤：按配置跳过某些“命令/括号动作”类消息
+        if _should_skip_forward_by_prefix(cfg, msg_to_forward):
+            return
+
         # 将当前消息中的 AT 替换为文本
         msg_to_forward = _replace_at_with_text(plugin_event, src_gid, msg_to_forward)
         
