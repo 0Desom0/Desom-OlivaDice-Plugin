@@ -28,19 +28,19 @@
  * `OlivaDiceRAD` -- rad功能实现。论坛发布地址：https://forum.olivos.run/d/872-rad
  * `QQGroupForward` -- QQ群转发插件。论坛发布地址：https://forum.olivos.run/d/884-qqqqgroupforward
 
- 
+
 ### 💪实用
  * `OlivaDiceShouHun` -- 狩魂者插件，包含人物卡模板。论坛发布地址：https://forum.olivos.run/d/827
  * `OlivaDiceCats` -- 喵影奇谋插件，包含人物卡模板。论坛发布地址：https://forum.olivos.run/d/847
  * `OlivaDiceTA` -- 三角机构插件，包含人物卡模板。论坛发布地址：https://forum.olivos.run/d/849-triangle-agency`
  * `OlivaDiceSanchi` -- 三尺之下插件，包含人物卡模板。论坛发布地址：https://forum.olivos.run/d/850
  * `OlivaDiceDH` -- 匕首之心插件，包含人物卡模板。论坛发布地址：https://forum.olivos.run/d/871-daggerheart`
+ * `OlivaDiceMS` -- 母舰(Mothership)插件。论坛发布地址：https://forum.olivos.run/d/886-mothership
  * `OlivaDiceSortCOC` -- 排序制卡结果并合并转发，便于快速找到最高总属性的结果。论坛发布地址：https://forum.olivos.run/d/836-olivadicesortcoc
  * `SmartInterceptor` -- 拦截词系统，包含三种拦截方式。论坛发布地址：https://forum.olivos.run/d/707-smartinterceptor
  * `messageRecall` -- 撤回消息插件。论坛发布地址：https://forum.olivos.run/d/860
  * `OlivaDiceManager` -- 群管插件。论坛发布地址：https://forum.olivos.run/d/866-olivadicemanager
- * `OlivaDiceMS` -- 母舰(Mothership)插件。论坛发布地址：https://forum.olivos.run/d/886-mothership
- 
+ * `StatusPlugin` -- 系统状态查询插件。论坛发布地址：https://forum.olivos.run/d/887-statusplugin
 
 ### 📚示例
  * `OlivaDice插件模板` -- 一个自用插件模板，论坛发布地址：https://forum.olivos.run/d/833-olivadicecoregui

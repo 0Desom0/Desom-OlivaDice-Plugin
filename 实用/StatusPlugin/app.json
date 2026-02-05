@@ -1,0 +1,18 @@
+{
+    "name" : "StatusPlugin",
+    "author" : "Desom-fu",
+    "namespace" : "StatusPlugin",
+    "info" : "StatusPlugin，显示当前服务器状态",
+    "priority" : 10000,
+    "svn" : 1,
+    "version" : "1.0.0",
+    "compatible_svn" : 190,
+    "message_mode" : "olivos_string",
+    "support" : [
+        {
+            "sdk" : "all",
+            "platform" : "all",
+            "model" : "all"
+        }
+    ]
+}
