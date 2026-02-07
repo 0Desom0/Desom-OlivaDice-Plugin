@@ -4,8 +4,8 @@
     "namespace" : "OlivaDiceDH",
     "message_mode" : "old_string",
     "info" : "这里是OlivaDice的匕首之心模块，实现了匕首之心规则的功能。",
-    "version" : "1.0.2",
-    "svn" : 2,
+    "version" : "1.0.3",
+    "svn" : 3,
     "compatible_svn" : 190,
     "priority" : 19990,
     "support" : [

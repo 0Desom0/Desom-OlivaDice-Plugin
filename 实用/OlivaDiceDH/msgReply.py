@@ -1047,6 +1047,7 @@ def parseModifier(mod_str, tmp_pc_id, tmp_hagID, result):
         # 优势/劣势骰 - 支持：优势、劣势、优、劣、adv、dis、2优势、优势3等
         # 注意：这里只记录数量，不掷骰（掷骰在processDDCommand中统一处理）
         # 逻辑：+优势=优势，-优势=劣势，+劣势=优势，-劣势=劣势
+        # 特殊处理：劣势类无符号默认为劣势（-），而其他无符号默认为+
         adv_match = re.match(r'^(\d*)([优劣]势?|adv|dis|advantage|disadvantage)(\d*)$', part, re.I)
         if adv_match:
             num_before, adv_type, num_after = adv_match.groups()
@@ -1055,10 +1056,16 @@ def parseModifier(mod_str, tmp_pc_id, tmp_hagID, result):
             is_advantage = adv_type.lower() in ['优势', '优', 'adv', 'advantage']
             is_disadvantage = adv_type.lower() in ['劣势', '劣', 'dis', 'disadvantage']
             
+            # 特殊处理：劣势类无符号时默认为劣势（相当于sign=-1）
+            effective_sign = sign
+            if is_disadvantage and sign == 1:
+                # 劣势类无符号时，默认为-（劣势）
+                effective_sign = -1
+            
             # 逻辑：+优势=优势，-优势=劣势，+劣势=优势，-劣势=劣势
             if is_advantage:
                 # 优势关键字
-                if sign == 1:
+                if effective_sign == 1:
                     # +优势 = 优势
                     final_type = 'advantage'
                 else:
@@ -1066,7 +1073,7 @@ def parseModifier(mod_str, tmp_pc_id, tmp_hagID, result):
                     final_type = 'disadvantage'
             else:
                 # 劣势关键字
-                if sign == 1:
+                if effective_sign == 1:
                     # +劣势 = 优势
                     final_type = 'advantage'
                 else:
