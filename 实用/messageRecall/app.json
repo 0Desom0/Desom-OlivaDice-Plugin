@@ -3,7 +3,7 @@
     "author" : "Desom-fu",
     "namespace" : "messageRecall",
     "info" : "通过回复+撤回进行强制撤回操作，撤回他人消息需要管理员权限",
-    "priority" : 30000,
+    "priority" : 29999,
     "svn" : 1,
     "version" : "1.0.0",
     "compatible_svn" : 190,

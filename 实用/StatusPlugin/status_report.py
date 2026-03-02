@@ -35,28 +35,9 @@ def parse_status_command(message: str, self_id: str) -> Optional[StatusCommand]:
     if not text:
         return None
 
-    # 支持两种运行时模式：
-    # - 如果存在 OlivaDiceCore（通常外层会先去掉前缀），则前缀是可选的；
-    #   遇到前缀则去掉，未遇到前缀也可直接匹配命令。
-    # - 如果不存在 OlivaDiceCore，则要求消息必须以前缀开头。
-    # 检查 OlivaDiceCore 是否存在（避免实际导入导致未使用的导入警告）
-    try:
-        import importlib.util as _importlib_util
-        _has_core = _importlib_util.find_spec('OlivaDiceCore') is not None
-    except Exception:
-        _has_core = False
-
-    if _has_core:
-        # 允许可选前缀
-        if text and text[0] in _PREFIXES:
-            after = text[1:].lstrip()
-        else:
-            after = text.lstrip()
-    else:
-        # 必须有前缀
-        if not text or text[0] not in _PREFIXES:
-            return None
-        after = text[1:].lstrip()
+    if not text or text[0] not in _PREFIXES:
+        return None
+    after = text[1:].lstrip()
 
     if not after:
         return None

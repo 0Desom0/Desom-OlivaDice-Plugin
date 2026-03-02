@@ -67,6 +67,7 @@ def unity_reply(plugin_event, Proc):
     # 双标识都有执行撤回
     if isMatchWordStart(tmp_reast_str, '撤回') and is_reply_flag is True and is_at_self_flag is True:
         plugin_event.delete_msg(message_id)
+        plugin_event.set_block()
 
 def skipSpaceStart(data):
     tmp_output_str = ''
