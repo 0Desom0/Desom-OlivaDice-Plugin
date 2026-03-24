@@ -41,10 +41,13 @@ class Event(object):
 
 def unity_reply(plugin_event, Proc):
     # 被动回复消息示例
+    raw_message = plugin_event.data.message
+    parsed_message = raw_message
+    parsed_by_olivadice = False
 
     if _has_olivadice:
         try:
-            tmp_reast_str = plugin_event.data.message
+            tmp_reast_str = raw_message
             tmp_reast_str = OlivaDiceCore.msgReply.to_half_width(tmp_reast_str)
 
             tmp_id_str = str(plugin_event.base_info['self_id'])
@@ -76,6 +79,8 @@ def unity_reply(plugin_event, Proc):
             msgIsCommand = OlivaDiceCore.msgReply.msgIsCommand
             tmp_reast_str, flag_is_command = msgIsCommand(tmp_reast_str, OlivaDiceCore.crossHook.dictHookList['prefix'])
             if flag_is_command:
+                parsed_message = tmp_reast_str
+                parsed_by_olivadice = True
                 flag_is_from_group = plugin_event.plugin_info['func_type'] == 'group_message'
                 flag_is_from_host = False
                 if flag_is_from_group and plugin_event.data.host_id is not None:
@@ -115,7 +120,20 @@ def unity_reply(plugin_event, Proc):
         except Exception:
             # 出错则忽略 OlivaDice 检查
             pass
-    status_cmd = parse_status_command(message=tmp_reast_str, self_id=str(plugin_event.base_info['self_id']))
+
+    if parsed_by_olivadice:
+        status_cmd = parse_status_command(
+            message=parsed_message,
+            self_id=str(plugin_event.base_info['self_id']),
+            require_prefix=False,
+        )
+    else:
+        status_cmd = parse_status_command(
+            message=raw_message,
+            self_id=str(plugin_event.base_info['self_id']),
+            require_prefix=True,
+        )
+
     if status_cmd is not None:
         plugin_event.reply(build_status_report())
         plugin_event.set_block()

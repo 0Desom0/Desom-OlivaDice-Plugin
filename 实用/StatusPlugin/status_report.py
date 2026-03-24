@@ -23,7 +23,7 @@ class StatusCommand:
 _last_net_sample: Optional[tuple[float, int, int]] = None
 
 
-def parse_status_command(message: str, self_id: str) -> Optional[StatusCommand]:
+def parse_status_command(message: str, self_id: str, require_prefix: bool = True) -> Optional[StatusCommand]:
     """解析 OlivOS 的消息文本；匹配时返回 StatusCommand。
 
     支持前缀：'.'、'/'、'。'。
@@ -35,9 +35,12 @@ def parse_status_command(message: str, self_id: str) -> Optional[StatusCommand]:
     if not text:
         return None
 
-    if not text or text[0] not in _PREFIXES:
-        return None
-    after = text[1:].lstrip()
+    if require_prefix:
+        if not text or text[0] not in _PREFIXES:
+            return None
+        after = text[1:].lstrip()
+    else:
+        after = text
 
     if not after:
         return None

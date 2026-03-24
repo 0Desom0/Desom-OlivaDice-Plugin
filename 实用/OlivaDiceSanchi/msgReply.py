@@ -281,6 +281,9 @@ def roll_three_coins_with_bp(b_count, p_count, u_count=0, d_count=0):
     base_coins = 3
     actual_coins = max(1, base_coins + u_count - d_count)
     
+    # b/p相互抵消后，只保留单一方向转换
+    b_count, p_count = normalize_bp_counts(b_count, p_count)
+
     # 投掷铜钱
     rd = OlivaDiceCore.onedice.RD(f'{actual_coins}d2')
     rd.roll()
@@ -312,6 +315,47 @@ def roll_three_coins_with_bp(b_count, p_count, u_count=0, d_count=0):
     
     return results, yang_count, transformations, extra_coins
 
+def normalize_bp_counts(b_count, p_count):
+    """
+    规范化b/p数量：二者相互抵消，最终只保留一种
+    返回: (normalized_b_count, normalized_p_count)
+    """
+    net_count = b_count - p_count
+
+    if net_count > 0:
+        return net_count, 0
+    if net_count < 0:
+        return 0, abs(net_count)
+    return 0, 0
+
+def roll_divination_coins():
+    """
+    投签专用：投掷三枚铜钱并返回正反顺序对应的序号
+    返回: (铜钱显示列表, 序号)
+    """
+    coins_display = []
+    coins_binary = []
+
+    for i in range(3):
+        rd = OlivaDiceCore.onedice.RD('1D2')
+        rd.roll()
+        if rd.resError is not None:
+            raise Exception("投掷铜钱失败")
+
+        coin_result = rd.resMetaTuple[0]
+        if coin_result == 1:
+            coins_display.append("阴")
+            coins_binary.append(0)
+        else:
+            coins_display.append("阳")
+            coins_binary.append(1)
+
+    divination_index = hexagramData.get_divination_index_by_coins(coins_binary)
+    if divination_index is None:
+        raise Exception("投签结果解析失败")
+
+    return coins_display, divination_index
+
 def determine_tqa_success(attr_value, difficulty, yang_count):
     """
     根据三尺之下规则判断tqa检定是否成功
@@ -341,10 +385,13 @@ def apply_bp_transformations(results, b_count, p_count):
     b_count: 阴转阳的数量
     p_count: 阳转阴的数量（同时增加劣势铜钱数）
     返回: (转换后的结果列表, 转换说明列表, 额外增加的铜钱数)
-    
-    劣势规则：每个p转换会增加一枚标记为(劣势)的铜钱，且劣势铜钱投出的阳也可以被继续转换
-    优势规则：优势转换会在劣势转换完成后继续处理剩余的优势
+
+    规则：
+    - b和p先相互抵消，最终只保留单一方向
+    - 所有转换仅基于初始投掷结果，不进行连环/套娃转换
     """
+    b_count, p_count = normalize_bp_counts(b_count, p_count)
+
     if b_count <= 0 and p_count <= 0:
         return results, [], 0
     
@@ -353,82 +400,29 @@ def apply_bp_transformations(results, b_count, p_count):
     transformations = []
     extra_coins = 0
     
-    # 记录剩余的转换次数
-    remaining_b = b_count
-    remaining_p = p_count
-    
-    # 第一轮：执行初始b转换（阴转阳）
-    yin_indices = [i for i, r in enumerate(new_results) if r.startswith('阴')]
-    initial_b = min(remaining_b, len(yin_indices))
-    if initial_b > 0:
-        # 随机选择要转换的阴
-        selected_yin = random.sample(yin_indices, initial_b)
-        for idx in selected_yin:
-            new_results[idx] = '阳(阴)'
-            transformations.append(f"位置{idx+1}: 阴→阳")
-        remaining_b -= initial_b
-    
-    # 第二轮：执行p转换（阳转阴+劣势铜钱）
-    while remaining_p > 0:
-        # 先增加一枚劣势铜钱
-        extra_coins += 1
-        coin_result = random.choice(['阴', '阳'])
-        coin_result += '(劣势)'  # 所有劣势铜钱都标记为劣势
-        new_results.append(coin_result)
-        
-        # 获取当前所有阳的位置（包括新增加的劣势阳）
-        yang_indices = [i for i, r in enumerate(new_results) if r.startswith('阳')]
-        
-        if len(yang_indices) == 0:
-            # 没有阳可以转换了，退出循环
-            break
-        
-        # 每次只转换一个阳（劣势的定义是每个劣势转换一个阳）
-        actual_p = min(1, len(yang_indices))
-        if actual_p > 0:
-            # 随机选择要转换的阳
-            selected_yang = random.sample(yang_indices, actual_p)
-            for idx in selected_yang:
-                old_value = new_results[idx]
-                # 保留原有的劣势标记
-                if '(劣势)' in old_value:
-                    new_results[idx] = '阴(阳)(劣势)'
-                else:
-                    new_results[idx] = '阴(阳)'
-                transformations.append(f"位置{idx+1}: 阳→阴")
-        
-        remaining_p -= actual_p
-    
-    # 第三轮：如果还有剩余的b转换，继续处理新产生的阴爻
-    while remaining_b > 0:
-        # 获取当前所有阴的位置（包括劣势转换产生的新阴爻）
-        yin_indices = [i for i, r in enumerate(new_results) if r.startswith('阴')]
-        
-        if len(yin_indices) == 0:
-            # 没有阴可以转换了，退出循环
-            break
-        
-        # 转换剩余的阴
-        actual_b = min(remaining_b, len(yin_indices))
+    if b_count > 0:
+        yin_indices = [i for i, r in enumerate(new_results) if r == '阴']
+        actual_b = min(b_count, len(yin_indices))
         if actual_b > 0:
-            # 随机选择要转换的阴
             selected_yin = random.sample(yin_indices, actual_b)
             for idx in selected_yin:
-                old_value = new_results[idx]
-                # 保留原有的标记
-                if '(劣势)' in old_value and '(阳)' in old_value:
-                    new_results[idx] = '阳(阴)(阳)(劣势)'
-                elif '(劣势)' in old_value:
-                    new_results[idx] = '阳(阴)(劣势)'
-                elif '(阳)' in old_value:
-                    new_results[idx] = '阳(阴)(阳)'
-                else:
-                    new_results[idx] = '阳(阴)'
+                new_results[idx] = '阳(阴)'
                 transformations.append(f"位置{idx+1}: 阴→阳")
-            remaining_b -= actual_b
-        else:
-            break
-    
+
+    elif p_count > 0:
+        yang_indices = [i for i, r in enumerate(new_results) if r == '阳']
+        actual_p = min(p_count, len(yang_indices))
+        if actual_p > 0:
+            selected_yang = random.sample(yang_indices, actual_p)
+            for idx in selected_yang:
+                new_results[idx] = '阴(阳)'
+                transformations.append(f"位置{idx+1}: 阳→阴")
+
+        for i in range(p_count):
+            extra_coins += 1
+            coin_result = random.choice(['阴', '阳'])
+            new_results.append(f'{coin_result}(劣势)')
+
     return new_results, transformations, extra_coins
 
 def unity_init(plugin_event, Proc):
@@ -661,6 +655,8 @@ def unity_reply(plugin_event, Proc):
             my_part_cleaned, my_b_count, my_p_count, my_u_count, my_d_count = parse_bp_parameters(my_part)
             # 解析对方的参数
             other_part_cleaned, other_b_count, other_p_count, other_u_count, other_d_count = parse_bp_parameters(other_part)
+            my_b_count, my_p_count = normalize_bp_counts(my_b_count, my_p_count)
+            other_b_count, other_p_count = normalize_bp_counts(other_b_count, other_p_count)
             
             # 计算自己的属性值
             my_value = 0
@@ -892,6 +888,7 @@ def unity_reply(plugin_event, Proc):
             need_extra_disadvantage = diff > 2
             if need_extra_disadvantage:
                 p_count += 1  # 自动增加一个劣势
+            b_count, p_count = normalize_bp_counts(b_count, p_count)
             
             # 投掷铜钱
             results, yang_count, transformations, extra_coins = roll_three_coins_with_bp(b_count, p_count, u_count, d_count)
@@ -1112,56 +1109,23 @@ def unity_reply(plugin_event, Proc):
 
             # 投签功能实现
             try:
-                # 1. 凡尘记忆 - 曾经的身份
-                past_identity_coins = []
-                past_identity_yang = 0
-                for i in range(3):
-                    rd = OlivaDiceCore.onedice.RD('1D2')
-                    rd.roll()
-                    if rd.resError is not None:
-                        raise Exception("投掷铜钱失败")
-                    coin_result = rd.resMetaTuple[0]
-                    if coin_result == 1:
-                        past_identity_coins.append("阴")
-                    else:
-                        past_identity_coins.append("阳")
-                        past_identity_yang += 1
+                # 1. 凡世身份
+                past_identity_coins, past_identity_index = roll_divination_coins()
+                past_identity_desc = hexagramData.mortal_identity_dict.get(past_identity_index)
+                if past_identity_desc is None:
+                    raise Exception("凡世身份解析失败")
 
-                past_identity_desc = hexagramData.past_identity_dict.get(past_identity_yang)
-                
-                # 2. 横遭祸事 - 发生的变故
-                past_tragedy_coins = []
-                past_tragedy_yang = 0
-                for i in range(3):
-                    rd = OlivaDiceCore.onedice.RD('1D2')
-                    rd.roll()
-                    if rd.resError is not None:
-                        raise Exception("投掷铜钱失败")
-                    coin_result = rd.resMetaTuple[0]
-                    if coin_result == 1:
-                        past_tragedy_coins.append("阴")
-                    else:
-                        past_tragedy_coins.append("阳")
-                        past_tragedy_yang += 1
+                # 2. 动机
+                past_tragedy_coins, past_tragedy_index = roll_divination_coins()
+                past_tragedy_desc = hexagramData.motivation_dict.get(past_tragedy_index)
+                if past_tragedy_desc is None:
+                    raise Exception("动机解析失败")
 
-                past_tragedy_desc = hexagramData.past_tragedy_dict.get(past_tragedy_yang)
-                
-                # 3. 执念生根 - 如今的目标
-                current_goal_coins = []
-                current_goal_yang = 0
-                for i in range(3):
-                    rd = OlivaDiceCore.onedice.RD('1D2')
-                    rd.roll()
-                    if rd.resError is not None:
-                        raise Exception("投掷铜钱失败")
-                    coin_result = rd.resMetaTuple[0]
-                    if coin_result == 1:
-                        current_goal_coins.append("阴")
-                    else:
-                        current_goal_coins.append("阳")
-                        current_goal_yang += 1
-
-                current_goal_desc = hexagramData.current_goal_dict.get(current_goal_yang)
+                # 3. 执念
+                current_goal_coins, current_goal_index = roll_divination_coins()
+                current_goal_desc = hexagramData.obsession_dict.get(current_goal_index)
+                if current_goal_desc is None:
+                    raise Exception("执念解析失败")
 
                 # 4. 三官官职 - d3决定
                 rd_official = OlivaDiceCore.onedice.RD('1D3')
@@ -1409,6 +1373,7 @@ def unity_reply(plugin_event, Proc):
             
             # 应用u/d参数调整铜钱数量
             tq_number = max(1, tq_number + u_count - d_count)
+            b_count, p_count = normalize_bp_counts(b_count, p_count)
             
             # 校验铜钱数
             if tq_number < 1 or tq_number > 100:
