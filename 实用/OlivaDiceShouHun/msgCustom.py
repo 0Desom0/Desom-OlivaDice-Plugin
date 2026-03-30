@@ -24,11 +24,11 @@ dictStrCustom = {
     'strShSuccessLevel': '\n成功等级: {tSuccessLevelInt}',
     'strShShmAdd': '\nshm: {tShmOld}+{tShmAddValue}={tShmNew}',
     'strShError': '狩魂者检定错误: {tResult}\n查询正确检定指令请使用.help sh查看\n录卡规则请使用.help shst查看',
-    'strShSetSuccess': '已将[{tChallengeScope}]的默认挑战值设置为: {tChallengeValue}',
-    'strShSetShow': '[{tChallengeScope}]当前默认挑战值: {tChallengeValue}',
-    'strShSetShowDefault': '[{tChallengeScope}]未设置默认挑战值，当前使用默认值: {tChallengeValue}',
-    'strShSetReset': '已清除[{tChallengeScope}]的默认挑战值，当前已恢复为默认值: {tChallengeValue}',
-    'strShSetInvalid': '默认挑战值设置错误: 请输入合法的解析式。\n用法: .sh set [数字/show/clr]'
+    'strShSetSuccess': '已将[{tChallengeScope}]的默认挑战值设置为[{tChallengeValue}]',
+    'strShSetShow': '[{tChallengeScope}]当前默认挑战值[{tChallengeValue}]',
+    'strShSetShowDefault': '[{tChallengeScope}]未设置默认挑战值，当前使用默认挑战值[{tChallengeValue}]',
+    'strShSetReset': '已清除[{tChallengeScope}]的默认挑战值，当前已恢复为默认挑战值[{tChallengeValue}]',
+    'strShSetInvalid': '默认挑战值设置错误: 请输入合法的解析式。'
 }
 
 dictStrConst = {
