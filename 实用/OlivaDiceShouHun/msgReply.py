@@ -16,8 +16,13 @@ import hashlib
 import time
 import traceback
 import re
+import os
+import json
 from functools import wraps
 import copy
+
+SHOUHUN_DEFAULT_CHALLENGE = 10
+SHOUHUN_ONEDICE_EXPR_CHARS = set('0123456789dD+-*/().^kKhHlL')
 
 def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skipSpaceStart, parse_m_h=True):
     """
@@ -211,6 +216,142 @@ def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skip
     
     return cleaned_expr, b_count, p_count, m_flag, x_value, x_flag, h_flag, x_modifier, s_count, s_fixed_values, kh_kl_type, kh_kl_num, a_flag
 
+def get_shouhun_data_path():
+    shouhun_data_path = os.path.join('plugin', 'data', 'OlivaDiceShouhun')
+    if not os.path.exists(shouhun_data_path):
+        os.makedirs(shouhun_data_path)
+    return shouhun_data_path
+
+def get_redirected_bot_hash(bot_hash):
+    try:
+        master = OlivaDiceCore.console.getMasterBotHash(bot_hash)
+        if master:
+            return str(master)
+    except Exception:
+        pass
+    return bot_hash
+
+def get_shouhun_default_scope(plugin_event, flag_is_from_group, tmp_hagID):
+    if flag_is_from_group and tmp_hagID is not None:
+        return 'group', str(tmp_hagID), '本群'
+    return 'user', str(plugin_event.data.user_id), '当前私聊'
+
+def get_shouhun_default_hash(plugin_event, target_id, target_type):
+    return OlivaDiceCore.userConfig.getUserHash(
+        userId = target_id,
+        userType = target_type,
+        platform = plugin_event.platform['platform']
+    )
+
+def get_shouhun_default_file_path(plugin_event, target_id, target_type):
+    shouhun_data_path = get_shouhun_data_path()
+    bot_hash = get_redirected_bot_hash(plugin_event.bot_info.hash)
+    target_hash = get_shouhun_default_hash(plugin_event, target_id, target_type)
+    bot_path = os.path.join(shouhun_data_path, bot_hash)
+    target_path = os.path.join(bot_path, target_type)
+    for path in [bot_path, target_path]:
+        if not os.path.exists(path):
+            os.makedirs(path)
+    return os.path.join(target_path, f'{target_hash}.json')
+
+def load_shouhun_default_challenge(plugin_event, target_id, target_type):
+    file_path = get_shouhun_default_file_path(plugin_event, target_id, target_type)
+    if not os.path.exists(file_path):
+        return None
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for key in ['defaultChallengeValue', 'challengeValue', 'value']:
+                if key in data:
+                    return str(data[key]).strip()
+        elif isinstance(data, (int, float, str)):
+            return str(data).strip()
+    except Exception:
+        return None
+    return None
+
+def save_shouhun_default_challenge(plugin_event, target_id, target_type, challenge_value):
+    file_path = get_shouhun_default_file_path(plugin_event, target_id, target_type)
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump({'defaultChallengeValue': str(challenge_value).strip()}, f, ensure_ascii=False, indent=2)
+
+def reset_shouhun_default_challenge(plugin_event, target_id, target_type):
+    file_path = get_shouhun_default_file_path(plugin_event, target_id, target_type)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+def get_current_shouhun_default_challenge(plugin_event, target_id, target_type):
+    res = load_shouhun_default_challenge(plugin_event, target_id, target_type)
+    if res in [None, '']:
+        return str(SHOUHUN_DEFAULT_CHALLENGE)
+    return str(res)
+
+def can_roll_expression(expr_str, tmp_template_customDefault=None):
+    if expr_str in [None, '']:
+        return False
+    expr_str = str(expr_str).replace(' ', '')
+    if expr_str == '':
+        return False
+    if expr_str.isdecimal():
+        return True
+    expr_lower = expr_str.lower()
+    expr_lower_without_khkl = re.sub(r'k[hl]', '', expr_lower)
+    if 'k' in expr_lower_without_khkl or 'h' in expr_lower_without_khkl or 'l' in expr_lower_without_khkl:
+        return False
+    bracket_count = 0
+    for ch in expr_str:
+        if ch not in SHOUHUN_ONEDICE_EXPR_CHARS:
+            return False
+        if ch == '(':
+            bracket_count += 1
+        elif ch == ')':
+            bracket_count -= 1
+            if bracket_count < 0:
+                return False
+    if bracket_count != 0:
+        return False
+    if expr_str[-1] in ['+', '-', '*', '/', '^', 'd', 'D', 'k', 'K', 'h', 'H', 'l', 'L', '(']:
+        return False
+    return True
+
+def can_roll_front_prefix(expr_str, tmp_template_customDefault=None):
+    if expr_str in [None, '']:
+        return False
+    expr_str = str(expr_str).replace(' ', '')
+    if expr_str == '':
+        return False
+    if expr_str.isdecimal():
+        return True
+    if expr_str[0] in ['*', '/']:
+        return False
+    return can_roll_expression(expr_str, tmp_template_customDefault)
+
+def has_non_ignorable_suffix(rest_str):
+    rest_str = str(rest_str).strip()
+    if rest_str == '':
+        return False
+    return re.search(r'[0-9dD+\-*/()]', rest_str) is not None
+
+def trim_front_expr_greedy(expr_str, skill_valueTable, tmp_pcCardRule, tmp_template_customDefault):
+    expr_str = str(expr_str).strip()
+    if expr_str == '':
+        return None
+    for i in range(len(expr_str), 0, -1):
+        prefix = expr_str[:i].strip()
+        suffix = expr_str[i:]
+        if prefix == '':
+            continue
+        replaced_expr, _ = replace_skills(prefix.replace('=', '').replace(' ', ''), skill_valueTable, tmp_pcCardRule)
+        if not can_roll_front_prefix(replaced_expr, tmp_template_customDefault):
+            continue
+        if has_non_ignorable_suffix(suffix):
+            return expr_str
+        return prefix
+    if has_non_ignorable_suffix(expr_str):
+        return expr_str
+    return None
+
 def unity_init(plugin_event, Proc):
     pass
 
@@ -384,7 +525,52 @@ def unity_reply(plugin_event, Proc):
             if is_at and not at_user_id:
                 return
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'sh')
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
         else:
+            return
+        target_type, target_id, target_scope_name = get_shouhun_default_scope(plugin_event, flag_is_from_group, tmp_hagID)
+        dictTValue['tChallengeScope'] = target_scope_name
+        # 设置默认挑战值
+        if isMatchWordStart(tmp_reast_str, 'set', isCommand = True):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'set')
+            tmp_reast_str = skipSpaceStart(tmp_reast_str).strip()
+            # 清空挑战值
+            if tmp_reast_str == '' or isMatchWordStart(tmp_reast_str, ['reset', 'clear', 'clr', '重置', '清除'], isCommand = True):
+                reset_shouhun_default_challenge(plugin_event, target_id, target_type)
+                dictTValue['tChallengeValue'] = str(SHOUHUN_DEFAULT_CHALLENGE)
+                tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShSetReset'], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str.strip())
+                return
+            # 查看挑战值
+            if isMatchWordStart(tmp_reast_str, ['show', '查看'], isCommand = True):
+                current_default = load_shouhun_default_challenge(plugin_event, target_id, target_type)
+                if current_default is None:
+                    dictTValue['tChallengeValue'] = str(SHOUHUN_DEFAULT_CHALLENGE)
+                    tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShSetShowDefault'], dictTValue)
+                else:
+                    dictTValue['tChallengeValue'] = str(current_default)
+                    tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShSetShow'], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str.strip())
+                return
+            # 设置挑战值
+            tmp_default_expr = tmp_reast_str.replace(' ', '')
+            tmp_default_expr_parsed, _, _, _, _, is_default_back_x, _, _, _, _, _, _, _ = parse_sh_parameters(
+                tmp_default_expr,
+                isMatchWordStart,
+                getMatchWordStartRight,
+                skipSpaceStart,
+                parse_m_h=False
+            )
+            if tmp_default_expr_parsed == '':
+                tmp_default_expr_parsed = '0' if is_default_back_x else '10'
+            if can_roll_expression(tmp_default_expr_parsed, None):
+                save_shouhun_default_challenge(plugin_event, target_id, target_type, tmp_default_expr)
+                dictTValue['tChallengeValue'] = str(tmp_default_expr)
+                tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShSetSuccess'], dictTValue)
+                replyMsg(plugin_event, tmp_reply_str.strip())
+                return
+            tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShSetInvalid'], dictTValue)
+            replyMsg(plugin_event, tmp_reply_str.strip())
             return
         # 默认tName是人物卡名
         if True:
@@ -423,9 +609,11 @@ def unity_reply(plugin_event, Proc):
                 )
             
             # 分割前后表达式（用#分隔），h参数会在解析函数中处理
+            default_back_part = str(get_current_shouhun_default_challenge(plugin_event, target_id, target_type))
             parts = tmp_reast_str.split('#')
             front_part = parts[0].strip() if len(parts) > 0 else ''
-            back_part = parts[1].strip() if len(parts) > 1 else '10'
+            back_part_raw = parts[1].strip() if len(parts) > 1 else default_back_part
+            back_part = back_part_raw
             
             # 使用新的参数解析函数处理前式（包括h参数和kh/kl参数）
             front_part, flag_bp_count, flag_p_count, flag_no_default_d20, x_dice_value, is_x, flag_hide, x_modifier, s_count, s_fixed_values, kh_kl_type, kh_kl_num, a_flag = parse_sh_parameters(
@@ -477,7 +665,7 @@ def unity_reply(plugin_event, Proc):
             # 处理前式表达式
             front_expr = front_part
             front_expr_str = front_part
-            back_expr_str = back_part if back_part else '10'
+            back_expr_str = back_part if back_part else ('0' if is_back_x else '10')
             
             # 处理~参数（将计算结果加到人物卡shm）
             shm_add_value = None
@@ -521,7 +709,7 @@ def unity_reply(plugin_event, Proc):
                 dice_20 = '0'
             
             if not back_expr_str:
-                back_expr_str = '10'
+                back_expr_str = '0' if is_back_x else '10'
             
             # 出值解析
             if front_expr:
@@ -605,6 +793,10 @@ def unity_reply(plugin_event, Proc):
             tmp_template = OlivaDiceCore.pcCard.pcCardDataGetTemplateByKey(tmp_template_name)
             if tmp_template != None and 'customDefault' in tmp_template:
                 tmp_template_customDefault = tmp_template['customDefault']
+
+            if front_expr:
+                front_expr = trim_front_expr_greedy(front_expr, skill_valueTable, tmp_pcCardRule, tmp_template_customDefault)
+                front_expr_str = front_expr
             
             # 计算前项 (1D20 + 前项表达式)
             # D20 或指定点数（现在总是需要掷骰，除非m参数）
@@ -851,7 +1043,7 @@ def unity_reply(plugin_event, Proc):
             # 处理技能名和表达式
             back_expr, back_detail = replace_skills(back_expr_str.replace('=', '').replace(' ', ''), skill_valueTable, tmp_pcCardRule)
             if not back_expr:
-                back_expr = '0' if is_back_x else '10'
+                back_expr = '0' if is_back_x else default_back_part
             rd_back = OlivaDiceCore.onedice.RD(back_expr, tmp_template_customDefault)
             rd_back.roll()
             
@@ -1058,7 +1250,7 @@ def unity_reply(plugin_event, Proc):
                 )
             else:
                 dictTValue['tSuccessLevel'] = ''
-            
+
             # 更新人物卡shm值
             if shm_add_value is not None and tmp_pc_name:
                 # 获取当前shm值
