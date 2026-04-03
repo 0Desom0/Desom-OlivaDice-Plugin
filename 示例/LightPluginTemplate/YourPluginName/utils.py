@@ -1121,9 +1121,7 @@ def send_message_force(bot_hash: Any, send_type: str, target_id: Any, message_te
 def record_reply_to_logger(plugin_event, message_text: str) -> None:
     """
     主动把回复写入 OlivaDiceLogger 的消息钩子。
-
-    这里的目的不是“强依赖 Logger”，而是在 Logger 存在时，提供一个明确的、
-    由模板调用者控制的“是否主动记录”开关。
+    也就是说，如果回复调用了这个钩子，bot 的消息就能在日志染色网站上看到
     """
     if not has_oliva_dice_core:
         return
@@ -1164,9 +1162,6 @@ def reply_message(
     - record_by_logger=True：主动调用 Logger 钩子，便于被日志系统记录。
     - record_by_logger=False：不主动调用 Logger 钩子，只发送消息。
     - at_sender=True：在消息前追加一个 at 当前用户的 OP 码。
-
-    由于不同环境对日志插件的接入深度不同，“不主动调用钩子”并不保证绝对不会被
-    其他全局拦截器记录，但它至少保证模板自己不会额外推送一条 reply 记录。
     """
     final_message = safe_str(message_text)
     if at_sender:
