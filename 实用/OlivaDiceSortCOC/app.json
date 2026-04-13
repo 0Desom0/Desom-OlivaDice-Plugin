@@ -4,8 +4,8 @@
     "namespace" : "OlivaDiceSortCOC",
     "message_mode" : "old_string",
     "info" : "OlivaDice排序生成COC角色卡，合并转发发送",
-    "version" : "0.0.4",
-    "svn" : 20,
+    "version" : "0.0.5",
+    "svn" : 25,
     "compatible_svn" : 190,
     "priority" : 19980,
     "support" : [

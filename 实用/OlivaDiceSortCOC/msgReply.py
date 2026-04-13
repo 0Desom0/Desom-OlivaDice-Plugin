@@ -69,8 +69,25 @@ def create_forward_node(user_id, nickname, content):
         }
     }
 
+def normalize_pc_card_template(tmp_pcCardTemplate, tmp_pcCardTemplateName):
+    """兼容错误入参，确保后续总能按模板字典读取字段。"""
+    if isinstance(tmp_pcCardTemplate, str):
+        if tmp_pcCardTemplateName == "COC7":
+            tmp_pcCardTemplateName = tmp_pcCardTemplate
+        tmp_pcCardTemplate = OlivaDiceCore.pcCard.pcCardDataGetTemplateByKey(tmp_pcCardTemplate)
+
+    if not isinstance(tmp_pcCardTemplate, dict):
+        return {'showName': {}}
+
+    if not isinstance(tmp_pcCardTemplate.get('showName'), dict):
+        tmp_pcCardTemplate = copy.deepcopy(tmp_pcCardTemplate)
+        tmp_pcCardTemplate['showName'] = {}
+
+    return tmp_pcCardTemplate
+
 def generate_sorted_message(sorted_list, title, tmp_pcCardTemplate, use_luck_in_total=True, tmp_pcCardTemplateName="COC7"):
     """生成排序后的回复消息"""
+    tmp_pcCardTemplate = normalize_pc_card_template(tmp_pcCardTemplate, tmp_pcCardTemplateName)
     message = f"{title}"
     for i, item in enumerate(sorted_list):
         if i > 0:
@@ -148,18 +165,18 @@ def send_forward_message(plugin_event, messages, server_config):
     except Exception:
         return False
 
-def send_normal_message(plugin_event, dictTValue, dictStrCustom, tmp_pcCardTemplateName, sorted_by_total_with_luck, sorted_by_total_without_luck):
+def send_normal_message(plugin_event, dictTValue, dictStrCustom, tmp_pcCardTemplate, tmp_pcCardTemplateName, sorted_by_total_with_luck, sorted_by_total_without_luck):
     """发送普通消息"""
     replyMsg = OlivaDiceCore.msgReply.replyMsg
-    msg_by_total = generate_sorted_message(sorted_by_total_with_luck, "\n【含运排序(从高到低)】", tmp_pcCardTemplateName, True, tmp_pcCardTemplateName)
+    msg_by_total = generate_sorted_message(sorted_by_total_with_luck, "\n【含运排序(从高到低)】", tmp_pcCardTemplate, True, tmp_pcCardTemplateName)
     dictTValue['tPcTempName'] = tmp_pcCardTemplateName
     dictTValue['tPcInitResult'] = msg_by_total
     send_msg_total = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcInit'], dictTValue)
-    
-    msg_by_efficiency = generate_sorted_message(sorted_by_total_without_luck, "\n【不含运排序(从高到低)】", tmp_pcCardTemplateName, False, tmp_pcCardTemplateName)
+
+    msg_by_efficiency = generate_sorted_message(sorted_by_total_without_luck, "\n【不含运排序(从高到低)】", tmp_pcCardTemplate, False, tmp_pcCardTemplateName)
     dictTValue['tPcInitResult'] = msg_by_efficiency
     send_msg_efficiency = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcInit'], dictTValue)
-    
+
     replyMsg(plugin_event, send_msg_total)
     replyMsg(plugin_event, send_msg_efficiency)
 
@@ -226,7 +243,7 @@ def process_coc_command(plugin_event, dictTValue, dictStrCustom, tmp_reast_str):
             
             platform = plugin_event.platform['platform']
             if platform != 'qq':
-                send_normal_message(plugin_event, dictTValue, dictStrCustom, tmp_pcCardTemplateName, sorted_by_total_with_luck, sorted_by_total_without_luck)
+                send_normal_message(plugin_event, dictTValue, dictStrCustom, tmp_pcCardTemplate, tmp_pcCardTemplateName, sorted_by_total_with_luck, sorted_by_total_without_luck)
                 plugin_event.set_block()
                 return
                 
@@ -250,7 +267,7 @@ def process_coc_command(plugin_event, dictTValue, dictStrCustom, tmp_reast_str):
             messages.append(create_forward_node(plugin_event.bot_info.id, OlivaDiceCore.msgCustom.dictStrCustomDict[plugin_event.bot_info.hash]['strBotName'], send_msg_without_luck))
 
             if not send_forward_message(plugin_event, messages, server_config):
-                send_normal_message(plugin_event, dictTValue, dictStrCustom, tmp_pcCardTemplateName, sorted_by_total_with_luck, sorted_by_total_without_luck)
+                send_normal_message(plugin_event, dictTValue, dictStrCustom, tmp_pcCardTemplate, tmp_pcCardTemplateName, sorted_by_total_with_luck, sorted_by_total_without_luck)
                 
             plugin_event.set_block()
             return
