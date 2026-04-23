@@ -4,8 +4,8 @@
   "namespace": "CyberGladiator",
   "message_mode": "olivos_string",
   "info": "基于轻量模板实现的赛博斗蛐蛐插件",
-  "version": "1.0.2",
-  "svn": 1,
+  "version": "1.0.3",
+  "svn": 3,
   "compatible_svn": 190,
   "priority": 30000,
   "support": [
