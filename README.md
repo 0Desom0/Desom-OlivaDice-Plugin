@@ -28,7 +28,7 @@
  * `OlivaDiceLexNinjutsu` -- 语音释放忍术！论坛发布地址：https://forum.olivos.run/d/863
  * `OlivaDiceRAD` -- rad功能实现。论坛发布地址：https://forum.olivos.run/d/872-rad
  * `QQGroupForward` -- QQ群转发插件。论坛发布地址：https://forum.olivos.run/d/884-qqqqgroupforward
- * `CyberGladiator` -- 基于轻量模板做出来的完整实战示例，包含 GUI、分 Bot 配置、AI 推演、自动归档与权限控制。论坛发布地址：待发布
+ * `CyberGladiator` -- 基于轻量模板做出来的完整实战示例，包含 GUI、分 Bot 配置、AI 推演、自动归档与权限控制。论坛发布地址：https://forum.olivos.run/d/908-ai
 
 
 ### 💪实用
