@@ -135,13 +135,7 @@ help_document_dict = {
 查看或修改当前 Bot 的每段播报等待时间。不带秒数时返回当前配置；设置成功后会写入当前 Bot 的 bot_config.json。仅骰主与配置骰主可用。
 
 13. .角斗帮助 / .决斗帮助
-查看本帮助文档。
-
-11. Bot 配置文件
-每个 Bot 的 bot_config.json 内可填写 api_url、api_key、model、system_prompt、user_prompt_prefix、切片等待时间区间与 QQ 合并转发开关。
-
-12. 回复词配置
-所有用户可见的提示文案都在 message_custom.json 中，可通过 GUI 的“编辑回复词”修改。''',
+查看本帮助文档。''',
 }
 
 
