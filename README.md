@@ -13,6 +13,7 @@
 👇以下是插件列表👇
 
 ### 🧩娱乐
+ * `CyberGladiator` -- 赛博角斗场，群聊 AI 文字大逃杀插件，支持 GUI 配置、分段播报、自动归档与反作弊约束。论坛发布地址：待发布
  * `LiarBar` -- 骗子酒馆，多人回合制纸牌游戏。论坛发布地址：https://forum.olivos.run/d/881-liars-bar
  * `TexasHoldem` -- 德州扑克，多人德州扑克模拟器。论坛发布地址：https://forum.olivos.run/d/882-texas-holdem
  * `Buckshot` -- 超级牛逼的26道具3模式恶魔轮盘赌！论坛发布地址：https://forum.olivos.run/d/858-26-3
@@ -27,6 +28,7 @@
  * `OlivaDiceLexNinjutsu` -- 语音释放忍术！论坛发布地址：https://forum.olivos.run/d/863
  * `OlivaDiceRAD` -- rad功能实现。论坛发布地址：https://forum.olivos.run/d/872-rad
  * `QQGroupForward` -- QQ群转发插件。论坛发布地址：https://forum.olivos.run/d/884-qqqqgroupforward
+ * `CyberGladiator` -- 基于轻量模板做出来的完整实战示例，包含 GUI、分 Bot 配置、AI 推演、自动归档与权限控制。论坛发布地址：待发布
 
 
 ### 💪实用
@@ -43,7 +45,8 @@
  * `StatusPlugin` -- 系统状态查询插件。论坛发布地址：https://forum.olivos.run/d/887-statusplugin
 
 ### 📚示例
- * `OlivaDice插件模板` -- 一个自用插件模板，论坛发布地址：https://forum.olivos.run/d/833-olivadicecoregui
+ * `OlivaDice插件模板` -- 一个自用的，用于规则类插件的插件模板，论坛发布地址：https://forum.olivos.run/d/833-olivadicecoregui
+ * `OlivaDice轻量级插件模板` -- 一个自用轻量级带有gui的插件模板，论坛发布地址：https://forum.olivos.run/d/907-olivos/
 
 ### 🕊️待更新
  * `LexNinjutsu` -- 目前功能最强大的插件，可以各种自定义，但是由于早期开发的原因现已成石山，我也懒得维护了。自定义简介中想写可以通过对比变量的大小来决定对应的内容，但是懒得写了，鸽。论坛发布地址：https://forum.olivos.run/d/818

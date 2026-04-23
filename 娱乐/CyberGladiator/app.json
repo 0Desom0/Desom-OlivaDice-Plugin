@@ -1,0 +1,29 @@
+{
+  "name": "赛博角斗场",
+  "author": "Desom-fu",
+  "namespace": "CyberGladiator",
+  "message_mode": "olivos_string",
+  "info": "基于轻量模板实现的群聊文字大逃杀插件",
+  "version": "1.0.0",
+  "svn": 1,
+  "compatible_svn": 190,
+  "priority": 30000,
+  "support": [
+    {
+      "sdk": "onebot",
+      "platform": "qq",
+      "model": "all"
+    },
+    {
+      "sdk": "all",
+      "platform": "all",
+      "model": "all"
+    }
+  ],
+  "menu_config": [
+    {
+      "title": "打开插件配置",
+      "event": "CyberGladiator_Menu_001"
+    }
+  ]
+}

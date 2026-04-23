@@ -19,6 +19,7 @@ from tkinter import scrolledtext
 from tkinter import ttk
 
 from . import config
+from . import function
 from . import message_custom
 from . import utils
 
@@ -30,6 +31,9 @@ dict_color_context = {
     'color_004': '#FFFFFF',
     'color_005': '#000000',
     'color_006': '#80D7FF',
+    'color_007': '#FFD447',
+    'color_008': '#FFBF00',
+    'color_009': '#114B5F',
 }
 
 
@@ -46,8 +50,21 @@ class TemplatePluginGui(object):
         self.global_enable_var = None
         self.global_debug_var = None
         self.bot_enable_var = None
+        self.bot_api_url_var = None
+        self.bot_api_key_var = None
+        self.bot_model_var = None
+        self.bot_timeout_var = None
+        self.bot_temperature_var = None
+        self.bot_delay_min_var = None
+        self.bot_delay_max_var = None
+        self.bot_forward_switch_var = None
+        self.system_prompt_summary_var = None
+        self.user_prompt_summary_var = None
         self.bot_info_var = None
         self.linked_hint_var = None
+        self.frame_bot_container = None
+        self.bot_scroll_canvas = None
+        self.active_scroll_canvas = None
 
         self.bot_display_value_list = []
         self.bot_display_to_hash_dict = {}
@@ -60,7 +77,7 @@ class TemplatePluginGui(object):
 
     def calculate_window_geometry(self) -> str:
         """统一窗口尺寸。"""
-        return '760x460'
+        return '780x640'
 
     def build_bot_selector_mapping(self) -> None:
         """生成 Bot 选择下拉框映射。"""
@@ -149,33 +166,141 @@ class TemplatePluginGui(object):
         self.root.grid_columnconfigure(0, weight=1)
         self.notebook.grid(row=0, column=0, sticky='nsew', padx=(15, 15), pady=(15, 15))
 
-    def create_native_button(self, parent_widget, text, command, width=12):
+    def create_native_button(
+        self,
+        parent_widget,
+        text,
+        command,
+        width=12,
+        bg_color=None,
+        hover_color=None,
+        fg_color=None,
+        font=None,
+    ):
         """创建 NativeGUI 风格按钮。"""
+        final_bg_color = bg_color or dict_color_context['color_003']
+        final_hover_color = hover_color or dict_color_context['color_006']
+        final_fg_color = fg_color or dict_color_context['color_004']
         button_widget = tkinter.Button(
             parent_widget,
             text=text,
             command=command,
             bd=0,
-            activebackground=dict_color_context['color_002'],
-            activeforeground=dict_color_context['color_001'],
-            bg=dict_color_context['color_003'],
-            fg=dict_color_context['color_004'],
+            activebackground=final_hover_color,
+            activeforeground=final_fg_color,
+            bg=final_bg_color,
+            fg=final_fg_color,
             relief='groove',
             height=2,
             width=width,
+            font=font or ('等线', 10, 'bold'),
         )
-        button_widget.bind('<Enter>', lambda _event: button_widget.configure(bg=dict_color_context['color_006']))
-        button_widget.bind('<Leave>', lambda _event: button_widget.configure(bg=dict_color_context['color_003']))
+        button_widget.bind('<Enter>', lambda _event: button_widget.configure(bg=final_hover_color))
+        button_widget.bind('<Leave>', lambda _event: button_widget.configure(bg=final_bg_color))
         return button_widget
+
+    def create_save_button(self, parent_widget, text, command, width=16):
+        """创建更显眼的保存按钮。"""
+        return self.create_native_button(
+            parent_widget,
+            text,
+            command,
+            width=width,
+            bg_color=dict_color_context['color_007'],
+            hover_color=dict_color_context['color_008'],
+            fg_color=dict_color_context['color_009'],
+            font=('等线', 11, 'bold'),
+        )
 
     def create_page_root(self):
         """创建统一蓝底页面。"""
         frame_widget = tkinter.Frame(self.notebook, bg=dict_color_context['color_001'], borderwidth=0)
         return frame_widget
 
-    def handle_combobox_mousewheel(self, _event) -> str:
-        """禁止下拉框被滚轮误改值。"""
+    def create_scrollable_page(self):
+        """创建带纵向滚动条的页面。"""
+        page_widget = self.create_page_root()
+        page_widget.grid_rowconfigure(0, weight=1)
+        page_widget.grid_columnconfigure(0, weight=1)
+
+        canvas_widget = tkinter.Canvas(
+            page_widget,
+            bg=dict_color_context['color_001'],
+            highlightthickness=0,
+            borderwidth=0,
+            yscrollincrement=24,
+        )
+        scrollbar_widget = ttk.Scrollbar(
+            page_widget,
+            orient='vertical',
+            command=canvas_widget.yview,
+        )
+        canvas_widget.configure(yscrollcommand=scrollbar_widget.set)
+
+        canvas_widget.grid(row=0, column=0, sticky='nsew')
+        scrollbar_widget.grid(row=0, column=1, sticky='ns')
+
+        content_widget = tkinter.Frame(canvas_widget, bg=dict_color_context['color_001'], borderwidth=0)
+        content_window_id = canvas_widget.create_window((0, 0), window=content_widget, anchor='nw')
+
+        def sync_scroll_region(_event=None):
+            canvas_widget.configure(scrollregion=canvas_widget.bbox('all'))
+
+        def sync_content_width(event):
+            canvas_widget.itemconfigure(content_window_id, width=event.width)
+
+        content_widget.bind('<Configure>', sync_scroll_region)
+        canvas_widget.bind('<Configure>', sync_content_width)
+
+        return page_widget, content_widget, canvas_widget
+
+    def bind_scroll_canvas_widgets(self, widget, canvas_widget) -> None:
+        """为页面中的控件递归绑定鼠标滚轮焦点。"""
+        widget.bind(
+            '<Enter>',
+            lambda _event, target_canvas=canvas_widget: self.set_active_scroll_canvas(target_canvas),
+            add='+',
+        )
+        widget.bind(
+            '<Leave>',
+            lambda _event, target_canvas=canvas_widget: self.clear_active_scroll_canvas(target_canvas),
+            add='+',
+        )
+        for child_widget in widget.winfo_children():
+            self.bind_scroll_canvas_widgets(child_widget, canvas_widget)
+
+    def set_active_scroll_canvas(self, canvas_widget) -> None:
+        """记录当前应响应滚轮的滚动页面。"""
+        self.active_scroll_canvas = canvas_widget
+
+    def clear_active_scroll_canvas(self, canvas_widget) -> None:
+        """离开页面时清理滚轮目标。"""
+        if self.active_scroll_canvas == canvas_widget:
+            self.active_scroll_canvas = None
+
+    def handle_mousewheel(self, event) -> str | None:
+        """把全局滚轮事件转发到当前活动页面。"""
+        if self.active_scroll_canvas is None:
+            return None
+
+        delta_value = getattr(event, 'delta', 0)
+        if delta_value:
+            scroll_units = int(-delta_value / 120)
+            if scroll_units == 0:
+                scroll_units = -1 if delta_value > 0 else 1
+        elif getattr(event, 'num', None) == 4:
+            scroll_units = -1
+        elif getattr(event, 'num', None) == 5:
+            scroll_units = 1
+        else:
+            return None
+
+        self.active_scroll_canvas.yview_scroll(scroll_units, 'units')
         return 'break'
+
+    def handle_combobox_mousewheel(self, event) -> str:
+        """禁止下拉框被滚轮改值，同时尽量保留页面滚动。"""
+        return self.handle_mousewheel(event) or 'break'
 
     def init_string_vars(self) -> None:
         """初始化界面变量。"""
@@ -183,6 +308,16 @@ class TemplatePluginGui(object):
         self.global_enable_var = tkinter.StringVar(value='True')
         self.global_debug_var = tkinter.StringVar(value='False')
         self.bot_enable_var = tkinter.StringVar(value='True')
+        self.bot_api_url_var = tkinter.StringVar(value='')
+        self.bot_api_key_var = tkinter.StringVar(value='')
+        self.bot_model_var = tkinter.StringVar(value='')
+        self.bot_timeout_var = tkinter.StringVar(value='180')
+        self.bot_temperature_var = tkinter.StringVar(value='0.9')
+        self.bot_delay_min_var = tkinter.StringVar(value=str(config.default_segment_delay_min_seconds))
+        self.bot_delay_max_var = tkinter.StringVar(value=str(config.default_segment_delay_max_seconds))
+        self.bot_forward_switch_var = tkinter.StringVar(value='False')
+        self.system_prompt_summary_var = tkinter.StringVar(value='')
+        self.user_prompt_summary_var = tkinter.StringVar(value='')
         self.bot_info_var = tkinter.StringVar(value='当前未检测到 Bot')
         self.linked_hint_var = tkinter.StringVar(value='')
 
@@ -248,6 +383,129 @@ class TemplatePluginGui(object):
         combobox_widget.bind('<Button-5>', self.handle_combobox_mousewheel, add='+')
         return combobox_widget
 
+    def create_labeled_entry(
+        self,
+        parent_widget,
+        row_index: int,
+        label_text: str,
+        variable,
+        show: str = '',
+    ):
+        """创建一行标签加输入框。"""
+        label_widget = tkinter.Label(
+            parent_widget,
+            text=label_text,
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 11, 'bold'),
+            anchor='w',
+        )
+        label_widget.grid(row=row_index, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
+
+        entry_widget = tkinter.Entry(parent_widget, textvariable=variable, show=show)
+        entry_widget.grid(row=row_index + 1, column=0, sticky='nsew', padx=(20, 20), pady=(4, 0))
+        return entry_widget
+
+    def summarize_text(self, text_value: str, empty_text: str) -> str:
+        """把长文本压成一行摘要，避免主界面过长。"""
+        normalized_text = ' '.join(utils.safe_str(text_value).strip().split())
+        if not normalized_text:
+            return empty_text
+        if len(normalized_text) > 80:
+            normalized_text = normalized_text[:77] + '...'
+        return f'已配置：{normalized_text}'
+
+    def build_current_bot_config_from_form(self) -> dict:
+        """从当前界面读取并校验 Bot 配置。"""
+        try:
+            request_timeout_seconds = int(utils.safe_str(self.bot_timeout_var.get()).strip())
+            if request_timeout_seconds <= 0:
+                raise ValueError()
+        except Exception as err:
+            raise ValueError('请求超时必须是大于 0 的整数。') from err
+
+        try:
+            temperature = float(utils.safe_str(self.bot_temperature_var.get()).strip())
+        except Exception as err:
+            raise ValueError('Temperature 必须是数字。') from err
+
+        try:
+            delay_min_seconds = int(utils.safe_str(self.bot_delay_min_var.get()).strip())
+            delay_max_seconds = int(utils.safe_str(self.bot_delay_max_var.get()).strip())
+        except Exception as err:
+            raise ValueError('切片等待时间必须填写整数。') from err
+
+        if delay_min_seconds <= 0 or delay_max_seconds <= 0:
+            raise ValueError('切片等待时间必须是大于 0 的整数。')
+        if delay_max_seconds < delay_min_seconds:
+            raise ValueError('切片等待最大值不能小于最小值。')
+
+        return {
+            'bot_enable_switch': self.str_to_bool(self.bot_enable_var.get()),
+            'api_url': utils.safe_str(self.bot_api_url_var.get()).strip(),
+            'api_key': utils.safe_str(self.bot_api_key_var.get()).strip(),
+            'model': utils.safe_str(self.bot_model_var.get()).strip(),
+            'request_timeout_seconds': request_timeout_seconds,
+            'temperature': temperature,
+            'segment_delay_min_seconds': delay_min_seconds,
+            'segment_delay_max_seconds': delay_max_seconds,
+            'qq_forward_message_switch': self.str_to_bool(self.bot_forward_switch_var.get()),
+            'system_prompt': self.get_bot_system_prompt_text(),
+            'user_prompt_prefix': self.get_bot_user_prompt_prefix_text(),
+        }
+
+    def test_bot_api_from_form(self) -> None:
+        """使用当前界面里的 Bot 配置进行一次轻量 API 测试。"""
+        config_bot_hash = self.get_current_config_bot_hash()
+        if not config_bot_hash:
+            messagebox.showwarning('提示', '当前没有可操作的 Bot。')
+            return
+
+        try:
+            current_bot_config = self.build_current_bot_config_from_form()
+        except ValueError as err:
+            messagebox.showwarning('提示', str(err))
+            return
+
+        if not function.api_config_dict_is_ready(current_bot_config):
+            messagebox.showwarning('提示', '请先填写完整的 API 地址、API Key 和模型名称。')
+            return
+
+        try:
+            self.root.config(cursor='watch')
+            self.root.update_idletasks()
+            result = function.test_chat_api_with_bot_config(current_bot_config)
+        except Exception as err:
+            messagebox.showerror('提示', f'测试调用发生异常：{err}')
+            return
+        finally:
+            self.root.config(cursor='')
+            self.root.update_idletasks()
+
+        response_text = utils.safe_str(result.get('response_text', '')).strip()
+        if len(response_text) > 300:
+            response_text = response_text[:300] + '...'
+
+        message_text = ''
+        if result.get('ok'):
+            message_text = 'API 测试成功。'
+            if result.get('status_code'):
+                message_text += f'\nHTTP 状态：{result.get("status_code")}'
+            if response_text:
+                message_text += f'\n\n返回内容：\n{response_text}'
+            messagebox.showinfo('提示', message_text)
+            return
+
+        message_text = 'API 测试失败。'
+        if result.get('status_code'):
+            message_text += f'\nHTTP 状态：{result.get("status_code")}'
+        error_message = utils.safe_str(result.get('error_message', '')).strip()
+        if error_message:
+            message_text += f'\n错误信息：{error_message}'
+        if response_text:
+            message_text += f'\n\n返回内容：\n{response_text}'
+        messagebox.showerror('提示', message_text)
+
     def init_frame_global(self) -> None:
         """全局配置页。"""
         self.frame_global = self.create_page_root()
@@ -258,7 +516,7 @@ class TemplatePluginGui(object):
 
         button_frame = tkinter.Frame(self.frame_global, bg=dict_color_context['color_001'])
         button_frame.grid(row=4, column=0, sticky='nsew', padx=(20, 20), pady=(40, 0))
-        self.create_native_button(button_frame, '保存全局设置', self.save_global_config_from_form, width=16).pack(
+        self.create_save_button(button_frame, '保存全局设置', self.save_global_config_from_form, width=16).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
         self.create_native_button(
@@ -274,16 +532,16 @@ class TemplatePluginGui(object):
 
         hint_label = tkinter.Label(
             self.frame_global,
-            text='提示：修改后点击保存按钮生效。',
+            text='提示：修改任何配置后，都需要点击黄色“保存”按钮才会真正生效。',
             bg=dict_color_context['color_001'],
-            fg=dict_color_context['color_004'],
-            font=('等线', 10),
+            fg=dict_color_context['color_007'],
+            font=('等线', 10, 'bold'),
         )
         hint_label.grid(row=5, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
 
     def init_frame_bot(self) -> None:
         """Bot 配置页。"""
-        self.frame_bot = self.create_page_root()
+        self.frame_bot_container, self.frame_bot, self.bot_scroll_canvas = self.create_scrollable_page()
         self.frame_bot.grid_columnconfigure(0, weight=1)
 
         selector_label = tkinter.Label(
@@ -312,7 +570,7 @@ class TemplatePluginGui(object):
             font=('等线', 12, 'bold'),
             justify='left',
             anchor='w',
-            wraplength=700,
+            wraplength=620,
         )
         title_label.grid(row=2, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
 
@@ -324,15 +582,99 @@ class TemplatePluginGui(object):
             font=('等线', 10),
             justify='left',
             anchor='w',
-            wraplength=700,
+            wraplength=620,
         )
         hint_label.grid(row=3, column=0, sticky='nsew', padx=(20, 20), pady=(6, 0))
 
         self.create_labeled_combobox(self.frame_bot, 4, '当前 Bot 启用', self.bot_enable_var)
 
+        self.create_labeled_entry(self.frame_bot, 6, 'API 地址', self.bot_api_url_var)
+        self.create_labeled_entry(self.frame_bot, 8, 'API Key', self.bot_api_key_var, show='*')
+        self.create_labeled_entry(self.frame_bot, 10, '模型名称', self.bot_model_var)
+        self.create_labeled_entry(self.frame_bot, 12, '请求超时（秒）', self.bot_timeout_var)
+        self.create_labeled_entry(self.frame_bot, 14, 'Temperature', self.bot_temperature_var)
+        self.create_labeled_entry(self.frame_bot, 16, '切片等待最小值（秒）', self.bot_delay_min_var)
+        self.create_labeled_entry(self.frame_bot, 18, '切片等待最大值（秒）', self.bot_delay_max_var)
+        self.create_labeled_combobox(self.frame_bot, 20, 'QQ 合并转发播报', self.bot_forward_switch_var)
+
+        prompt_frame = tkinter.Frame(self.frame_bot, bg=dict_color_context['color_001'])
+        prompt_frame.grid(row=22, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
+        prompt_frame.grid_columnconfigure(0, weight=1)
+
+        tkinter.Label(
+            prompt_frame,
+            text='系统提示词',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 11, 'bold'),
+            anchor='w',
+        ).grid(row=0, column=0, sticky='nsew')
+        tkinter.Label(
+            prompt_frame,
+            textvariable=self.system_prompt_summary_var,
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 10),
+            justify='left',
+            anchor='w',
+            wraplength=620,
+        ).grid(row=1, column=0, sticky='nsew', pady=(4, 0))
+
+        system_prompt_button_frame = tkinter.Frame(prompt_frame, bg=dict_color_context['color_001'])
+        system_prompt_button_frame.grid(row=2, column=0, sticky='w', pady=(8, 0))
+        self.create_native_button(
+            system_prompt_button_frame,
+            '编辑系统提示词',
+            self.open_system_prompt_editor,
+            width=16,
+        ).pack(side=tkinter.LEFT, padx=(0, 8))
+        self.create_native_button(
+            system_prompt_button_frame,
+            '恢复默认系统提示词',
+            self.reset_system_prompt_to_default,
+            width=18,
+        ).pack(side=tkinter.LEFT)
+
+        tkinter.Label(
+            prompt_frame,
+            text='用户前置提示词',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 11, 'bold'),
+            anchor='w',
+        ).grid(row=3, column=0, sticky='nsew', pady=(16, 0))
+        tkinter.Label(
+            prompt_frame,
+            textvariable=self.user_prompt_summary_var,
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 10),
+            justify='left',
+            anchor='w',
+            wraplength=620,
+        ).grid(row=4, column=0, sticky='nsew', pady=(4, 0))
+
+        user_prompt_button_frame = tkinter.Frame(prompt_frame, bg=dict_color_context['color_001'])
+        user_prompt_button_frame.grid(row=5, column=0, sticky='w', pady=(8, 0))
+        self.create_native_button(
+            user_prompt_button_frame,
+            '编辑用户前置提示词',
+            self.open_user_prompt_editor,
+            width=18,
+        ).pack(side=tkinter.LEFT, padx=(0, 8))
+        self.create_native_button(
+            user_prompt_button_frame,
+            '清空用户前置提示词',
+            self.clear_user_prompt_prefix,
+            width=18,
+        ).pack(side=tkinter.LEFT)
+
         button_frame_top = tkinter.Frame(self.frame_bot, bg=dict_color_context['color_001'])
-        button_frame_top.grid(row=6, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
-        self.create_native_button(button_frame_top, '保存 Bot 设置', self.save_bot_config_from_form, width=16).pack(
+        button_frame_top.grid(row=23, column=0, sticky='nsew', padx=(20, 20), pady=(20, 0))
+        self.create_save_button(button_frame_top, '保存 Bot 设置', self.save_bot_config_from_form, width=16).pack(
+            side=tkinter.LEFT, padx=(0, 8)
+        )
+        self.create_native_button(button_frame_top, '测试调用 API', self.test_bot_api_from_form, width=14).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
         self.create_native_button(button_frame_top, '刷新', self.refresh_all_views, width=10).pack(
@@ -345,8 +687,21 @@ class TemplatePluginGui(object):
             width=14,
         ).pack(side=tkinter.RIGHT)
 
+        bot_save_hint_label = tkinter.Label(
+            self.frame_bot,
+            text='提示：这里修改的任何 Bot 配置、提示词和开关，都需要点击黄色“保存 Bot 设置”后才生效。',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_007'],
+            font=('等线', 10, 'bold'),
+            justify='left',
+            anchor='w',
+            wraplength=620,
+        )
+        bot_save_hint_label.grid(row=20, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
+        bot_save_hint_label.grid_configure(row=24)
+
         button_frame_bottom = tkinter.Frame(self.frame_bot, bg=dict_color_context['color_001'])
-        button_frame_bottom.grid(row=7, column=0, sticky='nsew', padx=(20, 20), pady=(14, 0))
+        button_frame_bottom.grid(row=25, column=0, sticky='nsew', padx=(20, 20), pady=(14, 20))
         self.create_native_button(button_frame_bottom, '编辑回复词', self.open_reply_manager_dialog, width=12).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
@@ -362,6 +717,9 @@ class TemplatePluginGui(object):
             lambda: self.open_path(self.get_current_reply_data_dir()),
             width=14,
         ).pack(side=tkinter.RIGHT)
+
+        self.bind_scroll_canvas_widgets(self.frame_bot, self.bot_scroll_canvas)
+        self.bind_scroll_canvas_widgets(self.bot_scroll_canvas, self.bot_scroll_canvas)
 
     def get_selected_tree_value(self, tree_widget, value_index: int = 0) -> str:
         """获取当前树表选中项的某个值。"""
@@ -416,7 +774,7 @@ class TemplatePluginGui(object):
             save_callback(editor_widget.get('1.0', tkinter.END).rstrip('\n'))
             dialog_window.destroy()
 
-        self.create_native_button(button_frame, '保存', save_action).pack(side=tkinter.RIGHT)
+        self.create_save_button(button_frame, '保存', save_action, width=12).pack(side=tkinter.RIGHT)
         self.create_native_button(button_frame, '取消', dialog_window.destroy).pack(side=tkinter.RIGHT, padx=(0, 5))
 
     def open_reply_manager_dialog(self) -> None:
@@ -575,6 +933,63 @@ class TemplatePluginGui(object):
             refresh_callback()
         messagebox.showinfo('提示', '当前 Bot 的回复词已恢复为模板默认值。')
 
+    def update_prompt_summary_vars(self) -> None:
+        """刷新提示词摘要显示。"""
+        self.system_prompt_summary_var.set(
+            self.summarize_text(self.get_bot_system_prompt_text(), '未配置系统提示词')
+        )
+        self.user_prompt_summary_var.set(
+            self.summarize_text(self.get_bot_user_prompt_prefix_text(), '当前为空，将直接使用参赛名单')
+        )
+
+    def get_bot_system_prompt_text(self) -> str:
+        """从当前界面状态读取系统提示词。"""
+        return utils.safe_str(getattr(self, '_bot_system_prompt_text', config.SYSTEM_PROMPT))
+
+    def set_bot_system_prompt_text(self, text_value: str) -> None:
+        """更新当前界面缓存的系统提示词。"""
+        self._bot_system_prompt_text = utils.safe_str(text_value)
+        self.update_prompt_summary_vars()
+
+    def get_bot_user_prompt_prefix_text(self) -> str:
+        """从当前界面状态读取用户前置提示词。"""
+        return utils.safe_str(getattr(self, '_bot_user_prompt_prefix_text', ''))
+
+    def set_bot_user_prompt_prefix_text(self, text_value: str) -> None:
+        """更新当前界面缓存的用户前置提示词。"""
+        self._bot_user_prompt_prefix_text = utils.safe_str(text_value)
+        self.update_prompt_summary_vars()
+
+    def open_system_prompt_editor(self) -> None:
+        """编辑当前 Bot 的系统提示词。"""
+        self.open_text_editor_dialog(
+            title_text='编辑系统提示词',
+            note_text='这里编辑当前 Bot 的 system_prompt，将写回 bot_config.json。',
+            initial_text=self.get_bot_system_prompt_text(),
+            save_callback=self.set_bot_system_prompt_text,
+        )
+
+    def reset_system_prompt_to_default(self) -> None:
+        """恢复默认系统提示词。"""
+        if not messagebox.askyesno('确认', '确定要恢复为默认系统提示词吗？'):
+            return
+        self.set_bot_system_prompt_text(config.SYSTEM_PROMPT)
+
+    def open_user_prompt_editor(self) -> None:
+        """编辑当前 Bot 的用户前置提示词。"""
+        self.open_text_editor_dialog(
+            title_text='编辑用户前置提示词',
+            note_text='这里的文本会插入到参赛名单之前，适合补充自定义裁判风格或规则。',
+            initial_text=self.get_bot_user_prompt_prefix_text(),
+            save_callback=self.set_bot_user_prompt_prefix_text,
+        )
+
+    def clear_user_prompt_prefix(self) -> None:
+        """清空用户前置提示词。"""
+        if not messagebox.askyesno('确认', '确定要清空当前 Bot 的用户前置提示词吗？'):
+            return
+        self.set_bot_user_prompt_prefix_text('')
+
     def open_master_manager_dialog(self) -> None:
         """打开骰主列表管理窗口。"""
         config_bot_hash = self.get_current_config_bot_hash()
@@ -672,15 +1087,38 @@ class TemplatePluginGui(object):
         if bot_info is None or not config_bot_hash:
             self.bot_info_var.set('当前未检测到 Bot')
             self.bot_enable_var.set(str(bool(config.default_bot_config.get('bot_enable_switch', True))))
+            self.bot_api_url_var.set(utils.safe_str(config.default_bot_config.get('api_url', '')))
+            self.bot_api_key_var.set(utils.safe_str(config.default_bot_config.get('api_key', '')))
+            self.bot_model_var.set(utils.safe_str(config.default_bot_config.get('model', '')))
+            self.bot_timeout_var.set(str(config.default_bot_config.get('request_timeout_seconds', 180)))
+            self.bot_temperature_var.set(str(config.default_bot_config.get('temperature', 0.9)))
+            self.bot_delay_min_var.set(str(config.default_bot_config.get('segment_delay_min_seconds', 10)))
+            self.bot_delay_max_var.set(str(config.default_bot_config.get('segment_delay_max_seconds', 20)))
+            self.bot_forward_switch_var.set(
+                str(bool(config.default_bot_config.get('qq_forward_message_switch', False)))
+            )
+            self.set_bot_system_prompt_text(config.default_bot_config.get('system_prompt', config.SYSTEM_PROMPT))
+            self.set_bot_user_prompt_prefix_text(config.default_bot_config.get('user_prompt_prefix', ''))
             self.linked_hint_var.set('')
             return
 
         bot_display_text = self.get_bot_display_text(self.current_bot_hash, bot_info=bot_info)
         bot_config = utils.load_bot_config(config_bot_hash)
+        delay_min_seconds, delay_max_seconds = function.get_segment_delay_range_from_bot_config(bot_config)
         self.bot_info_var.set(
             f'当前 Bot：{bot_display_text}'
         )
         self.bot_enable_var.set(str(bool(bot_config.get('bot_enable_switch', True))))
+        self.bot_api_url_var.set(utils.safe_str(bot_config.get('api_url', '')))
+        self.bot_api_key_var.set(utils.safe_str(bot_config.get('api_key', '')))
+        self.bot_model_var.set(utils.safe_str(bot_config.get('model', '')))
+        self.bot_timeout_var.set(str(bot_config.get('request_timeout_seconds', 180)))
+        self.bot_temperature_var.set(str(bot_config.get('temperature', 0.9)))
+        self.bot_delay_min_var.set(str(delay_min_seconds))
+        self.bot_delay_max_var.set(str(delay_max_seconds))
+        self.bot_forward_switch_var.set(str(bool(bot_config.get('qq_forward_message_switch', False))))
+        self.set_bot_system_prompt_text(bot_config.get('system_prompt', config.SYSTEM_PROMPT))
+        self.set_bot_user_prompt_prefix_text(bot_config.get('user_prompt_prefix', ''))
 
         if reply_bot_hash and reply_bot_hash != config_bot_hash:
             linked_bot_info = self.bot_info_dict.get(reply_bot_hash)
@@ -711,8 +1149,15 @@ class TemplatePluginGui(object):
         if not config_bot_hash:
             messagebox.showwarning('提示', '当前没有可操作的 Bot。')
             return
+
+        try:
+            current_bot_config = self.build_current_bot_config_from_form()
+        except ValueError as err:
+            messagebox.showwarning('提示', str(err))
+            return
+
         bot_config = utils.load_bot_config(config_bot_hash)
-        bot_config['bot_enable_switch'] = self.str_to_bool(self.bot_enable_var.get())
+        bot_config.update(current_bot_config)
         utils.save_bot_config(config_bot_hash, bot_config)
         messagebox.showinfo('提示', 'Bot 设置已保存。')
         self.refresh_bot_view()
@@ -733,11 +1178,14 @@ class TemplatePluginGui(object):
         self.root = self.create_root_window()
         self.root.title(config.gui_window_title)
         self.root.geometry(self.calculate_window_geometry())
-        self.root.minsize(720, 430)
+        self.root.minsize(720, 560)
         self.root.resizable(width=True, height=True)
         self.root.configure(bg=dict_color_context['color_001'])
         self.init_string_vars()
         self.build_bot_selector_mapping()
+        self.root.bind_all('<MouseWheel>', self.handle_mousewheel, add='+')
+        self.root.bind_all('<Button-4>', self.handle_mousewheel, add='+')
+        self.root.bind_all('<Button-5>', self.handle_mousewheel, add='+')
 
         self.init_notebook()
 
@@ -745,7 +1193,7 @@ class TemplatePluginGui(object):
         self.init_frame_bot()
 
         self.notebook.add(self.frame_global, text='全局设置')
-        self.notebook.add(self.frame_bot, text='Bot 配置')
+        self.notebook.add(self.frame_bot_container, text='Bot 配置')
 
         self.refresh_all_views()
         self.root.mainloop()
