@@ -132,6 +132,23 @@ def normalize_toggle_scope(command_argument: str) -> str:
     return 'group'
 
 
+def _parse_god_war_command(command_argument: str) -> dict:
+    token_list = utils.safe_str(command_argument).strip().split()
+    if not token_list:
+        return {'ok': True, 'action': 'show', 'scope': 'group'}
+
+    if len(token_list) == 1 and token_list[0] in {'开启', '关闭'}:
+        return {'ok': True, 'action': 'set', 'scope': 'group', 'enabled': token_list[0] == '开启'}
+
+    if len(token_list) == 2 and token_list[0] == '全局' and token_list[1] in {'开启', '关闭'}:
+        return {'ok': True, 'action': 'set', 'scope': 'global', 'enabled': token_list[1] == '开启'}
+
+    if len(token_list) == 1 and token_list[0] == '全局':
+        return {'ok': True, 'action': 'show', 'scope': 'global'}
+
+    return {'ok': False}
+
+
 def handle_gladiator_help(plugin_event) -> None:
     utils.reply_message(plugin_event, message_custom.help_document_dict['gladiator_help'])
 
@@ -429,43 +446,73 @@ def handle_gladiator_config(plugin_event, config_bot_hash: str, command_argument
 
 
 def handle_gladiator_god_war(plugin_event, config_bot_hash: str, command_argument: str) -> None:
-    normalized_argument = utils.safe_str(command_argument).strip()
-    bot_config = utils.load_bot_config(config_bot_hash)
-    current_switch = bool(bot_config.get('god_war_enable_switch', False))
+    parse_result = _parse_god_war_command(command_argument)
+    if not parse_result.get('ok'):
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_god_war_invalid'))
+        return
 
-    if normalized_argument == '':
+    bot_config = utils.load_bot_config(config_bot_hash)
+    total_switch = bool(bot_config.get('god_war_enable_switch', False))
+    global_switch = function.is_global_god_war_enabled()
+    group_switch = function.is_group_god_war_enabled(plugin_event)
+    effective_switch = bool(total_switch and global_switch and group_switch)
+
+    if parse_result.get('action') == 'show':
         utils.reply_message(
             plugin_event,
             render_custom_message(
                 plugin_event,
                 'reply_god_war_status',
-                extra_value_dict={'god_war_mode': '开启' if current_switch else '关闭'},
+                extra_value_dict={
+                    'god_war_mode': '开启' if effective_switch else '关闭',
+                    'god_war_total_mode': '开启' if total_switch else '关闭',
+                    'god_war_global_mode': '开启' if global_switch else '关闭',
+                    'god_war_group_mode': '开启' if group_switch else '关闭',
+                },
             ),
         )
         return
 
-    if normalized_argument not in {'开启', '关闭'}:
-        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_god_war_invalid'))
-        return
+    target_switch = bool(parse_result.get('enabled', False))
+    target_scope = parse_result.get('scope', 'group')
+    current_switch = global_switch if target_scope == 'global' else group_switch
 
-    target_switch = normalized_argument == '开启'
     if current_switch == target_switch:
         utils.reply_message(
             plugin_event,
             render_custom_message(
                 plugin_event,
-                'reply_god_war_already_enabled' if target_switch else 'reply_god_war_already_disabled',
+                (
+                    'reply_god_war_global_already_enabled'
+                    if target_switch and target_scope == 'global'
+                    else 'reply_god_war_global_already_disabled'
+                    if not target_switch and target_scope == 'global'
+                    else 'reply_god_war_group_already_enabled'
+                    if target_switch
+                    else 'reply_god_war_group_already_disabled'
+                ),
             ),
         )
         return
 
-    bot_config['god_war_enable_switch'] = target_switch
-    utils.save_bot_config(config_bot_hash, bot_config)
+    if target_scope == 'global':
+        function.set_global_god_war_enabled(target_switch)
+    else:
+        function.set_group_god_war_enabled(plugin_event, target_switch)
+
     utils.reply_message(
         plugin_event,
         render_custom_message(
             plugin_event,
-            'reply_god_war_enabled' if target_switch else 'reply_god_war_disabled',
+            (
+                'reply_god_war_global_enabled'
+                if target_switch and target_scope == 'global'
+                else 'reply_god_war_global_disabled'
+                if not target_switch and target_scope == 'global'
+                else 'reply_god_war_group_enabled'
+                if target_switch
+                else 'reply_god_war_group_disabled'
+            ),
         ),
     )
 

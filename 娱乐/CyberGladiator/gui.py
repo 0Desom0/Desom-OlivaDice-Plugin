@@ -62,7 +62,6 @@ class TemplatePluginGui(object):
         self.system_prompt_summary_var = None
         self.user_prompt_summary_var = None
         self.god_war_system_prompt_summary_var = None
-        self.victory_speech_prompt_summary_var = None
         self.bot_info_var = None
         self.linked_hint_var = None
         self.frame_bot_container = None
@@ -323,7 +322,6 @@ class TemplatePluginGui(object):
         self.system_prompt_summary_var = tkinter.StringVar(value='')
         self.user_prompt_summary_var = tkinter.StringVar(value='')
         self.god_war_system_prompt_summary_var = tkinter.StringVar(value='')
-        self.victory_speech_prompt_summary_var = tkinter.StringVar(value='')
         self.bot_info_var = tkinter.StringVar(value='当前未检测到 Bot')
         self.linked_hint_var = tkinter.StringVar(value='')
 
@@ -460,7 +458,6 @@ class TemplatePluginGui(object):
             'system_prompt': self.get_bot_system_prompt_text(),
             'god_war_system_prompt': self.get_bot_god_war_system_prompt_text(),
             'user_prompt_prefix': self.get_bot_user_prompt_prefix_text(),
-            'victory_speech_prompt': self.get_bot_victory_speech_prompt_text(),
         }
 
     def test_bot_api_from_form(self) -> None:
@@ -710,40 +707,6 @@ class TemplatePluginGui(object):
             god_war_system_prompt_button_frame,
             '恢复默认神战提示词',
             self.reset_god_war_system_prompt_to_default,
-            width=18,
-        ).pack(side=tkinter.LEFT)
-
-        tkinter.Label(
-            prompt_frame,
-            text='获胜感言自定义',
-            bg=dict_color_context['color_001'],
-            fg=dict_color_context['color_004'],
-            font=('等线', 11, 'bold'),
-            anchor='w',
-        ).grid(row=9, column=0, sticky='nsew', pady=(16, 0))
-        tkinter.Label(
-            prompt_frame,
-            textvariable=self.victory_speech_prompt_summary_var,
-            bg=dict_color_context['color_001'],
-            fg=dict_color_context['color_004'],
-            font=('等线', 10),
-            justify='left',
-            anchor='w',
-            wraplength=620,
-        ).grid(row=10, column=0, sticky='nsew', pady=(4, 0))
-
-        victory_speech_button_frame = tkinter.Frame(prompt_frame, bg=dict_color_context['color_001'])
-        victory_speech_button_frame.grid(row=11, column=0, sticky='w', pady=(8, 0))
-        self.create_native_button(
-            victory_speech_button_frame,
-            '编辑获胜感言要求',
-            self.open_victory_speech_prompt_editor,
-            width=18,
-        ).pack(side=tkinter.LEFT, padx=(0, 8))
-        self.create_native_button(
-            victory_speech_button_frame,
-            '清空获胜感言要求',
-            self.clear_victory_speech_prompt,
             width=18,
         ).pack(side=tkinter.LEFT)
 
@@ -1022,9 +985,6 @@ class TemplatePluginGui(object):
         self.god_war_system_prompt_summary_var.set(
             self.summarize_text(self.get_bot_god_war_system_prompt_text(), '未配置神战系统提示词')
         )
-        self.victory_speech_prompt_summary_var.set(
-            self.summarize_text(self.get_bot_victory_speech_prompt_text(), '当前为空，将由胜者自由发挥')
-        )
 
     def get_bot_system_prompt_text(self) -> str:
         """从当前界面状态读取系统提示词。"""
@@ -1051,15 +1011,6 @@ class TemplatePluginGui(object):
     def set_bot_god_war_system_prompt_text(self, text_value: str) -> None:
         """更新当前界面缓存的神战系统提示词。"""
         self._bot_god_war_system_prompt_text = utils.safe_str(text_value)
-        self.update_prompt_summary_vars()
-
-    def get_bot_victory_speech_prompt_text(self) -> str:
-        """从当前界面状态读取获胜感言附加要求。"""
-        return utils.safe_str(getattr(self, '_bot_victory_speech_prompt_text', ''))
-
-    def set_bot_victory_speech_prompt_text(self, text_value: str) -> None:
-        """更新当前界面缓存的获胜感言附加要求。"""
-        self._bot_victory_speech_prompt_text = utils.safe_str(text_value)
         self.update_prompt_summary_vars()
 
     def open_system_prompt_editor(self) -> None:
@@ -1106,21 +1057,6 @@ class TemplatePluginGui(object):
         if not messagebox.askyesno('确认', '确定要恢复为默认神战系统提示词吗？'):
             return
         self.set_bot_god_war_system_prompt_text(config.GOD_WAR_SYSTEM_PROMPT)
-
-    def open_victory_speech_prompt_editor(self) -> None:
-        """编辑当前 Bot 的获胜感言附加要求。"""
-        self.open_text_editor_dialog(
-            title_text='编辑获胜感言要求',
-            note_text='这里的文本会插入到普通模式和神战模式的 user prompt 中，用来约束最终胜者的获胜感言。',
-            initial_text=self.get_bot_victory_speech_prompt_text(),
-            save_callback=self.set_bot_victory_speech_prompt_text,
-        )
-
-    def clear_victory_speech_prompt(self) -> None:
-        """清空获胜感言附加要求。"""
-        if not messagebox.askyesno('确认', '确定要清空当前 Bot 的获胜感言要求吗？'):
-            return
-        self.set_bot_victory_speech_prompt_text('')
 
     def open_master_manager_dialog(self) -> None:
         """打开骰主列表管理窗口。"""
@@ -1237,7 +1173,6 @@ class TemplatePluginGui(object):
                 config.default_bot_config.get('god_war_system_prompt', config.GOD_WAR_SYSTEM_PROMPT)
             )
             self.set_bot_user_prompt_prefix_text(config.default_bot_config.get('user_prompt_prefix', ''))
-            self.set_bot_victory_speech_prompt_text(config.default_bot_config.get('victory_speech_prompt', ''))
             self.linked_hint_var.set('')
             return
 
@@ -1262,7 +1197,6 @@ class TemplatePluginGui(object):
             bot_config.get('god_war_system_prompt', config.GOD_WAR_SYSTEM_PROMPT)
         )
         self.set_bot_user_prompt_prefix_text(bot_config.get('user_prompt_prefix', ''))
-        self.set_bot_victory_speech_prompt_text(bot_config.get('victory_speech_prompt', ''))
 
         if reply_bot_hash and reply_bot_hash != config_bot_hash:
             linked_bot_info = self.bot_info_dict.get(reply_bot_hash)

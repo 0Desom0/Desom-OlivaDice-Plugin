@@ -511,6 +511,7 @@ def save_bot_config(bot_hash: Any, bot_config: Dict[str, Any]) -> bool:
     final_config = merge_dict_with_default(bot_config, config.default_bot_config)
     for legacy_key in ['bot_id', 'bot_hash', 'raw_bot_hash']:
         final_config.pop(legacy_key, None)
+    final_config.pop('victory_speech_prompt', None)
     final_config['configured_master_list'] = normalize_id_list(final_config.get('configured_master_list', []))
     return save_json_file(get_bot_config_file_path(bot_hash), final_config)
 

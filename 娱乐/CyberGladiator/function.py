@@ -126,6 +126,7 @@ def _build_default_group_state(plugin_event) -> Dict[str, Any]:
         'group_id': utils.get_group_id_from_event(plugin_event),
         'host_id': utils.get_host_id_from_event(plugin_event),
         'plugin_enabled': True,
+        'group_god_war_enabled': True,
         'waiting_room': [],
         'battle_running': False,
         'stop_requested': False,
@@ -199,6 +200,30 @@ def is_global_plugin_enabled() -> bool:
 def set_global_plugin_enabled(enabled: bool) -> Dict[str, Any]:
     global_config = utils.load_global_config()
     global_config['global_enable_switch'] = bool(enabled)
+    utils.save_global_config(global_config)
+    return global_config
+
+
+def is_group_god_war_enabled(plugin_event) -> bool:
+    group_state = load_group_state(plugin_event)
+    return bool(group_state.get('group_god_war_enabled', True))
+
+
+def set_group_god_war_enabled(plugin_event, enabled: bool) -> Dict[str, Any]:
+    group_state = load_group_state(plugin_event)
+    group_state['group_god_war_enabled'] = bool(enabled)
+    save_group_state(plugin_event, group_state)
+    return group_state
+
+
+def is_global_god_war_enabled() -> bool:
+    global_config = utils.load_global_config()
+    return bool(global_config.get('global_god_war_enable_switch', True))
+
+
+def set_global_god_war_enabled(enabled: bool) -> Dict[str, Any]:
+    global_config = utils.load_global_config()
+    global_config['global_god_war_enable_switch'] = bool(enabled)
     utils.save_global_config(global_config)
     return global_config
 
@@ -523,7 +548,12 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
     bot_config = utils.load_bot_config(config_bot_hash)
     timeout_seconds = _coerce_int(bot_config.get('request_timeout_seconds', 180), 180)
     delay_min_seconds, delay_max_seconds = get_segment_delay_range_from_bot_config(bot_config)
-    god_war_enable_switch = _coerce_bool(bot_config.get('god_war_enable_switch', False), False)
+    god_war_total_enable_switch = _coerce_bool(bot_config.get('god_war_enable_switch', False), False)
+    global_god_war_enable_switch = is_global_god_war_enabled()
+    group_god_war_enable_switch = is_group_god_war_enabled(plugin_event)
+    god_war_enable_switch = bool(
+        god_war_total_enable_switch and global_god_war_enable_switch and group_god_war_enable_switch
+    )
     normal_system_prompt = utils.safe_str(bot_config.get('system_prompt') or config.SYSTEM_PROMPT).strip()
     god_war_system_prompt = utils.safe_str(
         bot_config.get('god_war_system_prompt') or config.GOD_WAR_SYSTEM_PROMPT
@@ -540,12 +570,14 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
             bot_config.get('qq_forward_message_switch', False),
             False,
         ),
+        'god_war_total_enable_switch': god_war_total_enable_switch,
+        'global_god_war_enable_switch': global_god_war_enable_switch,
+        'group_god_war_enable_switch': group_god_war_enable_switch,
         'god_war_enable_switch': god_war_enable_switch,
         'normal_system_prompt': normal_system_prompt,
         'god_war_system_prompt': god_war_system_prompt,
         'system_prompt': god_war_system_prompt if god_war_enable_switch else normal_system_prompt,
         'user_prompt_prefix': utils.safe_str(bot_config.get('user_prompt_prefix', '')).strip(),
-        'victory_speech_prompt': utils.safe_str(bot_config.get('victory_speech_prompt', '')).strip(),
     }
 
 
@@ -655,17 +687,12 @@ def _build_user_prompt(bot_config: Dict[str, Any], combatant_list: List[Dict[str
     custom_section = ''
     if custom_user_prompt:
         custom_section = custom_user_prompt + '\n\n'
-    victory_speech_prompt = utils.safe_str(bot_config.get('victory_speech_prompt', '')).strip()
-    victory_speech_prompt_section = ''
-    if victory_speech_prompt:
-        victory_speech_prompt_section = '\n\n额外的获胜感言要求：\n' + victory_speech_prompt
     user_prompt_template = config.GOD_WAR_USER_PROMPT_TEMPLATE
     if not bot_config.get('god_war_enable_switch', False):
         user_prompt_template = config.USER_PROMPT_TEMPLATE
     return user_prompt_template.format(
         custom_user_prompt_section=custom_section,
         players_info_str=_build_players_info_str(combatant_list),
-        victory_speech_prompt_section=victory_speech_prompt_section,
     )
 
 
