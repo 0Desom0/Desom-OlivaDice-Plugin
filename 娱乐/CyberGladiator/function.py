@@ -635,6 +635,7 @@ def _build_players_info_str(combatant_list: List[Dict[str, Any]]) -> str:
                     (
                         '- 你必须先根据这条情报，总结一个稳定的出场名字/称号。'
                         ' 后续所有播报和面板都只能用这个名字，不能再写成角斗士编号。'
+                        '- 无论情报多短，攻击方式、施法方式、特性都必须写完整。'
                     ),
                     (
                         f'- 初始面板：[HP: {combatant["hp"]}] / [MP: {combatant["mp"]}] '
