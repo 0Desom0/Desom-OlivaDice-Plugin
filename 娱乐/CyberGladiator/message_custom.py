@@ -40,6 +40,12 @@ default_custom_message_dict = {
     'reply_delay_config_status': '当前 Bot 的切片播报等待时间为 {delay_min_seconds} 到 {delay_max_seconds} 秒。',
     'reply_delay_config_updated': '当前 Bot 的切片播报等待时间已更新为 {delay_min_seconds} 到 {delay_max_seconds} 秒。',
     'reply_delay_config_invalid': '等待时间配置格式错误，请使用 {prefix}角斗配置 等待 10 20，且两个值都必须是大于 0 的整数，并满足最小值不大于最大值。',
+    'reply_god_war_status': '当前 Bot 的神战模式：{god_war_mode}。',
+    'reply_god_war_enabled': '当前 Bot 的神战模式已开启。后续 .角斗开始 / .决斗开始 将切换为神战 prompt。',
+    'reply_god_war_disabled': '当前 Bot 的神战模式已关闭。后续 .角斗开始 / .决斗开始 将恢复普通模式 prompt。',
+    'reply_god_war_already_enabled': '当前 Bot 的神战模式已经处于开启状态。',
+    'reply_god_war_already_disabled': '当前 Bot 的神战模式已经处于关闭状态。',
+    'reply_god_war_invalid': '神战命令格式错误，请使用 {prefix}角斗神战 开启 或 {prefix}角斗神战 关闭。',
     'reply_missing_api_config': '当前 Bot 未配置完整的 API 信息，请在 bot_config.json 中补充 api_url、api_key 和 model。',
     'reply_battle_failed': '角斗推演失败：{error_message}',
     'reply_unknown_command': '未识别的角斗/决斗指令，可使用 {prefix}角斗帮助 查看帮助。',
@@ -90,6 +96,12 @@ custom_message_note_dict = {
     'reply_delay_config_status': '【角斗配置 等待】\n查询当前 Bot 的切片播报等待区间时使用。',
     'reply_delay_config_updated': '【角斗配置 等待】\n成功保存当前 Bot 的切片播报等待区间时使用。',
     'reply_delay_config_invalid': '【角斗配置 等待】\n参数格式错误时使用。',
+    'reply_god_war_status': '【角斗神战】\n查询当前 Bot 的神战模式状态时使用。',
+    'reply_god_war_enabled': '【角斗神战 开启】\n成功开启神战模式时使用。',
+    'reply_god_war_disabled': '【角斗神战 关闭】\n成功关闭神战模式时使用。',
+    'reply_god_war_already_enabled': '【角斗神战 开启】\n重复开启时使用。',
+    'reply_god_war_already_disabled': '【角斗神战 关闭】\n重复关闭时使用。',
+    'reply_god_war_invalid': '【角斗神战】\n神战命令参数错误时使用。',
     'reply_missing_api_config': '【API 配置缺失】\n未填写 api_url、api_key、model 时使用。',
     'reply_battle_failed': '【角斗开始】\n调用 API 或播报失败时使用。',
     'reply_unknown_command': '【未知角斗指令】\n已识别到角斗前缀但子命令不合法时使用。',
@@ -134,7 +146,10 @@ help_document_dict = {
 12. .角斗配置 等待 [最小秒数] [最大秒数] / .决斗配置 等待 [最小秒数] [最大秒数]
 查看或修改当前 Bot 的每段播报等待时间。不带秒数时返回当前配置；设置成功后会写入当前 Bot 的 bot_config.json。仅骰主与配置骰主可用。
 
-13. .角斗帮助 / .决斗帮助
+13. .角斗神战 [开启/关闭] / .决斗神战 [开启/关闭]
+切换当前 Bot 是否使用神战模式 prompt。不带参数时可查看当前状态。仅骰主与配置骰主可用。
+
+14. .角斗帮助 / .决斗帮助
 查看本帮助文档。''',
 }
 
@@ -143,4 +158,4 @@ gui_description_text = '''赛博角斗场 GUI 继续保持轻量结构：
 1. 主界面仍然只有“全局配置”和“Bot 配置”两个页签。
 2. Bot 配置页可切换账号，并直接打开当前 Bot 的配置目录与回复目录。
 3. 回复词仍通过子窗口编辑，方便在 GUI 中改所有用户可见文案。
-4. 每个 Bot 的 API、模型、提示词和切片等待区间配置保存在对应 bot_config.json 中。'''
+4. 每个 Bot 的 API、模型、普通/神战提示词、获胜感言要求和切片等待区间配置保存在对应 bot_config.json 中。'''

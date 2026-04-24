@@ -523,6 +523,11 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
     bot_config = utils.load_bot_config(config_bot_hash)
     timeout_seconds = _coerce_int(bot_config.get('request_timeout_seconds', 180), 180)
     delay_min_seconds, delay_max_seconds = get_segment_delay_range_from_bot_config(bot_config)
+    god_war_enable_switch = _coerce_bool(bot_config.get('god_war_enable_switch', False), False)
+    normal_system_prompt = utils.safe_str(bot_config.get('system_prompt') or config.SYSTEM_PROMPT).strip()
+    god_war_system_prompt = utils.safe_str(
+        bot_config.get('god_war_system_prompt') or config.GOD_WAR_SYSTEM_PROMPT
+    ).strip()
     return {
         'api_url': utils.safe_str(bot_config.get('api_url', '')).strip(),
         'api_key': utils.safe_str(bot_config.get('api_key', '')).strip(),
@@ -535,10 +540,12 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
             bot_config.get('qq_forward_message_switch', False),
             False,
         ),
-        'system_prompt': utils.safe_str(
-            bot_config.get('system_prompt') or config.SYSTEM_PROMPT
-        ).strip(),
+        'god_war_enable_switch': god_war_enable_switch,
+        'normal_system_prompt': normal_system_prompt,
+        'god_war_system_prompt': god_war_system_prompt,
+        'system_prompt': god_war_system_prompt if god_war_enable_switch else normal_system_prompt,
         'user_prompt_prefix': utils.safe_str(bot_config.get('user_prompt_prefix', '')).strip(),
+        'victory_speech_prompt': utils.safe_str(bot_config.get('victory_speech_prompt', '')).strip(),
     }
 
 
@@ -648,9 +655,17 @@ def _build_user_prompt(bot_config: Dict[str, Any], combatant_list: List[Dict[str
     custom_section = ''
     if custom_user_prompt:
         custom_section = custom_user_prompt + '\n\n'
-    return config.USER_PROMPT_TEMPLATE.format(
+    victory_speech_prompt = utils.safe_str(bot_config.get('victory_speech_prompt', '')).strip()
+    victory_speech_prompt_section = ''
+    if victory_speech_prompt:
+        victory_speech_prompt_section = '\n\n额外的获胜感言要求：\n' + victory_speech_prompt
+    user_prompt_template = config.GOD_WAR_USER_PROMPT_TEMPLATE
+    if not bot_config.get('god_war_enable_switch', False):
+        user_prompt_template = config.USER_PROMPT_TEMPLATE
+    return user_prompt_template.format(
         custom_user_prompt_section=custom_section,
         players_info_str=_build_players_info_str(combatant_list),
+        victory_speech_prompt_section=victory_speech_prompt_section,
     )
 
 

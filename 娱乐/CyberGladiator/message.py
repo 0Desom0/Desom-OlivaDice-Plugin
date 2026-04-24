@@ -8,14 +8,14 @@ from . import utils
 
 
 gladiator_command_prefix_tuple = ('角斗', '决斗')
-gladiator_command_suffix_tuple = ('加入', '更新', '录入', '开始', '查询', '退出', '清空', '停止', '关闭', '开启', '配置', '帮助')
+gladiator_command_suffix_tuple = ('加入', '更新', '录入', '开始', '查询', '退出', '清空', '停止', '关闭', '开启', '配置', '帮助', '神战')
 command_name_list = [
     f'{command_prefix}{command_suffix}'
     for command_prefix in gladiator_command_prefix_tuple
     for command_suffix in gladiator_command_suffix_tuple
 ]
 management_command_name_set = {'清空', '停止', '关闭', '开启'}
-master_only_command_name_set = {'配置'}
+master_only_command_name_set = {'配置', '神战'}
 locked_command_name_set = {'加入', '更新', '开始', '退出', '清空'}
 
 
@@ -428,6 +428,48 @@ def handle_gladiator_config(plugin_event, config_bot_hash: str, command_argument
     )
 
 
+def handle_gladiator_god_war(plugin_event, config_bot_hash: str, command_argument: str) -> None:
+    normalized_argument = utils.safe_str(command_argument).strip()
+    bot_config = utils.load_bot_config(config_bot_hash)
+    current_switch = bool(bot_config.get('god_war_enable_switch', False))
+
+    if normalized_argument == '':
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_god_war_status',
+                extra_value_dict={'god_war_mode': '开启' if current_switch else '关闭'},
+            ),
+        )
+        return
+
+    if normalized_argument not in {'开启', '关闭'}:
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_god_war_invalid'))
+        return
+
+    target_switch = normalized_argument == '开启'
+    if current_switch == target_switch:
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_god_war_already_enabled' if target_switch else 'reply_god_war_already_disabled',
+            ),
+        )
+        return
+
+    bot_config['god_war_enable_switch'] = target_switch
+    utils.save_bot_config(config_bot_hash, bot_config)
+    utils.reply_message(
+        plugin_event,
+        render_custom_message(
+            plugin_event,
+            'reply_god_war_enabled' if target_switch else 'reply_god_war_disabled',
+        ),
+    )
+
+
 def handle_gladiator_start(plugin_event, Proc) -> None:
     battle_context = function.prepare_battle_run(plugin_event)
     if not battle_context.get('ok'):
@@ -596,6 +638,10 @@ def handle_message(plugin_event, Proc) -> None:
 
     if command_name == '配置':
         handle_gladiator_config(plugin_event, config_bot_hash, command_argument)
+        return
+
+    if command_name == '神战':
+        handle_gladiator_god_war(plugin_event, config_bot_hash, command_argument)
         return
 
     if command_name == '开始':
