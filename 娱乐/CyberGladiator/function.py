@@ -21,8 +21,7 @@ function_module_note = '赛博角斗场纯 Python 业务逻辑模块。'
 
 MAX_PARTICIPANTS = 4
 HP_RANGE = (800, 1200)
-MP_RANGE = (150, 250)
-SP_RANGE = (80, 120)
+MP_RANGE = (200, 400)
 ROLL_COUNT = 10
 SEGMENT_SEPARATOR = '|||'
 SEGMENT_DELAY_RANGE = (
@@ -617,7 +616,6 @@ def _generate_combatants(waiting_room: List[Dict[str, str]]) -> List[Dict[str, A
                 'input_text': entry.get('input_text', ''),
                 'hp': random.randint(*HP_RANGE),
                 'mp': random.randint(*MP_RANGE),
-                'sp': random.randint(*SP_RANGE),
                 'rolls': [random.randint(1, 20) for _ in range(ROLL_COUNT)],
             }
         )
@@ -635,12 +633,9 @@ def _build_players_info_str(combatant_list: List[Dict[str, Any]]) -> str:
                     (
                         '- 你必须先根据这条情报，总结一个稳定的出场名字/称号。'
                         ' 后续所有播报和面板都只能用这个名字，不能再写成角斗士编号。'
-                        '- 无论情报多短，攻击方式、施法方式、特性都必须写完整。'
+                        ' 无论情报多短，攻击方式、施法方式、特性都必须写完整。'
                     ),
-                    (
-                        f'- 初始面板：[HP: {combatant["hp"]}] / [MP: {combatant["mp"]}] '
-                        f'/ [SP: {combatant["sp"]}]'
-                    ),
+                    f'- 初始面板：[HP: {combatant["hp"]}] / [MP: {combatant["mp"]}]',
                     f'- 命运序列（前10回合固定骰点）：{combatant["rolls"]}',
                 ]
             )
