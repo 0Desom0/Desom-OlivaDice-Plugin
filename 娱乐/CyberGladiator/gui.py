@@ -49,6 +49,7 @@ class TemplatePluginGui(object):
         self.bot_selector_var = None
         self.global_enable_var = None
         self.global_debug_var = None
+        self.global_god_war_var = None
         self.bot_enable_var = None
         self.bot_api_url_var = None
         self.bot_api_key_var = None
@@ -58,7 +59,6 @@ class TemplatePluginGui(object):
         self.bot_delay_min_var = None
         self.bot_delay_max_var = None
         self.bot_forward_switch_var = None
-        self.bot_god_war_switch_var = None
         self.system_prompt_summary_var = None
         self.user_prompt_summary_var = None
         self.god_war_system_prompt_summary_var = None
@@ -309,6 +309,7 @@ class TemplatePluginGui(object):
         self.bot_selector_var = tkinter.StringVar(value='')
         self.global_enable_var = tkinter.StringVar(value='True')
         self.global_debug_var = tkinter.StringVar(value='False')
+        self.global_god_war_var = tkinter.StringVar(value='True')
         self.bot_enable_var = tkinter.StringVar(value='True')
         self.bot_api_url_var = tkinter.StringVar(value='')
         self.bot_api_key_var = tkinter.StringVar(value='')
@@ -318,7 +319,6 @@ class TemplatePluginGui(object):
         self.bot_delay_min_var = tkinter.StringVar(value=str(config.default_segment_delay_min_seconds))
         self.bot_delay_max_var = tkinter.StringVar(value=str(config.default_segment_delay_max_seconds))
         self.bot_forward_switch_var = tkinter.StringVar(value='False')
-        self.bot_god_war_switch_var = tkinter.StringVar(value='False')
         self.system_prompt_summary_var = tkinter.StringVar(value='')
         self.user_prompt_summary_var = tkinter.StringVar(value='')
         self.god_war_system_prompt_summary_var = tkinter.StringVar(value='')
@@ -454,7 +454,6 @@ class TemplatePluginGui(object):
             'segment_delay_min_seconds': delay_min_seconds,
             'segment_delay_max_seconds': delay_max_seconds,
             'qq_forward_message_switch': self.str_to_bool(self.bot_forward_switch_var.get()),
-            'god_war_enable_switch': self.str_to_bool(self.bot_god_war_switch_var.get()),
             'system_prompt': self.get_bot_system_prompt_text(),
             'god_war_system_prompt': self.get_bot_god_war_system_prompt_text(),
             'user_prompt_prefix': self.get_bot_user_prompt_prefix_text(),
@@ -519,9 +518,10 @@ class TemplatePluginGui(object):
 
         self.create_labeled_combobox(self.frame_global, 0, '全局启用', self.global_enable_var)
         self.create_labeled_combobox(self.frame_global, 2, '全局调试模式', self.global_debug_var)
+        self.create_labeled_combobox(self.frame_global, 4, '神战总开关', self.global_god_war_var)
 
         button_frame = tkinter.Frame(self.frame_global, bg=dict_color_context['color_001'])
-        button_frame.grid(row=4, column=0, sticky='nsew', padx=(20, 20), pady=(40, 0))
+        button_frame.grid(row=6, column=0, sticky='nsew', padx=(20, 20), pady=(40, 0))
         self.create_save_button(button_frame, '保存全局设置', self.save_global_config_from_form, width=16).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
@@ -543,7 +543,7 @@ class TemplatePluginGui(object):
             fg=dict_color_context['color_007'],
             font=('等线', 10, 'bold'),
         )
-        hint_label.grid(row=5, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
+        hint_label.grid(row=7, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
 
     def init_frame_bot(self) -> None:
         """Bot 配置页。"""
@@ -602,10 +602,9 @@ class TemplatePluginGui(object):
         self.create_labeled_entry(self.frame_bot, 16, '切片等待最小值（秒）', self.bot_delay_min_var)
         self.create_labeled_entry(self.frame_bot, 18, '切片等待最大值（秒）', self.bot_delay_max_var)
         self.create_labeled_combobox(self.frame_bot, 20, 'QQ 合并转发播报', self.bot_forward_switch_var)
-        self.create_labeled_combobox(self.frame_bot, 22, '神战模式开关', self.bot_god_war_switch_var)
 
         prompt_frame = tkinter.Frame(self.frame_bot, bg=dict_color_context['color_001'])
-        prompt_frame.grid(row=24, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
+        prompt_frame.grid(row=22, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
         prompt_frame.grid_columnconfigure(0, weight=1)
 
         tkinter.Label(
@@ -1146,6 +1145,7 @@ class TemplatePluginGui(object):
         global_config = utils.load_global_config()
         self.global_enable_var.set(str(bool(global_config.get('global_enable_switch', True))))
         self.global_debug_var.set(str(bool(global_config.get('global_debug_mode_switch', False))))
+        self.global_god_war_var.set(str(bool(global_config.get('global_god_war_enable_switch', True))))
 
     def refresh_bot_view(self) -> None:
         """刷新 Bot 配置页。"""
@@ -1164,9 +1164,6 @@ class TemplatePluginGui(object):
             self.bot_delay_max_var.set(str(config.default_bot_config.get('segment_delay_max_seconds', 20)))
             self.bot_forward_switch_var.set(
                 str(bool(config.default_bot_config.get('qq_forward_message_switch', False)))
-            )
-            self.bot_god_war_switch_var.set(
-                str(bool(config.default_bot_config.get('god_war_enable_switch', False)))
             )
             self.set_bot_system_prompt_text(config.default_bot_config.get('system_prompt', config.SYSTEM_PROMPT))
             self.set_bot_god_war_system_prompt_text(
@@ -1191,7 +1188,6 @@ class TemplatePluginGui(object):
         self.bot_delay_min_var.set(str(delay_min_seconds))
         self.bot_delay_max_var.set(str(delay_max_seconds))
         self.bot_forward_switch_var.set(str(bool(bot_config.get('qq_forward_message_switch', False))))
-        self.bot_god_war_switch_var.set(str(bool(bot_config.get('god_war_enable_switch', False))))
         self.set_bot_system_prompt_text(bot_config.get('system_prompt', config.SYSTEM_PROMPT))
         self.set_bot_god_war_system_prompt_text(
             bot_config.get('god_war_system_prompt', config.GOD_WAR_SYSTEM_PROMPT)
@@ -1217,6 +1213,7 @@ class TemplatePluginGui(object):
         global_config = utils.load_global_config()
         global_config['global_enable_switch'] = self.str_to_bool(self.global_enable_var.get())
         global_config['global_debug_mode_switch'] = self.str_to_bool(self.global_debug_var.get())
+        global_config['global_god_war_enable_switch'] = self.str_to_bool(self.global_god_war_var.get())
         utils.save_global_config(global_config)
         messagebox.showinfo('提示', '全局设置已保存。')
         self.refresh_global_view()
@@ -1236,6 +1233,7 @@ class TemplatePluginGui(object):
 
         bot_config = utils.load_bot_config(config_bot_hash)
         bot_config.update(current_bot_config)
+        bot_config.pop('god_war_enable_switch', None)
         utils.save_bot_config(config_bot_hash, bot_config)
         messagebox.showinfo('提示', 'Bot 设置已保存。')
         self.refresh_bot_view()

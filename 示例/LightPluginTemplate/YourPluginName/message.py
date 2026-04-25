@@ -358,11 +358,12 @@ def handle_message(plugin_event, Proc) -> None:
     original_message_text = utils.get_message_text_from_event(plugin_event)
     cleaned_message_text = utils.strip_reply_segment(original_message_text)
     at_item_list, remaining_after_at = utils.parse_at_segments(cleaned_message_text, allow_multi=True)
-    allow_no_prefix = utils.is_force_reply_to_current_bot(at_item_list, plugin_event)
+    if at_item_list and not utils.is_force_reply_to_current_bot(at_item_list, plugin_event):
+        return
     command_info = utils.parse_command(
         remaining_after_at,
         prefix_list=config.allowed_prefix_list,
-        allow_no_prefix=allow_no_prefix,
+        allow_no_prefix=False,
     )
 
     if not command_info['is_command']:

@@ -861,7 +861,7 @@ def is_force_reply_to_current_bot(at_item_list: List[Dict[str, str]], plugin_eve
     """
     判断解析出的 at 列表里是否包含当前 bot 或 all。
 
-    这类判断通常用于“允许 at bot 后不写前缀也能继续解析命令”。
+    这类判断通常用于“前置 at 时，只允许 at 到当前 bot / all 的消息继续进入命令解析”。
     """
     self_id = get_self_id_from_event(plugin_event)
     for at_item in at_item_list:

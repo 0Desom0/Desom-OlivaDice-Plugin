@@ -126,7 +126,8 @@ def _build_default_group_state(plugin_event) -> Dict[str, Any]:
         'group_id': utils.get_group_id_from_event(plugin_event),
         'host_id': utils.get_host_id_from_event(plugin_event),
         'plugin_enabled': True,
-        'group_god_war_enabled': True,
+        'group_god_war_override_switch': False,
+        'group_god_war_enabled': False,
         'waiting_room': [],
         'battle_running': False,
         'stop_requested': False,
@@ -206,13 +207,52 @@ def set_global_plugin_enabled(enabled: bool) -> Dict[str, Any]:
 
 def is_group_god_war_enabled(plugin_event) -> bool:
     group_state = load_group_state(plugin_event)
-    return bool(group_state.get('group_god_war_enabled', True))
+    return bool(group_state.get('group_god_war_enabled', False))
+
+
+def is_group_god_war_override_enabled(plugin_event) -> bool:
+    group_state = load_group_state(plugin_event)
+    return bool(group_state.get('group_god_war_override_switch', False))
+
+
+def get_effective_god_war_enabled(plugin_event) -> bool:
+    if is_group_god_war_override_enabled(plugin_event):
+        return is_group_god_war_enabled(plugin_event)
+    return is_global_god_war_enabled()
+
+
+def _disable_other_group_god_war_switches(plugin_event) -> None:
+    bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
+    current_file_path = _group_state_file_path(bot_hash, utils.get_hag_id_from_event(plugin_event))
+    group_folder_path = _group_state_dir(bot_hash)
+
+    for entry_name in utils.list_folder_entries(group_folder_path, only_file=True):
+        if not entry_name.lower().endswith('.json'):
+            continue
+        entry_file_path = os.path.join(group_folder_path, entry_name)
+        if os.path.abspath(entry_file_path) == os.path.abspath(current_file_path):
+            continue
+
+        group_state = utils.read_json_file(entry_file_path, {})
+        if not isinstance(group_state, dict):
+            continue
+        if not group_state.get('group_god_war_override_switch', False):
+            continue
+        if not group_state.get('group_god_war_enabled', False):
+            continue
+
+        group_state['group_god_war_override_switch'] = False
+        group_state['group_god_war_enabled'] = False
+        utils.save_json_file(entry_file_path, group_state)
 
 
 def set_group_god_war_enabled(plugin_event, enabled: bool) -> Dict[str, Any]:
     group_state = load_group_state(plugin_event)
+    group_state['group_god_war_override_switch'] = True
     group_state['group_god_war_enabled'] = bool(enabled)
     save_group_state(plugin_event, group_state)
+    if enabled and not is_global_god_war_enabled():
+        _disable_other_group_god_war_switches(plugin_event)
     return group_state
 
 
@@ -548,12 +588,10 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
     bot_config = utils.load_bot_config(config_bot_hash)
     timeout_seconds = _coerce_int(bot_config.get('request_timeout_seconds', 180), 180)
     delay_min_seconds, delay_max_seconds = get_segment_delay_range_from_bot_config(bot_config)
-    god_war_total_enable_switch = _coerce_bool(bot_config.get('god_war_enable_switch', False), False)
-    global_god_war_enable_switch = is_global_god_war_enabled()
+    god_war_total_enable_switch = is_global_god_war_enabled()
     group_god_war_enable_switch = is_group_god_war_enabled(plugin_event)
-    god_war_enable_switch = bool(
-        god_war_total_enable_switch and global_god_war_enable_switch and group_god_war_enable_switch
-    )
+    group_god_war_override_switch = is_group_god_war_override_enabled(plugin_event)
+    god_war_enable_switch = get_effective_god_war_enabled(plugin_event)
     normal_system_prompt = utils.safe_str(bot_config.get('system_prompt') or config.SYSTEM_PROMPT).strip()
     god_war_system_prompt = utils.safe_str(
         bot_config.get('god_war_system_prompt') or config.GOD_WAR_SYSTEM_PROMPT
@@ -571,7 +609,8 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
             False,
         ),
         'god_war_total_enable_switch': god_war_total_enable_switch,
-        'global_god_war_enable_switch': global_god_war_enable_switch,
+        'global_god_war_enable_switch': god_war_total_enable_switch,
+        'group_god_war_override_switch': group_god_war_override_switch,
         'group_god_war_enable_switch': group_god_war_enable_switch,
         'god_war_enable_switch': god_war_enable_switch,
         'normal_system_prompt': normal_system_prompt,

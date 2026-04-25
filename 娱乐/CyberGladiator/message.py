@@ -451,11 +451,10 @@ def handle_gladiator_god_war(plugin_event, config_bot_hash: str, command_argumen
         utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_god_war_invalid'))
         return
 
-    bot_config = utils.load_bot_config(config_bot_hash)
-    total_switch = bool(bot_config.get('god_war_enable_switch', False))
-    global_switch = function.is_global_god_war_enabled()
+    total_switch = function.is_global_god_war_enabled()
+    group_override_switch = function.is_group_god_war_override_enabled(plugin_event)
     group_switch = function.is_group_god_war_enabled(plugin_event)
-    effective_switch = bool(total_switch and global_switch and group_switch)
+    effective_switch = function.get_effective_god_war_enabled(plugin_event)
 
     if parse_result.get('action') == 'show':
         utils.reply_message(
@@ -466,7 +465,7 @@ def handle_gladiator_god_war(plugin_event, config_bot_hash: str, command_argumen
                 extra_value_dict={
                     'god_war_mode': '开启' if effective_switch else '关闭',
                     'god_war_total_mode': '开启' if total_switch else '关闭',
-                    'god_war_global_mode': '开启' if global_switch else '关闭',
+                    'god_war_group_override_mode': '开启' if group_override_switch else '关闭',
                     'god_war_group_mode': '开启' if group_switch else '关闭',
                 },
             ),
@@ -475,9 +474,9 @@ def handle_gladiator_god_war(plugin_event, config_bot_hash: str, command_argumen
 
     target_switch = bool(parse_result.get('enabled', False))
     target_scope = parse_result.get('scope', 'group')
-    current_switch = global_switch if target_scope == 'global' else group_switch
+    current_switch = total_switch if target_scope == 'global' else (group_override_switch and group_switch == target_switch)
 
-    if current_switch == target_switch:
+    if target_scope == 'global' and current_switch == target_switch:
         utils.reply_message(
             plugin_event,
             render_custom_message(
@@ -491,6 +490,16 @@ def handle_gladiator_god_war(plugin_event, config_bot_hash: str, command_argumen
                     if target_switch
                     else 'reply_god_war_group_already_disabled'
                 ),
+            ),
+        )
+        return
+
+    if target_scope == 'group' and group_override_switch and group_switch == target_switch:
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_god_war_group_already_enabled' if target_switch else 'reply_god_war_group_already_disabled',
             ),
         )
         return
@@ -585,11 +594,12 @@ def handle_message(plugin_event, Proc) -> None:
     original_message_text = utils.get_message_text_from_event(plugin_event)
     cleaned_message_text = utils.strip_reply_segment(original_message_text)
     at_item_list, remaining_after_at = utils.parse_at_segments(cleaned_message_text, allow_multi=True)
-    allow_no_prefix = utils.is_force_reply_to_current_bot(at_item_list, plugin_event)
+    if at_item_list and not utils.is_force_reply_to_current_bot(at_item_list, plugin_event):
+        return
     command_info = utils.parse_command(
         remaining_after_at,
         prefix_list=config.allowed_prefix_list,
-        allow_no_prefix=allow_no_prefix,
+        allow_no_prefix=False,
         command_name=command_name_list,
     )
 
@@ -597,7 +607,7 @@ def handle_message(plugin_event, Proc) -> None:
         generic_command_info = utils.parse_command(
             remaining_after_at,
             prefix_list=config.allowed_prefix_list,
-            allow_no_prefix=allow_no_prefix,
+            allow_no_prefix=False,
         )
         if (
             generic_command_info['is_command']

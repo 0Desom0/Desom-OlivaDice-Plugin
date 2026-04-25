@@ -40,13 +40,13 @@ default_custom_message_dict = {
     'reply_delay_config_status': '当前 Bot 的切片播报等待时间为 {delay_min_seconds} 到 {delay_max_seconds} 秒。',
     'reply_delay_config_updated': '当前 Bot 的切片播报等待时间已更新为 {delay_min_seconds} 到 {delay_max_seconds} 秒。',
     'reply_delay_config_invalid': '等待时间配置格式错误，请使用 {prefix}角斗配置 等待 10 20，且两个值都必须是大于 0 的整数，并满足最小值不大于最大值。',
-    'reply_god_war_status': '神战当前实际状态：{god_war_mode}。总开关：{god_war_total_mode}；全局开关：{god_war_global_mode}；本群开关：{god_war_group_mode}。',
-    'reply_god_war_group_enabled': '本群的神战模式开关已开启。若总开关与全局开关也开启，后续 .角斗开始 / .决斗开始 将使用神战 prompt。',
-    'reply_god_war_group_disabled': '本群的神战模式开关已关闭。后续本群 .角斗开始 / .决斗开始 将恢复普通模式。',
+    'reply_god_war_status': '神战当前实际状态：{god_war_mode}。总开关：{god_war_total_mode}；本群单独配置：{god_war_group_override_mode}；本群开关：{god_war_group_mode}。',
+    'reply_god_war_group_enabled': '本群的神战模式已单独开启，并会覆盖总开关。后续本群 .角斗开始 / .决斗开始 将使用神战 prompt。',
+    'reply_god_war_group_disabled': '本群的神战模式已单独关闭，并会覆盖总开关。后续本群 .角斗开始 / .决斗开始 将恢复普通模式。',
     'reply_god_war_group_already_enabled': '本群的神战模式开关已经处于开启状态。',
     'reply_god_war_group_already_disabled': '本群的神战模式开关已经处于关闭状态。',
-    'reply_god_war_global_enabled': '神战模式全局开关已开启。若总开关与本群开关也开启，后续 .角斗开始 / .决斗开始 将使用神战 prompt。',
-    'reply_god_war_global_disabled': '神战模式全局开关已关闭。后续所有群的 .角斗开始 / .决斗开始 都不会进入神战模式。',
+    'reply_god_war_global_enabled': '神战总开关已开启。未单独配置的群会默认进入神战模式。',
+    'reply_god_war_global_disabled': '神战总开关已关闭。未单独配置的群会默认使用普通模式。',
     'reply_god_war_global_already_enabled': '神战模式全局开关已经处于开启状态。',
     'reply_god_war_global_already_disabled': '神战模式全局开关已经处于关闭状态。',
     'reply_god_war_invalid': '神战命令格式错误，请使用 {prefix}角斗神战 开启、{prefix}角斗神战 关闭、{prefix}角斗神战 全局 开启 或 {prefix}角斗神战 全局 关闭。',
@@ -100,13 +100,13 @@ custom_message_note_dict = {
     'reply_delay_config_status': '【角斗配置 等待】\n查询当前 Bot 的切片播报等待区间时使用。',
     'reply_delay_config_updated': '【角斗配置 等待】\n成功保存当前 Bot 的切片播报等待区间时使用。',
     'reply_delay_config_invalid': '【角斗配置 等待】\n参数格式错误时使用。',
-    'reply_god_war_status': '【角斗神战】\n查询神战总开关、全局开关、本群开关与最终生效状态时使用。',
-    'reply_god_war_group_enabled': '【角斗神战 开启】\n成功开启本群神战开关时使用。',
-    'reply_god_war_group_disabled': '【角斗神战 关闭】\n成功关闭本群神战开关时使用。',
+    'reply_god_war_status': '【角斗神战】\n查询神战总开关、本群单独配置、本群开关与最终生效状态时使用。',
+    'reply_god_war_group_enabled': '【角斗神战 开启】\n成功把本群神战模式单独开启并覆盖总开关时使用。',
+    'reply_god_war_group_disabled': '【角斗神战 关闭】\n成功把本群神战模式单独关闭并覆盖总开关时使用。',
     'reply_god_war_group_already_enabled': '【角斗神战 开启】\n本群神战开关重复开启时使用。',
     'reply_god_war_group_already_disabled': '【角斗神战 关闭】\n本群神战开关重复关闭时使用。',
-    'reply_god_war_global_enabled': '【角斗神战 全局 开启】\n成功开启神战全局开关时使用。',
-    'reply_god_war_global_disabled': '【角斗神战 全局 关闭】\n成功关闭神战全局开关时使用。',
+    'reply_god_war_global_enabled': '【角斗神战 全局 开启】\n成功开启神战总开关时使用。',
+    'reply_god_war_global_disabled': '【角斗神战 全局 关闭】\n成功关闭神战总开关时使用。',
     'reply_god_war_global_already_enabled': '【角斗神战 全局 开启】\n神战全局开关重复开启时使用。',
     'reply_god_war_global_already_disabled': '【角斗神战 全局 关闭】\n神战全局开关重复关闭时使用。',
     'reply_god_war_invalid': '【角斗神战】\n神战命令参数错误时使用。',
@@ -155,10 +155,10 @@ help_document_dict = {
 查看或修改当前 Bot 的每段播报等待时间。不带秒数时返回当前配置；设置成功后会写入当前 Bot 的 bot_config.json。仅骰主与配置骰主可用。
 
 13. .角斗神战 [开启/关闭] / .决斗神战 [开启/关闭]
-切换本群的神战开关。不带参数时可查看神战总开关、全局开关、本群开关与实际生效状态。仅骰主与配置骰主可用。
+切换本群的神战单独配置，本群设置优先级高于总开关。不带参数时可查看神战总开关、本群单独配置、本群开关与实际生效状态。仅骰主与配置骰主可用。
 
 14. .角斗神战 全局 [开启/关闭] / .决斗神战 全局 [开启/关闭]
-切换神战全局开关，仅骰主与配置骰主可用。
+切换神战总开关，仅骰主与配置骰主可用。
 
 15. .角斗帮助 / .决斗帮助
 查看本帮助文档。''',
