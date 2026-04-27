@@ -58,6 +58,8 @@ class TemplatePluginGui(object):
         self.bot_temperature_var = None
         self.bot_delay_min_var = None
         self.bot_delay_max_var = None
+        self.bot_normal_input_limit_var = None
+        self.bot_god_war_input_limit_var = None
         self.bot_forward_switch_var = None
         self.system_prompt_summary_var = None
         self.user_prompt_summary_var = None
@@ -318,6 +320,8 @@ class TemplatePluginGui(object):
         self.bot_temperature_var = tkinter.StringVar(value='0.9')
         self.bot_delay_min_var = tkinter.StringVar(value=str(config.default_segment_delay_min_seconds))
         self.bot_delay_max_var = tkinter.StringVar(value=str(config.default_segment_delay_max_seconds))
+        self.bot_normal_input_limit_var = tkinter.StringVar(value=str(config.default_input_limit))
+        self.bot_god_war_input_limit_var = tkinter.StringVar(value=str(config.default_input_limit))
         self.bot_forward_switch_var = tkinter.StringVar(value='False')
         self.system_prompt_summary_var = tkinter.StringVar(value='')
         self.user_prompt_summary_var = tkinter.StringVar(value='')
@@ -439,10 +443,18 @@ class TemplatePluginGui(object):
         except Exception as err:
             raise ValueError('切片等待时间必须填写整数。') from err
 
+        try:
+            normal_input_limit = int(utils.safe_str(self.bot_normal_input_limit_var.get()).strip())
+            god_war_input_limit = int(utils.safe_str(self.bot_god_war_input_limit_var.get()).strip())
+        except Exception as err:
+            raise ValueError('设定字数上限必须填写整数。') from err
+
         if delay_min_seconds <= 0 or delay_max_seconds <= 0:
             raise ValueError('切片等待时间必须是大于 0 的整数。')
         if delay_max_seconds < delay_min_seconds:
             raise ValueError('切片等待最大值不能小于最小值。')
+        if normal_input_limit < 0 or god_war_input_limit < 0:
+            raise ValueError('设定字数上限必须是大于等于 0 的整数，0 表示不限制。')
 
         return {
             'bot_enable_switch': self.str_to_bool(self.bot_enable_var.get()),
@@ -453,6 +465,8 @@ class TemplatePluginGui(object):
             'temperature': temperature,
             'segment_delay_min_seconds': delay_min_seconds,
             'segment_delay_max_seconds': delay_max_seconds,
+            'normal_input_limit': normal_input_limit,
+            'god_war_input_limit': god_war_input_limit,
             'qq_forward_message_switch': self.str_to_bool(self.bot_forward_switch_var.get()),
             'system_prompt': self.get_bot_system_prompt_text(),
             'god_war_system_prompt': self.get_bot_god_war_system_prompt_text(),
@@ -601,10 +615,22 @@ class TemplatePluginGui(object):
         self.create_labeled_entry(self.frame_bot, 14, 'Temperature', self.bot_temperature_var)
         self.create_labeled_entry(self.frame_bot, 16, '切片等待最小值（秒）', self.bot_delay_min_var)
         self.create_labeled_entry(self.frame_bot, 18, '切片等待最大值（秒）', self.bot_delay_max_var)
-        self.create_labeled_combobox(self.frame_bot, 20, 'QQ 合并转发播报', self.bot_forward_switch_var)
+        self.create_labeled_entry(
+            self.frame_bot,
+            20,
+            '普通模式设定字数上限（0 不限制）',
+            self.bot_normal_input_limit_var,
+        )
+        self.create_labeled_entry(
+            self.frame_bot,
+            22,
+            '神战模式设定字数上限（0 不限制）',
+            self.bot_god_war_input_limit_var,
+        )
+        self.create_labeled_combobox(self.frame_bot, 24, 'QQ 合并转发播报', self.bot_forward_switch_var)
 
         prompt_frame = tkinter.Frame(self.frame_bot, bg=dict_color_context['color_001'])
-        prompt_frame.grid(row=22, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
+        prompt_frame.grid(row=26, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
         prompt_frame.grid_columnconfigure(0, weight=1)
 
         tkinter.Label(
@@ -710,7 +736,7 @@ class TemplatePluginGui(object):
         ).pack(side=tkinter.LEFT)
 
         button_frame_top = tkinter.Frame(self.frame_bot, bg=dict_color_context['color_001'])
-        button_frame_top.grid(row=25, column=0, sticky='nsew', padx=(20, 20), pady=(20, 0))
+        button_frame_top.grid(row=29, column=0, sticky='nsew', padx=(20, 20), pady=(20, 0))
         self.create_save_button(button_frame_top, '保存 Bot 设置', self.save_bot_config_from_form, width=16).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
@@ -738,10 +764,10 @@ class TemplatePluginGui(object):
             wraplength=620,
         )
         bot_save_hint_label.grid(row=20, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
-        bot_save_hint_label.grid_configure(row=26)
+        bot_save_hint_label.grid_configure(row=30)
 
         button_frame_bottom = tkinter.Frame(self.frame_bot, bg=dict_color_context['color_001'])
-        button_frame_bottom.grid(row=27, column=0, sticky='nsew', padx=(20, 20), pady=(14, 20))
+        button_frame_bottom.grid(row=31, column=0, sticky='nsew', padx=(20, 20), pady=(14, 20))
         self.create_native_button(button_frame_bottom, '编辑回复词', self.open_reply_manager_dialog, width=12).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
@@ -1162,6 +1188,8 @@ class TemplatePluginGui(object):
             self.bot_temperature_var.set(str(config.default_bot_config.get('temperature', 0.9)))
             self.bot_delay_min_var.set(str(config.default_bot_config.get('segment_delay_min_seconds', 10)))
             self.bot_delay_max_var.set(str(config.default_bot_config.get('segment_delay_max_seconds', 20)))
+            self.bot_normal_input_limit_var.set(str(config.default_bot_config.get('normal_input_limit', config.default_input_limit)))
+            self.bot_god_war_input_limit_var.set(str(config.default_bot_config.get('god_war_input_limit', config.default_input_limit)))
             self.bot_forward_switch_var.set(
                 str(bool(config.default_bot_config.get('qq_forward_message_switch', False)))
             )
@@ -1187,6 +1215,12 @@ class TemplatePluginGui(object):
         self.bot_temperature_var.set(str(bot_config.get('temperature', 0.9)))
         self.bot_delay_min_var.set(str(delay_min_seconds))
         self.bot_delay_max_var.set(str(delay_max_seconds))
+        self.bot_normal_input_limit_var.set(
+            str(bot_config.get('normal_input_limit', config.default_input_limit))
+        )
+        self.bot_god_war_input_limit_var.set(
+            str(bot_config.get('god_war_input_limit', config.default_input_limit))
+        )
         self.bot_forward_switch_var.set(str(bool(bot_config.get('qq_forward_message_switch', False))))
         self.set_bot_system_prompt_text(bot_config.get('system_prompt', config.SYSTEM_PROMPT))
         self.set_bot_god_war_system_prompt_text(

@@ -8,6 +8,7 @@ import re
 import ssl
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -27,6 +28,17 @@ SEGMENT_SEPARATOR = '|||'
 SEGMENT_DELAY_RANGE = (
     config.default_segment_delay_min_seconds,
     config.default_segment_delay_max_seconds,
+)
+SECTION_TITLE_REPLACEMENT_LIST = (
+    ('【终局】', '【终局伪装】'),
+    ('【获胜感言】', '【获胜感言伪装】'),
+    ('【皇帝点评】', '【皇帝点评伪装】'),
+    ('【赛前垃圾话】', '【赛前垃圾话伪装】'),
+    ('【赛博皇帝开场白】', '【赛博皇帝开场白伪装】'),
+)
+PANEL_TOKEN_PATTERN_LIST = (
+    (re.compile(r'\[\s*hp\b', re.IGNORECASE), '[ＨＰ'),
+    (re.compile(r'\[\s*mp\b', re.IGNORECASE), '[ＭＰ'),
 )
 
 battle_state_lock = threading.RLock()
@@ -80,6 +92,53 @@ def get_segment_delay_range_from_bot_config(bot_config: Dict[str, Any]) -> tuple
         bot_config.get('segment_delay_min_seconds', SEGMENT_DELAY_RANGE[0]),
         bot_config.get('segment_delay_max_seconds', SEGMENT_DELAY_RANGE[1]),
     )
+
+
+def get_input_limit_from_bot_config(bot_config: Dict[str, Any], god_war_mode: bool = False) -> int:
+    if not isinstance(bot_config, dict):
+        return config.default_input_limit
+    config_key = 'god_war_input_limit' if god_war_mode else 'normal_input_limit'
+    return max(_coerce_int(bot_config.get(config_key, config.default_input_limit), config.default_input_limit), 0)
+
+
+def format_input_limit(limit_value: Any) -> str:
+    normalized_limit = max(_coerce_int(limit_value, config.default_input_limit), 0)
+    if normalized_limit == 0:
+        return '不限制'
+    return str(normalized_limit)
+
+
+def calculate_weighted_text_length(text_value: Any) -> float:
+    half_width_unit_count = 0
+    for single_char in utils.safe_str(text_value):
+        if single_char.isspace():
+            continue
+        if unicodedata.east_asian_width(single_char) in ('F', 'W', 'A'):
+            half_width_unit_count += 2
+        else:
+            half_width_unit_count += 1
+    return half_width_unit_count / 2.0
+
+
+def format_weighted_text_length(length_value: float) -> str:
+    normalized_half_width_units = int(round(float(length_value) * 2))
+    if normalized_half_width_units % 2 == 0:
+        return str(normalized_half_width_units // 2)
+    return f'{normalized_half_width_units / 2:.1f}'
+
+
+def sanitize_prompt_control_text(text_value: Any) -> str:
+    sanitized_text = utils.safe_str(text_value).replace('\r\n', '\n').replace('\r', '\n')
+    sanitized_text = sanitized_text.replace(SEGMENT_SEPARATOR, '｜｜｜')
+    for old_text, new_text in SECTION_TITLE_REPLACEMENT_LIST:
+        sanitized_text = sanitized_text.replace(old_text, new_text)
+    for pattern_object, replacement_text in PANEL_TOKEN_PATTERN_LIST:
+        sanitized_text = pattern_object.sub(replacement_text, sanitized_text)
+    return sanitized_text.strip()
+
+
+def sanitize_display_text(text_value: Any) -> str:
+    return ' '.join(sanitize_prompt_control_text(text_value).split())
 
 
 def _build_battle_key(plugin_event) -> str:
@@ -150,9 +209,9 @@ def _sanitize_waiting_room(waiting_room: Any) -> List[Dict[str, str]]:
         sanitized_list.append(
             {
                 'user_id': utils.safe_str(entry.get('user_id', '')).strip(),
-                'user_name': utils.safe_str(entry.get('user_name', '')).strip(),
-                'group_display_name': utils.safe_str(entry.get('group_display_name', '')).strip(),
-                'input_text': utils.safe_str(entry.get('input_text', '')).strip(),
+                'user_name': sanitize_display_text(entry.get('user_name', '')),
+                'group_display_name': sanitize_display_text(entry.get('group_display_name', '')),
+                'input_text': sanitize_prompt_control_text(entry.get('input_text', '')),
                 'joined_at': utils.safe_str(entry.get('joined_at', '')).strip(),
                 'updated_at': utils.safe_str(entry.get('updated_at', '')).strip(),
             }
@@ -251,8 +310,6 @@ def set_group_god_war_enabled(plugin_event, enabled: bool) -> Dict[str, Any]:
     group_state['group_god_war_override_switch'] = True
     group_state['group_god_war_enabled'] = bool(enabled)
     save_group_state(plugin_event, group_state)
-    if enabled and not is_global_god_war_enabled():
-        _disable_other_group_god_war_switches(plugin_event)
     return group_state
 
 
@@ -419,12 +476,36 @@ def build_default_input_text(display_name: str) -> str:
     return f'姓名：{display_name}，请AI完全随机生成离谱设定'
 
 
-def _build_waiting_room_entry(plugin_event, input_text: str) -> Dict[str, str]:
+def _resolve_waiting_input_text(group_display_name: str, input_text: str) -> str:
+    final_input_text = sanitize_prompt_control_text(input_text)
+    if not final_input_text:
+        final_input_text = sanitize_prompt_control_text(build_default_input_text(group_display_name))
+    return final_input_text
+
+
+def get_current_input_limit_info(plugin_event) -> Dict[str, Any]:
+    bot_config = get_runtime_bot_config(plugin_event)
+    god_war_mode = bool(bot_config.get('god_war_enable_switch', False))
+    input_limit = get_input_limit_from_bot_config(bot_config, god_war_mode=god_war_mode)
+    return {
+        'mode_name': '神战' if god_war_mode else '普通',
+        'god_war_mode': god_war_mode,
+        'input_limit': input_limit,
+        'input_limit_text': format_input_limit(input_limit),
+    }
+
+
+def _build_waiting_room_entry(
+    plugin_event,
+    input_text: str,
+    resolved_input_text: Optional[str] = None,
+) -> Dict[str, str]:
     user_id = utils.get_sender_id_from_event(plugin_event)
-    user_name = utils.get_sender_name_from_event(plugin_event)
-    group_display_name = get_group_display_name(plugin_event, user_id=user_id)
-    final_input_text = utils.safe_str(input_text).strip()
-    final_input_text = final_input_text or build_default_input_text(group_display_name)
+    user_name = sanitize_display_text(utils.get_sender_name_from_event(plugin_event))
+    group_display_name = sanitize_display_text(get_group_display_name(plugin_event, user_id=user_id))
+    final_input_text = resolved_input_text
+    if final_input_text is None:
+        final_input_text = _resolve_waiting_input_text(group_display_name, input_text)
     now_text = _now_text()
     return {
         'user_id': user_id,
@@ -434,6 +515,23 @@ def _build_waiting_room_entry(plugin_event, input_text: str) -> Dict[str, str]:
         'joined_at': now_text,
         'updated_at': now_text,
     }
+
+
+def _build_input_length_result(plugin_event, input_text: str) -> Dict[str, Any]:
+    limit_info = get_current_input_limit_info(plugin_event)
+    current_length = calculate_weighted_text_length(input_text)
+    result = {
+        'ok': True,
+        'current_length': current_length,
+        'current_length_text': format_weighted_text_length(current_length),
+        'input_limit': limit_info['input_limit'],
+        'input_limit_text': limit_info['input_limit_text'],
+        'mode_name': limit_info['mode_name'],
+    }
+    if limit_info['input_limit'] > 0 and current_length > limit_info['input_limit']:
+        result['ok'] = False
+        result['reason'] = 'input_too_long'
+    return result
 
 
 def add_waiting_player(plugin_event, input_text: str) -> Dict[str, Any]:
@@ -448,6 +546,16 @@ def add_waiting_player(plugin_event, input_text: str) -> Dict[str, Any]:
             'waiting_count': len(waiting_room),
             'user_display_name': waiting_entry.get('group_display_name', ''),
         }
+
+    input_length_result = _build_input_length_result(plugin_event, waiting_entry.get('input_text', ''))
+    if not input_length_result.get('ok'):
+        input_length_result.update(
+            {
+                'user_display_name': waiting_entry.get('group_display_name', ''),
+                'waiting_count': len(waiting_room),
+            }
+        )
+        return input_length_result
 
     waiting_room.append(waiting_entry)
     group_state['waiting_room'] = waiting_room
@@ -503,6 +611,17 @@ def update_waiting_player_by_index_for_user(
         }
 
     new_entry = _build_waiting_room_entry(plugin_event, input_text)
+    input_length_result = _build_input_length_result(plugin_event, new_entry.get('input_text', ''))
+    if not input_length_result.get('ok'):
+        input_length_result.update(
+            {
+                'waiting_count': len(waiting_room),
+                'entry_index': entry_index,
+                'user_display_name': target_entry.get('group_display_name', ''),
+            }
+        )
+        return input_length_result
+
     target_entry['user_name'] = new_entry['user_name']
     target_entry['group_display_name'] = new_entry['group_display_name']
     target_entry['input_text'] = new_entry['input_text']
@@ -592,6 +711,8 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
     group_god_war_enable_switch = is_group_god_war_enabled(plugin_event)
     group_god_war_override_switch = is_group_god_war_override_enabled(plugin_event)
     god_war_enable_switch = get_effective_god_war_enabled(plugin_event)
+    normal_input_limit = get_input_limit_from_bot_config(bot_config, god_war_mode=False)
+    god_war_input_limit = get_input_limit_from_bot_config(bot_config, god_war_mode=True)
     normal_system_prompt = utils.safe_str(bot_config.get('system_prompt') or config.SYSTEM_PROMPT).strip()
     god_war_system_prompt = utils.safe_str(
         bot_config.get('god_war_system_prompt') or config.GOD_WAR_SYSTEM_PROMPT
@@ -613,6 +734,9 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
         'group_god_war_override_switch': group_god_war_override_switch,
         'group_god_war_enable_switch': group_god_war_enable_switch,
         'god_war_enable_switch': god_war_enable_switch,
+        'normal_input_limit': normal_input_limit,
+        'god_war_input_limit': god_war_input_limit,
+        'current_input_limit': god_war_input_limit if god_war_enable_switch else normal_input_limit,
         'normal_system_prompt': normal_system_prompt,
         'god_war_system_prompt': god_war_system_prompt,
         'system_prompt': god_war_system_prompt if god_war_enable_switch else normal_system_prompt,
@@ -677,6 +801,16 @@ def build_query_entries(waiting_room: List[Dict[str, str]]) -> List[Dict[str, st
             }
         )
     return result
+
+
+def get_gladiator_status(plugin_event) -> Dict[str, Any]:
+    snapshot = get_waiting_room_snapshot(plugin_event)
+    group_state = snapshot.get('group_state', {})
+    return {
+        'waiting_count': snapshot.get('waiting_count', 0),
+        'battle_running': bool(group_state.get('battle_running', False)),
+        'god_war_enable_switch': get_effective_god_war_enabled(plugin_event),
+    }
 
 
 def _generate_combatants(waiting_room: List[Dict[str, str]]) -> List[Dict[str, Any]]:
@@ -949,6 +1083,38 @@ def _send_forward_segments(plugin_event, segment_list: List[str]) -> bool:
         return True
     except Exception:
         return False
+
+
+def send_segment_messages(
+    plugin_event,
+    segment_list: List[str],
+    prefer_forward: bool = True,
+) -> Dict[str, Any]:
+    normalized_segment_list = []
+    for segment_text in segment_list:
+        cleaned_segment = utils.safe_str(segment_text).strip()
+        if cleaned_segment:
+            normalized_segment_list.append(cleaned_segment)
+
+    if not normalized_segment_list:
+        return {
+            'ok': False,
+            'segment_count': 0,
+            'used_forward_message': False,
+        }
+
+    used_forward_message = False
+    if prefer_forward and _send_forward_segments(plugin_event, normalized_segment_list):
+        used_forward_message = True
+    else:
+        for segment_text in normalized_segment_list:
+            utils.reply_message(plugin_event, segment_text)
+
+    return {
+        'ok': True,
+        'segment_count': len(normalized_segment_list),
+        'used_forward_message': used_forward_message,
+    }
 
 
 def _broadcast_segments(

@@ -8,14 +8,14 @@ from . import utils
 
 
 gladiator_command_prefix_tuple = ('角斗', '决斗')
-gladiator_command_suffix_tuple = ('加入', '更新', '录入', '开始', '查询', '退出', '清空', '停止', '关闭', '开启', '配置', '帮助', '神战')
+gladiator_command_suffix_tuple = ('加入', '更新', '录入', '开始', '查询', '状态', '退出', '清空', '停止', '关闭', '开启', '配置', '帮助', '神战')
 command_name_list = [
     f'{command_prefix}{command_suffix}'
     for command_prefix in gladiator_command_prefix_tuple
     for command_suffix in gladiator_command_suffix_tuple
 ]
 management_command_name_set = {'清空', '停止', '关闭', '开启'}
-master_only_command_name_set = {'配置', '神战'}
+master_only_command_name_set = {'配置'}
 locked_command_name_set = {'加入', '更新', '开始', '退出', '清空'}
 
 
@@ -156,6 +156,23 @@ def handle_gladiator_help(plugin_event) -> None:
 def handle_gladiator_join(plugin_event, command_argument: str) -> None:
     result = function.add_waiting_player(plugin_event, command_argument)
     if not result.get('ok'):
+        if result.get('reason') == 'input_too_long':
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_input_limit_exceeded',
+                    extra_value_dict={
+                        'mode_name': result.get('mode_name', '普通'),
+                        'input_limit_text': result.get('input_limit_text', function.format_input_limit(0)),
+                        'current_length_text': result.get(
+                            'current_length_text',
+                            function.format_weighted_text_length(result.get('current_length', 0)),
+                        ),
+                    },
+                ),
+            )
+            return
         utils.reply_message(
             plugin_event,
             render_custom_message(
@@ -213,6 +230,23 @@ def handle_gladiator_update(plugin_event, command_argument: str) -> None:
 
     result = function.update_waiting_player_by_index_for_user(plugin_event, target_entry_index, update_text)
     if not result.get('ok'):
+        if result.get('reason') == 'input_too_long':
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_input_limit_exceeded',
+                    extra_value_dict={
+                        'mode_name': result.get('mode_name', '普通'),
+                        'input_limit_text': result.get('input_limit_text', function.format_input_limit(0)),
+                        'current_length_text': result.get(
+                            'current_length_text',
+                            function.format_weighted_text_length(result.get('current_length', 0)),
+                        ),
+                    },
+                ),
+            )
+            return
         if result.get('reason') == 'not_owner':
             utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_update_not_owner'))
             return
@@ -246,7 +280,7 @@ def handle_gladiator_query(plugin_event) -> None:
         utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_room_query_empty'))
         return
 
-    line_list = [
+    segment_list = [
         render_custom_message(
             plugin_event,
             'reply_room_query_header',
@@ -254,14 +288,33 @@ def handle_gladiator_query(plugin_event) -> None:
         )
     ]
     for entry in function.build_query_entries(snapshot['waiting_room']):
-        line_list.append(
+        segment_list.append(
             render_custom_message(
                 plugin_event,
                 'reply_room_query_item',
                 extra_value_dict=entry,
             )
         )
-    utils.reply_message(plugin_event, '\n\n'.join(line_list))
+    function.send_segment_messages(plugin_event, segment_list, prefer_forward=True)
+
+
+def handle_gladiator_status(plugin_event) -> None:
+    status_info = function.get_gladiator_status(plugin_event)
+    bot_config = function.get_runtime_bot_config(plugin_event)
+    utils.reply_message(
+        plugin_event,
+        render_custom_message(
+            plugin_event,
+            'reply_gladiator_status',
+            extra_value_dict={
+                'battle_mode': '神战' if status_info.get('god_war_enable_switch', False) else '普通',
+                'battle_progress': '进行中' if status_info.get('battle_running', False) else '未开始',
+                'waiting_count': status_info.get('waiting_count', 0),
+                'normal_input_limit_text': function.format_input_limit(bot_config.get('normal_input_limit', 0)),
+                'god_war_input_limit_text': function.format_input_limit(bot_config.get('god_war_input_limit', 0)),
+            },
+        ),
+    )
 
 
 def _parse_positive_index(command_argument: str) -> int:
@@ -376,45 +429,109 @@ def handle_gladiator_open(plugin_event, command_argument: str) -> None:
     utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_open_success'))
 
 
-def _parse_delay_config_command(command_argument: str) -> dict:
-    token_list = utils.safe_str(command_argument).strip().split()
-    if not token_list:
-        return {'ok': True, 'action': 'show'}
-
-    option_name = token_list[0]
-    if option_name not in {'等待', '等待时间', '间隔', '延时'}:
-        return {'ok': False}
-
+def _parse_delay_config_tokens(token_list) -> dict:
     if len(token_list) == 1:
-        return {'ok': True, 'action': 'show'}
+        return {'ok': True, 'config_type': 'delay', 'action': 'show'}
     if len(token_list) != 3:
-        return {'ok': False}
+        return {'ok': False, 'config_type': 'delay'}
 
     try:
         delay_min_seconds = int(token_list[1])
         delay_max_seconds = int(token_list[2])
     except Exception:
-        return {'ok': False}
+        return {'ok': False, 'config_type': 'delay'}
 
     if delay_min_seconds <= 0 or delay_max_seconds <= 0 or delay_max_seconds < delay_min_seconds:
-        return {'ok': False}
+        return {'ok': False, 'config_type': 'delay'}
     return {
         'ok': True,
+        'config_type': 'delay',
         'action': 'set',
         'delay_min_seconds': delay_min_seconds,
         'delay_max_seconds': delay_max_seconds,
     }
 
 
+def _parse_input_limit_mode(mode_text: str) -> str:
+    normalized_mode_text = utils.safe_str(mode_text).strip()
+    if normalized_mode_text in {'普通', '普通模式'}:
+        return 'normal'
+    if normalized_mode_text in {'神战', '神战模式'}:
+        return 'god_war'
+    return ''
+
+
+def _parse_input_limit_config_tokens(token_list) -> dict:
+    if len(token_list) == 1:
+        return {'ok': True, 'config_type': 'input_limit', 'action': 'show'}
+    if len(token_list) != 3:
+        return {'ok': False, 'config_type': 'input_limit'}
+
+    target_mode = _parse_input_limit_mode(token_list[1])
+    if not target_mode:
+        return {'ok': False, 'config_type': 'input_limit'}
+
+    try:
+        input_limit = int(token_list[2])
+    except Exception:
+        return {'ok': False, 'config_type': 'input_limit'}
+
+    if input_limit < 0:
+        return {'ok': False, 'config_type': 'input_limit'}
+    return {
+        'ok': True,
+        'config_type': 'input_limit',
+        'action': 'set',
+        'target_mode': target_mode,
+        'input_limit': input_limit,
+    }
+
+
+def _parse_config_command(command_argument: str) -> dict:
+    token_list = utils.safe_str(command_argument).strip().split()
+    if not token_list:
+        return {'ok': True, 'config_type': 'all', 'action': 'show'}
+
+    option_name = token_list[0]
+    if option_name in {'等待', '等待时间', '间隔', '延时'}:
+        return _parse_delay_config_tokens(token_list)
+    if option_name in {'字数', '字数限制', '限制'}:
+        return _parse_input_limit_config_tokens(token_list)
+    return {'ok': False, 'config_type': ''}
+
+
 def handle_gladiator_config(plugin_event, config_bot_hash: str, command_argument: str) -> None:
-    parse_result = _parse_delay_config_command(command_argument)
+    parse_result = _parse_config_command(command_argument)
     if not parse_result.get('ok'):
-        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_delay_config_invalid'))
+        reply_message_key = 'reply_delay_config_invalid'
+        if parse_result.get('config_type') == 'input_limit':
+            reply_message_key = 'reply_input_limit_invalid'
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, reply_message_key))
         return
 
-    if parse_result.get('action') == 'show':
+    bot_config = utils.load_bot_config(config_bot_hash)
+    delay_min_seconds, delay_max_seconds = function.get_segment_delay_range_from_bot_config(bot_config)
+    normal_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=False)
+    god_war_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+
+    if parse_result.get('config_type') == 'all':
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_config_status',
+                extra_value_dict={
+                    'delay_min_seconds': str(delay_min_seconds),
+                    'delay_max_seconds': str(delay_max_seconds),
+                    'normal_input_limit_text': function.format_input_limit(normal_input_limit),
+                    'god_war_input_limit_text': function.format_input_limit(god_war_input_limit),
+                },
+            ),
+        )
+        return
+
+    if parse_result.get('config_type') == 'delay' and parse_result.get('action') == 'show':
         bot_config = utils.load_bot_config(config_bot_hash)
-        delay_min_seconds, delay_max_seconds = function.get_segment_delay_range_from_bot_config(bot_config)
         utils.reply_message(
             plugin_event,
             render_custom_message(
@@ -428,18 +545,52 @@ def handle_gladiator_config(plugin_event, config_bot_hash: str, command_argument
         )
         return
 
-    bot_config = utils.load_bot_config(config_bot_hash)
-    bot_config['segment_delay_min_seconds'] = parse_result['delay_min_seconds']
-    bot_config['segment_delay_max_seconds'] = parse_result['delay_max_seconds']
+    if parse_result.get('config_type') == 'delay':
+        bot_config['segment_delay_min_seconds'] = parse_result['delay_min_seconds']
+        bot_config['segment_delay_max_seconds'] = parse_result['delay_max_seconds']
+        utils.save_bot_config(config_bot_hash, bot_config)
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_delay_config_updated',
+                extra_value_dict={
+                    'delay_min_seconds': str(parse_result['delay_min_seconds']),
+                    'delay_max_seconds': str(parse_result['delay_max_seconds']),
+                },
+            ),
+        )
+        return
+
+    if parse_result.get('action') == 'show':
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_input_limit_status',
+                extra_value_dict={
+                    'normal_input_limit_text': function.format_input_limit(normal_input_limit),
+                    'god_war_input_limit_text': function.format_input_limit(god_war_input_limit),
+                },
+            ),
+        )
+        return
+
+    config_key = 'normal_input_limit'
+    target_mode_name = '普通'
+    if parse_result.get('target_mode') == 'god_war':
+        config_key = 'god_war_input_limit'
+        target_mode_name = '神战'
+    bot_config[config_key] = parse_result['input_limit']
     utils.save_bot_config(config_bot_hash, bot_config)
     utils.reply_message(
         plugin_event,
         render_custom_message(
             plugin_event,
-            'reply_delay_config_updated',
+            'reply_input_limit_updated',
             extra_value_dict={
-                'delay_min_seconds': str(parse_result['delay_min_seconds']),
-                'delay_max_seconds': str(parse_result['delay_max_seconds']),
+                'mode_name': target_mode_name,
+                'input_limit_text': function.format_input_limit(parse_result['input_limit']),
             },
         ),
     )
@@ -659,6 +810,10 @@ def handle_message(plugin_event, Proc) -> None:
         handle_gladiator_query(plugin_event)
         return
 
+    if command_name == '状态':
+        handle_gladiator_status(plugin_event)
+        return
+
     if command_name == '退出':
         handle_gladiator_leave(plugin_event, command_argument)
         return
@@ -698,6 +853,15 @@ def handle_message(plugin_event, Proc) -> None:
         return
 
     if command_name == '神战':
+        parse_result = _parse_god_war_command(command_argument)
+        target_scope = parse_result.get('scope', 'group') if parse_result.get('ok') else 'group'
+        if target_scope == 'global':
+            if not sender_has_master_permission(plugin_event):
+                reply_global_permission_denied(plugin_event)
+                return
+        elif not sender_has_group_management_permission(plugin_event):
+            reply_permission_denied(plugin_event)
+            return
         handle_gladiator_god_war(plugin_event, config_bot_hash, command_argument)
         return
 
