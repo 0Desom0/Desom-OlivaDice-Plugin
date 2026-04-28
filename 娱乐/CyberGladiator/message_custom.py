@@ -38,13 +38,16 @@ default_custom_message_dict = {
     'reply_global_open_success': '赛博角斗场全局开关已开启。',
     'reply_global_already_closed': '赛博角斗场全局开关已经处于关闭状态。',
     'reply_global_already_open': '赛博角斗场全局开关已经处于开启状态。',
-    'reply_config_status': '当前 Bot 配置：切片等待 {delay_min_seconds} 到 {delay_max_seconds} 秒；普通模式设定字数上限 {normal_input_limit_text}；神战模式设定字数上限 {god_war_input_limit_text}。',
+    'reply_config_status': '当前角斗配置总览：\n全局启用：{global_enable_mode}\n全局调试：{global_debug_mode}\n全局神战默认：{global_god_war_mode}\nAPI 地址：{api_url_text}\nAPI Key：{api_key_text}\n模型名称：{model_text}\n请求超时：{request_timeout_seconds_text} 秒\nTemperature：{temperature_text}\n切片等待：{delay_min_seconds} 到 {delay_max_seconds} 秒\n普通模式字数限制：{normal_input_limit_text}\n神战模式字数限制：{god_war_input_limit_text}\nQQ 合并转发：{qq_forward_message_mode}\n系统提示词：{system_prompt_summary_text}\n用户前置提示词：{user_prompt_prefix_summary_text}\n神战系统提示词：{god_war_system_prompt_summary_text}',
+    'reply_config_item_status': '当前{config_label}：{config_value_display}',
+    'reply_config_updated': '{config_label}已更新为：{config_value_display}',
+    'reply_config_invalid': '角斗配置命令格式错误。配置项会按最长别名贪婪匹配，可使用 {prefix}角斗配置 查看总览，或参考 {prefix}角斗配置全局神战开启、{prefix}角斗配置字数500 这类写法。',
     'reply_delay_config_status': '当前 Bot 的切片播报等待时间为 {delay_min_seconds} 到 {delay_max_seconds} 秒。',
     'reply_delay_config_updated': '当前 Bot 的切片播报等待时间已更新为 {delay_min_seconds} 到 {delay_max_seconds} 秒。',
     'reply_delay_config_invalid': '等待时间配置格式错误，请使用 {prefix}角斗配置 等待 10 20，且两个值都必须是大于 0 的整数，并满足最小值不大于最大值。',
     'reply_input_limit_status': '当前 Bot 的设定字数上限：普通模式 {normal_input_limit_text}；神战模式 {god_war_input_limit_text}。',
     'reply_input_limit_updated': '{mode_name}模式的设定字数上限已更新为 {input_limit_text}。',
-    'reply_input_limit_invalid': '字数限制配置格式错误，请使用 {prefix}角斗配置 字数 普通 1000 或 {prefix}角斗配置 字数 神战 1000；数值必须是大于等于 0 的整数，0 表示不限制。',
+    'reply_input_limit_invalid': '字数限制配置格式错误，请使用 {prefix}角斗配置字数500、{prefix}角斗配置 字数 普通 1000 或 {prefix}角斗配置 字数 神战 1000；数值必须是大于等于 0 的整数，0 表示不限制。',
     'reply_input_limit_exceeded': '{mode_name}模式设定超出上限。当前字符数：{current_length_text}；允许上限：{input_limit_text}。计数规则：全角/中文按 1，半角/数字按 0.5，空格不计。',
     'reply_god_war_status': '神战当前实际状态：{god_war_mode}。全局默认模式：{god_war_total_mode}；本群单独配置：{god_war_group_override_mode}；本群配置结果：{god_war_group_mode}。',
     'reply_god_war_group_enabled': '本群的神战模式已单独开启，并会覆盖全局默认模式。后续本群 .角斗开始 / .决斗开始 将使用神战 prompt。',
@@ -55,7 +58,7 @@ default_custom_message_dict = {
     'reply_god_war_global_disabled': '神战全局默认模式已设置为关闭。未单独配置的群会默认使用普通模式。',
     'reply_god_war_global_already_enabled': '神战全局默认模式已经处于开启状态。',
     'reply_god_war_global_already_disabled': '神战全局默认模式已经处于关闭状态。',
-    'reply_god_war_invalid': '神战命令格式错误，请使用 {prefix}角斗神战 开启、{prefix}角斗神战 关闭、{prefix}角斗神战 全局 开启 或 {prefix}角斗神战 全局 关闭。',
+    'reply_god_war_invalid': '神战命令格式错误，请使用 {prefix}角斗神战开启、{prefix}角斗神战关闭、{prefix}角斗神战全局开启 或 {prefix}角斗神战全局关闭。',
     'reply_missing_api_config': '当前 Bot 未配置完整的 API 信息，请在 bot_config.json 中补充 api_url、api_key 和 model。',
     'reply_battle_failed': '角斗推演失败：{error_message}',
     'reply_unknown_command': '未识别的角斗/决斗指令，可使用 {prefix}角斗帮助 查看帮助。',
@@ -104,7 +107,10 @@ custom_message_note_dict = {
     'reply_global_open_success': '【角斗开启 全局】\n成功开启全局开关后的文案。',
     'reply_global_already_closed': '【角斗关闭 全局】\n全局已关闭时使用。',
     'reply_global_already_open': '【角斗开启 全局】\n全局已开启时使用。',
-    'reply_config_status': '【角斗配置】\n不带参数时，同时展示等待时间与普通/神战设定字数上限。',
+    'reply_config_status': '【角斗配置】\n不带参数时，展示当前 Bot 与全局相关的完整配置总览。',
+    'reply_config_item_status': '【角斗配置 单项查询】\n查询某个具体配置项当前值时使用。',
+    'reply_config_updated': '【角斗配置 单项修改】\n成功修改某个具体配置项后使用。',
+    'reply_config_invalid': '【角斗配置】\n参数格式错误或配置项不存在时使用。',
     'reply_delay_config_status': '【角斗配置 等待】\n查询当前 Bot 的切片播报等待区间时使用。',
     'reply_delay_config_updated': '【角斗配置 等待】\n成功保存当前 Bot 的切片播报等待区间时使用。',
     'reply_delay_config_invalid': '【角斗配置 等待】\n参数格式错误时使用。',
@@ -167,21 +173,18 @@ help_document_dict = {
 默认重新开启本群赛博角斗场，仅群主、群管、骰主可用。若参数为“全局”，则开启全局开关，仅骰主与配置骰主可用。
 
 13. .角斗配置 / .决斗配置
-查看当前 Bot 的切片等待时间与普通/神战设定字数上限。仅骰主与配置骰主可用。
+查看当前角斗配置总览。当前支持：全局启用、全局调试、全局神战、API 地址、API Key、模型名称、请求超时、温度、切片等待、字数限制、QQ 合并转发、系统提示词、用户前置提示词、神战系统提示词。仅骰主与配置骰主可用。
+查询示例：.角斗配置 全局 神战、.角斗配置 请求超时、.角斗配置 温度、.角斗配置 系统提示词
+修改示例：.角斗配置 全局 神战 开启、.角斗配置 请求超时 60、.角斗配置 温度 1.2、.角斗配置 字数 500、.角斗配置 字数 神战 800、.角斗配置 系统提示词 默认、.角斗配置 用户前置提示词 清空
+补充说明：切片等待仍使用 .角斗配置 等待 [最小秒数] [最大秒数]；两个值都必须是大于 0 的整数，且最小值不大于最大值。字数限制 0 表示不限制；全角/中文按 1，半角/数字按 0.5，空格不计；直接使用 .角斗配置字数500 会同时把普通模式和神战模式都设置为 500。
 
-14. .角斗配置 等待 [最小秒数] [最大秒数] / .决斗配置 等待 [最小秒数] [最大秒数]
-查看或修改当前 Bot 的每段播报等待时间。不带秒数时返回当前配置；设置成功后会写入当前 Bot 的 bot_config.json。仅骰主与配置骰主可用。
-
-15. .角斗配置 字数 [普通/神战] [上限] / .决斗配置 字数 [普通/神战] [上限]
-查看或修改当前 Bot 的设定字数上限。0 表示不限制；全角/中文按 1，半角/数字按 0.5，空格不计。仅骰主与配置骰主可用。
-
-16. .角斗神战 [开启/关闭] / .决斗神战 [开启/关闭]
+14. .角斗神战 [开启/关闭] / .决斗神战 [开启/关闭]
 切换本群的神战单独配置，本群设置优先级高于全局默认模式。不带参数时可查看全局默认模式、本群单独配置、本群开关与实际生效状态。群主、群管、OlivaDiceCore 骰主与本插件配置骰主可用。
 
-17. .角斗神战 全局 [开启/关闭] / .决斗神战 全局 [开启/关闭]
+15. .角斗神战 全局 [开启/关闭] / .决斗神战 全局 [开启/关闭]
 切换神战全局默认模式，仅骰主与配置骰主可用。
 
-18. .角斗帮助 / .决斗帮助
+16. .角斗帮助 / .决斗帮助
 查看本帮助文档。''',
 }
 

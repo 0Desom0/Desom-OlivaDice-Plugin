@@ -17,6 +17,33 @@ command_name_list = [
 management_command_name_set = {'清空', '停止', '关闭', '开启'}
 master_only_command_name_set = {'配置'}
 locked_command_name_set = {'加入', '更新', '开始', '退出', '清空'}
+config_command_definition_list = [
+    ('global_enable', '全局启用', ('全局启用', '全局开关')),
+    ('global_debug', '全局调试', ('全局调试', '全局调试模式')),
+    ('global_god_war', '全局神战', ('全局神战', '神战总开关', '神战默认')),
+    ('api_url', 'API 地址', ('api地址', 'api url')),
+    ('api_key', 'API Key', ('apikey', 'api key', 'api_key')),
+    ('model', '模型名称', ('模型名称', '模型')),
+    ('timeout', '请求超时', ('请求超时', '超时')),
+    ('temperature', 'Temperature', ('temperature', '温度')),
+    ('delay', '切片等待', ('等待时间', '切片等待', '等待', '间隔', '延时')),
+    ('input_limit', '设定字数限制', ('字数限制', '字数', '限制')),
+    ('forward', 'QQ 合并转发', ('qq合并转发', 'qq 合并转发', 'qq转发', '合并转发', '转发')),
+    ('system_prompt', '系统提示词', ('系统提示词', '普通系统提示词')),
+    ('user_prompt_prefix', '用户前置提示词', ('用户前置提示词', '前置提示词', '用户提示词')),
+    ('god_war_system_prompt', '神战系统提示词', ('神战系统提示词', '神战提示词')),
+]
+config_command_alias_to_key_dict = {}
+config_command_alias_name_list = []
+config_command_label_dict = {}
+for config_option_key, config_option_label, alias_name_tuple in config_command_definition_list:
+    config_command_label_dict[config_option_key] = config_option_label
+    for alias_name in alias_name_tuple:
+        normalized_alias_name = utils.safe_str(alias_name).strip().lower()
+        if not normalized_alias_name:
+            continue
+        config_command_alias_to_key_dict[normalized_alias_name] = config_option_key
+        config_command_alias_name_list.append(normalized_alias_name)
 
 
 def handle_init(plugin_event, Proc) -> None:
@@ -132,21 +159,157 @@ def normalize_toggle_scope(command_argument: str) -> str:
     return 'group'
 
 
-def _parse_god_war_command(command_argument: str) -> dict:
-    token_list = utils.safe_str(command_argument).strip().split()
-    if not token_list:
+def _parse_scope_toggle_command(command_argument: str) -> dict:
+    argument_text = utils.safe_str(command_argument).strip()
+    if not argument_text:
         return {'ok': True, 'action': 'show', 'scope': 'group'}
 
-    if len(token_list) == 1 and token_list[0] in {'开启', '关闭'}:
-        return {'ok': True, 'action': 'set', 'scope': 'group', 'enabled': token_list[0] == '开启'}
+    scope_info = utils.parse_command(
+        argument_text,
+        allow_no_prefix=True,
+        command_name=('全局',),
+    )
+    if scope_info.get('is_command'):
+        action_argument = utils.safe_str(scope_info.get('command_argument', '')).strip()
+        if not action_argument:
+            return {'ok': True, 'action': 'show', 'scope': 'global'}
+        action_info = utils.parse_command(
+            action_argument,
+            allow_no_prefix=True,
+            command_name=('开启', '关闭'),
+        )
+        if not action_info.get('is_command') or utils.safe_str(action_info.get('command_argument', '')).strip():
+            return {'ok': False}
+        return {
+            'ok': True,
+            'action': 'set',
+            'scope': 'global',
+            'enabled': action_info.get('command_name', '') == '开启',
+        }
 
-    if len(token_list) == 2 and token_list[0] == '全局' and token_list[1] in {'开启', '关闭'}:
-        return {'ok': True, 'action': 'set', 'scope': 'global', 'enabled': token_list[1] == '开启'}
+    action_info = utils.parse_command(
+        argument_text,
+        allow_no_prefix=True,
+        command_name=('开启', '关闭'),
+    )
+    if not action_info.get('is_command') or utils.safe_str(action_info.get('command_argument', '')).strip():
+        return {'ok': False}
+    return {
+        'ok': True,
+        'action': 'set',
+        'scope': 'group',
+        'enabled': action_info.get('command_name', '') == '开启',
+    }
 
-    if len(token_list) == 1 and token_list[0] == '全局':
-        return {'ok': True, 'action': 'show', 'scope': 'global'}
 
-    return {'ok': False}
+def _parse_god_war_command(command_argument: str) -> dict:
+    return _parse_scope_toggle_command(command_argument)
+
+
+def _bool_to_text(enabled: bool) -> str:
+    return '开启' if enabled else '关闭'
+
+
+def _summarize_config_text(text_value: str, empty_text: str) -> str:
+    normalized_text = ' '.join(utils.safe_str(text_value).strip().split())
+    if not normalized_text:
+        return empty_text
+    if len(normalized_text) > 80:
+        normalized_text = normalized_text[:77] + '...'
+    return normalized_text
+
+
+def _build_config_overview_value_dict(config_bot_hash: str) -> dict:
+    global_config = utils.load_global_config()
+    bot_config = utils.load_bot_config(config_bot_hash)
+    delay_min_seconds, delay_max_seconds = function.get_segment_delay_range_from_bot_config(bot_config)
+    normal_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=False)
+    god_war_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+    return {
+        'global_enable_mode': _bool_to_text(bool(global_config.get('global_enable_switch', True))),
+        'global_debug_mode': _bool_to_text(bool(global_config.get('global_debug_mode_switch', False))),
+        'global_god_war_mode': _bool_to_text(bool(global_config.get('global_god_war_enable_switch', True))),
+        'api_url_text': utils.safe_str(bot_config.get('api_url', '')).strip() or '未配置',
+        'api_key_text': function._mask_api_key(utils.safe_str(bot_config.get('api_key', '')).strip()) or '未配置',
+        'model_text': utils.safe_str(bot_config.get('model', '')).strip() or '未配置',
+        'request_timeout_seconds_text': str(bot_config.get('request_timeout_seconds', 180)),
+        'temperature_text': str(bot_config.get('temperature', 0.9)),
+        'delay_min_seconds': str(delay_min_seconds),
+        'delay_max_seconds': str(delay_max_seconds),
+        'normal_input_limit_text': function.format_input_limit(normal_input_limit),
+        'god_war_input_limit_text': function.format_input_limit(god_war_input_limit),
+        'qq_forward_message_mode': _bool_to_text(bool(bot_config.get('qq_forward_message_switch', False))),
+        'system_prompt_summary_text': _summarize_config_text(
+            utils.safe_str(bot_config.get('system_prompt', config.SYSTEM_PROMPT)),
+            '未配置系统提示词',
+        ),
+        'user_prompt_prefix_summary_text': _summarize_config_text(
+            utils.safe_str(bot_config.get('user_prompt_prefix', '')),
+            '当前为空',
+        ),
+        'god_war_system_prompt_summary_text': _summarize_config_text(
+            utils.safe_str(bot_config.get('god_war_system_prompt', config.GOD_WAR_SYSTEM_PROMPT)),
+            '未配置神战系统提示词',
+        ),
+    }
+
+
+def _parse_bool_config_argument(command_argument: str) -> dict:
+    argument_text = utils.safe_str(command_argument).strip()
+    if not argument_text:
+        return {'ok': True, 'action': 'show'}
+    command_info = utils.parse_command(
+        argument_text,
+        allow_no_prefix=True,
+        command_name=('开启', '关闭', 'true', 'false', 'on', 'off', '1', '0', 'yes', 'no'),
+    )
+    if not command_info.get('is_command') or utils.safe_str(command_info.get('command_argument', '')).strip():
+        return {'ok': False}
+    return {
+        'ok': True,
+        'action': 'set',
+        'enabled': command_info.get('command_name', '') in {'开启', 'true', 'on', '1', 'yes'},
+    }
+
+
+def _parse_integer_config_argument(command_argument: str, minimum_value=None) -> dict:
+    argument_text = utils.safe_str(command_argument).strip()
+    if not argument_text:
+        return {'ok': True, 'action': 'show'}
+    if ' ' in argument_text or '\n' in argument_text or '\t' in argument_text:
+        return {'ok': False}
+    try:
+        int_value = int(argument_text)
+    except Exception:
+        return {'ok': False}
+    if minimum_value is not None and int_value < minimum_value:
+        return {'ok': False}
+    return {'ok': True, 'action': 'set', 'value': int_value}
+
+
+def _parse_float_config_argument(command_argument: str) -> dict:
+    argument_text = utils.safe_str(command_argument).strip()
+    if not argument_text:
+        return {'ok': True, 'action': 'show'}
+    if ' ' in argument_text or '\n' in argument_text or '\t' in argument_text:
+        return {'ok': False}
+    try:
+        float_value = float(argument_text)
+    except Exception:
+        return {'ok': False}
+    return {'ok': True, 'action': 'set', 'value': float_value}
+
+
+def _parse_text_config_argument(command_argument: str, allow_default: bool = False) -> dict:
+    argument_text = utils.safe_str(command_argument)
+    if not argument_text.strip():
+        return {'ok': True, 'action': 'show'}
+    trimmed_text = argument_text.strip()
+    if trimmed_text == '清空':
+        return {'ok': True, 'action': 'set', 'value': ''}
+    if allow_default and trimmed_text == '默认':
+        return {'ok': True, 'action': 'reset_default'}
+    return {'ok': True, 'action': 'set', 'value': argument_text}
 
 
 def handle_gladiator_help(plugin_event) -> None:
@@ -429,15 +592,17 @@ def handle_gladiator_open(plugin_event, command_argument: str) -> None:
     utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_open_success'))
 
 
-def _parse_delay_config_tokens(token_list) -> dict:
-    if len(token_list) == 1:
+def _parse_delay_config_tokens(argument_text: str) -> dict:
+    if not utils.safe_str(argument_text).strip():
         return {'ok': True, 'config_type': 'delay', 'action': 'show'}
-    if len(token_list) != 3:
+    first_token, remaining_text = utils.split_first_token(argument_text)
+    second_token, tail_text = utils.split_first_token(remaining_text)
+    if not first_token or not second_token or utils.safe_str(tail_text).strip():
         return {'ok': False, 'config_type': 'delay'}
 
     try:
-        delay_min_seconds = int(token_list[1])
-        delay_max_seconds = int(token_list[2])
+        delay_min_seconds = int(first_token)
+        delay_max_seconds = int(second_token)
     except Exception:
         return {'ok': False, 'config_type': 'delay'}
 
@@ -453,147 +618,377 @@ def _parse_delay_config_tokens(token_list) -> dict:
 
 
 def _parse_input_limit_mode(mode_text: str) -> str:
-    normalized_mode_text = utils.safe_str(mode_text).strip()
-    if normalized_mode_text in {'普通', '普通模式'}:
+    mode_info = utils.parse_command(
+        mode_text,
+        allow_no_prefix=True,
+        command_name=('普通模式', '神战模式', '普通', '神战'),
+    )
+    if not mode_info.get('is_command'):
+        return ''
+    command_name = mode_info.get('command_name', '')
+    if command_name in {'普通', '普通模式'}:
         return 'normal'
-    if normalized_mode_text in {'神战', '神战模式'}:
+    if command_name in {'神战', '神战模式'}:
         return 'god_war'
     return ''
 
 
-def _parse_input_limit_config_tokens(token_list) -> dict:
-    if len(token_list) == 1:
+def _parse_input_limit_config_tokens(argument_text: str) -> dict:
+    if not utils.safe_str(argument_text).strip():
         return {'ok': True, 'config_type': 'input_limit', 'action': 'show'}
-    if len(token_list) != 3:
+    parse_whole_value_result = _parse_integer_config_argument(argument_text, minimum_value=0)
+    if parse_whole_value_result.get('ok') and parse_whole_value_result.get('action') == 'set':
+        return {
+            'ok': True,
+            'config_type': 'input_limit',
+            'action': 'set',
+            'target_mode': 'all',
+            'input_limit': parse_whole_value_result['value'],
+        }
+    mode_info = utils.parse_command(
+        argument_text,
+        allow_no_prefix=True,
+        command_name=('普通模式', '神战模式', '普通', '神战'),
+    )
+    if not mode_info.get('is_command'):
         return {'ok': False, 'config_type': 'input_limit'}
 
-    target_mode = _parse_input_limit_mode(token_list[1])
+    target_mode = _parse_input_limit_mode(mode_info.get('command_name', ''))
     if not target_mode:
         return {'ok': False, 'config_type': 'input_limit'}
 
-    try:
-        input_limit = int(token_list[2])
-    except Exception:
-        return {'ok': False, 'config_type': 'input_limit'}
-
-    if input_limit < 0:
+    parse_value_result = _parse_integer_config_argument(mode_info.get('command_argument', ''), minimum_value=0)
+    if not parse_value_result.get('ok') or parse_value_result.get('action') != 'set':
         return {'ok': False, 'config_type': 'input_limit'}
     return {
         'ok': True,
         'config_type': 'input_limit',
         'action': 'set',
         'target_mode': target_mode,
-        'input_limit': input_limit,
+        'input_limit': parse_value_result['value'],
     }
 
 
 def _parse_config_command(command_argument: str) -> dict:
-    token_list = utils.safe_str(command_argument).strip().split()
-    if not token_list:
+    argument_text = utils.safe_str(command_argument).strip()
+    if not argument_text:
         return {'ok': True, 'config_type': 'all', 'action': 'show'}
-
-    option_name = token_list[0]
-    if option_name in {'等待', '等待时间', '间隔', '延时'}:
-        return _parse_delay_config_tokens(token_list)
-    if option_name in {'字数', '字数限制', '限制'}:
-        return _parse_input_limit_config_tokens(token_list)
-    return {'ok': False, 'config_type': ''}
+    command_info = utils.parse_command(
+        argument_text,
+        allow_no_prefix=True,
+        command_name=config_command_alias_name_list,
+    )
+    if not command_info.get('is_command'):
+        return {'ok': False, 'config_type': ''}
+    config_type = config_command_alias_to_key_dict.get(command_info.get('command_name', ''), '')
+    return {
+        'ok': True,
+        'config_type': config_type,
+        'config_label': config_command_label_dict.get(config_type, ''),
+        'command_argument': command_info.get('command_argument', ''),
+    }
 
 
 def handle_gladiator_config(plugin_event, config_bot_hash: str, command_argument: str) -> None:
     parse_result = _parse_config_command(command_argument)
     if not parse_result.get('ok'):
-        reply_message_key = 'reply_delay_config_invalid'
-        if parse_result.get('config_type') == 'input_limit':
-            reply_message_key = 'reply_input_limit_invalid'
-        utils.reply_message(plugin_event, render_custom_message(plugin_event, reply_message_key))
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_config_invalid'))
         return
 
+    global_config = utils.load_global_config()
     bot_config = utils.load_bot_config(config_bot_hash)
-    delay_min_seconds, delay_max_seconds = function.get_segment_delay_range_from_bot_config(bot_config)
-    normal_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=False)
-    god_war_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+    config_type = parse_result.get('config_type', '')
+    config_label = parse_result.get('config_label', '')
+    config_argument = parse_result.get('command_argument', '')
 
-    if parse_result.get('config_type') == 'all':
+    if config_type == 'all':
         utils.reply_message(
             plugin_event,
             render_custom_message(
                 plugin_event,
                 'reply_config_status',
-                extra_value_dict={
-                    'delay_min_seconds': str(delay_min_seconds),
-                    'delay_max_seconds': str(delay_max_seconds),
-                    'normal_input_limit_text': function.format_input_limit(normal_input_limit),
-                    'god_war_input_limit_text': function.format_input_limit(god_war_input_limit),
-                },
+                extra_value_dict=_build_config_overview_value_dict(config_bot_hash),
             ),
         )
         return
 
-    if parse_result.get('config_type') == 'delay' and parse_result.get('action') == 'show':
-        bot_config = utils.load_bot_config(config_bot_hash)
-        utils.reply_message(
-            plugin_event,
-            render_custom_message(
+    if config_type == 'delay':
+        delay_parse_result = _parse_delay_config_tokens(config_argument)
+        if not delay_parse_result.get('ok'):
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_delay_config_invalid'))
+            return
+        delay_min_seconds, delay_max_seconds = function.get_segment_delay_range_from_bot_config(bot_config)
+        if delay_parse_result.get('action') == 'show':
+            utils.reply_message(
                 plugin_event,
-                'reply_delay_config_status',
-                extra_value_dict={
-                    'delay_min_seconds': str(delay_min_seconds),
-                    'delay_max_seconds': str(delay_max_seconds),
-                },
-            ),
-        )
-        return
-
-    if parse_result.get('config_type') == 'delay':
-        bot_config['segment_delay_min_seconds'] = parse_result['delay_min_seconds']
-        bot_config['segment_delay_max_seconds'] = parse_result['delay_max_seconds']
+                render_custom_message(
+                    plugin_event,
+                    'reply_config_item_status',
+                    extra_value_dict={
+                        'config_label': config_label,
+                        'config_value_display': f'{delay_min_seconds} 到 {delay_max_seconds} 秒',
+                    },
+                ),
+            )
+            return
+        bot_config['segment_delay_min_seconds'] = delay_parse_result['delay_min_seconds']
+        bot_config['segment_delay_max_seconds'] = delay_parse_result['delay_max_seconds']
         utils.save_bot_config(config_bot_hash, bot_config)
         utils.reply_message(
             plugin_event,
             render_custom_message(
                 plugin_event,
-                'reply_delay_config_updated',
+                'reply_config_updated',
                 extra_value_dict={
-                    'delay_min_seconds': str(parse_result['delay_min_seconds']),
-                    'delay_max_seconds': str(parse_result['delay_max_seconds']),
+                    'config_label': config_label,
+                    'config_value_display': (
+                        f'{delay_parse_result["delay_min_seconds"]} 到 {delay_parse_result["delay_max_seconds"]} 秒'
+                    ),
                 },
             ),
         )
         return
 
-    if parse_result.get('action') == 'show':
+    if config_type == 'input_limit':
+        input_limit_parse_result = _parse_input_limit_config_tokens(config_argument)
+        if not input_limit_parse_result.get('ok'):
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_input_limit_invalid'))
+            return
+        normal_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=False)
+        god_war_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+        if input_limit_parse_result.get('action') == 'show':
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_config_item_status',
+                    extra_value_dict={
+                        'config_label': config_label,
+                        'config_value_display': (
+                            f'普通模式 {function.format_input_limit(normal_input_limit)}；'
+                            f'神战模式 {function.format_input_limit(god_war_input_limit)}'
+                        ),
+                    },
+                ),
+            )
+            return
+        target_mode = input_limit_parse_result.get('target_mode')
+        if target_mode == 'all':
+            bot_config['normal_input_limit'] = input_limit_parse_result['input_limit']
+            bot_config['god_war_input_limit'] = input_limit_parse_result['input_limit']
+            utils.save_bot_config(config_bot_hash, bot_config)
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_config_updated',
+                    extra_value_dict={
+                        'config_label': '普通/神战字数限制',
+                        'config_value_display': function.format_input_limit(input_limit_parse_result['input_limit']),
+                    },
+                ),
+            )
+            return
+        config_key = 'normal_input_limit'
+        target_mode_name = '普通模式'
+        if target_mode == 'god_war':
+            config_key = 'god_war_input_limit'
+            target_mode_name = '神战模式'
+        bot_config[config_key] = input_limit_parse_result['input_limit']
+        utils.save_bot_config(config_bot_hash, bot_config)
         utils.reply_message(
             plugin_event,
             render_custom_message(
                 plugin_event,
-                'reply_input_limit_status',
+                'reply_config_updated',
                 extra_value_dict={
-                    'normal_input_limit_text': function.format_input_limit(normal_input_limit),
-                    'god_war_input_limit_text': function.format_input_limit(god_war_input_limit),
+                    'config_label': f'{target_mode_name}字数限制',
+                    'config_value_display': function.format_input_limit(input_limit_parse_result['input_limit']),
                 },
             ),
         )
         return
 
-    config_key = 'normal_input_limit'
-    target_mode_name = '普通'
-    if parse_result.get('target_mode') == 'god_war':
-        config_key = 'god_war_input_limit'
-        target_mode_name = '神战'
-    bot_config[config_key] = parse_result['input_limit']
-    utils.save_bot_config(config_bot_hash, bot_config)
-    utils.reply_message(
-        plugin_event,
-        render_custom_message(
+    if config_type in {'global_enable', 'global_debug', 'global_god_war', 'forward'}:
+        bool_parse_result = _parse_bool_config_argument(config_argument)
+        if not bool_parse_result.get('ok'):
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_config_invalid'))
+            return
+        config_value_lookup_dict = {
+            'global_enable': bool(global_config.get('global_enable_switch', True)),
+            'global_debug': bool(global_config.get('global_debug_mode_switch', False)),
+            'global_god_war': bool(global_config.get('global_god_war_enable_switch', True)),
+            'forward': bool(bot_config.get('qq_forward_message_switch', False)),
+        }
+        if bool_parse_result.get('action') == 'show':
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_config_item_status',
+                    extra_value_dict={
+                        'config_label': config_label,
+                        'config_value_display': _bool_to_text(config_value_lookup_dict.get(config_type, False)),
+                    },
+                ),
+            )
+            return
+        target_enabled = bool(bool_parse_result.get('enabled', False))
+        if config_type == 'global_enable':
+            global_config['global_enable_switch'] = target_enabled
+            utils.save_global_config(global_config)
+        elif config_type == 'global_debug':
+            global_config['global_debug_mode_switch'] = target_enabled
+            utils.save_global_config(global_config)
+        elif config_type == 'global_god_war':
+            global_config['global_god_war_enable_switch'] = target_enabled
+            utils.save_global_config(global_config)
+        else:
+            bot_config['qq_forward_message_switch'] = target_enabled
+            utils.save_bot_config(config_bot_hash, bot_config)
+        utils.reply_message(
             plugin_event,
-            'reply_input_limit_updated',
-            extra_value_dict={
-                'mode_name': target_mode_name,
-                'input_limit_text': function.format_input_limit(parse_result['input_limit']),
-            },
-        ),
-    )
+            render_custom_message(
+                plugin_event,
+                'reply_config_updated',
+                extra_value_dict={
+                    'config_label': config_label,
+                    'config_value_display': _bool_to_text(target_enabled),
+                },
+            ),
+        )
+        return
+
+    if config_type == 'timeout':
+        timeout_parse_result = _parse_integer_config_argument(config_argument, minimum_value=1)
+        if not timeout_parse_result.get('ok'):
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_config_invalid'))
+            return
+        if timeout_parse_result.get('action') == 'show':
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_config_item_status',
+                    extra_value_dict={
+                        'config_label': config_label,
+                        'config_value_display': f'{bot_config.get("request_timeout_seconds", 180)} 秒',
+                    },
+                ),
+            )
+            return
+        bot_config['request_timeout_seconds'] = timeout_parse_result['value']
+        utils.save_bot_config(config_bot_hash, bot_config)
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_config_updated',
+                extra_value_dict={
+                    'config_label': config_label,
+                    'config_value_display': f'{timeout_parse_result["value"]} 秒',
+                },
+            ),
+        )
+        return
+
+    if config_type == 'temperature':
+        temperature_parse_result = _parse_float_config_argument(config_argument)
+        if not temperature_parse_result.get('ok'):
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_config_invalid'))
+            return
+        if temperature_parse_result.get('action') == 'show':
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_config_item_status',
+                    extra_value_dict={
+                        'config_label': config_label,
+                        'config_value_display': str(bot_config.get('temperature', 0.9)),
+                    },
+                ),
+            )
+            return
+        bot_config['temperature'] = temperature_parse_result['value']
+        utils.save_bot_config(config_bot_hash, bot_config)
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_config_updated',
+                extra_value_dict={
+                    'config_label': config_label,
+                    'config_value_display': str(temperature_parse_result['value']),
+                },
+            ),
+        )
+        return
+
+    if config_type in {'api_url', 'api_key', 'model', 'system_prompt', 'user_prompt_prefix', 'god_war_system_prompt'}:
+        allow_default = config_type in {'system_prompt', 'god_war_system_prompt'}
+        text_parse_result = _parse_text_config_argument(config_argument, allow_default=allow_default)
+        if not text_parse_result.get('ok'):
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_config_invalid'))
+            return
+        config_key_lookup_dict = {
+            'api_url': 'api_url',
+            'api_key': 'api_key',
+            'model': 'model',
+            'system_prompt': 'system_prompt',
+            'user_prompt_prefix': 'user_prompt_prefix',
+            'god_war_system_prompt': 'god_war_system_prompt',
+        }
+        config_key = config_key_lookup_dict[config_type]
+        if text_parse_result.get('action') == 'show':
+            current_text = utils.safe_str(bot_config.get(config_key, '')).strip()
+            if config_type == 'system_prompt' and not current_text:
+                current_text = config.SYSTEM_PROMPT
+            if config_type == 'god_war_system_prompt' and not current_text:
+                current_text = config.GOD_WAR_SYSTEM_PROMPT
+            if config_type == 'api_key':
+                current_text = function._mask_api_key(current_text) or '未配置'
+            else:
+                current_text = current_text or '当前为空'
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_config_item_status',
+                    extra_value_dict={
+                        'config_label': config_label,
+                        'config_value_display': current_text,
+                    },
+                ),
+            )
+            return
+        if text_parse_result.get('action') == 'reset_default':
+            if config_type == 'system_prompt':
+                bot_config[config_key] = config.SYSTEM_PROMPT
+            else:
+                bot_config[config_key] = config.GOD_WAR_SYSTEM_PROMPT
+        else:
+            bot_config[config_key] = text_parse_result.get('value', '')
+        utils.save_bot_config(config_bot_hash, bot_config)
+        display_text = utils.safe_str(bot_config.get(config_key, '')).strip() or '当前为空'
+        if config_type == 'api_key':
+            display_text = function._mask_api_key(utils.safe_str(bot_config.get(config_key, '')).strip()) or '未配置'
+        elif config_type in {'system_prompt', 'user_prompt_prefix', 'god_war_system_prompt'}:
+            display_text = _summarize_config_text(display_text, '当前为空')
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_config_updated',
+                extra_value_dict={
+                    'config_label': config_label,
+                    'config_value_display': display_text,
+                },
+            ),
+        )
+        return
+
+    utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_config_invalid'))
 
 
 def handle_gladiator_god_war(plugin_event, config_bot_hash: str, command_argument: str) -> None:
