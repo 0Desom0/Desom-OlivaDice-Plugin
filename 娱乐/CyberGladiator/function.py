@@ -101,11 +101,30 @@ def get_input_limit_from_bot_config(bot_config: Dict[str, Any], god_war_mode: bo
     return max(_coerce_int(bot_config.get(config_key, config.default_input_limit), config.default_input_limit), 0)
 
 
+def _coerce_optional_input_limit(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    normalized_text = utils.safe_str(value).strip()
+    if normalized_text == '':
+        return None
+    try:
+        return max(int(normalized_text), 0)
+    except Exception:
+        return None
+
+
 def format_input_limit(limit_value: Any) -> str:
     normalized_limit = max(_coerce_int(limit_value, config.default_input_limit), 0)
     if normalized_limit == 0:
         return '不限制'
     return str(normalized_limit)
+
+
+def format_group_input_limit(limit_value: Any, global_limit_value: Any) -> str:
+    normalized_limit = _coerce_optional_input_limit(limit_value)
+    if normalized_limit is None:
+        return f'跟随全局（{format_input_limit(global_limit_value)}）'
+    return format_input_limit(normalized_limit)
 
 
 def calculate_weighted_text_length(text_value: Any) -> float:
@@ -187,6 +206,8 @@ def _build_default_group_state(plugin_event) -> Dict[str, Any]:
         'plugin_enabled': True,
         'group_god_war_override_switch': False,
         'group_god_war_enabled': False,
+        'group_normal_input_limit': None,
+        'group_god_war_input_limit': None,
         'waiting_room': [],
         'battle_running': False,
         'stop_requested': False,
@@ -323,6 +344,34 @@ def set_global_god_war_enabled(enabled: bool) -> Dict[str, Any]:
     global_config['global_god_war_enable_switch'] = bool(enabled)
     utils.save_global_config(global_config)
     return global_config
+
+
+def get_group_input_limit_override(plugin_event, god_war_mode: bool = False) -> Optional[int]:
+    group_state = load_group_state(plugin_event)
+    config_key = 'group_god_war_input_limit' if god_war_mode else 'group_normal_input_limit'
+    return _coerce_optional_input_limit(group_state.get(config_key, None))
+
+
+def get_effective_input_limit(plugin_event, god_war_mode: bool = False) -> int:
+    bot_config = utils.load_bot_config(utils.get_bot_hash_from_event(plugin_event))
+    group_limit = get_group_input_limit_override(plugin_event, god_war_mode=god_war_mode)
+    if group_limit is not None:
+        return group_limit
+    return get_input_limit_from_bot_config(bot_config, god_war_mode=god_war_mode)
+
+
+def set_group_input_limit_override(
+    plugin_event,
+    normal_input_limit: Optional[int] = None,
+    god_war_input_limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    group_state = load_group_state(plugin_event)
+    if normal_input_limit is not None:
+        group_state['group_normal_input_limit'] = max(_coerce_int(normal_input_limit, config.default_input_limit), 0)
+    if god_war_input_limit is not None:
+        group_state['group_god_war_input_limit'] = max(_coerce_int(god_war_input_limit, config.default_input_limit), 0)
+    save_group_state(plugin_event, group_state)
+    return group_state
 
 
 def is_group_battle_running(plugin_event) -> bool:
@@ -486,7 +535,7 @@ def _resolve_waiting_input_text(group_display_name: str, input_text: str) -> str
 def get_current_input_limit_info(plugin_event) -> Dict[str, Any]:
     bot_config = get_runtime_bot_config(plugin_event)
     god_war_mode = bool(bot_config.get('god_war_enable_switch', False))
-    input_limit = get_input_limit_from_bot_config(bot_config, god_war_mode=god_war_mode)
+    input_limit = get_effective_input_limit(plugin_event, god_war_mode=god_war_mode)
     return {
         'mode_name': '神战' if god_war_mode else '普通',
         'god_war_mode': god_war_mode,
@@ -711,8 +760,12 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
     group_god_war_enable_switch = is_group_god_war_enabled(plugin_event)
     group_god_war_override_switch = is_group_god_war_override_enabled(plugin_event)
     god_war_enable_switch = get_effective_god_war_enabled(plugin_event)
-    normal_input_limit = get_input_limit_from_bot_config(bot_config, god_war_mode=False)
-    god_war_input_limit = get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+    global_normal_input_limit = get_input_limit_from_bot_config(bot_config, god_war_mode=False)
+    global_god_war_input_limit = get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+    group_normal_input_limit = get_group_input_limit_override(plugin_event, god_war_mode=False)
+    group_god_war_input_limit = get_group_input_limit_override(plugin_event, god_war_mode=True)
+    normal_input_limit = get_effective_input_limit(plugin_event, god_war_mode=False)
+    god_war_input_limit = get_effective_input_limit(plugin_event, god_war_mode=True)
     normal_system_prompt = utils.safe_str(bot_config.get('system_prompt') or config.SYSTEM_PROMPT).strip()
     god_war_system_prompt = utils.safe_str(
         bot_config.get('god_war_system_prompt') or config.GOD_WAR_SYSTEM_PROMPT
@@ -734,6 +787,10 @@ def get_runtime_bot_config(plugin_event) -> Dict[str, Any]:
         'group_god_war_override_switch': group_god_war_override_switch,
         'group_god_war_enable_switch': group_god_war_enable_switch,
         'god_war_enable_switch': god_war_enable_switch,
+        'global_normal_input_limit': global_normal_input_limit,
+        'global_god_war_input_limit': global_god_war_input_limit,
+        'group_normal_input_limit': group_normal_input_limit,
+        'group_god_war_input_limit': group_god_war_input_limit,
         'normal_input_limit': normal_input_limit,
         'god_war_input_limit': god_war_input_limit,
         'current_input_limit': god_war_input_limit if god_war_enable_switch else normal_input_limit,

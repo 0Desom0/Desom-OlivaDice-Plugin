@@ -8,14 +8,14 @@ from . import utils
 
 
 gladiator_command_prefix_tuple = ('角斗', '决斗')
-gladiator_command_suffix_tuple = ('加入', '更新', '录入', '开始', '查询', '状态', '退出', '清空', '停止', '关闭', '开启', '配置', '帮助', '神战')
+gladiator_command_suffix_tuple = ('加入', '更新', '录入', '开始', '查询', '状态', '退出', '清空', '停止', '关闭', '开启', '配置', '设置', '帮助', '神战')
 command_name_list = [
     f'{command_prefix}{command_suffix}'
     for command_prefix in gladiator_command_prefix_tuple
     for command_suffix in gladiator_command_suffix_tuple
 ]
 management_command_name_set = {'清空', '停止', '关闭', '开启'}
-master_only_command_name_set = {'配置'}
+master_only_command_name_set = set()
 locked_command_name_set = {'加入', '更新', '开始', '退出', '清空'}
 config_command_definition_list = [
     ('global_enable', '全局启用', ('全局启用', '全局开关')),
@@ -73,7 +73,7 @@ def is_master_only_command(command_name: str) -> bool:
 
 
 def is_privileged_command(command_name: str) -> bool:
-    return is_management_command(command_name) or is_master_only_command(command_name)
+    return is_management_command(command_name) or is_master_only_command(command_name) or command_name == '配置'
 
 
 def normalize_command_name(command_name: str) -> str:
@@ -84,6 +84,8 @@ def normalize_command_name(command_name: str) -> str:
         command_suffix = normalized_command_name[len(command_prefix) :]
         if command_suffix == '录入':
             return '加入'
+        if command_suffix == '设置':
+            return '配置'
         if command_suffix in gladiator_command_suffix_tuple:
             return command_suffix
         return normalized_command_name
@@ -219,12 +221,15 @@ def _summarize_config_text(text_value: str, empty_text: str) -> str:
     return normalized_text
 
 
-def _build_config_overview_value_dict(config_bot_hash: str) -> dict:
+def _build_config_overview_value_dict(plugin_event, config_bot_hash: str) -> dict:
     global_config = utils.load_global_config()
     bot_config = utils.load_bot_config(config_bot_hash)
+    runtime_bot_config = function.get_runtime_bot_config(plugin_event)
     delay_min_seconds, delay_max_seconds = function.get_segment_delay_range_from_bot_config(bot_config)
-    normal_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=False)
-    god_war_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+    global_normal_input_limit = runtime_bot_config.get('global_normal_input_limit', config.default_input_limit)
+    global_god_war_input_limit = runtime_bot_config.get('global_god_war_input_limit', config.default_input_limit)
+    group_normal_input_limit = runtime_bot_config.get('group_normal_input_limit', None)
+    group_god_war_input_limit = runtime_bot_config.get('group_god_war_input_limit', None)
     return {
         'global_enable_mode': _bool_to_text(bool(global_config.get('global_enable_switch', True))),
         'global_debug_mode': _bool_to_text(bool(global_config.get('global_debug_mode_switch', False))),
@@ -236,8 +241,16 @@ def _build_config_overview_value_dict(config_bot_hash: str) -> dict:
         'temperature_text': str(bot_config.get('temperature', 0.9)),
         'delay_min_seconds': str(delay_min_seconds),
         'delay_max_seconds': str(delay_max_seconds),
-        'normal_input_limit_text': function.format_input_limit(normal_input_limit),
-        'god_war_input_limit_text': function.format_input_limit(god_war_input_limit),
+        'global_normal_input_limit_text': function.format_input_limit(global_normal_input_limit),
+        'global_god_war_input_limit_text': function.format_input_limit(global_god_war_input_limit),
+        'group_normal_input_limit_text': function.format_group_input_limit(
+            group_normal_input_limit,
+            global_normal_input_limit,
+        ),
+        'group_god_war_input_limit_text': function.format_group_input_limit(
+            group_god_war_input_limit,
+            global_god_war_input_limit,
+        ),
         'qq_forward_message_mode': _bool_to_text(bool(bot_config.get('qq_forward_message_switch', False))),
         'system_prompt_summary_text': _summarize_config_text(
             utils.safe_str(bot_config.get('system_prompt', config.SYSTEM_PROMPT)),
@@ -471,10 +484,24 @@ def handle_gladiator_status(plugin_event) -> None:
             'reply_gladiator_status',
             extra_value_dict={
                 'battle_mode': '神战' if status_info.get('god_war_enable_switch', False) else '普通',
-                'battle_progress': '进行中' if status_info.get('battle_running', False) else '未开始',
+                'battle_progress': '是' if status_info.get('battle_running', False) else '否',
                 'waiting_count': status_info.get('waiting_count', 0),
-                'normal_input_limit_text': function.format_input_limit(bot_config.get('normal_input_limit', 0)),
-                'god_war_input_limit_text': function.format_input_limit(bot_config.get('god_war_input_limit', 0)),
+                'delay_min_seconds': bot_config.get('segment_delay_min_seconds', config.default_segment_delay_min_seconds),
+                'delay_max_seconds': bot_config.get('segment_delay_max_seconds', config.default_segment_delay_max_seconds),
+                'global_normal_input_limit_text': function.format_input_limit(
+                    bot_config.get('global_normal_input_limit', config.default_input_limit)
+                ),
+                'global_god_war_input_limit_text': function.format_input_limit(
+                    bot_config.get('global_god_war_input_limit', config.default_input_limit)
+                ),
+                'group_normal_input_limit_text': function.format_group_input_limit(
+                    bot_config.get('group_normal_input_limit', None),
+                    bot_config.get('global_normal_input_limit', config.default_input_limit),
+                ),
+                'group_god_war_input_limit_text': function.format_group_input_limit(
+                    bot_config.get('group_god_war_input_limit', None),
+                    bot_config.get('global_god_war_input_limit', config.default_input_limit),
+                ),
             },
         ),
     )
@@ -633,37 +660,76 @@ def _parse_input_limit_mode(mode_text: str) -> str:
     return ''
 
 
+def _parse_input_limit_scope(argument_text: str) -> tuple[str, str]:
+    scope_info = utils.parse_command(
+        argument_text,
+        allow_no_prefix=True,
+        command_name=('全局',),
+    )
+    if scope_info.get('is_command'):
+        return 'global', utils.safe_str(scope_info.get('command_argument', '')).strip()
+    return 'group', utils.safe_str(argument_text).strip()
+
+
 def _parse_input_limit_config_tokens(argument_text: str) -> dict:
-    if not utils.safe_str(argument_text).strip():
-        return {'ok': True, 'config_type': 'input_limit', 'action': 'show'}
-    parse_whole_value_result = _parse_integer_config_argument(argument_text, minimum_value=0)
+    normalized_argument_text = utils.safe_str(argument_text).strip()
+    if not normalized_argument_text:
+        return {'ok': True, 'config_type': 'input_limit', 'action': 'show', 'scope': 'group'}
+
+    target_scope, remaining_argument_text = _parse_input_limit_scope(normalized_argument_text)
+    if not remaining_argument_text:
+        return {'ok': True, 'config_type': 'input_limit', 'action': 'show', 'scope': target_scope}
+
+    first_token, second_text = utils.split_first_token(remaining_argument_text)
+    second_token, tail_text = utils.split_first_token(second_text)
+    if first_token and second_token and not utils.safe_str(tail_text).strip():
+        try:
+            normal_input_limit = int(first_token)
+            god_war_input_limit = int(second_token)
+        except Exception:
+            normal_input_limit = -1
+            god_war_input_limit = -1
+        if normal_input_limit >= 0 and god_war_input_limit >= 0:
+            return {
+                'ok': True,
+                'config_type': 'input_limit',
+                'action': 'set',
+                'scope': target_scope,
+                'target_mode': 'pair',
+                'normal_input_limit': normal_input_limit,
+                'god_war_input_limit': god_war_input_limit,
+            }
+
+    parse_whole_value_result = _parse_integer_config_argument(remaining_argument_text, minimum_value=0)
     if parse_whole_value_result.get('ok') and parse_whole_value_result.get('action') == 'set':
         return {
             'ok': True,
             'config_type': 'input_limit',
             'action': 'set',
+            'scope': target_scope,
             'target_mode': 'all',
             'input_limit': parse_whole_value_result['value'],
         }
     mode_info = utils.parse_command(
-        argument_text,
+        remaining_argument_text,
         allow_no_prefix=True,
         command_name=('普通模式', '神战模式', '普通', '神战'),
     )
     if not mode_info.get('is_command'):
-        return {'ok': False, 'config_type': 'input_limit'}
+        return {'ok': False, 'config_type': 'input_limit', 'scope': target_scope}
 
     target_mode = _parse_input_limit_mode(mode_info.get('command_name', ''))
     if not target_mode:
-        return {'ok': False, 'config_type': 'input_limit'}
+        return {'ok': False, 'config_type': 'input_limit', 'scope': target_scope}
 
     parse_value_result = _parse_integer_config_argument(mode_info.get('command_argument', ''), minimum_value=0)
     if not parse_value_result.get('ok') or parse_value_result.get('action') != 'set':
-        return {'ok': False, 'config_type': 'input_limit'}
+        return {'ok': False, 'config_type': 'input_limit', 'scope': target_scope}
     return {
         'ok': True,
         'config_type': 'input_limit',
         'action': 'set',
+        'scope': target_scope,
         'target_mode': target_mode,
         'input_limit': parse_value_result['value'],
     }
@@ -704,11 +770,7 @@ def handle_gladiator_config(plugin_event, config_bot_hash: str, command_argument
     if config_type == 'all':
         utils.reply_message(
             plugin_event,
-            render_custom_message(
-                plugin_event,
-                'reply_config_status',
-                extra_value_dict=_build_config_overview_value_dict(config_bot_hash),
-            ),
+            render_custom_message(plugin_event, 'reply_config_need_argument'),
         )
         return
 
@@ -754,36 +816,82 @@ def handle_gladiator_config(plugin_event, config_bot_hash: str, command_argument
         if not input_limit_parse_result.get('ok'):
             utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_input_limit_invalid'))
             return
-        normal_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=False)
-        god_war_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+        target_scope = input_limit_parse_result.get('scope', 'group')
+        global_normal_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=False)
+        global_god_war_input_limit = function.get_input_limit_from_bot_config(bot_config, god_war_mode=True)
+        group_normal_input_limit = function.get_group_input_limit_override(plugin_event, god_war_mode=False)
+        group_god_war_input_limit = function.get_group_input_limit_override(plugin_event, god_war_mode=True)
         if input_limit_parse_result.get('action') == 'show':
+            if target_scope == 'global':
+                config_value_display = (
+                    f'普通模式 {function.format_input_limit(global_normal_input_limit)}；'
+                    f'神战模式 {function.format_input_limit(global_god_war_input_limit)}'
+                )
+                target_label = '全局字数限制'
+            else:
+                config_value_display = (
+                    f'普通模式 {function.format_group_input_limit(group_normal_input_limit, global_normal_input_limit)}；'
+                    f'神战模式 {function.format_group_input_limit(group_god_war_input_limit, global_god_war_input_limit)}'
+                )
+                target_label = '本群字数限制'
             utils.reply_message(
                 plugin_event,
                 render_custom_message(
                     plugin_event,
                     'reply_config_item_status',
                     extra_value_dict={
-                        'config_label': config_label,
-                        'config_value_display': (
-                            f'普通模式 {function.format_input_limit(normal_input_limit)}；'
-                            f'神战模式 {function.format_input_limit(god_war_input_limit)}'
-                        ),
+                        'config_label': target_label,
+                        'config_value_display': config_value_display,
                     },
                 ),
             )
             return
         target_mode = input_limit_parse_result.get('target_mode')
-        if target_mode == 'all':
-            bot_config['normal_input_limit'] = input_limit_parse_result['input_limit']
-            bot_config['god_war_input_limit'] = input_limit_parse_result['input_limit']
-            utils.save_bot_config(config_bot_hash, bot_config)
+        scope_label = '全局' if target_scope == 'global' else '本群'
+        if target_mode == 'pair':
+            if target_scope == 'global':
+                bot_config['normal_input_limit'] = input_limit_parse_result['normal_input_limit']
+                bot_config['god_war_input_limit'] = input_limit_parse_result['god_war_input_limit']
+                utils.save_bot_config(config_bot_hash, bot_config)
+            else:
+                function.set_group_input_limit_override(
+                    plugin_event,
+                    normal_input_limit=input_limit_parse_result['normal_input_limit'],
+                    god_war_input_limit=input_limit_parse_result['god_war_input_limit'],
+                )
             utils.reply_message(
                 plugin_event,
                 render_custom_message(
                     plugin_event,
                     'reply_config_updated',
                     extra_value_dict={
-                        'config_label': '普通/神战字数限制',
+                        'config_label': f'{scope_label}普通/神战字数限制',
+                        'config_value_display': (
+                            f'普通模式 {function.format_input_limit(input_limit_parse_result["normal_input_limit"])}；'
+                            f'神战模式 {function.format_input_limit(input_limit_parse_result["god_war_input_limit"])}'
+                        ),
+                    },
+                ),
+            )
+            return
+        if target_mode == 'all':
+            if target_scope == 'global':
+                bot_config['normal_input_limit'] = input_limit_parse_result['input_limit']
+                bot_config['god_war_input_limit'] = input_limit_parse_result['input_limit']
+                utils.save_bot_config(config_bot_hash, bot_config)
+            else:
+                function.set_group_input_limit_override(
+                    plugin_event,
+                    normal_input_limit=input_limit_parse_result['input_limit'],
+                    god_war_input_limit=input_limit_parse_result['input_limit'],
+                )
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_config_updated',
+                    extra_value_dict={
+                        'config_label': f'{scope_label}普通/神战字数限制',
                         'config_value_display': function.format_input_limit(input_limit_parse_result['input_limit']),
                     },
                 ),
@@ -794,15 +902,22 @@ def handle_gladiator_config(plugin_event, config_bot_hash: str, command_argument
         if target_mode == 'god_war':
             config_key = 'god_war_input_limit'
             target_mode_name = '神战模式'
-        bot_config[config_key] = input_limit_parse_result['input_limit']
-        utils.save_bot_config(config_bot_hash, bot_config)
+        if target_scope == 'global':
+            bot_config[config_key] = input_limit_parse_result['input_limit']
+            utils.save_bot_config(config_bot_hash, bot_config)
+        else:
+            function.set_group_input_limit_override(
+                plugin_event,
+                normal_input_limit=input_limit_parse_result['input_limit'] if config_key == 'normal_input_limit' else None,
+                god_war_input_limit=input_limit_parse_result['input_limit'] if config_key == 'god_war_input_limit' else None,
+            )
         utils.reply_message(
             plugin_event,
             render_custom_message(
                 plugin_event,
                 'reply_config_updated',
                 extra_value_dict={
-                    'config_label': f'{target_mode_name}字数限制',
+                    'config_label': f'{scope_label}{target_mode_name}字数限制',
                     'config_value_display': function.format_input_limit(input_limit_parse_result['input_limit']),
                 },
             ),
@@ -1213,11 +1328,6 @@ def handle_message(plugin_event, Proc) -> None:
         handle_gladiator_leave(plugin_event, command_argument)
         return
 
-    if command_name in master_only_command_name_set:
-        if not sender_has_master_permission(plugin_event):
-            reply_config_permission_denied(plugin_event)
-            return
-
     if command_name in management_command_name_set:
         if command_name in {'关闭', '开启'} and normalize_toggle_scope(command_argument) == 'global':
             if not sender_has_master_permission(plugin_event):
@@ -1244,6 +1354,19 @@ def handle_message(plugin_event, Proc) -> None:
         return
 
     if command_name == '配置':
+        parse_result = _parse_config_command(command_argument)
+        if parse_result.get('config_type') == 'input_limit':
+            input_limit_parse_result = _parse_input_limit_config_tokens(parse_result.get('command_argument', ''))
+            if input_limit_parse_result.get('scope', 'group') == 'global':
+                if not sender_has_master_permission(plugin_event):
+                    reply_config_permission_denied(plugin_event)
+                    return
+            elif not sender_has_group_management_permission(plugin_event):
+                reply_permission_denied(plugin_event)
+                return
+        elif not sender_has_master_permission(plugin_event):
+            reply_config_permission_denied(plugin_event)
+            return
         handle_gladiator_config(plugin_event, config_bot_hash, command_argument)
         return
 
