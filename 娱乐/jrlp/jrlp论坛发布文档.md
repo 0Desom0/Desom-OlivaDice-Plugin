@@ -2,9 +2,9 @@
 
 - **名称**​：今日老婆插件 (JRLP)
 - ​**作者**​：Desom-fu
-- ​**版本**​：1.0.0
+- ​**版本**​：1.1.0
 - ​**兼容版本**​：理论兼容所有版本，但仅在最新版本测试过
-- ​**平台**​：理论支持全平台（仅在 QQ 部署测试过）
+- ​**平台**​：理论仅支持 QQ 第三方协议（gocq, lagrange, llbot, napcat）
 - ​**操作系统**​：理论支持全系统（仅在 Windows Server 2019 上部署过）
 - **前置插件**：OlivaDiceCore
 
@@ -15,7 +15,7 @@
 - 建议使用最新构建版`OlivaDiceNativeGUI`以获得最佳体验
 - 下载地址：https://github.com/Desom-fu/OlivaDiceNativeGUI/actions
 - （记得解压！）
-[upl-file uuid=7e860b49-2b94-427f-adc0-576df28df16f size=237kB]olivadicenativegui.zip[/upl-file]
+[upl-file uuid=a54a3284-e3cc-4257-b551-d079ba4376c2 size=6kB]jrlp.zip[/upl-file]
 
 - 下载完毕后建议打开`OlivaDice 设置面板`的自定义回复，在回复词中的`配置恢复模块`里面新增一行`jrlp`（注意大小写要完全一致!）
 
@@ -31,6 +31,9 @@
 ---
 
 ## 更新日志
+
+## 2026.5.7 v1.1.0发布：
+- 新增纯爱模式，别人抽到了你你只能抽到他，并且无法抽到自己
 
 ## 2025.9.23 v1.0.0发布：
 - 今日老婆插件发布
@@ -67,6 +70,31 @@
 - 每人每天每群只能抽取一次  
 - 每天0点自动重置
 ```
+
+---
+
+## 默认自定义回复
+
+```json
+dictStrCustom = {
+    "jrlpMode": "0",
+    "jrlpFirst": "让小芙瞧瞧，[{tUserName}]今天的群老婆是：\n{name}({qq})",
+    "jrlpRepeat": "[{tUserName}]今天已经有老婆啦，不要太贪心哦！\n你的今日老婆是：{name}({qq})",
+    "jrlpRobot": "让小芙瞧瞧，[{tUserName}]今天的群老婆是：\n{name}({qq})\n哇，你抽到了小芙！今天小芙就是你的老婆了~",
+    "jrlpSelf": "让小芙瞧瞧，[{tUserName}]今天的群老婆是：\n{name}({qq})\n哇，你的今日老婆居然是自己诶！",
+    "jrlpNoAvailable": "[{tUserName}]今天已经没有可抽取的对象啦，明天再来试试吧~"
+}
+
+dictStrCustomNote = {
+    "jrlpMode": "【配置参数】纯爱模式开关\n0=普通模式；1=纯爱模式；其他=按普通模式处理",
+    "jrlpFirst": "【今日老婆】首次抽取\n首次抽取今日老婆时的回复",
+    "jrlpRepeat": "【今日老婆】重复查看\n重复查看今日老婆时的回复",
+    "jrlpSelf": "【今日老婆】抽到自己\n普通模式抽到自己时的回复",
+    "jrlpRobot": "【今日老婆】抽到机器人\n抽到机器人自己时的回复",
+    "jrlpNoAvailable": "【今日老婆】无可抽取对象\n纯爱模式下没有可抽取对象时的回复"
+}
+```
+
 
 ---
 
