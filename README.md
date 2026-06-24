@@ -29,6 +29,7 @@
  * `OlivaDiceRAD` -- rad功能实现。论坛发布地址：https://forum.olivos.run/d/872-rad
  * `QQGroupForward` -- QQ群转发插件。论坛发布地址：https://forum.olivos.run/d/884-qqqqgroupforward
  * `CyberGladiator` -- 基于轻量模板做出来的完整实战示例，包含 GUI、分 Bot 配置、AI 推演、自动归档与权限控制。论坛发布地址：https://forum.olivos.run/d/908-ai
+ * `IWannaSearch` -- 神秘小众我想除了我应该不会有任何人进行装载的 i wanna 插件（ 论坛发布地址：https://forum.olivos.run/d/918-i-wanna-fangame-archive
 
 
 ### 💪实用
@@ -43,7 +44,6 @@
  * `messageRecall` -- 撤回消息插件。论坛发布地址：https://forum.olivos.run/d/860
  * `OlivaDiceManager` -- 群管插件。论坛发布地址：https://forum.olivos.run/d/866-olivadicemanager
  * `StatusPlugin` -- 系统状态查询插件。论坛发布地址：https://forum.olivos.run/d/887-statusplugin
- * `IWannaSearch` -- i wanna 插件。论坛发布地址：暂无
 
 ### 📚示例
  * `OlivaDice插件模板` -- 一个自用的，用于规则类插件的插件模板，论坛发布地址：https://forum.olivos.run/d/833-olivadicecoregui
