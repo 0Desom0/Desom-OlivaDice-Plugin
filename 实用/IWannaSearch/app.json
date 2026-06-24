@@ -1,0 +1,29 @@
+{
+    "name" : "I Wanna Search 查询插件",
+    "author" : "Desom-fu",
+    "namespace" : "IWannaSearch",
+    "message_mode" : "olivos_string",
+    "info" : "I Wanna fangame archive 查询插件",
+    "version" : "1.0.0",
+    "svn" : 1,
+    "compatible_svn" : 190,
+    "priority" : 30000,
+    "support" : [
+        {
+            "sdk" : "onebot",
+            "platform" : "qq",
+            "model" : "all"
+        },
+        {
+            "sdk" : "all",
+            "platform" : "all",
+            "model" : "all"
+        }
+    ],
+    "menu_config": [
+        {
+            "title": "打开插件配置",
+            "event": "IWannaSearch_Menu_001"
+        }
+    ]
+}

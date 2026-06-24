@@ -43,6 +43,7 @@
  * `messageRecall` -- 撤回消息插件。论坛发布地址：https://forum.olivos.run/d/860
  * `OlivaDiceManager` -- 群管插件。论坛发布地址：https://forum.olivos.run/d/866-olivadicemanager
  * `StatusPlugin` -- 系统状态查询插件。论坛发布地址：https://forum.olivos.run/d/887-statusplugin
+ * `IWannaSearch` -- i wanna 插件。论坛发布地址：暂无
 
 ### 📚示例
  * `OlivaDice插件模板` -- 一个自用的，用于规则类插件的插件模板，论坛发布地址：https://forum.olivos.run/d/833-olivadicecoregui
