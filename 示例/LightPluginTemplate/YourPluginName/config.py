@@ -54,7 +54,9 @@ default_global_config = {
 # 这份配置仍固定保存在 plugin/data/YourPluginName/<raw_bot_hash>/bot_config.json。
 # 当前模板里，bot_config 和 configured_master_list 都不跟随 link；
 # 只有 storage、message_custom、message_variable 会按 linked_bot_hash 生效。
+# disabled_group_list：群级禁用列表，记录哪些群被关闭了插件命令。
 default_bot_config = {
     'bot_enable_switch': True,
     'configured_master_list': [],
+    'disabled_group_list': [],
 }

@@ -16,6 +16,7 @@
 
 import OlivOS
 import copy
+import hashlib
 import json
 import os
 import re
@@ -52,6 +53,36 @@ def safe_str(value: Any) -> str:
         return str(value)
     except Exception:
         return ''
+
+
+def get_user_hash(user_id: Any, user_type: Any, platform: Any, sub_id: Any = None) -> str:
+    """
+    复刻 OlivaDiceCore.userConfig.getUserHash 的哈希规则。
+
+    在没有 OlivaDiceCore 的环境下，也能用这套规则生成与之一致的 user_hash，
+    用于做用户级数据隔离、缓存 key 等。
+    """
+    hash_object = hashlib.new('md5')
+    if sub_id is not None:
+        id_text = f'{safe_str(sub_id)}|{safe_str(user_id)}'
+        hash_object.update(id_text.encode(encoding='UTF-8'))
+    else:
+        hash_object.update(safe_str(user_id).encode(encoding='UTF-8'))
+    hash_object.update(safe_str(user_type).encode(encoding='UTF-8'))
+    hash_object.update(safe_str(platform).encode(encoding='UTF-8'))
+    if sub_id is not None:
+        hash_object.update(safe_str(sub_id).encode(encoding='UTF-8'))
+    return hash_object.hexdigest()
+
+
+def get_group_hash(hag_id: Any, platform: Any) -> str:
+    """
+    复刻 OlivaDiceCore 群级哈希规则。
+
+    与 get_user_hash 的区别仅在于 user_type 固定为 'group'，
+    传入的 id 为 hag_id（host_id|group_id 或纯 group_id）。
+    """
+    return get_user_hash(hag_id, 'group', platform)
 
 
 def deep_copy_default(default_value: Any) -> Any:
@@ -188,7 +219,7 @@ def debug_log(Proc, message_text: str, plugin_event=None, bot_hash: Optional[str
     """
     global_config = load_global_config()
     if global_config.get('global_debug_mode_switch', False):
-        log_message(Proc, 2, 'DEBUG', message_text)
+        log_message(Proc, 0, 'DEBUG', message_text)
 
 
 def info_log(Proc, message_text: str) -> None:
@@ -198,7 +229,7 @@ def info_log(Proc, message_text: str) -> None:
 
 def error_log(Proc, message_text: str) -> None:
     """Error 级日志，仅用于错误输出。"""
-    log_message(Proc, 3, 'ERROR', message_text)
+    log_message(Proc, 4, 'ERROR', message_text)
 
 
 def log_exception(action_name: str):
@@ -363,6 +394,40 @@ def get_message_text_from_event(plugin_event) -> str:
         return safe_str(plugin_event.data.message)
     except Exception:
         return ''
+
+
+def get_platform_from_event(plugin_event) -> str:
+    """从事件对象中安全获取平台标识。"""
+    try:
+        return safe_str(plugin_event.platform.get('platform', 'unknown'))
+    except Exception:
+        return 'unknown'
+
+
+def get_user_hash_from_event(plugin_event) -> str:
+    """
+    从事件对象中提取 user_id 与 platform，生成 user_hash。
+
+    当无法获取有效 user_id 时返回空字符串，避免生成无意义的哈希。
+    """
+    user_id = get_sender_id_from_event(plugin_event)
+    if not user_id:
+        return ''
+    platform_name = get_platform_from_event(plugin_event)
+    return get_user_hash(user_id, 'user', platform_name)
+
+
+def get_group_hash_from_event(plugin_event) -> str:
+    """
+    从事件对象中提取 hag_id 与 platform，生成 group_hash。
+
+    当不在群聊场景（无 group_id）时返回空字符串。
+    """
+    hag_id = get_hag_id_from_event(plugin_event)
+    if not hag_id:
+        return ''
+    platform_name = get_platform_from_event(plugin_event)
+    return get_group_hash(hag_id, platform_name)
 
 
 def get_config_bot_root_dir(bot_hash: Any) -> str:
@@ -1015,6 +1080,54 @@ def check_core_group_enable(plugin_event) -> bool:
         return True
 
     return True
+
+
+def get_disabled_group_list(bot_hash: Any) -> List[str]:
+    """获取当前 bot 的群级禁用列表。"""
+    bot_config = load_bot_config(bot_hash)
+    return normalize_id_list(bot_config.get('disabled_group_list', []))
+
+
+def set_disabled_group_list(bot_hash: Any, group_id_list: Iterable[str]) -> bool:
+    """保存当前 bot 的群级禁用列表。"""
+    bot_config = load_bot_config(bot_hash)
+    bot_config['disabled_group_list'] = normalize_id_list(list(group_id_list))
+    return save_bot_config(bot_hash, bot_config)
+
+
+def is_group_disabled(plugin_event) -> bool:
+    """
+    检查当前事件来源群是否在本插件的群级禁用列表中。
+
+    仅对群消息有效；私聊或无法获取 group_id 时直接返回 False。
+    """
+    group_id = get_group_id_from_event(plugin_event)
+    if not group_id:
+        return False
+    config_bot_hash = get_bot_hash_from_event(plugin_event)
+    return group_id in get_disabled_group_list(config_bot_hash)
+
+
+def add_disabled_group(bot_hash: Any, group_id: Any) -> bool:
+    """将一个群加入当前 bot 的群级禁用列表。"""
+    disabled_list = get_disabled_group_list(bot_hash)
+    target_id_list = normalize_id_list([group_id])
+    changed = False
+    for target_id in target_id_list:
+        if target_id not in disabled_list:
+            disabled_list.append(target_id)
+            changed = True
+    if changed:
+        return set_disabled_group_list(bot_hash, disabled_list)
+    return True
+
+
+def remove_disabled_group(bot_hash: Any, group_id: Any) -> bool:
+    """将一个群从当前 bot 的群级禁用列表中移除。"""
+    disabled_list = get_disabled_group_list(bot_hash)
+    target_id_list = normalize_id_list([group_id])
+    new_list = [gid for gid in disabled_list if gid not in target_id_list]
+    return set_disabled_group_list(bot_hash, new_list)
 
 
 class TemplateValueDict(dict):

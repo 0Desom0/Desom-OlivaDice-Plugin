@@ -15,7 +15,7 @@ from . import message_custom
 from . import utils
 
 
-management_command_name_set = {'tplglobal', 'tplbot'}
+management_command_name_set = {'tplglobal', 'tplbot', 'tplgroup'}
 
 
 def handle_init(plugin_event, Proc) -> None:
@@ -129,6 +129,11 @@ def sender_has_master_permission(plugin_event) -> bool:
     """统一判断是否拥有骰主权限。"""
     master_permission_info = utils.get_master_permission_info(plugin_event)
     return master_permission_info['sender_is_master']
+
+
+def sender_has_group_management_permission(plugin_event) -> bool:
+    """判断是否拥有群级管理权限（骰主或群主/群管）。"""
+    return sender_has_master_permission(plugin_event) or utils.is_group_admin(plugin_event)
 
 
 def build_runtime_value_dict(plugin_event, command_argument: str = '', extra_value_dict=None):
@@ -246,10 +251,16 @@ def handle_tplglobal(plugin_event, command_argument: str) -> None:
         elif debug_action == 'off':
             global_config['global_debug_mode_switch'] = False
         else:
-            utils.reply_message(plugin_event, '用法：.tplglobal debug on 或 .tplglobal debug off')
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_global_usage_debug'),
+            )
             return
     else:
-        utils.reply_message(plugin_event, '用法：.tplglobal status/on/off/debug on/debug off')
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(plugin_event, 'reply_global_usage'),
+        )
         return
 
     utils.save_global_config(global_config)
@@ -282,8 +293,6 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
         utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_bot_status'))
         return
 
-    # 以上是回复使用自定义消息范例，以下是回复不使用自定义消息范例
-    
     if action_name == 'master':
         master_action, master_argument = parse_secondary_action(action_argument)
         configured_master_list = utils.get_configured_master_list(config_bot_hash)
@@ -291,7 +300,14 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
 
         if master_action in ['', 'list']:
             master_text = ', '.join(configured_master_list) or '无'
-            utils.reply_message(plugin_event, f'当前本插件配置骰主列表：{master_text}')
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_bot_master_list',
+                    extra_value_dict={'master_list': master_text},
+                ),
+            )
             return
 
         if master_action == 'add':
@@ -299,9 +315,14 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
                 if target_master_id not in configured_master_list:
                     configured_master_list.append(target_master_id)
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
+            master_text = ', '.join(configured_master_list) or '无'
             utils.reply_message(
                 plugin_event,
-                f'已更新本插件配置骰主列表：{", ".join(configured_master_list) or "无"}',
+                render_custom_message(
+                    plugin_event,
+                    'reply_bot_master_updated',
+                    extra_value_dict={'master_list': master_text},
+                ),
             )
             return
 
@@ -312,15 +333,157 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
                 if configured_master_id not in target_master_id_list
             ]
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
+            master_text = ', '.join(configured_master_list) or '无'
             utils.reply_message(
                 plugin_event,
-                f'已更新本插件配置骰主列表：{", ".join(configured_master_list) or "无"}',
+                render_custom_message(
+                    plugin_event,
+                    'reply_bot_master_updated',
+                    extra_value_dict={'master_list': master_text},
+                ),
             )
             return
 
     utils.reply_message(
         plugin_event,
-        '用法：.tplbot status/on/off 或 .tplbot master list/add/del [用户ID]',
+        render_custom_message(plugin_event, 'reply_bot_usage'),
+    )
+
+
+def handle_tplgroup(plugin_event, command_argument: str) -> None:
+    """
+    群级禁用命令。
+
+    权限分层：
+    - status/on/off/list：骰主、群主、群管均可使用。
+    - add [群号]/del [群号]：仅骰主可用（因为涉及跨群操作）。
+
+    管理命令本身始终不会被群级禁用拦截，保证随时可以重新开启。
+    所有回复均通过自定义消息模板渲染，可在 message_custom.json 中修改。
+    """
+    action_name, action_argument = parse_secondary_action(command_argument)
+
+    cross_group_actions = {'add', 'del'}
+    if action_name in cross_group_actions:
+        if not sender_has_master_permission(plugin_event):
+            reply_permission_denied(plugin_event)
+            return
+    else:
+        if not sender_has_group_management_permission(plugin_event):
+            reply_permission_denied(plugin_event)
+            return
+
+    config_bot_hash = utils.get_bot_hash_from_event(plugin_event)
+    current_group_id = utils.get_group_id_from_event(plugin_event)
+
+    if action_name in ['', 'status']:
+        if current_group_id:
+            is_disabled = current_group_id in utils.get_disabled_group_list(config_bot_hash)
+            group_status = '禁用' if is_disabled else '启用'
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_group_status',
+                    extra_value_dict={'group_disable_status': group_status},
+                ),
+            )
+        else:
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_group_not_in_group'),
+            )
+        return
+
+    if action_name == 'off':
+        if not current_group_id:
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_group_not_in_group'),
+            )
+            return
+        utils.add_disabled_group(config_bot_hash, current_group_id)
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(plugin_event, 'reply_group_disabled'),
+        )
+        return
+
+    if action_name == 'on':
+        if not current_group_id:
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_group_not_in_group'),
+            )
+            return
+        utils.remove_disabled_group(config_bot_hash, current_group_id)
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(plugin_event, 'reply_group_enabled'),
+        )
+        return
+
+    if action_name == 'list':
+        disabled_list = utils.get_disabled_group_list(config_bot_hash)
+        if disabled_list:
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_group_list',
+                    extra_value_dict={'group_disable_list': ', '.join(disabled_list)},
+                ),
+            )
+        else:
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_group_list_empty'),
+            )
+        return
+
+    if action_name == 'add':
+        target_group_list = utils.normalize_id_list(action_argument)
+        if not target_group_list:
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_group_usage_add'),
+            )
+            return
+        for target_group_id in target_group_list:
+            utils.add_disabled_group(config_bot_hash, target_group_id)
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_group_add_done',
+                extra_value_dict={'target_groups': ', '.join(target_group_list)},
+            ),
+        )
+        return
+
+    if action_name == 'del':
+        target_group_list = utils.normalize_id_list(action_argument)
+        if not target_group_list:
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_group_usage_del'),
+            )
+            return
+        for target_group_id in target_group_list:
+            utils.remove_disabled_group(config_bot_hash, target_group_id)
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_group_del_done',
+                extra_value_dict={'target_groups': ', '.join(target_group_list)},
+            ),
+        )
+        return
+
+    utils.reply_message(
+        plugin_event,
+        render_custom_message(plugin_event, 'reply_group_usage'),
     )
 
 
@@ -381,6 +544,9 @@ def handle_message(plugin_event, Proc) -> None:
         if not bot_config.get('bot_enable_switch', True):
             utils.debug_log(Proc, '当前 Bot 开关已关闭，普通命令不再处理。', plugin_event=plugin_event)
             return
+        if utils.is_group_disabled(plugin_event):
+            utils.debug_log(Proc, '当前群已在本插件群禁用列表中，普通命令不再处理。', plugin_event=plugin_event)
+            return
 
     if command_name == 'tplhelp':
         handle_tplhelp(plugin_event)
@@ -400,6 +566,10 @@ def handle_message(plugin_event, Proc) -> None:
 
     if command_name == 'tplbot':
         handle_tplbot(plugin_event, command_argument)
+        return
+
+    if command_name == 'tplgroup':
+        handle_tplgroup(plugin_event, command_argument)
         return
 
     if command_name == 'tplwhoami':
