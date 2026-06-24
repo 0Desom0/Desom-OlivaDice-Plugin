@@ -17,7 +17,7 @@ from . import utils
 management_command_name_set = {'iwglobal', 'iwbot'}
 selection_session_dict: Dict[str, Dict[str, Any]] = {}
 number_pattern = re.compile(r'^\d+$')
-random_tag_pattern = re.compile(r'--tag=([^\s]*)')
+random_tag_pattern = re.compile(r'--tag=(.*)')
 
 
 def handle_init(plugin_event, Proc) -> None:
