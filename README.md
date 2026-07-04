@@ -30,6 +30,7 @@
  * `QQGroupForward` -- QQ群转发插件。论坛发布地址：https://forum.olivos.run/d/884-qqqqgroupforward
  * `CyberGladiator` -- 基于轻量模板做出来的完整实战示例，包含 GUI、分 Bot 配置、AI 推演、自动归档与权限控制。论坛发布地址：https://forum.olivos.run/d/908-ai
  * `IWannaSearch` -- 神秘小众我想除了我应该不会有任何人进行装载的 i wanna 插件（ 论坛发布地址：https://forum.olivos.run/d/918-i-wanna-fangame-archive
+ * `IWannaSearch` -- 神秘小众我想除了我应该不会有任何人进行装载的 Lanota 插件（ 论坛发布地址：暂无
 
 
 ### 💪实用
