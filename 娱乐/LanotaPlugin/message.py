@@ -686,7 +686,22 @@ def handle_category(plugin_event, argument: str) -> None:
     reply_text(plugin_event, '\n'.join(lines))
 
 
-def handle_table(plugin_event) -> None:
+def handle_table(plugin_event, argument: str = '') -> None:
+    action, _value = parse_action(argument, ['update', 'import', '更新', '导入', '转换', '刷新'])
+    if action:
+        if action in ['update', 'import', '更新', '导入', '转换', '刷新']:
+            if not utils.sender_has_master_permission(plugin_event):
+                reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以导入 Excel 定数表。')
+                return
+            try:
+                _success, message_text = function.import_excel_table_to_song_table()
+                reply_text(plugin_event, message_text)
+            except Exception as exception_object:
+                reply_text(plugin_event, f'导入 Excel 定数表失败：{type(exception_object).__name__}: {exception_object}')
+            return
+        reply_text(plugin_event, '用法：/la table 或 /la table update')
+        return
+
     song_data = function.load_song_data()
     table_data = function.load_table_data()
     if not song_data:
@@ -885,9 +900,11 @@ help_categories = {
         'commands': [
             '/la table - 按定数从高到低显示所有谱面',
             '/la 定数表 - 同上',
+            '/la table update - 从 excel_table 文件夹导入 Excel 定数表并覆盖 song_table.json（骰主/插件管理员）',
         ],
         'examples': [
             '/la table',
+            '/la table update',
         ],
     },
     'color': {
@@ -915,6 +932,7 @@ help_categories = {
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
             '/la global status/on/off - 查看或修改全局开关',
             '/la update - 通过 Fandom/MediaWiki API 更新曲库',
+            '/la table update - 从 Excel 定数表更新 song_table.json',
         ],
         'priority': [
             '1. /la on 和 /la off 需要群主、群管、骰主或本插件管理员',
@@ -925,6 +943,7 @@ help_categories = {
             '/la off',
             '/la on',
             '/la update',
+            '/la table update',
         ],
     },
 }
@@ -1083,7 +1102,7 @@ command_handler_dict = {
     'notes': lambda event, arg: handle_notes(event),
     'rating': lambda event, arg: handle_rating(event),
     'category': handle_category,
-    'table': lambda event, arg: handle_table(event),
+    'table': handle_table,
     'ritmo': lambda event, arg: handle_ritmo(event),
     'color': handle_color,
     'confirm': lambda event, arg: handle_confirm_or_deny(event, True),

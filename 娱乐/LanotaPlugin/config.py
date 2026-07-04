@@ -16,6 +16,8 @@ user_data_file_name = 'UserData.json'
 song_list_file_name = 'song_list.json'
 song_alias_file_name = 'song_alias.json'
 song_table_file_name = 'song_table.json'
+excel_table_folder_name = 'excel_table'
+excel_table_extension_list = ['.xlsx', '.xlsm']
 font_file_name = 'fonts.ttf'
 
 allowed_prefix_list = ['.', '。', '/', '／']

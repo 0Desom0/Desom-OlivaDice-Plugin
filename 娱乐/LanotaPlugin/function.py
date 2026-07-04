@@ -78,6 +78,65 @@ def load_table_data() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def convert_excel_table_to_json(excel_path: str | Path, sheet_name: str = 'Sheet1') -> dict[str, dict[str, str]]:
+    """按原 jiaoben/table.py 规则把 Excel 定数表转换为 song_table 数据。"""
+    try:
+        from openpyxl import load_workbook
+    except Exception as exception_object:
+        raise RuntimeError('缺少依赖 openpyxl，请先安装 openpyxl 后再导入 Excel 定数表。') from exception_object
+
+    workbook = load_workbook(excel_path, data_only=True)
+    real_sheet_name = sheet_name if sheet_name in workbook.sheetnames else workbook.sheetnames[0]
+    sheet = workbook[real_sheet_name]
+    result = {}
+
+    for row in sheet.iter_rows(values_only=True):
+        if not row or not row[0]:
+            continue
+        key = str(row[0]).strip()
+        data = {}
+        for index in range(2, len(row), 2):
+            if index + 1 < len(row) and row[index] and row[index + 1]:
+                data[str(row[index]).strip()] = str(row[index + 1]).strip()
+        if data:
+            result[key] = data
+
+    try:
+        workbook.close()
+    except Exception:
+        pass
+    return result
+
+
+def import_excel_table_to_song_table() -> tuple[bool, str]:
+    table_file_list = utils.get_excel_table_file_list()
+    table_dir = utils.get_excel_table_dir()
+    if not table_file_list:
+        return False, f'未找到 Excel 定数表，请将唯一的 .xlsx/.xlsm 文件放入：{table_dir}'
+    if len(table_file_list) > 1:
+        file_name_list = [Path(item).name for item in table_file_list]
+        return False, 'excel_table 文件夹内只能保留一个文件，请清理后重试：\n' + '\n'.join(file_name_list)
+
+    excel_path = Path(table_file_list[0])
+    if excel_path.suffix.lower() not in config.excel_table_extension_list:
+        return False, f'不支持的文件类型：{excel_path.name}\n请仅保留一个 .xlsx 或 .xlsm 文件。'
+
+    table_data = convert_excel_table_to_json(excel_path)
+    if not table_data:
+        return False, f'未从 {excel_path.name} 解析到有效定数数据，请检查表格格式。'
+    if not utils.save_json_file(utils.get_song_table_path(), table_data):
+        return False, '写入 song_table.json 失败，请检查插件数据目录权限。'
+
+    chart_count = sum(len(item) for item in table_data.values() if isinstance(item, dict))
+    return True, (
+        'Excel 定数表转换完成。\n'
+        f'来源文件：{excel_path.name}\n'
+        f'乐曲条目：{len(table_data)}\n'
+        f'谱面定数：{chart_count}\n'
+        f'已覆盖：{utils.get_song_table_path()}'
+    )
+
+
 def load_user_data(bot_hash: Any = None) -> dict[str, Any]:
     data = utils.read_json_file(utils.ensure_user_data_file(bot_hash), {})
     return data if isinstance(data, dict) else {}

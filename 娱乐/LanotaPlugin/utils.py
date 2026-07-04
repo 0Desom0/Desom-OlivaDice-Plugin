@@ -239,6 +239,49 @@ def get_song_table_path() -> str:
     return os.path.join(get_song_data_dir(), config.song_table_file_name)
 
 
+def get_excel_table_dir() -> str:
+    return ensure_folder(os.path.join(config.plugin_data_dir, config.excel_table_folder_name))
+
+
+def get_seed_excel_table_dir() -> Path:
+    return config.asset_data_dir / config.excel_table_folder_name
+
+
+def get_excel_table_file_list() -> list[str]:
+    """列出运行期 excel_table 内的普通文件，忽略 Excel 临时锁文件。"""
+    table_dir = Path(get_excel_table_dir())
+    result = []
+    try:
+        for item in table_dir.iterdir():
+            if item.is_file() and not item.name.startswith('~$'):
+                result.append(str(item))
+    except Exception:
+        return []
+    return sorted(result)
+
+
+def copy_seed_excel_table_if_empty() -> None:
+    """首次运行时把随插件携带的 Excel 定数表复制到运行期目录。"""
+    try:
+        target_dir = Path(get_excel_table_dir())
+        if get_excel_table_file_list():
+            return
+        seed_dir = get_seed_excel_table_dir()
+        if not seed_dir.exists():
+            return
+        seed_files = [
+            item
+            for item in sorted(seed_dir.iterdir())
+            if item.is_file()
+            and not item.name.startswith('~$')
+            and item.suffix.lower() in config.excel_table_extension_list
+        ]
+        if seed_files:
+            shutil.copy2(seed_files[0], target_dir / seed_files[0].name)
+    except Exception:
+        return
+
+
 def get_generate_image_dir() -> str:
     return ensure_folder(os.path.join(config.plugin_data_dir, 'generate_image'))
 
@@ -267,12 +310,14 @@ def initialize_plugin(Proc=None) -> None:
         ensure_folder(config.plugin_data_dir)
         ensure_folder(get_storage_dir())
         ensure_folder(get_song_data_dir())
+        ensure_folder(get_excel_table_dir())
         ensure_folder(get_generate_image_dir())
         save_global_config(load_global_config())
 
         copy_seed_file(config.asset_data_dir / 'SongList' / config.song_list_file_name, get_song_list_path(), [])
         copy_seed_file(config.asset_data_dir / 'SongList' / config.song_alias_file_name, get_song_alias_path(), {})
         copy_seed_file(config.asset_data_dir / 'SongList' / config.song_table_file_name, get_song_table_path(), {})
+        copy_seed_excel_table_if_empty()
         copy_seed_file(config.asset_data_dir / config.font_file_name, get_font_path(), {})
         if not os.path.exists(get_user_data_path()):
             save_json_file(get_user_data_path(), {})

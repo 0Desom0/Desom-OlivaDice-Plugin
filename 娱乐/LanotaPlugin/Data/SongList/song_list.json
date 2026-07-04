@@ -20485,7 +20485,7 @@
       "whisper": "3",
       "acoustic": "7",
       "ultra": "12",
-      "master": "13"
+      "master": "13+"
     },
     "time": "2:32",
     "bpm": "110",
@@ -20505,7 +20505,7 @@
     "Legacy": {},
     "Trivia": [
       "This song's title in Japanese is \"雨模様\".",
-      "This song also appears in Paradigm: Reboot as part of its collaboration with DEEMO II.",
+      "This song also appears in Cytus Ⅱ and Paradigm: Reboot as part of its collaboration with DEEMO II.",
       "[https://wikiwiki.jp/lanotagame/AMEMOYOU Japanese wiki]"
     ]
   },
@@ -22061,9 +22061,9 @@
     "chart_design": "Adashi",
     "cover_art": "しなしなしなもん",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
+      "whisper": "507",
+      "acoustic": "650",
+      "ultra": "836",
       "master": "1144"
     },
     "source_url": "https://lanota.fandom.com/wiki/KN0Q",
@@ -22096,9 +22096,9 @@
     "chart_design": "Tri∆ngle379",
     "cover_art": "おむたつ, あらめ, 駿川/Hayakawa & あげは",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
+      "whisper": "615",
+      "acoustic": "877",
+      "ultra": "1084",
       "master": "1404"
     },
     "source_url": "https://lanota.fandom.com/wiki/Happyfulencer!",
@@ -22133,9 +22133,9 @@
     "chart_design": "",
     "cover_art": "小奈きなこ & yoshimo",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
+      "whisper": "442",
+      "acoustic": "699",
+      "ultra": "1075",
       "master": "1194"
     },
     "source_url": "https://lanota.fandom.com/wiki/Clotho_and_the_stargazer",
@@ -22169,9 +22169,9 @@
     "chart_design": "",
     "cover_art": "iyouka",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
+      "whisper": "871",
+      "acoustic": "1068",
+      "ultra": "1516",
       "master": "2257"
     },
     "source_url": "https://lanota.fandom.com/wiki/Haiboku_no_Altra_Vita",
@@ -22179,6 +22179,7 @@
       "This song's title in Japanese is \"敗北のAltra Vita\".",
       "This song was made for osu! Locus 2025. ([https://osu.ppy.sh/beatmapsets/2412331#osu/5238830 Beatmap])",
       "This song is available on takehirotei's [https://takehirotei.bandcamp.com/album/altra-vita Bandcamp].",
+      "This song is also featured in Estella.",
       "[https://wikiwiki.jp/lanotagame/Haiboku%20no%20Altra%20Vita Japanese wiki]"
     ],
     "Legacy": {}
@@ -22205,9 +22206,9 @@
     "chart_design": "TearsD",
     "cover_art": "",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
+      "whisper": "350",
+      "acoustic": "661",
+      "ultra": "991",
       "master": "1345"
     },
     "source_url": "https://lanota.fandom.com/wiki/MAX_OUT",
@@ -22239,9 +22240,9 @@
     "chart_design": "",
     "cover_art": "MM, Trina Lydia",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
+      "whisper": "771",
+      "acoustic": "1141",
+      "ultra": "1421",
       "master": "1685"
     },
     "source_url": "https://lanota.fandom.com/wiki/The_Cosmic_Letter_-Interstellar_Re:UNION-",
@@ -22275,7 +22276,7 @@
     "chart_design": "HeavenEGHD",
     "cover_art": "",
     "notes": {
-      "whisper": "",
+      "whisper": "825",
       "acoustic": "1174",
       "ultra": "1573",
       "master": "2808"
@@ -22283,6 +22284,7 @@
     "source_url": "https://lanota.fandom.com/wiki/GHOST_VS._GHOUL_MASHUP",
     "Trivia": [
       "This song is a mashup of Camellia's songs \"GHOST\" and \"GHOUL\".",
+      "As of version 3.2.6, this song's Master chart has the 2nd highest Max Combo of any chart in Lanota, behind only Villain Virus's Master chart.",
       "[https://wikiwiki.jp/lanotagame/GHOST%20VS.%20GHOUL%20MASHUP Japanese wiki]"
     ],
     "Legacy": {}
@@ -22309,13 +22311,17 @@
     "chart_design": "TearsD",
     "cover_art": "電鬼 & TOHRU MiTSUHASHi",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
+      "whisper": "352",
+      "acoustic": "585",
+      "ultra": "964",
       "master": "1369"
     },
     "source_url": "https://lanota.fandom.com/wiki/Embracing_intelligences",
-    "Legacy": {}
+    "Legacy": {},
+    "Trivia": [
+      "This song is included on Camellia's album \"[https://cametek.jp/heartofandroid/ heart of android]\".",
+      "[https://wikiwiki.jp/lanotagame/Embracing%20intelligences Japanese wiki]"
+    ]
   },
   {
     "id": 699,
@@ -22339,7 +22345,7 @@
     "chart_design": "",
     "cover_art": "Ciro & Wsx (Julie)",
     "notes": {
-      "whisper": "",
+      "whisper": "1066",
       "acoustic": "1555",
       "ultra": "1811",
       "master": "2541"
@@ -22376,10 +22382,10 @@
     "chart_design": "",
     "cover_art": "真墨 + BORSCH+",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
-      "master": ""
+      "whisper": "448",
+      "acoustic": "603",
+      "ultra": "768",
+      "master": "942"
     },
     "source_url": "https://lanota.fandom.com/wiki/Hare_Nochi_Castanet",
     "Trivia": [
@@ -22413,9 +22419,9 @@
     "chart_design": "",
     "cover_art": "石王マサト",
     "notes": {
-      "whisper": "",
-      "acoustic": "",
-      "ultra": "",
+      "whisper": "286",
+      "acoustic": "554",
+      "ultra": "952",
       "master": "1502"
     },
     "source_url": "https://lanota.fandom.com/wiki/UNMEIRON",
@@ -22444,7 +22450,7 @@
     "bpm": "190",
     "version": "3.2.6 - May 28, 2026",
     "area": "Ritmo's Library",
-    "genre": "",
+    "genre": "Pop",
     "vocals": "Hatsune Miku",
     "chart_design": "小夜",
     "cover_art": "西条",
@@ -22461,6 +22467,41 @@
       "This song can be found on irucaice's album \"[https://onprism-rec.com/icequarium6/ iceQuarium -Heaven-]\".",
       "Like Happyfulencer! (also by irucaice), Hatsune Miku provides the vocals for this song despite not being credited.",
       "[https://wikiwiki.jp/lanotagame/Yumetsumugi%20no%20Wanderer Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 703,
+    "title": "Piano...or is it?",
+    "title_outside": "Piano...or is it?",
+    "artist": "Trina Lydia",
+    "chapter": "Inf-372",
+    "category": "subscription",
+    "difficulty": {
+      "whisper": "4",
+      "acoustic": "7",
+      "ultra": "12",
+      "master": "14"
+    },
+    "time": "3:08",
+    "bpm": "145",
+    "version": "3.2.2 - March 26, 2026",
+    "area": "Ritmo's Library",
+    "genre": "Piano...?",
+    "vocals": "None",
+    "chart_design": "",
+    "cover_art": "Choko, Trina Lydia",
+    "notes": {
+      "whisper": "557",
+      "acoustic": "800",
+      "ultra": "1126",
+      "master": "1434"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Piano...or_is_it%3F",
+    "Trivia": [
+      "This song was an entry to [https://manbow.nothing.sh/event/event.cgi?action=More_def&num=228&event=149 BOF21], where it placed 60th.",
+      "This song was made entirely with piano samples, including the percussion and bass.",
+      "[https://wikiwiki.jp/lanotagame/Piano...or%20is%20it%3F Japanese wiki]"
     ],
     "Legacy": {}
   }
