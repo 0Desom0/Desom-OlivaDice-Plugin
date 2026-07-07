@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -27,6 +28,7 @@ DATA_ROOT = os.path.join('data', PLUGIN_NAMESPACE)
 
 DEFAULT_CONFIG = {
     'global_enable': True,
+    'default_group_enable': False,
     'single_forward_enable': False,
     'multi_forward_enable': True,
     'configured_master_list': [],
@@ -98,6 +100,31 @@ def handle_message(plugin_event, is_group: bool) -> None:
         return
 
 
+def bili_log(message_text: str, level: int = 2) -> None:
+    try:
+        if gProc is None:
+            return
+        gProc.log(level, f'[{PLUGIN_NAMESPACE}] {message_text}', [])
+    except Exception:
+        try:
+            if gProc is not None:
+                gProc.log(level, f'[{PLUGIN_NAMESPACE}] {message_text}')
+        except Exception:
+            return
+
+
+def parse_log(message_text: str) -> None:
+    return
+
+
+def log_resolved_video_refs(video_ref_list: list[dict[str, str]]) -> None:
+    for video_ref in video_ref_list:
+        if video_ref.get('bvid'):
+            bili_log(f'解析出BV号: {video_ref["bvid"]}', 2)
+        elif video_ref.get('aid'):
+            bili_log(f'解析出av号: av{video_ref["aid"]}', 2)
+
+
 def handle_command(plugin_event, message: str, is_group: bool) -> bool:
     command_info = parse_bili_command(message)
     if command_info is None:
@@ -126,6 +153,21 @@ def handle_command(plugin_event, message: str, is_group: bool) -> bool:
 
         set_global_enable(plugin_event, command_action == 'on')
         plugin_event.reply(f'B站解析全局开关已{"开启" if command_action == "on" else "关闭"}。')
+        plugin_event.set_block()
+        return True
+
+    if command_scope == 'default_group':
+        if command_action not in ['on', 'off']:
+            plugin_event.reply('用法：.bili default on/off')
+            plugin_event.set_block()
+            return True
+        if not has_global_switch_permission(plugin_event):
+            plugin_event.reply('权限不足：只有骰主可以切换本群默认开关。')
+            plugin_event.set_block()
+            return True
+
+        set_default_group_enable(plugin_event, command_action == 'on')
+        plugin_event.reply(f'本群B站解析默认状态已设为{"开启" if command_action == "on" else "关闭"}。')
         plugin_event.set_block()
         return True
 
@@ -183,6 +225,12 @@ def parse_bili_command(message: str) -> dict[str, str] | None:
             return {'scope': 'group', 'action': compact_tail}
         if compact_tail in ['globalon', 'globaloff']:
             return {'scope': 'global', 'action': compact_tail.removeprefix('global')}
+        if compact_tail in ['defaulton', 'defaultoff']:
+            return {'scope': 'default_group', 'action': compact_tail.removeprefix('default')}
+        if compact_tail in ['groupdefaulton', 'groupdefaultoff']:
+            return {'scope': 'default_group', 'action': compact_tail.removeprefix('groupdefault')}
+        if compact_tail in ['defaultgroupon', 'defaultgroupoff']:
+            return {'scope': 'default_group', 'action': compact_tail.removeprefix('defaultgroup')}
         if compact_tail in ['singleforwardon', 'singleforwardoff']:
             return {'scope': 'single_forward', 'action': compact_tail.removeprefix('singleforward')}
         if compact_tail in ['singlemergeon', 'singlemergeoff']:
@@ -216,10 +264,11 @@ def build_help_message(plugin_event, is_group: bool) -> str:
             'B站解析帮助',
             '本群开关：.bili on/off（群主、管理员、骰主）',
             '全局开关：.bili global on/off（仅骰主）',
+            '本群默认开关：.bili default on/off（仅骰主）',
             '单链接合并转发：.bili singleforward on/off（仅骰主）',
             '多链接合并转发：.bili multiforward on/off（仅骰主）',
             '帮助：.bili help',
-            '本群开关默认关闭，需要手动开启。',
+            '未单独设置的群会使用本群默认开关。',
             '开启后会自动解析群内的B站小程序/链接分享并回复视频信息。',
         ]
     )
@@ -240,6 +289,13 @@ def set_global_enable(plugin_event, enable: bool) -> None:
     bot_hash = get_config_bot_hash_from_event(plugin_event)
     bot_config = load_bot_config(bot_hash)
     bot_config['global_enable'] = bool(enable)
+    save_bot_config(bot_hash, bot_config)
+
+
+def set_default_group_enable(plugin_event, enable: bool) -> None:
+    bot_hash = get_config_bot_hash_from_event(plugin_event)
+    bot_config = load_bot_config(bot_hash)
+    bot_config['default_group_enable'] = bool(enable)
     save_bot_config(bot_hash, bot_config)
 
 
@@ -275,7 +331,12 @@ def is_group_enabled(plugin_event) -> bool:
     if not group_key:
         return False
     group_config = load_group_config(bot_hash)
-    return bool(group_config.get('groups', {}).get(group_key, False))
+    return bool(
+        group_config.get('groups', {}).get(
+            group_key,
+            bot_config.get('default_group_enable', False),
+        )
+    )
 
 
 def get_group_key(plugin_event) -> str:
@@ -288,8 +349,12 @@ def get_group_key(plugin_event) -> str:
 
 
 def load_bot_config(bot_hash: Any) -> dict[str, Any]:
-    config_data = read_json_file(get_bot_config_file(bot_hash), DEFAULT_CONFIG)
-    return normalize_config_data(config_data)
+    config_file = get_bot_config_file(bot_hash)
+    config_data = read_json_file(config_file, DEFAULT_CONFIG)
+    normalized_config = normalize_config_data(config_data)
+    if config_data != normalized_config or not os.path.exists(config_file):
+        write_json_file(config_file, normalized_config)
+    return normalized_config
 
 
 def save_bot_config(bot_hash: Any, config_data: dict[str, Any]) -> bool:
@@ -336,6 +401,7 @@ def normalize_config_data(config_data: Any) -> dict[str, Any]:
     if not isinstance(config_data, dict):
         return normalized_config
     normalized_config['global_enable'] = bool(config_data.get('global_enable', True))
+    normalized_config['default_group_enable'] = bool(config_data.get('default_group_enable', False))
     normalized_config['single_forward_enable'] = bool(config_data.get('single_forward_enable', False))
     normalized_config['multi_forward_enable'] = bool(config_data.get('multi_forward_enable', True))
     normalized_config['configured_master_list'] = normalize_id_list(
@@ -531,31 +597,63 @@ def is_probable_bili_card(card_data: dict[str, Any]) -> bool:
 def extract_video_refs_from_message(message: str) -> list[dict[str, str]]:
     video_ref_list = []
     seen_key_set = set()
+    url_ref_cache = {}
+    has_escaped_slash = '\\/' in message
 
-    for video_ref in extract_video_refs_from_text(message):
+    text_video_ref_list = extract_video_refs_from_text(message)
+    if text_video_ref_list:
+        parse_log(f'原始文本BV/av={format_video_ref_list(text_video_ref_list)}')
+    for video_ref in text_video_ref_list:
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
-    for url in extract_urls(message):
-        video_ref = resolve_video_ref_from_url(url)
+    message_url_list = extract_urls(message)
+    if message_url_list:
+        parse_log(
+            f'原始消息URL count={len(message_url_list)} escaped_slash={has_escaped_slash} '
+            f'urls={format_log_list(message_url_list, 5)}'
+        )
+    for url in message_url_list:
+        video_ref = resolve_video_ref_from_url_cached(url, url_ref_cache)
+        parse_log(f'原始消息URL解析 url={shorten_log_text(url, 180)} ref={format_video_ref(video_ref)}')
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
     card_data = extract_json_card(message)
-    if not card_data or not is_probable_bili_card(card_data):
+    if not card_data:
+        if message_url_list or text_video_ref_list:
+            parse_log(f'未解析到JSON卡片，当前refs={format_video_ref_list(video_ref_list)}')
+        log_resolved_video_refs(video_ref_list)
         return video_ref_list
 
-    card_video_ref_list = find_video_refs(card_data)
+    is_bili_card = is_probable_bili_card(card_data)
+    parse_log(
+        f'JSON卡片 probable_bili={is_bili_card} keys={format_log_list(list(card_data.keys()), 12)} '
+        f'title_hint={shorten_log_text(get_title_hint(card_data), 120)}'
+    )
+    if not is_bili_card:
+        log_resolved_video_refs(video_ref_list)
+        return video_ref_list
+
+    card_url_list = extract_urls_from_card(card_data)
+    parse_log(f'卡片URL count={len(card_url_list)} urls={format_log_list(card_url_list, 8)}')
+
+    card_video_ref_list = find_video_refs(card_data, url_ref_cache)
+    parse_log(f'卡片字段解析refs={format_video_ref_list(card_video_ref_list)}')
     for video_ref in card_video_ref_list:
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
     if not card_video_ref_list:
         title_hint = get_title_hint(card_data)
+        parse_log(f'卡片未解析到显式视频引用，进入标题搜索 keyword={shorten_log_text(title_hint, 120)}')
         video_ref = search_video_by_keyword(title_hint)
+        parse_log(f'标题搜索结果 ref={format_video_ref(video_ref)}')
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
+    parse_log(f'最终refs={format_video_ref_list(video_ref_list)}')
+    log_resolved_video_refs(video_ref_list)
     return video_ref_list
 
 
-def find_video_refs(card_data: dict[str, Any]) -> list[dict[str, str]]:
+def find_video_refs(card_data: dict[str, Any], url_ref_cache: dict[str, dict[str, str] | None] | None = None) -> list[dict[str, str]]:
     video_ref_list = []
     seen_key_set = set()
     string_list = collect_strings(card_data)
@@ -566,9 +664,18 @@ def find_video_refs(card_data: dict[str, Any]) -> list[dict[str, str]]:
     for text in string_list:
         url_list = extract_urls(text)
         for url in url_list:
-            video_ref = resolve_video_ref_from_url(url)
+            video_ref = resolve_video_ref_from_url_cached(url, url_ref_cache)
             add_video_ref(video_ref_list, seen_key_set, video_ref)
     return video_ref_list
+
+
+def extract_urls_from_card(card_data: dict[str, Any]) -> list[str]:
+    result = []
+    for text in collect_strings(card_data):
+        for url in extract_urls(text):
+            if url not in result:
+                result.append(url)
+    return result
 
 
 def extract_video_ref_from_text(text: str) -> dict[str, str] | None:
@@ -614,6 +721,35 @@ def get_video_ref_key(video_ref: dict[str, str]) -> str:
     return ''
 
 
+def format_video_ref(video_ref: dict[str, str] | None) -> str:
+    if not video_ref:
+        return 'None'
+    video_key = get_video_ref_key(video_ref)
+    if video_key:
+        return video_key
+    return safe_str(video_ref)
+
+
+def format_video_ref_list(video_ref_list: list[dict[str, str]]) -> str:
+    if not video_ref_list:
+        return '[]'
+    return '[' + ', '.join(format_video_ref(video_ref) for video_ref in video_ref_list) + ']'
+
+
+def format_log_list(value_list: list[Any], limit: int) -> str:
+    shown_list = [shorten_log_text(safe_str(value), 180) for value in value_list[:limit]]
+    if len(value_list) > limit:
+        shown_list.append(f'...(+{len(value_list) - limit})')
+    return '[' + ', '.join(shown_list) + ']'
+
+
+def shorten_log_text(text: Any, limit: int = 300) -> str:
+    value = safe_str(text).replace('\r', '\\r').replace('\n', '\\n')
+    if len(value) <= limit:
+        return value
+    return f'{value[:limit]}...'
+
+
 def extract_urls(text: str) -> list[str]:
     clean_text = html.unescape(safe_str(text)).replace('\\/', '/')
     url_pattern = (
@@ -642,16 +778,102 @@ def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
     if direct_ref:
         return direct_ref
 
+    for request_url in build_resolve_url_candidates(url):
+        try:
+            response_url, response_text = http_get_text(request_url, allow_response_body=True)
+        except urllib.error.HTTPError as exception_object:
+            video_ref = extract_video_ref_from_http_error(exception_object)
+            error_url = get_http_error_url(exception_object)
+            if video_ref:
+                parse_log(
+                    f'HTTP错误响应URL解析成功 url={shorten_log_text(request_url, 180)} '
+                    f'final={shorten_log_text(error_url, 180)} ref={format_video_ref(video_ref)}'
+                )
+                return video_ref
+            parse_log(
+                f'URL请求失败 url={shorten_log_text(request_url, 180)} '
+                f'final={shorten_log_text(error_url, 180)} '
+                f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 160)}'
+            )
+            continue
+        except Exception as exception_object:
+            parse_log(
+                f'URL请求失败 url={shorten_log_text(request_url, 180)} '
+                f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 160)}'
+            )
+            continue
+
+        for text in [response_url, response_text]:
+            video_ref = extract_video_ref_from_text(text)
+            if video_ref:
+                if request_url != url:
+                    parse_log(
+                        f'短链净化后解析成功 original={shorten_log_text(url, 180)} '
+                        f'request={shorten_log_text(request_url, 180)} ref={format_video_ref(video_ref)}'
+                    )
+                return video_ref
+
+        parse_log(
+            f'URL响应未找到BV/av url={shorten_log_text(request_url, 180)} '
+            f'final={shorten_log_text(response_url, 180)} body_len={len(response_text)}'
+        )
+    return None
+
+
+def extract_video_ref_from_http_error(exception_object: urllib.error.HTTPError) -> dict[str, str] | None:
+    error_url = get_http_error_url(exception_object)
+    video_ref = extract_video_ref_from_text(error_url)
+    if video_ref:
+        return video_ref
+
     try:
-        response_url, response_text = http_get_text(url, allow_response_body=True)
+        response_body = exception_object.read(128 * 1024)
+        charset = exception_object.headers.get_content_charset() or 'utf-8'
+        response_text = response_body.decode(charset, errors='ignore')
     except Exception:
         return None
+    return extract_video_ref_from_text(response_text)
 
-    for text in [response_url, response_text]:
-        video_ref = extract_video_ref_from_text(text)
-        if video_ref:
-            return video_ref
-    return None
+
+def get_http_error_url(exception_object: urllib.error.HTTPError) -> str:
+    try:
+        return safe_str(exception_object.geturl())
+    except Exception:
+        return ''
+
+
+def resolve_video_ref_from_url_cached(
+    url: str,
+    url_ref_cache: dict[str, dict[str, str] | None] | None,
+) -> dict[str, str] | None:
+    if url_ref_cache is None:
+        return resolve_video_ref_from_url(url)
+    if url not in url_ref_cache:
+        url_ref_cache[url] = resolve_video_ref_from_url(url)
+    return url_ref_cache[url]
+
+
+def build_resolve_url_candidates(url: str) -> list[str]:
+    url = safe_str(url)
+    result = []
+    parsed_url = urllib.parse.urlsplit(url)
+    host = parsed_url.netloc.lower()
+    if host in ['b23.tv', 'bili2233.cn']:
+        clean_url = urllib.parse.urlunsplit(
+            (
+                parsed_url.scheme or 'https',
+                parsed_url.netloc,
+                parsed_url.path.rstrip('/'),
+                '',
+                '',
+            )
+        )
+        if clean_url:
+            result.append(clean_url)
+
+    if url not in result:
+        result.append(url)
+    return result
 
 
 def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
@@ -667,13 +889,39 @@ def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
         result_list = response_data.get('data', {}).get('result', [])
         if not isinstance(result_list, list):
             return None
-        for item in result_list[:5]:
+        for item in result_list[:10]:
             bvid = safe_str(item.get('bvid', ''))
-            if re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid):
+            title = clean_search_result_title(safe_str(item.get('title', '')))
+            if re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid) and is_search_result_title_match(keyword, title):
                 return {'bvid': bvid}
+            if bvid:
+                parse_log(
+                    f'标题搜索候选不匹配 bvid={bvid} title={shorten_log_text(title, 120)} '
+                    f'keyword={shorten_log_text(keyword, 120)}'
+                )
     except Exception:
         return None
     return None
+
+
+def clean_search_result_title(title: str) -> str:
+    title = re.sub(r'<[^>]+>', '', safe_str(title))
+    return html.unescape(title).strip()
+
+
+def is_search_result_title_match(keyword: str, title: str) -> bool:
+    normalized_keyword = normalize_search_match_text(keyword)
+    normalized_title = normalize_search_match_text(title)
+    if not normalized_keyword or not normalized_title:
+        return False
+    return normalized_keyword in normalized_title or normalized_title in normalized_keyword
+
+
+def normalize_search_match_text(text: str) -> str:
+    text = safe_str(text).lower()
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html.unescape(text)
+    return re.sub(r'[\s\W_]+', '', text, flags=re.UNICODE)
 
 
 def fetch_video_info(video_ref: dict[str, str]) -> dict[str, Any] | None:
@@ -727,6 +975,8 @@ def get_http_headers() -> dict[str, str]:
         ),
         'Accept': 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9',
+        'Accept-Encoding': 'identity',
+        'Referer': 'https://www.bilibili.com/',
     }
 
 
