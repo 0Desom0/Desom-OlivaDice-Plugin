@@ -543,11 +543,11 @@ def extract_video_refs_from_message(message: str) -> list[dict[str, str]]:
     if not card_data or not is_probable_bili_card(card_data):
         return video_ref_list
 
-    card_ref_count_before = len(video_ref_list)
-    for video_ref in find_video_refs(card_data):
+    card_video_ref_list = find_video_refs(card_data)
+    for video_ref in card_video_ref_list:
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
-    if len(video_ref_list) == card_ref_count_before:
+    if not card_video_ref_list:
         title_hint = get_title_hint(card_data)
         video_ref = search_video_by_keyword(title_hint)
         add_video_ref(video_ref_list, seen_key_set, video_ref)
