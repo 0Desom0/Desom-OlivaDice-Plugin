@@ -65,6 +65,7 @@ def build_runtime_value_dict(plugin_event, command_argument: str = '', extra_val
             'global_enable': 'ON' if global_config.get('global_enable_switch', True) else 'OFF',
             'global_debug': 'ON' if global_config.get('global_debug_mode_switch', False) else 'OFF',
             'bot_enable': 'ON' if bot_config.get('bot_enable_switch', True) else 'OFF',
+            'merge_forward': 'ON' if bot_config.get('merge_forward_enabled', True) else 'OFF',
             'configured_masters': ', '.join(configured_master_list) or '无',
             'function_module_note': function.function_module_note,
         },
@@ -85,6 +86,13 @@ def render_custom_message(plugin_event, message_key: str, command_argument: str 
 
 def sender_has_master_permission(plugin_event) -> bool:
     return utils.get_master_permission_info(plugin_event)['sender_is_master']
+
+
+def is_merge_forward_enabled(plugin_event) -> bool:
+    """检查当前 bot 是否启用了合并转发。"""
+    config_bot_hash = utils.get_bot_hash_from_event(plugin_event)
+    bot_config = utils.load_bot_config(config_bot_hash)
+    return bool(bot_config.get('merge_forward_enabled', True))
 
 
 def reply_permission_denied(plugin_event) -> None:
@@ -151,6 +159,20 @@ def handle_iwbot(plugin_event, command_argument: str) -> None:
         utils.save_bot_config(config_bot_hash, bot_config)
         utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_bot_status'))
         return
+    if action_name == 'merge':
+        merge_action, _unused_argument = parse_secondary_action(action_argument)
+        if merge_action == 'on':
+            bot_config['merge_forward_enabled'] = True
+            utils.save_bot_config(config_bot_hash, bot_config)
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_bot_status'))
+            return
+        if merge_action == 'off':
+            bot_config['merge_forward_enabled'] = False
+            utils.save_bot_config(config_bot_hash, bot_config)
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_bot_status'))
+            return
+        utils.reply_message(plugin_event, '用法：.iwbot merge on/off')
+        return
     if action_name == 'master':
         master_action, master_argument = parse_secondary_action(action_argument)
         configured_master_list = utils.get_configured_master_list(config_bot_hash)
@@ -170,7 +192,7 @@ def handle_iwbot(plugin_event, command_argument: str) -> None:
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
             utils.reply_message(plugin_event, f'已更新本插件配置骰主列表：{", ".join(configured_master_list) or "无"}')
             return
-    utils.reply_message(plugin_event, '用法：.iwbot status/on/off 或 .iwbot master list/add/del [用户ID]')
+    utils.reply_message(plugin_event, '用法：.iwbot status/on/off/merge on/merge off 或 .iwbot master list/add/del [用户ID]')
 
 
 def get_int_config(global_config: Dict[str, Any], key: str, default_value: int, min_value: int, max_value: int) -> int:
@@ -319,7 +341,7 @@ def send_detail_messages(plugin_event, detail_text_list: List[str]) -> None:
     normalized_text_list = [utils.safe_str(detail_text).strip() for detail_text in detail_text_list if detail_text]
     if not normalized_text_list:
         return
-    if len(normalized_text_list) > 1 and send_forward_detail_messages(plugin_event, normalized_text_list):
+    if len(normalized_text_list) > 1 and is_merge_forward_enabled(plugin_event) and send_forward_detail_messages(plugin_event, normalized_text_list):
         return
     for index, detail_text in enumerate(normalized_text_list):
         if index > 0:

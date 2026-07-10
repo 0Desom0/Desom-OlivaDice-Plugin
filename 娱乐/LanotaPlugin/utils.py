@@ -167,23 +167,58 @@ def get_bot_config_path(bot_hash: Any) -> str:
 
 
 def load_global_config() -> dict[str, Any]:
-    return merge_dict_with_default(read_json_file(get_global_config_path(), config.default_global_config), config.default_global_config)
+    file_path = get_global_config_path()
+    file_exists = os.path.exists(file_path)
+    file_data = read_json_file(file_path, config.default_global_config)
+    data = merge_dict_with_default(file_data, config.default_global_config)
+    data['configured_master_list'] = normalize_id_list(data.get('configured_master_list', []))
+    if not file_exists or data != file_data:
+        save_json_file(file_path, data)
+    return data
 
 
 def save_global_config(global_config: dict[str, Any]) -> bool:
-    return save_json_file(get_global_config_path(), merge_dict_with_default(global_config, config.default_global_config))
+    data = merge_dict_with_default(global_config, config.default_global_config)
+    data['configured_master_list'] = normalize_id_list(data.get('configured_master_list', []))
+    return save_json_file(get_global_config_path(), data)
+
+
+def migrate_configured_master_list_to_global(master_list: Any) -> None:
+    legacy_master_list = normalize_id_list(master_list)
+    if not legacy_master_list:
+        return
+    global_config = load_global_config()
+    configured_master_list = normalize_id_list(global_config.get('configured_master_list', []))
+    changed = False
+    for master_id in legacy_master_list:
+        if master_id not in configured_master_list:
+            configured_master_list.append(master_id)
+            changed = True
+    if changed:
+        global_config['configured_master_list'] = configured_master_list
+        save_global_config(global_config)
 
 
 def load_bot_config(bot_hash: Any) -> dict[str, Any]:
-    data = merge_dict_with_default(read_json_file(get_bot_config_path(bot_hash), config.default_bot_config), config.default_bot_config)
-    data['configured_master_list'] = normalize_id_list(data.get('configured_master_list', []))
+    file_path = get_bot_config_path(bot_hash)
+    file_exists = os.path.exists(file_path)
+    file_data = read_json_file(file_path, config.default_bot_config)
+    if isinstance(file_data, dict) and 'configured_master_list' in file_data:
+        migrate_configured_master_list_to_global(file_data.get('configured_master_list', []))
+        file_data = dict(file_data)
+        file_data.pop('configured_master_list', None)
+    data = merge_dict_with_default(file_data, config.default_bot_config)
     data['disabled_group_list'] = normalize_id_list(data.get('disabled_group_list', []))
+    if not file_exists or data != file_data:
+        save_json_file(file_path, data)
     return data
 
 
 def save_bot_config(bot_hash: Any, bot_config: dict[str, Any]) -> bool:
     data = merge_dict_with_default(bot_config, config.default_bot_config)
-    data['configured_master_list'] = normalize_id_list(data.get('configured_master_list', []))
+    if 'configured_master_list' in data:
+        migrate_configured_master_list_to_global(data.get('configured_master_list', []))
+        data.pop('configured_master_list', None)
     data['disabled_group_list'] = normalize_id_list(data.get('disabled_group_list', []))
     return save_json_file(get_bot_config_path(bot_hash), data)
 
@@ -303,6 +338,16 @@ def copy_seed_file(seed_path: Path, target_path: str, default_value: Any) -> Non
         save_json_file(target_path, default_value)
 
 
+def ensure_runtime_bot_config_files(Proc=None) -> None:
+    """初始化时为当前进程已知 bot 预生成 bot_config。"""
+    try:
+        bot_info_dict = getattr(Proc, 'Proc_data', {}).get('bot_info_dict', {}) if Proc is not None else {}
+        for bot_hash in bot_info_dict.keys():
+            load_bot_config(bot_hash)
+    except Exception:
+        pass
+
+
 def initialize_plugin(Proc=None) -> None:
     """初始化数据目录并复制种子数据。"""
     global initialized
@@ -313,6 +358,7 @@ def initialize_plugin(Proc=None) -> None:
         ensure_folder(get_excel_table_dir())
         ensure_folder(get_generate_image_dir())
         save_global_config(load_global_config())
+        ensure_runtime_bot_config_files(Proc)
 
         copy_seed_file(config.asset_data_dir / 'SongList' / config.song_list_file_name, get_song_list_path(), [])
         copy_seed_file(config.asset_data_dir / 'SongList' / config.song_alias_file_name, get_song_alias_path(), {})
@@ -357,6 +403,13 @@ def get_group_id_from_event(plugin_event) -> str:
         return safe_str(getattr(plugin_event.data, 'group_id', '') or '')
     except Exception:
         return ''
+
+
+def get_platform_from_event(plugin_event) -> str:
+    try:
+        return safe_str(plugin_event.platform.get('platform', 'unknown'))
+    except Exception:
+        return 'unknown'
 
 
 def get_self_id_from_event(plugin_event) -> str:
@@ -479,14 +532,14 @@ def normalize_id_list(value: Any) -> list[str]:
     return result
 
 
-def get_configured_master_list(bot_hash: Any) -> list[str]:
-    return normalize_id_list(load_bot_config(bot_hash).get('configured_master_list', []))
+def get_configured_master_list(bot_hash: Any = None) -> list[str]:
+    return normalize_id_list(load_global_config().get('configured_master_list', []))
 
 
 def set_configured_master_list(bot_hash: Any, master_list: list[str]) -> bool:
-    bot_config = load_bot_config(bot_hash)
-    bot_config['configured_master_list'] = normalize_id_list(master_list)
-    return save_bot_config(bot_hash, bot_config)
+    global_config = load_global_config()
+    global_config['configured_master_list'] = normalize_id_list(master_list)
+    return save_global_config(global_config)
 
 
 def sender_is_core_master(plugin_event) -> bool:
@@ -505,8 +558,7 @@ def sender_is_core_master(plugin_event) -> bool:
 
 def sender_has_master_permission(plugin_event) -> bool:
     sender_id = get_sender_id_from_event(plugin_event)
-    bot_hash = get_bot_hash_from_event(plugin_event)
-    return sender_is_core_master(plugin_event) or sender_id in get_configured_master_list(bot_hash)
+    return sender_is_core_master(plugin_event) or sender_id in get_configured_master_list()
 
 
 def is_group_owner(plugin_event) -> bool:
@@ -614,3 +666,78 @@ def reply_image(plugin_event, image_path: str, fallback_text: str) -> Any:
         return plugin_event.reply(f'[OP:image,file={op_escape(file_uri)}]')
     except Exception:
         return reply_message(plugin_event, fallback_text)
+
+
+def split_text_by_line(message_text: str, max_chars: int = 1000) -> list[str]:
+    """按行切分长文本，避免纯文本消息过长。"""
+    source = safe_str(message_text).strip()
+    if not source:
+        return []
+
+    chunk_list = []
+    current_lines = []
+    current_length = 0
+    for raw_line in source.splitlines():
+        line = raw_line.rstrip()
+        line_length = len(line) + 1
+        if current_lines and current_length + line_length > max_chars:
+            chunk_list.append('\n'.join(current_lines).strip())
+            current_lines = []
+            current_length = 0
+        if len(line) > max_chars:
+            if current_lines:
+                chunk_list.append('\n'.join(current_lines).strip())
+                current_lines = []
+                current_length = 0
+            for start in range(0, len(line), max_chars):
+                chunk_list.append(line[start : start + max_chars])
+            continue
+        current_lines.append(line)
+        current_length += line_length
+    if current_lines:
+        chunk_list.append('\n'.join(current_lines).strip())
+    return [chunk for chunk in chunk_list if chunk]
+
+
+def create_forward_node(plugin_event, content: str) -> dict[str, Any]:
+    bot_id = safe_str(getattr(getattr(plugin_event, 'bot_info', None), 'id', '')).strip() or '0'
+    return {
+        'type': 'node',
+        'data': {
+            'user_id': bot_id,
+            'nickname': config.plugin_name,
+            'content': safe_str(content),
+        },
+    }
+
+
+def send_forward_messages(plugin_event, message_list: list[str]) -> bool:
+    """QQ 环境优先使用合并转发，接口不可用时返回 False。"""
+    if get_platform_from_event(plugin_event).lower() != 'qq':
+        return False
+
+    forward_messages = [create_forward_node(plugin_event, message_text) for message_text in message_list if message_text]
+    if not forward_messages:
+        return False
+
+    group_id = get_group_id_from_event(plugin_event)
+    try:
+        if group_id and hasattr(plugin_event, 'send_group_forward_msg'):
+            plugin_event.send_group_forward_msg(group_id, forward_messages)
+            return True
+        if hasattr(plugin_event, 'send_private_forward_msg'):
+            plugin_event.send_private_forward_msg(get_sender_id_from_event(plugin_event), forward_messages)
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def reply_long_plain_text(plugin_event, message_text: str, max_chars: int = 1000) -> None:
+    chunk_list = split_text_by_line(message_text, max_chars=max_chars)
+    if not chunk_list:
+        return
+    if len(chunk_list) > 1 and send_forward_messages(plugin_event, chunk_list):
+        return
+    for chunk in chunk_list:
+        reply_message(plugin_event, chunk)

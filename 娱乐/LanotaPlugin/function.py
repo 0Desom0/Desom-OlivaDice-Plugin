@@ -284,6 +284,62 @@ def get_songs_by_level(song_data: list[dict[str, Any]], level: str) -> list[dict
     ]
 
 
+def calculate_search_score(search_term: str, target_str: str) -> int:
+    """
+    使用LCS（最长公共子序列）和编辑距离的组合算法计算搜索分数。
+    分数越低越相似。参考OlivaDiceCore的实现。
+    """
+    search_term = str(search_term).lower().strip()
+    target_str = str(target_str).lower().strip()
+    
+    if not search_term or not target_str:
+        return 10001  # 完全不匹配
+    
+    # 如果在目标字符串中直接找到，降低分数
+    find_flag = 0 if target_str.find(search_term) != -1 else 1
+    
+    # 确保search_term是较短的字符串
+    if len(search_term) > len(target_str):
+        search_term, target_str = target_str, search_term
+    
+    search_len = len(search_term)
+    target_len = len(target_str)
+    
+    # LCS（最长公共子序列）
+    dp_lcs = [[0] * (search_len + 1) for _ in range(target_len + 1)]
+    for i in range(1, target_len + 1):
+        for j in range(1, search_len + 1):
+            if target_str[i - 1] == search_term[j - 1]:
+                dp_lcs[i][j] = dp_lcs[i - 1][j - 1] + 1
+            else:
+                dp_lcs[i][j] = max(dp_lcs[i - 1][j], dp_lcs[i][j - 1])
+    lcs_length = dp_lcs[target_len][search_len]
+    
+    # 编辑距离（Levenshtein Distance）
+    dp_dist = [[0] * (search_len + 1) for _ in range(target_len + 1)]
+    for i in range(search_len + 1):
+        dp_dist[0][i] = i
+    for i in range(target_len + 1):
+        dp_dist[i][0] = i
+    
+    for i in range(1, target_len + 1):
+        for j in range(1, search_len + 1):
+            if target_str[i - 1] == search_term[j - 1]:
+                dp_dist[i][j] = dp_dist[i - 1][j - 1]
+            else:
+                dp_dist[i][j] = min(dp_dist[i - 1][j - 1], dp_dist[i - 1][j], dp_dist[i][j - 1]) + 1
+    edit_dist = dp_dist[target_len][search_len]
+    
+    # 综合计算得分
+    score = find_flag * (target_len * (search_len - lcs_length) + edit_dist + 1)
+    score = int(int((score * score) / search_len) / target_len) if search_len > 0 and target_len > 0 else 10000
+    
+    if score >= search_len * target_len:
+        score += 1000
+    
+    return score
+
+
 def find_song_by_search_term(
     search_term: str,
     song_data: list[dict[str, Any]],
@@ -320,19 +376,38 @@ def find_song_by_search_term(
         match_type = '曲名匹配' if matched_songs else None
 
     if not matched_songs:
-        search_lower = search_text.lower()
-        title_matches = [song for song in song_data if search_lower in str(song.get('title', '')).lower()]
-        alias_matches = []
+        # 改进：使用打分制的模糊搜索，而不是简单的字符串包含
+        scored_songs = []
+        
+        # 为每首歌计算标题和别名的最佳匹配分数
         for song in song_data:
-            for alias in alias_data.get(str(song.get('title')), []):
-                if search_lower in str(alias).lower():
-                    alias_matches.append(song)
-                    break
-        unique = {}
-        for song in title_matches + alias_matches:
-            unique[str(song.get('id'))] = song
-        matched_songs = list(unique.values())
-        match_type = '模糊搜索' if matched_songs else None
+            best_score = 10001
+            search_source = None
+            
+            # 检查标题匹配
+            title = str(song.get('title', '')).strip()
+            if title:
+                title_score = calculate_search_score(search_text, title)
+                if title_score < best_score:
+                    best_score = title_score
+                    search_source = f'曲名({title})'
+            
+            # 检查别名匹配
+            aliases = alias_data.get(str(song.get('title')), [])
+            for alias in aliases:
+                alias_score = calculate_search_score(search_text, str(alias).strip())
+                if alias_score < best_score:
+                    best_score = alias_score
+                    search_source = f'别名({alias})'
+            
+            # 如果分数在可接受范围内（分数越低越好，阈值为1000）
+            if best_score < 1000:
+                scored_songs.append((best_score, song, search_source))
+        
+        # 按分数排序
+        scored_songs.sort(key=lambda x: x[0])
+        matched_songs = [song for _, song, _ in scored_songs]
+        match_type = '打分制模糊搜索' if matched_songs else None
 
     total_count = len(matched_songs)
     return matched_songs[:max_display], match_type, total_count
@@ -342,17 +417,31 @@ def find_artist_by_search_term(search_term: str, song_data: list[dict[str, Any]]
     search_lower = str(search_term).strip().lower()
     if not search_lower:
         return [], None, 0
+    
+    # 构建不重复的曲师列表
     artist_map = {}
     for song in song_data:
         artist = str(song.get('artist', '')).strip()
         if artist:
             artist_map.setdefault(artist.lower(), artist)
     artists = list(artist_map.values())
+    
+    # 尝试精确匹配
     matched = [artist for artist in artists if artist.lower() == search_lower]
     match_type = '曲师精确匹配' if matched else None
+    
+    # 如果精确匹配失败，使用打分制模糊搜索
     if not matched:
-        matched = [artist for artist in artists if search_lower in artist.lower()]
-        match_type = '曲师模糊匹配' if matched else None
+        scored_artists = []
+        for artist in artists:
+            score = calculate_search_score(search_term, artist)
+            if score < 1000:
+                scored_artists.append((score, artist))
+        
+        scored_artists.sort(key=lambda x: x[0])
+        matched = [artist for _, artist in scored_artists]
+        match_type = '曲师打分制模糊匹配' if matched else None
+    
     return matched[:max_display], match_type, len(matched)
 
 
@@ -482,6 +571,43 @@ def wrap_text(text: str, max_chars: int = 20) -> list[str]:
 def cubic_bezier(t: float, p0: float, p1: float, p2: float, p3: float) -> float:
     u = 1 - t
     return u**3 * p0 + 3 * u**2 * t * p1 + 3 * u * t**2 * p2 + t**3 * p3
+
+
+def get_page_items(items: list[Any], page_index: int, page_size: int) -> list[Any]:
+    """获取指定页的项目。"""
+    start_index = page_index * page_size
+    end_index = start_index + page_size
+    return items[start_index:end_index]
+
+
+def format_search_results_with_pagination(results: list[dict[str, Any]], page_index: int, page_size: int) -> tuple[str, int, int]:
+    """格式化搜索结果为可显示的文本，包含序号。
+    
+    返回：(格式化文本, 总页数, 当前页索引)
+    """
+    total_count = len(results)
+    total_pages = max(1, math.ceil(total_count / page_size))
+    page_index = max(0, min(page_index, total_pages - 1))
+    
+    page_results = get_page_items(results, page_index, page_size)
+    start_index = page_index * page_size
+    
+    result_text = f'第 {page_index + 1}/{total_pages} 页：\n'
+    
+    for idx, song in enumerate(page_results):
+        display_index = start_index + idx + 1
+        chapter = song.get('chapter', '?')
+        title = song.get('title', '未知')
+        song_id = song.get('id', '?')
+        
+        result_text += f'{display_index}. {chapter} - {title} (ID: {song_id})\n'
+    
+    result_text = result_text.rstrip('\n')
+    
+    if total_count > page_size:
+        result_text += f'\n\n【输入序号查看详情 | 下一页/上一页/第X页】'
+    
+    return result_text, total_pages, page_index
 
 
 def get_line_size(draw, line: str, font) -> tuple[int, int]:

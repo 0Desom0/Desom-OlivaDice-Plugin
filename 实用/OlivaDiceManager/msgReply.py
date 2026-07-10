@@ -6,9 +6,6 @@
 import OlivOS
 import OlivaDiceManager
 import OlivaDiceCore
-import json
-import requests
-import os
 import re
 
 # 全局变量存储Proc对象
@@ -16,13 +13,10 @@ globalProc = None
 
 def unity_init(plugin_event, Proc):
     # 插件初始化
-    global globalProc
-    globalProc = Proc
+    pass
 
 def data_init(plugin_event, Proc):
     # 数据初始化
-    global globalProc
-    globalProc = Proc
     OlivaDiceManager.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
 
 def unity_reply(plugin_event, Proc):
@@ -249,110 +243,32 @@ def unity_reply(plugin_event, Proc):
             cleaned_message = ''.join(new_tmp_reast_str_parts).strip()
             return is_at, at_user_id, cleaned_message
         
-        # 获取账号配置(用于调用API)
-        def get_account_config():
-            """从Proc对象获取账号配置，根据当前bot的hash匹配对应账号，失败时返回None"""
-            global globalProc
-            if globalProc is None:
-                return None
-            
-            try:
-                # 获取当前bot的hash
-                bot_hash = plugin_event.bot_info.hash
-                
-                # 从Proc中获取bot信息
-                bot_info_dict = globalProc.Proc_data.get('bot_info_dict', {})
-                if bot_hash not in bot_info_dict:
-                    return None
-                
-                bot_info = bot_info_dict[bot_hash]
-                post_info = bot_info.post_info
-                
-                # 检查必要的字段是否存在
-                if post_info.host is None or post_info.port == -1 or post_info.access_token is None:
-                    return None
-                
-                # 构建server_config字典
-                server_config = {
-                    'host': post_info.host,
-                    'port': post_info.port,
-                    'access_token': post_info.access_token
-                }
-                
-                return server_config
-            except Exception as e:
-                print(f"从Proc获取账号配置失败: {e}")
-                return None
-        
-        # 调用API发送群公告
+        # 调用已封装接口发送群公告
         def send_group_notice(group_id, content):
             """发送群公告"""
-            server_config = get_account_config()
-            if not server_config:
-                return False
-            
-            forward_data = {
-                "Host": server_config["host"].replace("http://", "").replace("https://", ""),
-                "Port": server_config["port"],
-                "AccessToken": server_config["access_token"]
-            }
-            
-            api_url = f"http://{forward_data['Host']}:{forward_data['Port']}/_send_group_notice"
-            payload = {
-                "group_id": group_id,
-                "content": content
-            }
-            
-            headers = {
-                "Authorization": f"Bearer {forward_data['AccessToken']}",
-                "Content-Type": "application/json"
-            }
-            
             try:
-                response = requests.post(
-                    api_url,
-                    data=json.dumps(payload),
-                    headers=headers,
-                    timeout=5
+                plugin_event.send_group_notice(
+                    group_id=group_id,
+                    content=content
                 )
-                return response.status_code == 200
-            except Exception:
+                return True
+            except Exception as e:
+                print(f'发送群公告失败: {e}')
                 return False
         
-        # 调用API设置群头衔
+        # 调用已封装接口设置群头衔
         def set_group_special_title(group_id, user_id, special_title):
             """设置群头衔"""
-            server_config = get_account_config()
-            if not server_config:
-                return False
-            
-            forward_data = {
-                "Host": server_config["host"].replace("http://", "").replace("https://", ""),
-                "Port": server_config["port"],
-                "AccessToken": server_config["access_token"]
-            }
-            
-            api_url = f"http://{forward_data['Host']}:{forward_data['Port']}/set_group_special_title"
-            payload = {
-                "group_id": group_id,
-                "user_id": user_id,
-                "special_title": special_title
-            }
-            
-            headers = {
-                "Authorization": f"Bearer {forward_data['AccessToken']}",
-                "Content-Type": "application/json"
-            }
-            
             try:
-                response = requests.post(
-                    api_url,
-                    data=json.dumps(payload),
-                    headers=headers,
-                    timeout=5
+                plugin_event.set_group_special_title(
+                    group_id=group_id,
+                    user_id=user_id,
+                    special_title=special_title,
+                    duration=-1
                 )
-                return response.status_code == 200
-            except Exception:
+                return True
+            except Exception as e:
+                print(f'设置群头衔失败: {e}')
                 return False
         
         '''命令处理开始'''

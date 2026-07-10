@@ -4,8 +4,8 @@
     "namespace" : "BiliShareInfo",
     "info" : "自动解析B站小程序/链接分享并回复视频信息",
     "priority" : 30000,
-    "svn" : 1,
-    "version" : "1.0.0",
+    "svn" : 2,
+    "version" : "1.0.1",
     "compatible_svn" : 190,
     "message_mode" : "olivos_string",
     "support" : [
@@ -19,6 +19,5 @@
             "platform" : "all",
             "model" : "all"
         }
-    ],
-    "menu_config": []
+    ]
 }

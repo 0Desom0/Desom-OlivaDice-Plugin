@@ -4,8 +4,8 @@
     "namespace" : "OlivaDiceMS",
     "message_mode" : "old_string",
     "info" : "母舰TRPG规则插件：人物作成、属性/豁免检定、压力、惊恐表",
-    "version" : "1.0.0",
-    "svn" : 3,
+    "version" : "1.0.1",
+    "svn" : 4,
     "compatible_svn" : 190,
     "priority" : 19990,
     "support" : [

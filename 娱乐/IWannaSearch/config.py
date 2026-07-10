@@ -39,4 +39,5 @@ default_global_config = {
 default_bot_config = {
     'bot_enable_switch': True,
     'configured_master_list': [],
+    'merge_forward_enabled': True,
 }

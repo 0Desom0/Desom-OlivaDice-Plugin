@@ -13,6 +13,87 @@ import random
 import os
 import json
 
+
+_RD_RECORD_CONTEXT = None
+
+
+def _set_rd_record_context(plugin_event, user_id=None, platform=None, skill_value=None):
+    global _RD_RECORD_CONTEXT
+    try:
+        _RD_RECORD_CONTEXT = {
+            'botHash': plugin_event.bot_info.hash,
+            'userId': str(user_id if user_id is not None else plugin_event.data.user_id),
+            'platform': platform if platform is not None else plugin_event.platform['platform'],
+            'skillValue': skill_value,
+        }
+    except Exception:
+        _RD_RECORD_CONTEXT = None
+
+
+def _save_rd_record(rd, user_id=None, platform=None, skill_value=None):
+    try:
+        if rd is None or getattr(rd, 'resError', None) is not None:
+            return
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        OlivaDiceCore.onediceOverride.saveRDDataUser(
+            data=rd,
+            botHash=ctx['botHash'],
+            userId=str(user_id if user_id is not None else ctx['userId']),
+            platform=platform if platform is not None else ctx['platform'],
+            skillValue=skill_value if skill_value is not None else ctx['skillValue'],
+        )
+    except Exception:
+        pass
+
+
+def _save_rd_record_detail(raw, detail, value, user_id=None, platform=None, skill_value=None):
+    try:
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        user_id_real = str(user_id if user_id is not None else ctx['userId'])
+        platform_real = platform if platform is not None else ctx['platform']
+        bot_hash = ctx['botHash']
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecord',
+            userConfigValue=[str(detail)],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordRaw',
+            userConfigValue=str(raw),
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordInt',
+            userConfigValue=value,
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordSkillInt',
+            userConfigValue=skill_value if skill_value is not None else ctx['skillValue'],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.writeUserConfigByUserHash(
+            userHash=OlivaDiceCore.userConfig.getUserHash(userId=user_id_real, userType='user', platform=platform_real)
+        )
+    except Exception:
+        pass
+
 def to_half_width(res):
     """
     将字符串中的全角符号转换为半角符号
@@ -405,6 +486,7 @@ def roll_ta_dice(bonus_dice=0, penalty_dice=0, tmp_template_customDefault=None):
     for i in range(6):
         rd = OlivaDiceCore.onedice.RD('1d4', tmp_template_customDefault)
         rd.roll()
+        _save_rd_record(rd)
         if rd.resError is None:
             original_dice.append(int(rd.resInt))
         else:
@@ -463,6 +545,7 @@ def roll_fr_dice(bonus_dice=0, penalty_dice=0, tmp_template_customDefault=None):
     for _ in range(4):
         rd = OlivaDiceCore.onedice.RD('1d4', tmp_template_customDefault)
         rd.roll()
+        _save_rd_record(rd)
         original_dice.append(int(rd.resInt) if rd.resError is None else 1)
 
     modified_dice = original_dice.copy()
@@ -611,6 +694,7 @@ def roll_d6_bonus(tmp_template_customDefault=None):
     """
     rd_d6 = OlivaDiceCore.onedice.RD('1d6', tmp_template_customDefault)
     rd_d6.roll()
+    _save_rd_record(rd_d6)
     d6_result = rd_d6.resInt
     
     if d6_result == 3:
@@ -630,6 +714,7 @@ def roll_d10_simple(tmp_template_customDefault=None):
     """
     rd_d10 = OlivaDiceCore.onedice.RD('1d10', tmp_template_customDefault)
     rd_d10.roll()
+    _save_rd_record(rd_d10)
     d10_result = rd_d10.resInt
     
     if d10_result == 3:
@@ -656,6 +741,7 @@ def data_init(plugin_event, Proc):
     OlivaDiceTA.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
 
 def unity_reply(plugin_event, Proc):
+    _set_rd_record_context(plugin_event)
     OlivaDiceCore.userConfig.setMsgCount()
     dictTValue = OlivaDiceCore.msgCustom.dictTValue.copy()
     dictTValue['tUserName'] = plugin_event.data.sender['name']
@@ -936,6 +1022,7 @@ def unity_reply(plugin_event, Proc):
                     # 使用RD处理技能表达式
                     rd_skill = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                     rd_skill.roll()
+                    _save_rd_record(rd_skill)
                     if rd_skill.resError is not None:
                         dictTValue['tRollPara'] = cleaned_expr
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_skill.resError, dictStrCustom, dictTValue)
@@ -969,6 +1056,7 @@ def unity_reply(plugin_event, Proc):
                     # 投掷D20
                     rd_d20 = OlivaDiceCore.onedice.RD('1d20', tmp_template_customDefault)
                     rd_d20.roll()
+                    _save_rd_record(rd_d20)
                     d20_result = rd_d20.resInt
                     
                     # 计算总结果
@@ -1057,6 +1145,13 @@ def unity_reply(plugin_event, Proc):
                         dictTValue['tNewChaos'] = str(group_data['chaos'])
                         chaos_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strChaosChange'], dictTValue)
                     dictTValue['tChaosChange'] = chaos_change_info
+                    _save_rd_record_detail(
+                        raw='TRA检定',
+                        detail=f"{dice_expr_display} {dictTValue['tSkillCheckReasult']}{chaos_change_info}\n\n（无视后面的\"=\"和数值）",
+                        value=total_result,
+                        user_id=target_user_id,
+                        platform=plugin_event.platform['platform'],
+                    )
                     
                     # 发送回复
                     if is_at:
@@ -1080,6 +1175,7 @@ def unity_reply(plugin_event, Proc):
                         if skill_expr:
                             tmp_rd = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                             tmp_rd.roll()
+                            _save_rd_record(tmp_rd)
                             this_aptitude_value = tmp_rd.resInt
                             this_skill_roll_detail = tmp_rd.resDetail
                         else:
@@ -1089,6 +1185,7 @@ def unity_reply(plugin_event, Proc):
                         # 投掷D20
                         rd_d20 = OlivaDiceCore.onedice.RD('1d20', tmp_template_customDefault)
                         rd_d20.roll()
+                        _save_rd_record(rd_d20)
                         d20_result = rd_d20.resInt
                         
                         # 计算总结果
@@ -1171,7 +1268,7 @@ def unity_reply(plugin_event, Proc):
                     
                     # 设置多次检定回复变量
                     dictTValue['tRollTimes'] = str(roll_times)
-                    dictTValue['tMultiResults'] = '\n'.join(results)
+                    dictTValue['tMultiResults'] = '\n'.join(results) + '\n\n（无视后面的\"=\"和数值）'
                     dictTValue['tSkillExpr'] = skill_expr_display if skill_expr_display else ""
                     dictTValue['tAptitude'] = str(aptitude_value)
                     
@@ -1184,6 +1281,13 @@ def unity_reply(plugin_event, Proc):
                         dictTValue['tNewChaos'] = str(new_chaos)
                         chaos_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strChaosChange'], dictTValue)
                     dictTValue['tChaosChange'] = chaos_change_info
+                    _save_rd_record_detail(
+                        raw='TRA检定',
+                        detail=dictTValue['tMultiResults'],
+                        value=[line.split(':', 1)[0] for line in results],
+                        user_id=target_user_id,
+                        platform=plugin_event.platform['platform'],
+                    )
                     
                     # 发送回复
                     if is_at:
@@ -1296,6 +1400,7 @@ def unity_reply(plugin_event, Proc):
                     )
                     rd_skill = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                     rd_skill.roll()
+                    _save_rd_record(rd_skill)
                     if rd_skill.resError is not None:
                         skill_value = 0
                         skill_detail = f"{cleaned_expr}(未找到对应资质，按0处理)"
@@ -1358,6 +1463,7 @@ def unity_reply(plugin_event, Proc):
                         if three_after == 2:
                             rd_extra = OlivaDiceCore.onedice.RD('1d4', tmp_template_customDefault)
                             rd_extra.roll()
+                            _save_rd_record(rd_extra)
                             extra_d4 = int(rd_extra.resInt) if rd_extra.resError is None else 1
                             if extra_d4 in [2, 4]:
                                 result_flag = 'success'
@@ -1462,6 +1568,13 @@ def unity_reply(plugin_event, Proc):
                         dictTValue['tNewTrace'] = str(new_trace)
                         trace_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTraceChange'], dictTValue)
                     dictTValue['tTraceChange'] = trace_change_info
+                    _save_rd_record_detail(
+                        raw='FR检定',
+                        detail=f"{dictTValue['tDiceResult']} {dictTValue['tSkillCheckReasult']}{trace_change_info}\n\n（无视后面的\"=\"和数值）",
+                        value=res_one['three_after'],
+                        user_id=target_user_id,
+                        platform=plugin_event.platform['platform'],
+                    )
 
                     if is_at:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResultAtOther'], dictTValue)
@@ -1491,7 +1604,7 @@ def unity_reply(plugin_event, Proc):
                     new_trace = load_group_data(bot_hash, group_hash).get('trace', old_trace)
 
                     dictTValue['tRollTimes'] = str(roll_times)
-                    dictTValue['tMultiResults'] = '\n'.join(results)
+                    dictTValue['tMultiResults'] = '\n'.join(results) + '\n\n（无视后面的\"=\"和数值）'
                     dictTValue['tSkillDetail'] = skill_detail
 
                     trace_change_info = ''
@@ -1501,6 +1614,13 @@ def unity_reply(plugin_event, Proc):
                         dictTValue['tNewTrace'] = str(new_trace)
                         trace_change_info = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTraceChange'], dictTValue)
                     dictTValue['tTraceChange'] = trace_change_info
+                    _save_rd_record_detail(
+                        raw='FR检定',
+                        detail=dictTValue['tMultiResults'],
+                        value=[line.split(':', 1)[0] for line in results],
+                        user_id=target_user_id,
+                        platform=plugin_event.platform['platform'],
+                    )
 
                     if is_at:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResultMultiAtOther'], dictTValue)
@@ -1623,6 +1743,7 @@ def unity_reply(plugin_event, Proc):
                     # 使用RD处理技能表达式
                     rd_skill = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                     rd_skill.roll()
+                    _save_rd_record(rd_skill)
                     if rd_skill.resError is not None:
                         # 找不到技能或表达式错误时，按0处理
                         skill_value = 0
@@ -1786,6 +1907,13 @@ def unity_reply(plugin_event, Proc):
                             dictTValue['tNewFail'] = str(group_data['reality_fail'])
                             chaos_change_info += OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFailChange'], dictTValue)
                         dictTValue['tChaosChange'] = chaos_change_info
+                        _save_rd_record_detail(
+                            raw='TA检定',
+                            detail=f"{dictTValue['tDiceResult']} {dictTValue['tThreeCount']} {dictTValue['tSkillCheckReasult']}{chaos_change_info}",
+                            value=three_count_final,
+                            user_id=target_user_id,
+                            platform=plugin_event.platform['platform'],
+                        )
                         
                         # 发送回复
                         if is_at:
@@ -1976,6 +2104,13 @@ def unity_reply(plugin_event, Proc):
                         dictTValue['tNewFail'] = str(group_data['reality_fail'])
                         chaos_change_info += OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFailChange'], dictTValue)
                     dictTValue['tChaosChange'] = chaos_change_info
+                    _save_rd_record_detail(
+                        raw='TA检定',
+                        detail=f"{dictTValue['tDiceResult']} {dictTValue['tThreeCount']} {dictTValue['tSkillCheckReasult']}{chaos_change_info}\n\n（无视后面的\"=\"和数值）",
+                        value=three_count_final,
+                        user_id=target_user_id,
+                        platform=plugin_event.platform['platform'],
+                    )
                     
                     # 发送回复
                     if is_at:
@@ -2172,7 +2307,7 @@ def unity_reply(plugin_event, Proc):
                     
                     # 设置多次检定回复变量
                     dictTValue['tRollTimes'] = str(roll_times)
-                    dictTValue['tMultiResults'] = '\n'.join(results)
+                    dictTValue['tMultiResults'] = '\n'.join(results) + '\n\n（无视后面的\"=\"和数值）'
                     
                     # 总变化信息（使用自定义模板）
                     chaos_change_info = ""
@@ -2193,6 +2328,13 @@ def unity_reply(plugin_event, Proc):
                             chaos_change_info += OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFailChange'], dictTValue)
                     
                     dictTValue['tChaosChange'] = chaos_change_info
+                    _save_rd_record_detail(
+                        raw='TA检定',
+                        detail=dictTValue['tMultiResults'],
+                        value=[line.split(':', 1)[0] for line in results],
+                        user_id=target_user_id,
+                        platform=plugin_event.platform['platform'],
+                    )
                     
                     # 发送回复
                     if is_at:
@@ -2292,6 +2434,7 @@ def unity_reply(plugin_event, Proc):
                 skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable_local, tmp_pcCardRule_local)
                 rd_val = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault_local)
                 rd_val.roll()
+                _save_rd_record(rd_val)
                 if rd_val.resError is not None:
                     raise ValueError(f"无效的表达式: {expr_str}")
                 value = rd_val.resInt
@@ -2527,6 +2670,7 @@ def unity_reply(plugin_event, Proc):
                                 skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
                                 rd_fail = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                 rd_fail.roll()
+                                _save_rd_record(rd_fail)
                                 if rd_fail.resError is not None:
                                     dictTValue['tResult'] = f"无效的表达式: {tmp_reast_str}"
                                     tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
@@ -2555,6 +2699,7 @@ def unity_reply(plugin_event, Proc):
                                 skill_expr, skill_detail, _ = replace_skills(expr_str, skill_valueTable, tmp_pcCardRule)
                                 rd_fail = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                 rd_fail.roll()
+                                _save_rd_record(rd_fail)
                                 if rd_fail.resError is not None:
                                     dictTValue['tResult'] = f"无效的表达式: {tmp_reast_str}"
                                     tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
@@ -2583,6 +2728,7 @@ def unity_reply(plugin_event, Proc):
                                 skill_expr, skill_detail, _ = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
                                 rd_fail = OlivaDiceCore.onedice.RD(skill_expr, tmp_template_customDefault)
                                 rd_fail.roll()
+                                _save_rd_record(rd_fail)
                                 if rd_fail.resError is not None:
                                     dictTValue['tResult'] = f"无效的表达式: {tmp_reast_str}"
                                     tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)

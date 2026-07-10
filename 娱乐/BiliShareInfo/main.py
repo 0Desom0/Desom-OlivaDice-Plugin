@@ -2,6 +2,7 @@ import html
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import urllib.error
@@ -24,7 +25,8 @@ gProc = None
 gPluginName = 'BiliShareInfo'
 
 PLUGIN_NAMESPACE = 'BiliShareInfo'
-DATA_ROOT = os.path.join('data', PLUGIN_NAMESPACE)
+DATA_ROOT = os.path.join('plugin', 'data', PLUGIN_NAMESPACE)
+LEGACY_DATA_ROOT = os.path.join('data', PLUGIN_NAMESPACE)
 
 DEFAULT_CONFIG = {
     'global_enable': True,
@@ -274,9 +276,39 @@ def build_help_message(plugin_event, is_group: bool) -> str:
     )
 
 
+def _migrate_legacy_data_dir() -> None:
+    """在初始化时一次性迁移旧数据目录到新位置，然后删除旧目录。"""
+    try:
+        with DATA_LOCK:
+            if os.path.isdir(LEGACY_DATA_ROOT):
+                # 创建新目录
+                os.makedirs(DATA_ROOT, exist_ok=True)
+                # 遍历旧目录中的所有文件和子目录，复制到新位置
+                for item in os.listdir(LEGACY_DATA_ROOT):
+                    src = os.path.join(LEGACY_DATA_ROOT, item)
+                    dst = os.path.join(DATA_ROOT, item)
+                    # 如果目标已存在则跳过（保留新目录的内容）
+                    if not os.path.exists(dst):
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst)
+                        else:
+                            shutil.copy2(src, dst)
+                # 删除旧目录
+                shutil.rmtree(LEGACY_DATA_ROOT)
+                bili_log(f'成功迁移数据目录从 {LEGACY_DATA_ROOT} 到 {DATA_ROOT}', 2)
+    except Exception as e:
+        try:
+            bili_log(f'迁移数据目录失败: {e}', 3)
+        except Exception:
+            pass
+
+
 def load_config() -> None:
     try:
-        os.makedirs(DATA_ROOT, exist_ok=True)
+        with DATA_LOCK:
+            os.makedirs(DATA_ROOT, exist_ok=True)
+        # 执行一次性的旧目录迁移
+        _migrate_legacy_data_dir()
     except Exception:
         pass
 
@@ -352,7 +384,7 @@ def load_bot_config(bot_hash: Any) -> dict[str, Any]:
     config_file = get_bot_config_file(bot_hash)
     config_data = read_json_file(config_file, DEFAULT_CONFIG)
     normalized_config = normalize_config_data(config_data)
-    if config_data != normalized_config or not os.path.exists(config_file):
+    if config_data != normalized_config:
         write_json_file(config_file, normalized_config)
     return normalized_config
 
@@ -362,8 +394,12 @@ def save_bot_config(bot_hash: Any, config_data: dict[str, Any]) -> bool:
 
 
 def load_group_config(bot_hash: Any) -> dict[str, Any]:
-    group_data = read_json_file(get_group_config_file(bot_hash), DEFAULT_GROUP_CONFIG)
-    return normalize_group_data(group_data)
+    group_file = get_group_config_file(bot_hash)
+    group_data = read_json_file(group_file, DEFAULT_GROUP_CONFIG)
+    normalized_group_data = normalize_group_data(group_data)
+    if group_data != normalized_group_data:
+        write_json_file(group_file, normalized_group_data)
+    return normalized_group_data
 
 
 def save_group_config(bot_hash: Any, group_data: dict[str, Any]) -> bool:

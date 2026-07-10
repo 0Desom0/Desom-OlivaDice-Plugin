@@ -116,6 +116,7 @@ def normalize_game_item(item: Dict[str, Any]) -> Dict[str, Any]:
         'creator': safe_text(item.get('creator', default_empty_text), default_empty_text),
         'url': safe_text(item.get('url', default_empty_text), default_empty_text),
         'tags': [safe_text(tag) for tag in tags if safe_text(tag)],
+        'engine': item.get('engine'),
         'rating': item.get('rating'),
         'difficulty': item.get('difficulty'),
         'rating_count': item.get('rating_count'),
@@ -153,6 +154,12 @@ def format_file_size(value: Any) -> str:
         return default_empty_text
 
 
+def format_engine_value(value: Any) -> str:
+    if value_is_empty(value):
+        return '未知'
+    return safe_text(value, '未知')
+
+
 def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict[str, str]:
     tag_text = ', '.join(game_item.get('tags', [])) or default_empty_text
     return {
@@ -164,6 +171,7 @@ def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict
         'difficulty': format_score_value(game_item.get('difficulty')),
         'rating_count': format_rating_count(game_item.get('rating_count')),
         'tags': tag_text,
+        'engine': format_engine_value(game_item.get('engine')),
         'url': safe_text(game_item.get('url', default_empty_text), default_empty_text),
         'file_size': format_file_size(game_item.get('file_size')),
     }

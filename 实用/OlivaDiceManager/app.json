@@ -4,8 +4,8 @@
     "namespace" : "OlivaDiceManager",
     "message_mode" : "old_string",
     "info" : "提供群管理功能，包括设置群名、管理员、禁言、踢人、点赞、群名片、群头衔、群公告等功能。具体通过[.help 群管]查看",
-    "version" : "1.0.2",
-    "svn" : 2,
+    "version" : "1.0.3",
+    "svn" : 3,
     "compatible_svn" : 190,
     "priority" : 19990,
     "support" : [

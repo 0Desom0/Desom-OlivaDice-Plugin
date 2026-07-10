@@ -24,6 +24,10 @@ allowed_prefix_list = ['.', '。', '/', '／']
 image_cache_limit = 40
 image_max_chars = 100
 
+# 搜索结果分页配置
+result_page_size = 10  # 每页显示的结果数
+selection_timeout_seconds = 3600  # 选择会话超时时间（秒）
+
 api_base_url = 'https://lanota.fandom.com'
 api_url = f'{api_base_url}/api.php'
 api_timeout_seconds = 15
@@ -31,7 +35,7 @@ api_timeout_seconds = 15
 default_global_config = {
     'global_enable_switch': True,
     'global_debug_mode_switch': False,
-    'send_as_image': True,
+    'configured_master_list': [],
     'alias_groups': [
         '1037559220',
         '767569571',
@@ -40,6 +44,7 @@ default_global_config = {
 
 default_bot_config = {
     'bot_enable_switch': True,
-    'configured_master_list': [],
+    'send_as_image': True,
+    'plain_text_mode': False,
     'disabled_group_list': [],
 }

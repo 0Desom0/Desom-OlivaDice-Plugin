@@ -21,6 +21,9 @@ default_custom_message_dict = {
 .iw today
 获取今日 I Wanna。每个用户每天固定一次，会缓存当天结果。
 
+.iwbot merge on/off
+开启或关闭多个 rand 结果的合并转发（仅骰主/配置主人可用）。
+
 .iw help
 查看本帮助。''',
     'reply_help_hint': '可使用 {prefix}iw help 查看 I Wanna 查询帮助。',
@@ -35,6 +38,7 @@ default_custom_message_dict = {
 · 评分：{rating}    难度：{difficulty}
 · 评分人数：{rating_count}
 · 标签：{tags}
+· 游戏引擎：{engine}
 · 下载链接：{url}
 · 文件大小：{file_size}''',
     'reply_multiple_header': '查询到了{count}个 I Wanna',
@@ -57,7 +61,7 @@ default_custom_message_dict = {
     'reply_last_page': '当前是末尾页。',
     'reply_permission_denied': '权限不足：只有 OlivaDiceCore 骰主或本插件配置骰主可以执行该操作。',
     'reply_global_status': '全局启用：{global_enable}，调试模式：{global_debug}。',
-    'reply_bot_status': '当前 Bot：{bot_id}，Bot 开关：{bot_enable}。',
+    'reply_bot_status': '当前 Bot：{bot_id}，Bot 开关：{bot_enable}，合并转发：{merge_forward}。',
 }
 
 
@@ -75,7 +79,7 @@ custom_message_note_dict = {
     'reply_api_error': '【查询失败】API 或网络异常时回复。可用变量：{error}',
     'reply_search_result_prefix': '【search/id 结果前缀】用于搜索或 ID 查询命中单个游戏时的前缀。',
     'reply_random_result_prefix': '【random/rand 结果前缀】用于随机游戏详情前缀。',
-    'reply_game_metadata': '【游戏元数据】可用变量：{id} {title} {creator} {rating} {difficulty} {rating_count} {tags} {url} {file_size}',
+    'reply_game_metadata': '【游戏元数据】可用变量：{id} {title} {creator} {rating} {difficulty} {rating_count} {tags} {engine} {url} {file_size}',
     'reply_multiple_header': '【多个结果头部】可用变量：{count}',
     'reply_multiple_item': '【多个结果列表项】可用变量：{index} {id} {title} {creator} {tags} {url}',
     'reply_multiple_footer': '【多个结果页脚】结果不超过一页时的输入提示。',
@@ -96,7 +100,7 @@ custom_message_note_dict = {
     'reply_last_page': '【下一页到头】已经位于末尾页时回复。',
     'reply_permission_denied': '【权限不足】管理命令权限不足时回复。',
     'reply_global_status': '【全局状态】可用变量：{global_enable} {global_debug}',
-    'reply_bot_status': '【Bot 状态】可用变量：{bot_id} {bot_enable}',
+    'reply_bot_status': '【Bot 状态】可用变量：{bot_id} {bot_enable} {merge_forward}',
 }
 
 

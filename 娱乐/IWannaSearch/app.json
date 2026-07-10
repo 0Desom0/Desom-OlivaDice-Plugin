@@ -4,8 +4,8 @@
     "namespace" : "IWannaSearch",
     "message_mode" : "olivos_string",
     "info" : "I Wanna fangame archive 查询插件",
-    "version" : "1.0.0",
-    "svn" : 1,
+    "version" : "1.0.1",
+    "svn" : 2,
     "compatible_svn" : 190,
     "priority" : 30000,
     "support" : [

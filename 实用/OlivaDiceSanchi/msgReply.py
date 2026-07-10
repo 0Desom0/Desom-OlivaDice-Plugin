@@ -30,6 +30,87 @@ import re
 import random
 
 
+
+_RD_RECORD_CONTEXT = None
+
+
+def _set_rd_record_context(plugin_event, user_id=None, platform=None, skill_value=None):
+    global _RD_RECORD_CONTEXT
+    try:
+        _RD_RECORD_CONTEXT = {
+            'botHash': plugin_event.bot_info.hash,
+            'userId': str(user_id if user_id is not None else plugin_event.data.user_id),
+            'platform': platform if platform is not None else plugin_event.platform['platform'],
+            'skillValue': skill_value,
+        }
+    except Exception:
+        _RD_RECORD_CONTEXT = None
+
+
+def _save_rd_record(rd, user_id=None, platform=None, skill_value=None):
+    try:
+        if rd is None or getattr(rd, 'resError', None) is not None:
+            return
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        OlivaDiceCore.onediceOverride.saveRDDataUser(
+            data=rd,
+            botHash=ctx['botHash'],
+            userId=str(user_id if user_id is not None else ctx['userId']),
+            platform=platform if platform is not None else ctx['platform'],
+            skillValue=skill_value if skill_value is not None else ctx['skillValue'],
+        )
+    except Exception:
+        pass
+
+
+def _save_rd_record_detail(raw, detail, value, user_id=None, platform=None, skill_value=None):
+    try:
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        user_id_real = str(user_id if user_id is not None else ctx['userId'])
+        platform_real = platform if platform is not None else ctx['platform']
+        bot_hash = ctx['botHash']
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecord',
+            userConfigValue=[str(detail)],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordRaw',
+            userConfigValue=str(raw),
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordInt',
+            userConfigValue=value,
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordSkillInt',
+            userConfigValue=skill_value if skill_value is not None else ctx['skillValue'],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.writeUserConfigByUserHash(
+            userHash=OlivaDiceCore.userConfig.getUserHash(userId=user_id_real, userType='user', platform=platform_real)
+        )
+    except Exception:
+        pass
+
 def parse_at_user(plugin_event, tmp_reast_str, valDict, flag_is_from_group_admin, need_check_permission = True):
     """
     解析消息中的@用户并检查权限
@@ -287,6 +368,7 @@ def roll_three_coins_with_bp(b_count, p_count, u_count=0, d_count=0):
     # 投掷铜钱
     rd = OlivaDiceCore.onedice.RD(f'{actual_coins}d2')
     rd.roll()
+    _save_rd_record(rd)
     if rd.resError is not None:
         return None, 0, [], 0
     
@@ -339,6 +421,7 @@ def roll_divination_coins():
     for i in range(3):
         rd = OlivaDiceCore.onedice.RD('1D2')
         rd.roll()
+        _save_rd_record(rd)
         if rd.resError is not None:
             raise Exception("投掷铜钱失败")
 
@@ -432,6 +515,7 @@ def data_init(plugin_event, Proc):
     OlivaDiceSanchi.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
 
 def unity_reply(plugin_event, Proc):
+    _set_rd_record_context(plugin_event)
     OlivaDiceCore.userConfig.setMsgCount()
     dictTValue = OlivaDiceCore.msgCustom.dictTValue.copy()
     dictTValue['tUserName'] = plugin_event.data.sender['name']
@@ -666,6 +750,7 @@ def unity_reply(plugin_event, Proc):
                     my_processed_expr, my_expr_show = replace_skills(my_part_cleaned, my_skill_valueTable, tmp_pcCardRule)
                     rd_my = OlivaDiceCore.onedice.RD(my_processed_expr)
                     rd_my.roll()
+                    _save_rd_record(rd_my)
                     if rd_my.resError is None:
                         my_value = int(rd_my.resInt)
                         # 构建详细显示过程
@@ -696,6 +781,7 @@ def unity_reply(plugin_event, Proc):
                     other_processed_expr, other_expr_show = replace_skills(other_part_cleaned, other_skill_valueTable, tmp_pcCardRule)
                     rd_other = OlivaDiceCore.onedice.RD(other_processed_expr)
                     rd_other.roll()
+                    _save_rd_record(rd_other)
                     if rd_other.resError is None:
                         other_value = int(rd_other.resInt)
                         # 构建详细显示过程
@@ -755,6 +841,21 @@ def unity_reply(plugin_event, Proc):
             dictTValue['tOtherTransformText'] = f"（优势{other_b_count}/劣势{other_p_count}转换）" if (other_b_count > 0 or other_p_count > 0) else ""
             
             dictTValue['tContestResult'] = result_desc
+
+            _save_rd_record_detail(
+                raw='三尺之下对抗',
+                detail=OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAVResult'], dictTValue).strip() + '\n\n（无视后面的"="和数值）',
+                value=[my_total, other_total],
+                user_id=my_pc_id,
+                platform=tmp_pc_platform,
+            )
+            _save_rd_record_detail(
+                raw='三尺之下对抗',
+                detail=OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAVResult'], dictTValue).strip() + '\n\n（无视后面的"="和数值）',
+                value=[my_total, other_total],
+                user_id=other_pc_id,
+                platform=tmp_pc_platform,
+            )
             
             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAVResult'], dictTValue)
             replyMsg(plugin_event, tmp_reply_str)
@@ -827,6 +928,7 @@ def unity_reply(plugin_event, Proc):
                     attr_processed_expr, attr_expr_show = replace_skills(attr_part, skill_valueTable, tmp_pcCardRule)
                     rd_attr = OlivaDiceCore.onedice.RD(attr_processed_expr)
                     rd_attr.roll()
+                    _save_rd_record(rd_attr)
                     if rd_attr.resError is None:
                         attr_value = int(rd_attr.resInt)
                         # 构建详细显示过程
@@ -859,6 +961,7 @@ def unity_reply(plugin_event, Proc):
                     difficulty_processed_expr, difficulty_expr_show = replace_skills(difficulty_part, skill_valueTable, tmp_pcCardRule)
                     rd_difficulty = OlivaDiceCore.onedice.RD(difficulty_processed_expr)
                     rd_difficulty.roll()
+                    _save_rd_record(rd_difficulty)
                     if rd_difficulty.resError is None:
                         difficulty_value = int(rd_difficulty.resInt)
                         # 构建详细显示过程
@@ -940,6 +1043,14 @@ def unity_reply(plugin_event, Proc):
             dictTValue['tTransformText'] = transform_text
             dictTValue['tExtraDifficultyText'] = extra_difficulty_text
             dictTValue['tSuccessText'] = success_text
+
+            _save_rd_record_detail(
+                raw='三尺之下检定',
+                detail=OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAResult'], dictTValue).strip() + '\n\n（无视后面的"="和数值）',
+                value=yang_count,
+                user_id=tmp_pc_id,
+                platform=tmp_pc_platform,
+            )
             
             # 根据是否暗骰和代骰选择回复方式
             if is_at:
@@ -971,6 +1082,7 @@ def unity_reply(plugin_event, Proc):
             for i in range(6):
                 rd = OlivaDiceCore.onedice.RD('1d2')
                 rd.roll()
+                _save_rd_record(rd)
                 if rd.resError is not None:
                     dictTValue['tError'] = '投掷铜钱失败'
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(
@@ -1011,6 +1123,7 @@ def unity_reply(plugin_event, Proc):
                     # 波动属性，需要投掷铜钱
                     rd = OlivaDiceCore.onedice.RD('1d2')
                     rd.roll()
+                    _save_rd_record(rd)
                     if rd.resError is not None:
                         dictTValue['tError'] = '五行属性检定失败'
                         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(
@@ -1130,6 +1243,7 @@ def unity_reply(plugin_event, Proc):
                 # 4. 三官官职 - d3决定
                 rd_official = OlivaDiceCore.onedice.RD('1D3')
                 rd_official.roll()
+                _save_rd_record(rd_official)
                 if rd_official.resError is not None:
                     raise Exception("投掷官职失败")
 
@@ -1147,6 +1261,7 @@ def unity_reply(plugin_event, Proc):
                 for i in range(3):
                     rd = OlivaDiceCore.onedice.RD('1d2')
                     rd.roll()
+                    _save_rd_record(rd)
                     if rd.resError is not None:
                         raise Exception("投掷铜钱失败")
                     coin_result = rd.resMetaTuple[0]
@@ -1297,6 +1412,7 @@ def unity_reply(plugin_event, Proc):
                                 processed_expr, expr_show = replace_skills(back_part, skill_valueTable, tmp_pcCardRule)
                                 rd = OlivaDiceCore.onedice.RD(processed_expr)
                                 rd.roll()
+                                _save_rd_record(rd)
                                 if rd.resError is None:
                                     tq_number = max(1, min(100, int(rd.resInt)))
                                     # 构建详细显示过程
@@ -1338,6 +1454,7 @@ def unity_reply(plugin_event, Proc):
                                 processed_expr, expr_show = replace_skills(tmp_reast_str, skill_valueTable, tmp_pcCardRule)
                                 rd = OlivaDiceCore.onedice.RD(processed_expr)
                                 rd.roll()
+                                _save_rd_record(rd)
                                 if rd.resError is None:
                                     tq_number = max(1, min(100, int(rd.resInt)))
                                     # 构建详细显示过程
@@ -1399,6 +1516,7 @@ def unity_reply(plugin_event, Proc):
                 yang_count = 0
                 rd = OlivaDiceCore.onedice.RD(f'{tq_number}d2')
                 rd.roll()
+                _save_rd_record(rd)
                 if rd.resError is not None:
                     dictTValue['tRollPara'] = f'{tq_number}d2'
                     error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd.resError, dictStrCustom, dictTValue) if hasattr(OlivaDiceCore.msgReplyModel, 'get_SkillCheckError') else str(rd.resError)
@@ -1460,6 +1578,13 @@ def unity_reply(plugin_event, Proc):
                     dictTValue['tTransformText'] = f'（{"/".join(transform_info)}转换）'
                 else:
                     dictTValue['tTransformText'] = ''
+                _save_rd_record_detail(
+                    raw='三尺之下铜钱',
+                    detail=OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQResult'], dictTValue).strip() + '\n\n（无视后面的"="和数值）',
+                    value=[final_yin_count, final_yang_count],
+                    user_id=tmp_pc_id,
+                    platform=tmp_pc_platform,
+                )
                 # 根据是否暗骰和代骰选择回复方式
                 if is_at:
                     if flag_hide and flag_is_from_group:
@@ -1508,6 +1633,7 @@ def unity_reply(plugin_event, Proc):
                     yang_count = 0
                     rd = OlivaDiceCore.onedice.RD(f'{tq_number}d2')
                     rd.roll()
+                    _save_rd_record(rd)
                     if rd.resError is not None:
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd.resError, dictStrCustom, dictTValue) if hasattr(OlivaDiceCore.msgReplyModel, 'get_SkillCheckError') else str(rd.resError)
                         result_list.append(f'第{i+1}次：铜钱卦出错 - {error_msg}')
@@ -1572,6 +1698,13 @@ def unity_reply(plugin_event, Proc):
                     dictTValue['tBPText'] = f'（每次{"/".join(bp_info)}转换）'
                 else:
                     dictTValue['tBPText'] = ''
+                _save_rd_record_detail(
+                    raw='三尺之下铜钱',
+                    detail=OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQResultMore'], dictTValue).strip() + '\n\n（无视后面的"="和数值）',
+                    value=[all_yin_count, all_yang_count],
+                    user_id=tmp_pc_id,
+                    platform=tmp_pc_platform,
+                )
                 # 根据是否暗骰和代骰选择回复方式
                 if is_at:
                     if flag_hide and flag_is_from_group:

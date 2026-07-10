@@ -24,6 +24,87 @@ import copy
 SHOUHUN_DEFAULT_CHALLENGE = 10
 SHOUHUN_ONEDICE_EXPR_CHARS = set('0123456789dD+-*/().^kKhHlL')
 
+
+_RD_RECORD_CONTEXT = None
+
+
+def _set_rd_record_context(plugin_event, user_id=None, platform=None, skill_value=None):
+    global _RD_RECORD_CONTEXT
+    try:
+        _RD_RECORD_CONTEXT = {
+            'botHash': plugin_event.bot_info.hash,
+            'userId': str(user_id if user_id is not None else plugin_event.data.user_id),
+            'platform': platform if platform is not None else plugin_event.platform['platform'],
+            'skillValue': skill_value,
+        }
+    except Exception:
+        _RD_RECORD_CONTEXT = None
+
+
+def _save_rd_record(rd, user_id=None, platform=None, skill_value=None):
+    try:
+        if rd is None or getattr(rd, 'resError', None) is not None:
+            return
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        OlivaDiceCore.onediceOverride.saveRDDataUser(
+            data=rd,
+            botHash=ctx['botHash'],
+            userId=str(user_id if user_id is not None else ctx['userId']),
+            platform=platform if platform is not None else ctx['platform'],
+            skillValue=skill_value if skill_value is not None else ctx['skillValue'],
+        )
+    except Exception:
+        pass
+
+
+def _save_rd_record_detail(raw, detail, value, user_id=None, platform=None, skill_value=None):
+    try:
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        user_id_real = str(user_id if user_id is not None else ctx['userId'])
+        platform_real = platform if platform is not None else ctx['platform']
+        bot_hash = ctx['botHash']
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecord',
+            userConfigValue=[str(detail)],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordRaw',
+            userConfigValue=str(raw),
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordInt',
+            userConfigValue=value,
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordSkillInt',
+            userConfigValue=skill_value if skill_value is not None else ctx['skillValue'],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.writeUserConfigByUserHash(
+            userHash=OlivaDiceCore.userConfig.getUserHash(userId=user_id_real, userType='user', platform=platform_real)
+        )
+    except Exception:
+        pass
+
 def parse_sh_parameters(expr_str, isMatchWordStart, getMatchWordStartRight, skipSpaceStart, parse_m_h=True):
     """
     解析 sh 命令中的参数 b/p、m、x、h、s、kh/kl、a
@@ -359,6 +440,7 @@ def data_init(plugin_event, Proc):
     OlivaDiceShouHun.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
 
 def unity_reply(plugin_event, Proc):
+    _set_rd_record_context(plugin_event)
     OlivaDiceCore.userConfig.setMsgCount()
     dictTValue = OlivaDiceCore.msgCustom.dictTValue.copy()
     dictTValue['tUserName'] = plugin_event.data.sender['name']
@@ -807,6 +889,7 @@ def unity_reply(plugin_event, Proc):
                 for i in range(s_count):
                     rd_single = OlivaDiceCore.onedice.RD('1D20', tmp_template_customDefault)
                     rd_single.roll()
+                    _save_rd_record(rd_single)
                     if rd_single.resError != None:
                         dictTValue['tRollPara'] = '1D20'
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_single.resError, dictStrCustom, dictTValue)
@@ -864,6 +947,7 @@ def unity_reply(plugin_event, Proc):
                         # 随机掷骰
                         rd_d20_single = OlivaDiceCore.onedice.RD('1D20', tmp_template_customDefault)
                         rd_d20_single.roll()
+                        _save_rd_record(rd_d20_single)
                         if rd_d20_single.resError != None:
                             dictTValue['tRollPara'] = front_expr_str
                             error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_d20_single.resError, dictStrCustom, dictTValue)
@@ -889,6 +973,7 @@ def unity_reply(plugin_event, Proc):
                 # 单个d20的情况
                 rd_d20 = OlivaDiceCore.onedice.RD(dice_20, tmp_template_customDefault)
                 rd_d20.roll()
+                _save_rd_record(rd_d20)
                 if rd_d20.resError != None:
                     dictTValue['tRollPara'] = front_expr_str
                     error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_d20.resError, dictStrCustom, dictTValue)
@@ -926,6 +1011,7 @@ def unity_reply(plugin_event, Proc):
                     combined_expr, front_detail = replace_skills(combined_expr.replace('=', '').replace(' ', ''), skill_valueTable, tmp_pcCardRule)
                     rd_combined = OlivaDiceCore.onedice.RD(combined_expr, tmp_template_customDefault)
                     rd_combined.roll()
+                    _save_rd_record(rd_combined)
                     if rd_combined.resError != None:
                         dictTValue['tRollPara'] = front_expr_str
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_combined.resError, dictStrCustom, dictTValue)
@@ -946,6 +1032,7 @@ def unity_reply(plugin_event, Proc):
                     front_expr, front_detail = replace_skills(front_expr.replace('=', '').replace(' ', ''), skill_valueTable, tmp_pcCardRule)
                     rd_front = OlivaDiceCore.onedice.RD(front_expr, tmp_template_customDefault)
                     rd_front.roll()
+                    _save_rd_record(rd_front)
                     if rd_front.resError != None:
                         dictTValue['tRollPara'] = front_expr_str
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_front.resError, dictStrCustom, dictTValue)
@@ -1018,6 +1105,7 @@ def unity_reply(plugin_event, Proc):
                 shm_add_expr_display, shm_add_detail = replace_skills(shm_add_expr_str.replace('=', '').replace(' ', ''), skill_valueTable, tmp_pcCardRule)
                 rd_shm = OlivaDiceCore.onedice.RD(shm_add_expr, tmp_template_customDefault)
                 rd_shm.roll()
+                _save_rd_record(rd_shm)
                 if rd_shm.resError != None:
                     dictTValue['tRollPara'] = shm_add_expr_str
                     error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_shm.resError, dictStrCustom, dictTValue)
@@ -1046,6 +1134,7 @@ def unity_reply(plugin_event, Proc):
                 back_expr = '0' if is_back_x else default_back_part
             rd_back = OlivaDiceCore.onedice.RD(back_expr, tmp_template_customDefault)
             rd_back.roll()
+            _save_rd_record(rd_back)
             
             if rd_back.resError != None:
                 dictTValue['tRollPara'] = back_expr_str
@@ -1290,6 +1379,15 @@ def unity_reply(plugin_event, Proc):
                 )
             else:
                 dictTValue['tShmAdd'] = ''
+
+            record_detail = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShResult'], dictTValue).strip() + '\n\n（无视后面的"="和数值）'
+            _save_rd_record_detail(
+                raw='狩魂者检定',
+                detail=record_detail,
+                value=[front_result, back_result, success_level],
+                user_id=tmp_pc_id,
+                platform=tmp_pc_platform,
+            )
             
             # 根据是否暗骰选择回复方式
             if is_at:

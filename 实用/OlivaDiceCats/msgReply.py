@@ -11,6 +11,84 @@ import copy
 import re
 import random
 
+_RD_RECORD_CONTEXT = None
+
+def _set_rd_record_context(plugin_event, user_id=None, platform=None, skill_value=None):
+    global _RD_RECORD_CONTEXT
+    try:
+        _RD_RECORD_CONTEXT = {
+            'botHash': plugin_event.bot_info.hash,
+            'userId': str(user_id if user_id is not None else plugin_event.data.user_id),
+            'platform': platform if platform is not None else plugin_event.platform['platform'],
+            'skillValue': skill_value,
+        }
+    except Exception:
+        _RD_RECORD_CONTEXT = None
+
+def _save_rd_record(rd, user_id=None, platform=None, skill_value=None):
+    try:
+        if rd is None or getattr(rd, 'resError', None) is not None:
+            return
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        OlivaDiceCore.onediceOverride.saveRDDataUser(
+            data=rd,
+            botHash=ctx['botHash'],
+            userId=str(user_id if user_id is not None else ctx['userId']),
+            platform=platform if platform is not None else ctx['platform'],
+            skillValue=skill_value if skill_value is not None else ctx['skillValue'],
+        )
+    except Exception:
+        pass
+
+
+def _save_rd_record_detail(raw, detail, value, user_id=None, platform=None, skill_value=None):
+    try:
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        user_id_real = str(user_id if user_id is not None else ctx['userId'])
+        platform_real = platform if platform is not None else ctx['platform']
+        bot_hash = ctx['botHash']
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecord',
+            userConfigValue=[str(detail)],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordRaw',
+            userConfigValue=str(raw),
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordInt',
+            userConfigValue=value,
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordSkillInt',
+            userConfigValue=skill_value if skill_value is not None else ctx['skillValue'],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.writeUserConfigByUserHash(
+            userHash=OlivaDiceCore.userConfig.getUserHash(userId=user_id_real, userType='user', platform=platform_real)
+        )
+    except Exception:
+        pass
+
 def to_half_width(res):
     """
     将字符串中的全角符号转换为半角符号
@@ -381,6 +459,7 @@ def roll_luck_dice(luck_count, tmp_template_customDefault=None):
     for i in range(luck_count):
         rd = OlivaDiceCore.onedice.RD('1d10', tmp_template_customDefault)
         rd.roll()
+        _save_rd_record(rd)
         if rd.resError is None:
             original_result = int(rd.resInt)  # 保存原始结果
             result = original_result  # 用于选择的结果（保持原始值）
@@ -392,6 +471,7 @@ def roll_luck_dice(luck_count, tmp_template_customDefault=None):
                 # 重投检查大成功
                 rd_reroll = OlivaDiceCore.onedice.RD('1d10', tmp_template_customDefault)
                 rd_reroll.roll()
+                _save_rd_record(rd_reroll)
                 if rd_reroll.resError is None:
                     reroll_result = int(rd_reroll.resInt)
                     detail_parts.append(f"重投{reroll_result}")
@@ -409,6 +489,7 @@ def roll_luck_dice(luck_count, tmp_template_customDefault=None):
                 # 重投检查大失败
                 rd_reroll = OlivaDiceCore.onedice.RD('1d10', tmp_template_customDefault)
                 rd_reroll.roll()
+                _save_rd_record(rd_reroll)
                 if rd_reroll.resError is None:
                     reroll_result = int(rd_reroll.resInt)
                     detail_parts.append(f"重投{reroll_result}")
@@ -483,6 +564,7 @@ def data_init(plugin_event, Proc):
     OlivaDiceCats.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
 
 def unity_reply(plugin_event, Proc):
+    _set_rd_record_context(plugin_event)
     OlivaDiceCore.userConfig.setMsgCount()
     dictTValue = OlivaDiceCore.msgCustom.dictTValue.copy()
     dictTValue['tUserName'] = plugin_event.data.sender['name']
@@ -790,6 +872,7 @@ def unity_reply(plugin_event, Proc):
                     # 使用RD处理前式表达式
                     rd_front = OlivaDiceCore.onedice.RD(front_expr, tmp_template_customDefault)
                     rd_front.roll()
+                    _save_rd_record(rd_front)
                     if rd_front.resError is not None:
                         dictTValue['tRollPara'] = front_cleaned
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_front.resError, dictStrCustom, dictTValue)
@@ -821,6 +904,7 @@ def unity_reply(plugin_event, Proc):
                     # 使用RD处理后式表达式
                     rd_back = OlivaDiceCore.onedice.RD(back_expr, tmp_template_customDefault)
                     rd_back.roll()
+                    _save_rd_record(rd_back)
                     if rd_back.resError is not None:
                         dictTValue['tRollPara'] = back_cleaned
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_back.resError, dictStrCustom, dictTValue)
@@ -1019,6 +1103,12 @@ def unity_reply(plugin_event, Proc):
                     # 正常检定或手动选择后的结果，使用完整模板
                     dictTValue['tSuccessLevel'] = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCatsSuccessLevel'], dictTValue)
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCatsaResult'], dictTValue)
+
+                _save_rd_record_detail(
+                    raw='喵影奇谋自动检定',
+                    detail=tmp_reply_str.strip() + '\n\n（无视后面的"="和数值）',
+                    value=0,
+                )
                 
                 replyMsg(plugin_event, tmp_reply_str)
                 
@@ -1182,6 +1272,7 @@ def unity_reply(plugin_event, Proc):
                     # 使用RD处理前式表达式
                     rd_front = OlivaDiceCore.onedice.RD(front_expr, tmp_template_customDefault)
                     rd_front.roll()
+                    _save_rd_record(rd_front)
                     if rd_front.resError is not None:
                         dictTValue['tRollPara'] = front_cleaned
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_front.resError, dictStrCustom, dictTValue)
@@ -1213,6 +1304,7 @@ def unity_reply(plugin_event, Proc):
                     # 使用RD处理后式表达式
                     rd_back = OlivaDiceCore.onedice.RD(back_expr, tmp_template_customDefault)
                     rd_back.roll()
+                    _save_rd_record(rd_back)
                     if rd_back.resError is not None:
                         dictTValue['tRollPara'] = back_cleaned
                         error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd_back.resError, dictStrCustom, dictTValue)
@@ -1429,6 +1521,12 @@ def unity_reply(plugin_event, Proc):
                     # 正常检定或手动选择后的结果，使用完整模板
                     dictTValue['tSuccessLevel'] = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCatsSuccessLevel'], dictTValue)
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCatsResult'], dictTValue)
+
+                _save_rd_record_detail(
+                    raw='喵影奇谋检定',
+                    detail=tmp_reply_str.strip() + '\n\n（无视后面的"="和数值）',
+                    value=0,
+                )
                 
                 replyMsg(plugin_event, tmp_reply_str)
                 

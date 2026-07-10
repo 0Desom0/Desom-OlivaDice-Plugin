@@ -12,6 +12,87 @@ import re
 import os
 import json
 
+
+_RD_RECORD_CONTEXT = None
+
+
+def _set_rd_record_context(plugin_event, user_id=None, platform=None, skill_value=None):
+    global _RD_RECORD_CONTEXT
+    try:
+        _RD_RECORD_CONTEXT = {
+            'botHash': plugin_event.bot_info.hash,
+            'userId': str(user_id if user_id is not None else plugin_event.data.user_id),
+            'platform': platform if platform is not None else plugin_event.platform['platform'],
+            'skillValue': skill_value,
+        }
+    except Exception:
+        _RD_RECORD_CONTEXT = None
+
+
+def _save_rd_record(rd, user_id=None, platform=None, skill_value=None):
+    try:
+        if rd is None or getattr(rd, 'resError', None) is not None:
+            return
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        OlivaDiceCore.onediceOverride.saveRDDataUser(
+            data=rd,
+            botHash=ctx['botHash'],
+            userId=str(user_id if user_id is not None else ctx['userId']),
+            platform=platform if platform is not None else ctx['platform'],
+            skillValue=skill_value if skill_value is not None else ctx['skillValue'],
+        )
+    except Exception:
+        pass
+
+
+def _save_rd_record_detail(raw, detail, value, user_id=None, platform=None, skill_value=None):
+    try:
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        user_id_real = str(user_id if user_id is not None else ctx['userId'])
+        platform_real = platform if platform is not None else ctx['platform']
+        bot_hash = ctx['botHash']
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecord',
+            userConfigValue=[str(detail)],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordRaw',
+            userConfigValue=str(raw),
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordInt',
+            userConfigValue=value,
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordSkillInt',
+            userConfigValue=skill_value if skill_value is not None else ctx['skillValue'],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.writeUserConfigByUserHash(
+            userHash=OlivaDiceCore.userConfig.getUserHash(userId=user_id_real, userType='user', platform=platform_real)
+        )
+    except Exception:
+        pass
+
 def unity_init(plugin_event, Proc):
     # 这里是插件初始化，通常用于加载配置等
     pass
@@ -21,6 +102,7 @@ def data_init(plugin_event, Proc):
     OlivaDiceDH.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
 
 def unity_reply(plugin_event, Proc):
+    _set_rd_record_context(plugin_event)
     OlivaDiceCore.userConfig.setMsgCount()
     dictTValue = OlivaDiceCore.msgCustom.dictTValue.copy()
     dictTValue['tUserName'] = plugin_event.data.sender['name']
@@ -460,12 +542,14 @@ def processDDCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom,
         
         hope_rd = OlivaDiceCore.onedice.RD(f'1d{hope_dice_faces}')
         hope_rd.roll()
+        _save_rd_record(hope_rd)
         if hope_rd.resError is not None:
             dictTValue['tResult'] = f'希望骰投掷失败: {hope_rd.resError}'
             return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strDDError'], dictTValue)
         
         fear_rd = OlivaDiceCore.onedice.RD(f'1d{fear_dice_faces}')
         fear_rd.roll()
+        _save_rd_record(fear_rd)
         if fear_rd.resError is not None:
             dictTValue['tResult'] = f'恐惧骰投掷失败: {fear_rd.resError}'
             return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strDDError'], dictTValue)
@@ -523,6 +607,7 @@ def processDDCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom,
             for _ in range(net_advantage):
                 rd = OlivaDiceCore.onedice.RD('1d6')
                 rd.roll()
+                _save_rd_record(rd)
                 if rd.resError is None:
                     dice_rolls.append(rd.resInt)
             if dice_rolls:
@@ -534,6 +619,7 @@ def processDDCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom,
             for _ in range(-net_advantage):
                 rd = OlivaDiceCore.onedice.RD('1d6')
                 rd.roll()
+                _save_rd_record(rd)
                 if rd.resError is None:
                     dice_rolls.append(rd.resInt)
             if dice_rolls:
@@ -810,12 +896,22 @@ def processDDCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom,
             dictTValue['tHelperInfo'] = ''.join(helper_messages)
         else:
             dictTValue['tHelperInfo'] = ''
+
+        if is_reaction:
+            tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strDDRResult'], dictTValue)
+        else:
+            tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strDDResult'], dictTValue)
+
+        _save_rd_record_detail(
+            raw='二元骰',
+            detail=tmp_reply_str.strip() + '\n\n（无视后面的"="和数值）',
+            value=[hope_roll, fear_roll],
+            user_id=None,
+            platform=None,
+        )
         
         # 返回结果
-        if is_reaction:
-            return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strDDRResult'], dictTValue)
-        else:
-            return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strDDResult'], dictTValue)
+        return tmp_reply_str
     
     except Exception as e:
         dictTValue['tResult'] = str(e)
@@ -1032,6 +1128,7 @@ def parseModifier(mod_str, tmp_pc_id, tmp_hagID, result):
             
             rd = OlivaDiceCore.onedice.RD(f'{num}d{faces}')
             rd.roll()
+            _save_rd_record(rd)
             if rd.resError is None:
                 roll_result = rd.resInt
                 value = roll_result * sign
@@ -1397,6 +1494,7 @@ def processCookCommand(plugin_event, Proc, command_str, dictTValue, dictStrCusto
             for dice in unpaired:
                 rd = OlivaDiceCore.onedice.RD(f"1d{dice['faces']}")
                 rd.roll()
+                _save_rd_record(rd)
                 dice['value'] = rd.resInt
             
             # 配对
@@ -1549,6 +1647,7 @@ def processCookCommand(plugin_event, Proc, command_str, dictTValue, dictStrCusto
                 for _ in range(num):
                     rd = OlivaDiceCore.onedice.RD(f'1d{faces}')
                     rd.roll()
+                    _save_rd_record(rd)
                     all_dice.append({
                         'faces': faces,
                         'value': rd.resInt

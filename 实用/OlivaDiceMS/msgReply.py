@@ -9,14 +9,89 @@ import os
 import random
 import re
 
+_RD_RECORD_CONTEXT = None
+
+def _set_rd_record_context(plugin_event, user_id=None, platform=None, skill_value=None):
+    global _RD_RECORD_CONTEXT
+    try:
+        _RD_RECORD_CONTEXT = {
+            'botHash': plugin_event.bot_info.hash,
+            'userId': str(user_id if user_id is not None else plugin_event.data.user_id),
+            'platform': platform if platform is not None else plugin_event.platform['platform'],
+            'skillValue': skill_value,
+        }
+    except Exception:
+        _RD_RECORD_CONTEXT = None
+
+def _save_rd_record(rd, user_id=None, platform=None, skill_value=None):
+    try:
+        if rd is None or getattr(rd, 'resError', None) is not None:
+            return
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        OlivaDiceCore.onediceOverride.saveRDDataUser(
+            data=rd,
+            botHash=ctx['botHash'],
+            userId=str(user_id if user_id is not None else ctx['userId']),
+            platform=platform if platform is not None else ctx['platform'],
+            skillValue=skill_value if skill_value is not None else ctx['skillValue'],
+        )
+    except Exception:
+        pass
+
+
+def _save_rd_record_detail(raw, detail, value, user_id=None, platform=None, skill_value=None):
+    try:
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        user_id_real = str(user_id if user_id is not None else ctx['userId'])
+        platform_real = platform if platform is not None else ctx['platform']
+        bot_hash = ctx['botHash']
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecord',
+            userConfigValue=[str(detail)],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordRaw',
+            userConfigValue=str(raw),
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordInt',
+            userConfigValue=value,
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordSkillInt',
+            userConfigValue=skill_value if skill_value is not None else ctx['skillValue'],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.writeUserConfigByUserHash(
+            userHash=OlivaDiceCore.userConfig.getUserHash(userId=user_id_real, userType='user', platform=platform_real)
+        )
+    except Exception:
+        pass
 
 def unity_init(plugin_event, Proc):
     pass
 
-
 def data_init(plugin_event, Proc):
     OlivaDiceMS.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
-
 
 def _load_local_ms_template():
     try:
@@ -29,7 +104,6 @@ def _load_local_ms_template():
     except:
         return None
 
-
 def _get_hag_id(plugin_event):
     tmp_hagID = None
     if plugin_event.plugin_info['func_type'] == 'group_message':
@@ -38,7 +112,6 @@ def _get_hag_id(plugin_event):
         else:
             tmp_hagID = str(plugin_event.data.group_id)
     return tmp_hagID
-
 
 def _get_target_pc(plugin_event, tmp_hagID, target_user_id, dictTValue):
     tmp_pc_platform = plugin_event.platform['platform']
@@ -80,7 +153,6 @@ def _get_target_pc(plugin_event, tmp_hagID, target_user_id, dictTValue):
         'userId': target_user_id,
     }
 
-
 def _safe_int(val, default=0):
     try:
         if val is None:
@@ -90,7 +162,6 @@ def _safe_int(val, default=0):
         return int(str(val))
     except:
         return default
-
 
 def _pc_get_skill_int(pcHash, hagId, skillName: str, default: int = 0) -> int:
     """按 OlivaDiceCore 的人物卡逻辑获取技能值（不存在时按模板默认值/0）。"""
@@ -104,7 +175,6 @@ def _pc_get_skill_int(pcHash, hagId, skillName: str, default: int = 0) -> int:
     except Exception:
         return default
 
-
 def _is_plain_skill_name(text: str) -> bool:
     try:
         s = str(text).strip()
@@ -114,7 +184,6 @@ def _is_plain_skill_name(text: str) -> bool:
         return re.match(r'^[A-Za-z_\u4e00-\u9fff]+$', s) is not None
     except Exception:
         return False
-
 
 def _is_ms_save_skill(skill_name: str, ms_template: dict) -> bool:
     try:
@@ -136,12 +205,11 @@ def _is_ms_save_skill(skill_name: str, ms_template: dict) -> bool:
     except Exception:
         return False
 
-
 def _roll(expr, customDefault=None):
     rd = OlivaDiceCore.onedice.RD(expr, customDefault)
     rd.roll()
+    _save_rd_record(rd)
     return rd
-
 
 def _format_rd_roll_text(expr: str, rd) -> str:
     res_int = getattr(rd, 'resInt', None)
@@ -185,7 +253,6 @@ def _format_rd_roll_text(expr: str, rd) -> str:
         return str(expr_show)
     return '%s=%d' % (expr_show, int(res_int))
 
-
 def _format_rd_final_only(expr: str, rd) -> str:
     """用于表达式技能值展示：只显示 expr=结果，不展开 resDetail。"""
     res_int = getattr(rd, 'resInt', None)
@@ -196,7 +263,6 @@ def _format_rd_final_only(expr: str, rd) -> str:
     if res_int is None:
         return str(expr_show)
     return '%s=%d' % (expr_show, int(res_int))
-
 
 def _eval_inline_dice(text: str, customDefault=None) -> str:
     if text is None:
@@ -216,12 +282,10 @@ def _eval_inline_dice(text: str, customDefault=None) -> str:
     # 仅处理不嵌套的大括号段
     return re.sub(r'\{([^{}]+)\}', _replace, text)
 
-
 def _format_d100_display(d100_int):
     if d100_int == 100 or d100_int == 0:
         return '00'
     return str(d100_int)
-
 
 def _ms_skillcheck_type(roll_value, skill_value, ms_template):
     dictRuleTempData = {
@@ -235,7 +299,6 @@ def _ms_skillcheck_type(roll_value, skill_value, ms_template):
     )
     return tmpSkillCheckType
 
-
 def _ms_rank(roll_value, skill_value, ms_template):
     tmpSkillCheckType = _ms_skillcheck_type(roll_value, skill_value, ms_template)
     if tmpSkillCheckType == OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_SUCCESS:
@@ -245,7 +308,6 @@ def _ms_rank(roll_value, skill_value, ms_template):
     if tmpSkillCheckType == OlivaDiceCore.skillCheck.resultType.SKILLCHECK_GREAT_FAIL:
         return -2, tmpSkillCheckType
     return -1, tmpSkillCheckType
-
 
 def _handle_stress_change(plugin_event, pc_info, dictTValue, dictStrCustom, is_failure, is_rest, d100_value):
     skill_table = pc_info['skillTable']
@@ -323,7 +385,6 @@ def _handle_stress_change(plugin_event, pc_info, dictTValue, dictStrCustom, is_f
     dictTValue['tStressOverflow'] = str(max(0, new_stress - stress_max))
     return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strStressAddMax'], dictTValue)
 
-
 def _draw_panic(d20_value, customDefault=None):
     PANIC_TABLE = OlivaDiceMS.msgCustom.dictStrConst.get('MS_PANIC_TABLE', [])
     idx = int(d20_value) - 1
@@ -342,7 +403,6 @@ def _draw_panic(d20_value, customDefault=None):
             die = random.randint(0, len(PANIC_TABLE) - 1)
             text += PANIC_TABLE[die] + '\n'
     return _eval_inline_dice(text.rstrip('\n'), customDefault)
-
 
 def _ms_generate_once(customDefault=None):
     def _roll_int(expr: str) -> int:
@@ -377,8 +437,8 @@ def _ms_generate_once(customDefault=None):
         '合计': total
     }
 
-
 def unity_reply(plugin_event, Proc):
+    _set_rd_record_context(plugin_event)
     OlivaDiceCore.userConfig.setMsgCount()
     dictTValue = OlivaDiceCore.msgCustom.dictTValue.copy()
     dictTValue['tUserName'] = plugin_event.data.sender['name']
@@ -583,6 +643,7 @@ def unity_reply(plugin_event, Proc):
             return
 
         target_user_id = at_user_id if at_user_id else plugin_event.data.user_id
+        _set_rd_record_context(plugin_event, target_user_id, plugin_event.platform['platform'])
         pc_info = _get_target_pc(plugin_event, tmp_hagID, target_user_id, dictTValue)
         pc_info['hagId'] = tmp_hagID
 
@@ -662,6 +723,7 @@ def unity_reply(plugin_event, Proc):
 
         # 休息豁免仅在母舰规则启用（避免检查冲突）
         target_user_id = at_user_id if at_user_id else plugin_event.data.user_id
+        _set_rd_record_context(plugin_event, target_user_id, plugin_event.platform['platform'])
         if isinstance(tmp_reast_str, str) and tmp_reast_str.startswith('休息') and (not _allow_ms_command_for_context(target_user_id)):
             plugin_event.set_block()
             return
@@ -963,6 +1025,12 @@ def unity_reply(plugin_event, Proc):
             else:
                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strRMResult'], dictTValue)
 
+        _save_rd_record_detail(
+            raw='母舰检定',
+            detail=tmp_reply_str.strip() + '\n\n（无视后面的"="和数值）',
+            value=0,
+        )
+
         replyMsg(plugin_event, tmp_reply_str)
         plugin_event.set_block()
         return
@@ -986,6 +1054,7 @@ def unity_reply(plugin_event, Proc):
             return
 
         target_user_id = at_user_id if at_user_id else plugin_event.data.user_id
+        _set_rd_record_context(plugin_event, target_user_id, plugin_event.platform['platform'])
         pc_info = _get_target_pc(plugin_event, tmp_hagID, target_user_id, dictTValue)
         pc_info['hagId'] = tmp_hagID
         skill_table = pc_info['skillTable']
@@ -1032,6 +1101,11 @@ def unity_reply(plugin_event, Proc):
             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strMPResultAtOther'], dictTValue)
         else:
             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strMPResult'], dictTValue)
+        _save_rd_record_detail(
+            raw='母舰MP',
+            detail=tmp_reply_str.strip() + '\n\n（无视后面的"="和数值）',
+            value=0,
+        )
         replyMsg(plugin_event, tmp_reply_str)
         return
 

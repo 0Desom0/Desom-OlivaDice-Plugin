@@ -2,13 +2,19 @@
 """LanotaPlugin 消息解析与命令处理。"""
 
 import datetime
+import math
 import random
 import re
+import time
 from typing import Any
 
+from . import config
 from . import crawler
 from . import function
 from . import utils
+
+# 全局搜索结果会话管理（用于分页和序号选择）
+search_session_dict = {}
 
 management_command_name_set = {'laglobal', 'labot', 'lagroup'}
 
@@ -85,6 +91,147 @@ subcommand_name_list = list(subcommand_alias_dict.keys())
 group_short_action_set = {'on', 'off'}
 
 
+# ============ 搜索会话管理相关 ============
+
+def build_session_key(plugin_event) -> str:
+    """构建用户会话密钥（基于bot、用户ID和群组）。"""
+    bot_hash = utils.get_bot_hash_from_event(plugin_event)
+    user_id = utils.get_sender_id_from_event(plugin_event)
+    group_id = utils.get_group_id_from_event(plugin_event)
+    if group_id:
+        return f'{bot_hash}|group|{group_id}|{user_id}'
+    return f'{bot_hash}|private|{user_id}'
+
+
+def save_search_session(plugin_event, results: list[dict[str, Any]], match_type: str | None) -> None:
+    """保存搜索结果为会话。"""
+    session_key = build_session_key(plugin_event)
+    search_session_dict[session_key] = {
+        'results': results,
+        'match_type': match_type,
+        'page_index': 0,
+        'updated_at': time.time(),
+    }
+
+
+def get_search_session(plugin_event) -> dict[str, Any]:
+    """获取有效的搜索会话。"""
+    clear_expired_sessions()
+    session_key = build_session_key(plugin_event)
+    return search_session_dict.get(session_key, {})
+
+
+def clear_search_session(plugin_event) -> None:
+    """清除搜索会话。"""
+    session_key = build_session_key(plugin_event)
+    search_session_dict.pop(session_key, None)
+
+
+def clear_expired_sessions(force: bool = False) -> None:
+    """清除过期的会话。"""
+    now_time = time.time()
+    timeout_seconds = config.selection_timeout_seconds
+    expired_keys = []
+    for session_key, session_data in search_session_dict.items():
+        if force or now_time - session_data.get('updated_at', now_time) > timeout_seconds:
+            expired_keys.append(session_key)
+    for session_key in expired_keys:
+        search_session_dict.pop(session_key, None)
+
+
+def get_current_page_range(session_data: dict[str, Any]) -> range:
+    """获取当前页的索引范围（从1开始）。"""
+    results = session_data.get('results', [])
+    page_size = config.result_page_size
+    page_index = session_data.get('page_index', 0)
+    total_pages = max(1, math.ceil(len(results) / page_size))
+    page_index = max(0, min(page_index, total_pages - 1))
+    
+    start_idx = page_index * page_size + 1
+    end_idx = min((page_index + 1) * page_size, len(results)) + 1
+    return range(start_idx, end_idx)
+
+
+def handle_search_session_input(plugin_event, input_text: str) -> bool:
+    """处理搜索会话的后续输入（序号、分页命令等）。
+    
+    返回True表示处理成功，False表示无有效会话或处理失败。
+    """
+    session_data = get_search_session(plugin_event)
+    if not session_data:
+        return False
+    
+    stripped_text = utils.safe_str(input_text).strip()
+    results = session_data.get('results', [])
+    page_size = config.result_page_size
+    page_index = session_data.get('page_index', 0)
+    total_pages = max(1, math.ceil(len(results) / page_size))
+    page_index = max(0, min(page_index, total_pages - 1))
+    
+    # 处理分页命令：下一页/上一页/第X页
+    if stripped_text.lower() in ['下一页', 'next', 'down']:
+        if len(results) <= page_size:
+            reply_text(plugin_event, '只有一页，无法翻页。')
+            return True
+        if page_index >= total_pages - 1:
+            formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index, page_size)
+            reply_text(plugin_event, f'已是最后一页\n\n{formatted_results}', max_chars=config.image_max_chars)
+            return True
+        session_data['page_index'] = page_index + 1
+        session_data['updated_at'] = time.time()
+        formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index + 1, page_size)
+        reply_text(plugin_event, formatted_results, max_chars=config.image_max_chars)
+        return True
+    
+    if stripped_text.lower() in ['上一页', 'prev', 'up']:
+        if len(results) <= page_size:
+            reply_text(plugin_event, '只有一页，无法翻页。')
+            return True
+        if page_index <= 0:
+            formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index, page_size)
+            reply_text(plugin_event, f'已是第一页\n\n{formatted_results}', max_chars=config.image_max_chars)
+            return True
+        session_data['page_index'] = page_index - 1
+        session_data['updated_at'] = time.time()
+        formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index - 1, page_size)
+        reply_text(plugin_event, formatted_results, max_chars=config.image_max_chars)
+        return True
+    
+    # 处理"第X页"命令
+    page_match = re.match(r'^第(\d+)页$', stripped_text)
+    if page_match:
+        target_page = int(page_match.group(1))
+        if target_page < 1 or target_page > total_pages:
+            reply_text(plugin_event, f'页码无效，总共 {total_pages} 页。')
+            return True
+        session_data['page_index'] = target_page - 1
+        session_data['updated_at'] = time.time()
+        formatted_results, _, _ = function.format_search_results_with_pagination(results, target_page - 1, page_size)
+        reply_text(plugin_event, formatted_results, max_chars=config.image_max_chars)
+        return True
+    
+    # 处理序号选择
+    if re.match(r'^\d+$', stripped_text):
+        selected_index = int(stripped_text)
+        current_range = get_current_page_range(session_data)
+        if selected_index not in current_range:
+            reply_text(plugin_event, f'序号无效，当前页可用的序号为：{min(current_range)}-{max(current_range)}')
+            return True
+        
+        selected_song = results[selected_index - 1]
+        clear_search_session(plugin_event)
+        song_info = function.format_song_info(selected_song)
+        reply_text(plugin_event, f'选择的乐曲:\n\n{song_info}', max_chars=config.image_max_chars)
+        return True
+    
+    # 如果输入不符合预期的格式
+    if len(results) > page_size:
+        reply_text(plugin_event, '请输入序号、"下一页"、"上一页"、"第X页" 或其他命令。')
+    return True
+
+
+# ============ 消息处理相关 ============
+
 def handle_init(plugin_event, Proc) -> None:
     utils.info_log(Proc, 'LanotaPlugin init 完成。')
 
@@ -102,13 +249,21 @@ def handle_group_message(plugin_event, Proc) -> None:
 
 
 def handle_save(plugin_event, Proc) -> None:
+    clear_expired_sessions(force=True)
     utils.debug_log(Proc, 'LanotaPlugin save 已执行。')
 
 
+def is_plain_text_mode(plugin_event) -> bool:
+    bot_hash = utils.get_bot_hash_from_event(plugin_event)
+    bot_config = utils.load_bot_config(bot_hash)
+    return bool(bot_config.get('plain_text_mode', False)) or not bool(bot_config.get('send_as_image', True))
+
+
 def reply_text(plugin_event, text: str, max_chars: int | None = None) -> None:
-    global_config = utils.load_global_config()
+    bot_hash = utils.get_bot_hash_from_event(plugin_event)
+    bot_config = utils.load_bot_config(bot_hash)
     user_id = utils.get_sender_id_from_event(plugin_event)
-    if global_config.get('send_as_image', True):
+    if bot_config.get('send_as_image', True) and not is_plain_text_mode(plugin_event):
         linked_bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
         image_path = function.create_text_image(
             text,
@@ -120,6 +275,13 @@ def reply_text(plugin_event, text: str, max_chars: int | None = None) -> None:
             utils.reply_image(plugin_event, image_path, text)
             return
     utils.reply_message(plugin_event, text)
+
+
+def reply_large_text(plugin_event, text: str) -> None:
+    if is_plain_text_mode(plugin_event):
+        utils.reply_long_plain_text(plugin_event, text)
+        return
+    reply_text(plugin_event, text)
 
 
 def match_command(message_text: str) -> tuple[str, str]:
@@ -171,14 +333,14 @@ def handle_laglobal(plugin_event, argument: str) -> None:
         reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以使用。')
         return
     global_config = utils.load_global_config()
-    action, value = parse_action(argument, ['status', 'debug', 'image', 'off', 'on'])
+    action, value = parse_action(argument, ['status', 'debug', 'master', 'off', 'on'])
     if action in ['', 'status']:
         reply_text(
             plugin_event,
             'LanotaPlugin 全局状态：\n'
             f'启用：{"ON" if global_config.get("global_enable_switch", True) else "OFF"}\n'
             f'调试：{"ON" if global_config.get("global_debug_mode_switch", False) else "OFF"}\n'
-            f'图片回复：{"ON" if global_config.get("send_as_image", True) else "OFF"}',
+            f'本插件管理员：{", ".join(utils.get_configured_master_list()) or "无"}',
         )
         return
     if action == 'on':
@@ -187,10 +349,29 @@ def handle_laglobal(plugin_event, argument: str) -> None:
         global_config['global_enable_switch'] = False
     elif action == 'debug':
         global_config['global_debug_mode_switch'] = value.lower() == 'on'
-    elif action == 'image':
-        global_config['send_as_image'] = value.lower() == 'on'
+    elif action == 'master':
+        sub_action, sub_value = parse_action(value, ['list', 'add', 'del'])
+        masters = utils.get_configured_master_list()
+        target_list = utils.normalize_id_list(sub_value)
+        if sub_action in ['', 'list']:
+            reply_text(plugin_event, f'本插件管理员：{", ".join(masters) or "无"}')
+            return
+        if sub_action == 'add':
+            for target in target_list:
+                if target not in masters:
+                    masters.append(target)
+            utils.set_configured_master_list(None, masters)
+            reply_text(plugin_event, f'已更新全局管理员：{", ".join(masters) or "无"}')
+            return
+        if sub_action == 'del':
+            masters = [item for item in masters if item not in target_list]
+            utils.set_configured_master_list(None, masters)
+            reply_text(plugin_event, f'已更新全局管理员：{", ".join(masters) or "无"}')
+            return
+        reply_text(plugin_event, '用法：.laglobal master list/add/del [用户ID]')
+        return
     else:
-        reply_text(plugin_event, '用法：.laglobal status/on/off/debug on/debug off/image on/image off')
+        reply_text(plugin_event, '用法：.laglobal status/on/off/debug on/debug off/master list/add/del [用户ID]')
         return
     utils.save_global_config(global_config)
     reply_text(plugin_event, 'LanotaPlugin 全局配置已更新。')
@@ -202,12 +383,13 @@ def handle_labot(plugin_event, argument: str) -> None:
         return
     bot_hash = utils.get_bot_hash_from_event(plugin_event)
     bot_config = utils.load_bot_config(bot_hash)
-    action, value = parse_action(argument, ['status', 'master', 'off', 'on'])
+    action, value = parse_action(argument, ['status', 'master', 'image', 'plain', 'text', '纯文本', 'off', 'on'])
     if action in ['', 'status']:
         reply_text(
             plugin_event,
             f'当前 Bot 开关：{"ON" if bot_config.get("bot_enable_switch", True) else "OFF"}\n'
-            f'本插件管理员：{", ".join(utils.get_configured_master_list(bot_hash)) or "无"}',
+            f'图片回复：{"ON" if bot_config.get("send_as_image", True) and not bot_config.get("plain_text_mode", False) else "OFF"}\n'
+            f'纯文本模式：{"ON" if is_plain_text_mode(plugin_event) else "OFF"}',
         )
         return
     if action == 'on':
@@ -220,26 +402,44 @@ def handle_labot(plugin_event, argument: str) -> None:
         utils.save_bot_config(bot_hash, bot_config)
         reply_text(plugin_event, '当前 Bot 已停用 LanotaPlugin。')
         return
+    if action == 'image':
+        if value.lower() not in ['on', 'off']:
+            reply_text(plugin_event, '用法：.labot image on/off')
+            return
+        bot_config['send_as_image'] = value.lower() == 'on'
+        bot_config['plain_text_mode'] = not bot_config['send_as_image']
+        utils.save_bot_config(bot_hash, bot_config)
+        reply_text(plugin_event, f'当前 Bot 图片回复已{"开启" if bot_config["send_as_image"] else "关闭"}。')
+        return
+    if action in ['plain', 'text', '纯文本']:
+        if value.lower() not in ['on', 'off']:
+            reply_text(plugin_event, '用法：.labot plain on/off')
+            return
+        bot_config['plain_text_mode'] = value.lower() == 'on'
+        bot_config['send_as_image'] = not bot_config['plain_text_mode']
+        utils.save_bot_config(bot_hash, bot_config)
+        reply_text(plugin_event, f'当前 Bot 纯文本模式已{"开启" if bot_config["plain_text_mode"] else "关闭"}。')
+        return
     if action == 'master':
         sub_action, sub_value = parse_action(value, ['list', 'add', 'del'])
-        masters = utils.get_configured_master_list(bot_hash)
+        masters = utils.get_configured_master_list()
         target_list = utils.normalize_id_list(sub_value)
         if sub_action in ['', 'list']:
-            reply_text(plugin_event, f'本插件管理员：{", ".join(masters) or "无"}')
+            reply_text(plugin_event, f'本插件全局管理员：{", ".join(masters) or "无"}')
             return
         if sub_action == 'add':
             for target in target_list:
                 if target not in masters:
                     masters.append(target)
             utils.set_configured_master_list(bot_hash, masters)
-            reply_text(plugin_event, f'已更新管理员：{", ".join(masters) or "无"}')
+            reply_text(plugin_event, f'已更新全局管理员：{", ".join(masters) or "无"}')
             return
         if sub_action == 'del':
             masters = [item for item in masters if item not in target_list]
             utils.set_configured_master_list(bot_hash, masters)
-            reply_text(plugin_event, f'已更新管理员：{", ".join(masters) or "无"}')
+            reply_text(plugin_event, f'已更新全局管理员：{", ".join(masters) or "无"}')
             return
-    reply_text(plugin_event, '用法：.labot status/on/off 或 .labot master list/add/del [用户ID]')
+    reply_text(plugin_event, '用法：.labot status/on/off/image on/image off/plain on/plain off；管理员请用 .laglobal master list/add/del [用户ID]')
 
 
 def handle_lagroup(plugin_event, argument: str) -> None:
@@ -354,7 +554,12 @@ def handle_alias(plugin_event, argument: str) -> None:
             reply_text(plugin_event, f'没有找到章节号、ID或原名为[{search_term}]的乐曲。')
             return
         if total_count > 1:
-            reply_text(plugin_event, render_song_list(f'找到多个匹配的乐曲({total_count}个)，请使用更精确的搜索词：', matched_songs))
+            # 多个结果使用分页展示
+            save_search_session(plugin_event, matched_songs, '别名添加查询')
+            formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
+            header = f'找到多个匹配的乐曲({total_count}个)，请输入序号选择：\n'
+            message = header + formatted_results
+            reply_text(plugin_event, message, max_chars=config.image_max_chars)
             return
         std_name = str(matched_songs[0].get('title', ''))
         if alias.lower() in all_titles:
@@ -391,15 +596,21 @@ def handle_alias(plugin_event, argument: str) -> None:
         if not matched_songs:
             reply_text(plugin_event, f'没有找到章节号、ID、别名或原名为[{remaining}]的乐曲。')
             return
-        if total_count > 1:
-            reply_text(plugin_event, render_song_list(f'找到多个匹配的乐曲({total_count}个)：', matched_songs))
+        if total_count == 1:
+            std_name = str(matched_songs[0].get('title', ''))
+            aliases = alias_data.get(std_name, [])
+            if not aliases:
+                reply_text(plugin_event, f'乐曲[{std_name}]目前没有设置别名。')
+            else:
+                reply_text(plugin_event, f'乐曲[{std_name}]的别名({len(aliases)}个):\n' + '\n'.join(f'{i + 1}. {a}' for i, a in enumerate(aliases)))
             return
-        std_name = str(matched_songs[0].get('title', ''))
-        aliases = alias_data.get(std_name, [])
-        if not aliases:
-            reply_text(plugin_event, f'乐曲[{std_name}]目前没有设置别名。')
-        else:
-            reply_text(plugin_event, f'乐曲[{std_name}]的别名({len(aliases)}个):\n' + '\n'.join(f'{i + 1}. {a}' for i, a in enumerate(aliases)))
+        
+        # 多个结果使用分页展示
+        save_search_session(plugin_event, matched_songs, '别名查询')
+        formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
+        header = f'找到多个匹配的乐曲({total_count}个)：\n'
+        message = header + formatted_results
+        reply_text(plugin_event, message, max_chars=config.image_max_chars)
         return
     reply_text(plugin_event, '无效操作，只能使用 add/del/show。')
 
@@ -416,36 +627,28 @@ def handle_find(plugin_event, argument: str) -> None:
     if not raw_arg:
         reply_text(plugin_event, '用法：/la info <搜索词> 或 /la info <搜索词> p<页码>')
         return
-    page = 1
     search_term = raw_arg
-    page_match = re.match(r'^(.+?)\s+(?:p|page|页)\s*(\d+)$', raw_arg, re.IGNORECASE)
-    if page_match:
-        search_term = page_match.group(1).strip()
-        page = int(page_match.group(2))
+    
     song_data = function.load_song_data()
     alias_data = function.load_alias_data()
     matched_songs, match_type, total_count = function.find_song_by_search_term(search_term, song_data, alias_data, len(song_data))
     if not matched_songs:
         reply_text(plugin_event, f'没有找到与[{search_term}]相关的乐曲。')
         return
-    if total_count == 1 and page == 1:
-        reply_text(plugin_event, f'通过搜索词[{search_term}]进行[{match_type}]找到这首乐曲:\n\n{function.format_song_info(matched_songs[0])}')
+    
+    # 如果只有一个结果，直接显示详情
+    if total_count == 1:
+        clear_search_session(plugin_event)
+        reply_text(plugin_event, f'通过搜索词[{search_term}]进行[{match_type}]找到这首乐曲:\n\n{function.format_song_info(matched_songs[0])}', max_chars=config.image_max_chars)
         return
-    page_size = 10
-    total_pages = (total_count + page_size - 1) // page_size
-    if page < 1 or page > total_pages:
-        reply_text(plugin_event, f'页码超出范围，当前共有{total_pages}页。')
-        return
-    start = (page - 1) * page_size
-    page_songs = matched_songs[start : min(start + page_size, total_count)]
-    message = render_song_list(
-        f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)\n第{page}/{total_pages}页：',
-        page_songs,
-        start + 1,
-    )
-    if page < total_pages:
-        message += f'\n\n下一页：/la info {search_term} p{page + 1}'
-    reply_text(plugin_event, message)
+    
+    # 多个结果使用分页展示
+    save_search_session(plugin_event, matched_songs, match_type)
+    formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
+    
+    header = f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)：\n'
+    message = header + formatted_results
+    reply_text(plugin_event, message, max_chars=config.image_max_chars)
 
 
 def handle_artist(plugin_event, argument: str) -> None:
@@ -486,7 +689,7 @@ def handle_time(plugin_event) -> None:
     lines.extend(f'{i + 1}. {item["song"].get("title")} -|- {item["time"]} (Chapter: {item["song"].get("chapter")})' for i, item in enumerate(long_songs))
     lines.append(f'\n短于2分钟的乐曲(共{len(short_songs)}首，时长升序):')
     lines.extend(f'{i + 1}. {item["song"].get("title")} -|- {item["time"]} (Chapter: {item["song"].get("chapter")})' for i, item in enumerate(short_songs))
-    reply_text(plugin_event, '\n'.join(lines))
+    reply_large_text(plugin_event, '\n'.join(lines))
 
 
 def handle_all(plugin_event) -> None:
@@ -576,7 +779,7 @@ def handle_notes(plugin_event) -> None:
     lines = ['物量最高的前50个谱面:']
     for index, (notes_value, song, difficulty, difficulty_value) in enumerate(charts[:50], 1):
         lines.append(f'{index}. {song.get("title")} -|- 物量{notes_value} (难度: {difficulty} {difficulty_value}, Chapter: {song.get("chapter")})')
-    reply_text(plugin_event, '\n'.join(lines) if len(lines) > 1 else '没有找到有效的谱面数据。')
+    reply_large_text(plugin_event, '\n'.join(lines) if len(lines) > 1 else '没有找到有效的谱面数据。')
 
 
 def handle_rating(plugin_event) -> None:
@@ -629,7 +832,7 @@ def handle_rating(plugin_event) -> None:
     lines.extend(f'{i:2d}. {item["song"].get("title")} -|- {item["diff"]} {item["level"]} (Rating: {item["rating"]:.2f})' for i, item in enumerate(b30, 1))
     lines.append('========== R5谱面 ==========')
     lines.extend(f'{i}. {item["song"].get("title")} -|- {item["diff"]} {item["level"]} (Rating: {item["rating"]:.2f})' for i, item in enumerate(r5, 1))
-    reply_text(plugin_event, '\n'.join(lines))
+    reply_large_text(plugin_event, '\n'.join(lines))
 
 
 def handle_category(plugin_event, argument: str) -> None:
@@ -756,7 +959,7 @@ def handle_table(plugin_event, argument: str = '') -> None:
         song_difficulty = song.get('difficulty', {}).get(diff_type.lower(), '未知')
         range_tag = f' [范围定数: {original_range}]' if is_range else ''
         lines.append(f'{song.get("chapter")} -|- {song.get("title")} (ID: {song.get("id")}) [{diff_type} {song_difficulty}]{range_tag}')
-    reply_text(plugin_event, '\n'.join(lines))
+    reply_large_text(plugin_event, '\n'.join(lines))
 
 
 help_categories = {
@@ -1123,8 +1326,18 @@ def handle_message(plugin_event, Proc) -> None:
     if at_list and not utils.is_force_reply_to_current_bot(at_list, plugin_event):
         return
     prefix, remaining_text = utils.parse_prefix(remaining_after_at)
+    
+    # 如果没有前缀，先尝试处理搜索会话的输入
     if not prefix:
+        bot_hash = utils.get_bot_hash_from_event(plugin_event)
+        bot_config = utils.load_bot_config(bot_hash)
+        global_config = utils.load_global_config()
+        
+        if global_config.get('global_enable_switch', True) and bot_config.get('bot_enable_switch', True):
+            if handle_search_session_input(plugin_event, remaining_after_at):
+                return
         return
+    
     command_name, argument = match_command(remaining_text)
     if not command_name:
         return
@@ -1137,6 +1350,9 @@ def handle_message(plugin_event, Proc) -> None:
             return
         if utils.is_group_disabled(plugin_event):
             return
+    if is_plain_text_mode(plugin_event) and command_name in ['color', 'confirm', 'deny']:
+        reply_text(plugin_event, '当前 Bot 已开启纯文本模式，背景色功能不可用。')
+        return
     handler = command_handler_dict.get(command_name)
     if handler:
         handler(plugin_event, argument)

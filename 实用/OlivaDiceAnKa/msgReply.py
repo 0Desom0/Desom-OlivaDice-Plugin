@@ -13,17 +13,91 @@ import OlivOS
 import OlivaDiceCore
 import OlivaDiceAnKa
 
-
 DATA_DIR = os.path.join('plugin', 'data', 'OlivaDiceAnKa')
 
+_RD_RECORD_CONTEXT = None
+
+def _set_rd_record_context(plugin_event, user_id=None, platform=None, skill_value=None):
+    global _RD_RECORD_CONTEXT
+    try:
+        _RD_RECORD_CONTEXT = {
+            'botHash': plugin_event.bot_info.hash,
+            'userId': str(user_id if user_id is not None else plugin_event.data.user_id),
+            'platform': platform if platform is not None else plugin_event.platform['platform'],
+            'skillValue': skill_value,
+        }
+    except Exception:
+        _RD_RECORD_CONTEXT = None
+
+def _save_rd_record(rd, user_id=None, platform=None, skill_value=None):
+    try:
+        if rd is None or getattr(rd, 'resError', None) is not None:
+            return
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        OlivaDiceCore.onediceOverride.saveRDDataUser(
+            data=rd,
+            botHash=ctx['botHash'],
+            userId=str(user_id if user_id is not None else ctx['userId']),
+            platform=platform if platform is not None else ctx['platform'],
+            skillValue=skill_value if skill_value is not None else ctx['skillValue'],
+        )
+    except Exception:
+        pass
+
+
+def _save_rd_record_detail(raw, detail, value, user_id=None, platform=None, skill_value=None):
+    try:
+        ctx = _RD_RECORD_CONTEXT
+        if ctx is None:
+            return
+        user_id_real = str(user_id if user_id is not None else ctx['userId'])
+        platform_real = platform if platform is not None else ctx['platform']
+        bot_hash = ctx['botHash']
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecord',
+            userConfigValue=[str(detail)],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordRaw',
+            userConfigValue=str(raw),
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordInt',
+            userConfigValue=value,
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.setUserConfigByKey(
+            userConfigKey='RDRecordSkillInt',
+            userConfigValue=skill_value if skill_value is not None else ctx['skillValue'],
+            botHash=bot_hash,
+            userId=user_id_real,
+            userType='user',
+            platform=platform_real,
+        )
+        OlivaDiceCore.userConfig.writeUserConfigByUserHash(
+            userHash=OlivaDiceCore.userConfig.getUserHash(userId=user_id_real, userType='user', platform=platform_real)
+        )
+    except Exception:
+        pass
 
 def unity_init(plugin_event, Proc):
     _ensure_dir(DATA_DIR)
 
-
 def data_init(plugin_event, Proc):
     OlivaDiceAnKa.msgCustomManager.initMsgCustom(Proc.Proc_data['bot_info_dict'])
-
 
 def _safe_str(v):
     try:
@@ -31,13 +105,11 @@ def _safe_str(v):
     except Exception:
         return ''
 
-
 def _ensure_dir(path):
     try:
         os.makedirs(path, exist_ok=True)
     except Exception:
         pass
-
 
 def _load_json(path, default):
     try:
@@ -49,7 +121,6 @@ def _load_json(path, default):
     except Exception:
         return copy.deepcopy(default)
 
-
 def _save_json(path, data):
     try:
         _ensure_dir(os.path.dirname(path))
@@ -58,7 +129,6 @@ def _save_json(path, data):
         return True
     except Exception:
         return False
-
 
 def _get_bot_hash_with_link(plugin_event):
     bot_hash = ''
@@ -85,16 +155,13 @@ def _get_bot_hash_with_link(plugin_event):
 
     return 'unknown'
 
-
 def _get_bot_dir(bot_hash):
     path = os.path.join(DATA_DIR, _safe_str(bot_hash))
     _ensure_dir(path)
     return path
 
-
 def _get_data_path(bot_hash):
     return os.path.join(_get_bot_dir(bot_hash), 'anka_data.json')
-
 
 def _load_all_data(bot_hash):
     data = _load_json(_get_data_path(bot_hash), default={})
@@ -104,10 +171,8 @@ def _load_all_data(bot_hash):
         data['groups'] = {}
     return data
 
-
 def _save_all_data(bot_hash, data):
     return _save_json(_get_data_path(bot_hash), data)
-
 
 def _get_hag_id(plugin_event):
     if plugin_event.plugin_info['func_type'] != 'group_message':
@@ -128,7 +193,6 @@ def _get_hag_id(plugin_event):
         return '%s|%s' % (str(host_id), str(group_id))
     return str(group_id)
 
-
 def _get_group_hash(plugin_event):
     hag_id = _get_hag_id(plugin_event)
     if hag_id is None:
@@ -139,7 +203,6 @@ def _get_group_hash(plugin_event):
     except Exception:
         group_hash = hag_id
     return _safe_str(group_hash), hag_id
-
 
 def _get_group_entry(data, group_hash, hag_id, platform):
     groups = data['groups']
@@ -158,13 +221,11 @@ def _get_group_entry(data, group_hash, hag_id, platform):
         entry['current'] = ''
     return entry
 
-
 def _norm_name(name):
     s = _safe_str(name).strip()
     if s == '':
         s = 'default'
     return s
-
 
 def _resolve_anka_name(ankas, query_name):
     if type(ankas) is not dict:
@@ -204,11 +265,9 @@ def _resolve_anka_name(ankas, query_name):
 
     return None
 
-
 def _is_draw_no_return(token):
     t = _safe_str(token).strip().lower()
     return t in ['不放回', 'nr', 'noreturn', 'remove', 'pop']
-
 
 def _roll_index_by_onedice(max_count):
     if max_count <= 0:
@@ -216,6 +275,7 @@ def _roll_index_by_onedice(max_count):
     rd_expr = '1D%d' % int(max_count)
     rd = OlivaDiceCore.onedice.RD(rd_expr, None)
     rd.roll()
+    _save_rd_record(rd)
     if rd.resError is not None:
         return None, 'onedice异常：%s' % str(rd.resError)
     try:
@@ -228,7 +288,6 @@ def _roll_index_by_onedice(max_count):
         res_int = max_count
     return res_int - 1, None
 
-
 def _reply_group_only(replyMsg, plugin_event):
     tmp_reply = None
     try:
@@ -239,7 +298,6 @@ def _reply_group_only(replyMsg, plugin_event):
         tmp_reply = '此命令只能在群聊中使用'
     replyMsg(plugin_event, tmp_reply)
 
-
 def _cmd_take_word(skipSpaceStart, text):
     t = skipSpaceStart(_safe_str(text))
     if t == '':
@@ -249,12 +307,31 @@ def _cmd_take_word(skipSpaceStart, text):
         return arr[0], ''
     return arr[0], arr[1]
 
-
 def _fmt(dictStrCustom, dictTValue, key):
     return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom[key], dictTValue)
 
+def _save_reply_record(raw, reply_text, value=0, plugin_event=None):
+    if reply_text in [None, '']:
+        return
+    user_id = None
+    platform = None
+    if plugin_event is not None:
+        try:
+            user_id = plugin_event.data.user_id
+            platform = plugin_event.platform['platform']
+        except Exception:
+            user_id = None
+            platform = None
+    _save_rd_record_detail(
+        raw=raw,
+        detail=str(reply_text).strip() + '\n\n（无视后面的"="和数值）',
+        value=value,
+        user_id=user_id,
+        platform=platform,
+    )
 
 def unity_reply(plugin_event, Proc):
+    _set_rd_record_context(plugin_event)
     OlivaDiceCore.userConfig.setMsgCount()
     dictTValue = OlivaDiceCore.msgCustom.dictTValue.copy()
     dictTValue['tUserName'] = plugin_event.data.sender['name']
@@ -735,9 +812,13 @@ def unity_reply(plugin_event, Proc):
                     _save_all_data(bot_hash, data)
                     if no_return:
                         dictTValue['tAnkaCount'] = str(len(options))
-                        replyMsg(plugin_event, _fmt(dictStrCustom, dictTValue, 'strAnkaDrawNoReturn'))
+                        tmp_reply_str = _fmt(dictStrCustom, dictTValue, 'strAnkaDrawNoReturn')
+                        _save_reply_record('安价抽取', tmp_reply_str, value=result_list[0][0], plugin_event=plugin_event)
+                        replyMsg(plugin_event, tmp_reply_str)
                         return
-                    replyMsg(plugin_event, _fmt(dictStrCustom, dictTValue, 'strAnkaDrawWithReturn'))
+                    tmp_reply_str = _fmt(dictStrCustom, dictTValue, 'strAnkaDrawWithReturn')
+                    _save_reply_record('安价抽取', tmp_reply_str, value=result_list[0][0], plugin_event=plugin_event)
+                    replyMsg(plugin_event, tmp_reply_str)
                     return
 
                 dictTValue['tAnkaDrawCount'] = str(draw_count)
@@ -753,7 +834,9 @@ def unity_reply(plugin_event, Proc):
                     dictTValue['tAnkaCount'] = str(len(options))
                     out.append(_fmt(dictStrCustom, dictTValue, 'strAnkaDrawMultiTailNoReturn'))
                 _save_all_data(bot_hash, data)
-                replyMsg(plugin_event, '\n'.join(out))
+                tmp_reply_str = '\n'.join(out)
+                _save_reply_record('安价抽取', tmp_reply_str, value=[item[0] for item in result_list], plugin_event=plugin_event)
+                replyMsg(plugin_event, tmp_reply_str)
                 return
 
             if isMatchWordStart(tmp_reast_str, ['get', 'his', '记录', '历史'], isCommand=True):
