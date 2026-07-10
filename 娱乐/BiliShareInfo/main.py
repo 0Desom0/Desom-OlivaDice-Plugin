@@ -50,11 +50,14 @@ RECENT_TTL_SECONDS = 30
 
 class Event(object):
     def init(plugin_event, Proc):
+        global gProc
+        gProc = Proc
         load_config()
 
     def init_after(plugin_event, Proc):
         global gProc
         gProc = Proc
+        initialize_all_bot_data(Proc)
 
     def save(plugin_event, Proc):
         save_config()
@@ -311,6 +314,36 @@ def load_config() -> None:
         _migrate_legacy_data_dir()
     except Exception:
         pass
+
+
+def initialize_all_bot_data(Proc) -> None:
+    """启动时为所有已加载 Bot 初始化配置目录与数据文件。"""
+    try:
+        bot_info_dict = getattr(Proc, 'Proc_data', {}).get('bot_info_dict', {})
+    except Exception as exception_object:
+        bili_log(f'读取 Bot 列表失败: {exception_object}', 3)
+        return
+
+    if not isinstance(bot_info_dict, dict):
+        bili_log('初始化数据目录失败: bot_info_dict 不是字典。', 3)
+        return
+
+    initialized_bot_hash_set = set()
+    for raw_bot_hash in bot_info_dict:
+        try:
+            bot_hash = get_linked_bot_hash(raw_bot_hash)
+            if bot_hash in initialized_bot_hash_set:
+                continue
+            initialized_bot_hash_set.add(bot_hash)
+
+            bot_config = load_bot_config(bot_hash)
+            group_config = load_group_config(bot_hash)
+            config_saved = save_bot_config(bot_hash, bot_config)
+            group_saved = save_group_config(bot_hash, group_config)
+            if not config_saved or not group_saved:
+                bili_log(f'初始化 Bot 数据失败: {bot_hash}', 3)
+        except Exception as exception_object:
+            bili_log(f'初始化 Bot 数据失败: {raw_bot_hash}: {exception_object}', 3)
 
 
 def save_config(plugin_event=None) -> bool:
