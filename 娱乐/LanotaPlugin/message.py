@@ -16,7 +16,7 @@ from . import utils
 # 全局搜索结果会话管理（用于分页和序号选择）
 search_session_dict = {}
 
-management_command_name_set = {'laglobal', 'labot', 'lagroup'}
+management_command_name_set = {'laglobal', 'labot', 'lagroup', 'sync', 'cover'}
 
 command_configs = [
     ('today', '今日曲'),
@@ -28,6 +28,8 @@ command_configs = [
     ('time', '时长'),
     ('all', '全部'),
     ('update', '更新'),
+    ('sync', '同步'),
+    ('cover', '曲绘'),
     ('cal', '计算'),
     ('notes', '物量'),
     ('rating', 'rating'),
@@ -59,6 +61,10 @@ subcommand_alias_dict = {
     '全部': 'all',
     'update': 'update',
     '更新': 'update',
+    'sync': 'sync',
+    '同步': 'sync',
+    'cover': 'cover',
+    '曲绘': 'cover',
     'cal': 'cal',
     'calculate': 'cal',
     '计算': 'cal',
@@ -220,8 +226,7 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
         
         selected_song = results[selected_index - 1]
         clear_search_session(plugin_event)
-        song_info = function.format_song_info(selected_song)
-        reply_text(plugin_event, f'选择的乐曲:\n\n{song_info}', max_chars=config.image_max_chars)
+        reply_song_detail(plugin_event, '选择的乐曲:', selected_song)
         return True
     
     # 如果输入不符合预期的格式
@@ -282,6 +287,36 @@ def reply_large_text(plugin_event, text: str) -> None:
         utils.reply_long_plain_text(plugin_event, text)
         return
     reply_text(plugin_event, text)
+
+
+def reply_song_detail(plugin_event, header: str, song: dict[str, Any]) -> None:
+    """发送单曲详情，并在启用时附带本地缓存曲绘。"""
+    message_text = f'{header}\n\n{function.format_song_info(song)}'
+    global_config = utils.load_global_config()
+    if not global_config.get('send_cover_art', True):
+        reply_text(plugin_event, message_text, max_chars=config.image_max_chars)
+        return
+
+    cover_paths = crawler.ensure_song_covers(song)
+    if not cover_paths:
+        reply_text(plugin_event, message_text, max_chars=config.image_max_chars)
+        return
+
+    if is_plain_text_mode(plugin_event):
+        utils.reply_images_with_text(plugin_event, cover_paths, message_text)
+        return
+
+    linked_bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
+    text_image_path = function.create_text_image(
+        message_text,
+        user_id=utils.get_sender_id_from_event(plugin_event),
+        max_chars=config.image_max_chars,
+        bot_hash=linked_bot_hash,
+    )
+    if text_image_path:
+        utils.reply_images_with_text(plugin_event, [*cover_paths, text_image_path])
+    else:
+        utils.reply_images_with_text(plugin_event, cover_paths, message_text)
 
 
 def match_command(message_text: str) -> tuple[str, str]:
@@ -483,6 +518,102 @@ def handle_update(plugin_event) -> None:
         reply_text(plugin_event, f'更新过程中发生错误：{type(exception_object).__name__}: {exception_object}')
 
 
+def handle_sync(plugin_event, argument: str) -> None:
+    """由骰主预览或执行 Wiki Songs 页面同步。"""
+    if not utils.sender_has_master_permission(plugin_event):
+        reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以同步 Wiki。')
+        return
+    action_text = argument.strip().lower()
+    apply_edit = action_text in {'apply', '执行', '确认'} or 'apply' in action_text.split()
+    add_only = 'add-only' in action_text.split() or '仅新增' in action_text
+    global_config = utils.load_global_config()
+    username = str(global_config.get('wiki_sync_username', '')).strip()
+    password = str(global_config.get('wiki_sync_bot_password', '')).strip()
+    if apply_edit and (not username or not password):
+        reply_text(
+            plugin_event,
+            '尚未配置 Wiki 账号。请在 plugin/data/LanotaPlugin/global_config.json 中填写 '
+            'wiki_sync_username 与 wiki_sync_bot_password。',
+        )
+        return
+
+    mode_text = '实际编辑' if apply_edit else '预览'
+    reply_text(plugin_event, f'开始通过 MediaWiki API 进行 Songs {mode_text}，请稍候……')
+    try:
+        from . import wiki_sync
+
+        result = wiki_sync.run_sync(
+            username=username,
+            password=password,
+            apply=apply_edit,
+            add_only=add_only,
+            summary=str(global_config.get('wiki_sync_edit_summary', '')).strip()
+            or config.default_global_config['wiki_sync_edit_summary'],
+            timeout=max(config.api_timeout_seconds, 30),
+            output_dir=utils.get_plugin_data_dir(),
+        )
+        if not apply_edit:
+            reply_large_text(
+                plugin_event,
+                'Songs 同步预览（仅显示差异）：\n' + str(result.get('difference_text', '没有差异。')),
+            )
+        else:
+            reply_text(
+                plugin_event,
+                f'Songs 同步完成：已编辑 Wiki\n'
+                f'新增歌曲：{result.get("added", 0)}\n'
+                f'已有字段变化：{result.get("changed", 0)}\n'
+                f'无效候选页：{result.get("invalid", 0)}',
+            )
+    except Exception as exception_object:
+        reply_text(plugin_event, f'Songs 同步失败：{type(exception_object).__name__}: {exception_object}')
+
+
+def handle_cover(plugin_event, argument: str) -> None:
+    """由骰主管理本地曲绘缓存。"""
+    if not utils.sender_has_master_permission(plugin_event):
+        reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以管理曲绘缓存。')
+        return
+    action_text = argument.strip().lower()
+    if action_text in {'', 'status', '状态'}:
+        cache_status = crawler.get_cover_cache_status()
+        reply_text(
+            plugin_event,
+            f'本地曲绘缓存：{cache_status["cached"]}/{cache_status["total"]} 张\n'
+            f'曲绘文件数量：{cache_status["images"]}\n'
+            f'预置目录：{cache_status["seed_dir"]}\n运行期目录：{cache_status["runtime_dir"]}\n'
+            '使用 /la cover update 下载缺失曲绘，或 /la cover force 强制重下。',
+        )
+        return
+    if action_text not in {'update', '更新', 'download', '下载', 'force', '强制'}:
+        reply_text(plugin_event, '用法：/la cover status、/la cover update、/la cover force')
+        return
+
+    force = action_text in {'force', '强制'}
+    reply_text(plugin_event, '开始下载曲绘。首次下载可能耗时较长，请稍候……')
+
+    def report_progress(current: int, total: int, downloaded: int, failed: int) -> None:
+        if current == total or current % 25 == 0:
+            utils.info_log(
+                getattr(utils, 'runtime_proc', None),
+                f'曲绘下载进度 {current}/{total}，本次下载 {downloaded}，失败 {failed}',
+            )
+
+    try:
+        result = crawler.run_cover_update(force=force, progress_callback=report_progress)
+        reply_text(
+            plugin_event,
+            f'曲绘缓存更新完成！\n'
+            f'曲库歌曲：{result.get("total", 0)}\n'
+            f'本次下载：{result.get("downloaded", 0)}\n'
+            f'已有缓存：{result.get("cached", 0)}\n'
+            f'失败：{result.get("failed", 0)}\n'
+            f'目录：{result.get("cover_dir", "")}',
+        )
+    except Exception as exception_object:
+        reply_text(plugin_event, f'曲绘下载失败：{type(exception_object).__name__}: {exception_object}')
+
+
 def handle_today(plugin_event) -> None:
     user_id = utils.get_sender_id_from_event(plugin_event)
     linked_bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
@@ -491,7 +622,7 @@ def handle_today(plugin_event) -> None:
         reply_text(plugin_event, '今日乐曲获取失败，可能是乐曲数据未加载。')
         return
     nickname = utils.get_sender_name_from_event(plugin_event) or f'玩家{user_id}'
-    reply_text(plugin_event, f'[{nickname}]的今日乐曲：\n\n{function.format_song_info(song)}')
+    reply_song_detail(plugin_event, f'[{nickname}]的今日乐曲：', song)
 
 
 def handle_random(plugin_event, argument: str) -> None:
@@ -528,7 +659,7 @@ def handle_random(plugin_event, argument: str) -> None:
         reply_text(plugin_event, '没有找到符合条件的乐曲。')
         return
     selected = filtered_songs[function.random_index(len(filtered_songs) - 1)]
-    reply_text(plugin_event, f'{title}:\n\n{function.format_song_info(selected)}')
+    reply_song_detail(plugin_event, f'{title}:', selected)
 
 
 def handle_alias(plugin_event, argument: str) -> None:
@@ -639,7 +770,7 @@ def handle_find(plugin_event, argument: str) -> None:
     # 如果只有一个结果，直接显示详情
     if total_count == 1:
         clear_search_session(plugin_event)
-        reply_text(plugin_event, f'通过搜索词[{search_term}]进行[{match_type}]找到这首乐曲:\n\n{function.format_song_info(matched_songs[0])}', max_chars=config.image_max_chars)
+        reply_song_detail(plugin_event, f'通过搜索词[{search_term}]进行[{match_type}]找到这首乐曲:', matched_songs[0])
         return
     
     # 多个结果使用分页展示
@@ -1135,6 +1266,10 @@ help_categories = {
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
             '/la global status/on/off - 查看或修改全局开关',
             '/la update - 通过 Fandom/MediaWiki API 更新曲库',
+            '/la sync - 预览 Wiki Songs 页面同步（仅骰主）',
+            '/la sync apply - 实际同步 Wiki Songs 页面（仅骰主）',
+            '/la cover status - 查看本地曲绘缓存（仅骰主）',
+            '/la cover update - 下载缺失曲绘（仅骰主）',
             '/la table update - 从 Excel 定数表更新 song_table.json',
         ],
         'priority': [
@@ -1146,6 +1281,9 @@ help_categories = {
             '/la off',
             '/la on',
             '/la update',
+            '/la sync',
+            '/la sync apply',
+            '/la cover update',
             '/la table update',
         ],
     },
@@ -1301,6 +1439,8 @@ command_handler_dict = {
     'time': lambda event, arg: handle_time(event),
     'all': lambda event, arg: handle_all(event),
     'update': lambda event, arg: handle_update(event),
+    'sync': handle_sync,
+    'cover': handle_cover,
     'cal': handle_cal,
     'notes': lambda event, arg: handle_notes(event),
     'rating': lambda event, arg: handle_rating(event),

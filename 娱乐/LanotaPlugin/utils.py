@@ -274,6 +274,25 @@ def get_song_table_path() -> str:
     return os.path.join(get_song_data_dir(), config.song_table_file_name)
 
 
+def get_cover_art_dir() -> str:
+    """获取运行期曲绘缓存目录。"""
+    return ensure_folder(os.path.join(config.plugin_data_dir, config.cover_art_folder_name))
+
+
+def get_cover_index_path() -> str:
+    """获取曲绘缓存索引文件。"""
+    return os.path.join(get_cover_art_dir(), config.cover_index_file_name)
+
+
+def get_seed_cover_art_dir() -> str:
+    """获取随插件源码/安装包发布的预置曲绘目录。"""
+    return str(config.asset_data_dir / config.cover_art_folder_name)
+
+
+def get_seed_cover_index_path() -> str:
+    return os.path.join(get_seed_cover_art_dir(), config.cover_index_file_name)
+
+
 def get_excel_table_dir() -> str:
     return ensure_folder(os.path.join(config.plugin_data_dir, config.excel_table_folder_name))
 
@@ -355,6 +374,7 @@ def initialize_plugin(Proc=None) -> None:
         ensure_folder(config.plugin_data_dir)
         ensure_folder(get_storage_dir())
         ensure_folder(get_song_data_dir())
+        ensure_folder(get_cover_art_dir())
         ensure_folder(get_excel_table_dir())
         ensure_folder(get_generate_image_dir())
         save_global_config(load_global_config())
@@ -666,6 +686,24 @@ def reply_image(plugin_event, image_path: str, fallback_text: str) -> Any:
         return plugin_event.reply(f'[OP:image,file={op_escape(file_uri)}]')
     except Exception:
         return reply_message(plugin_event, fallback_text)
+
+
+def reply_images_with_text(plugin_event, image_path_list: list[str], message_text: str = '') -> Any:
+    """在一条 olivos_string 消息中发送多张本地图片，并可附带文本。"""
+    segment_list = []
+    for image_path in image_path_list:
+        if not image_path or not os.path.isfile(image_path):
+            continue
+        file_uri = Path(image_path).resolve().as_uri()
+        segment_list.append(f'[OP:image,file={op_escape(file_uri)}]')
+    if message_text:
+        segment_list.append(f'\n{safe_str(message_text)}')
+    if not segment_list:
+        return reply_message(plugin_event, message_text)
+    try:
+        return plugin_event.reply(''.join(segment_list))
+    except Exception:
+        return reply_message(plugin_event, message_text)
 
 
 def split_text_by_line(message_text: str, max_chars: int = 1000) -> list[str]:

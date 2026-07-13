@@ -20489,7 +20489,7 @@
     },
     "time": "2:32",
     "bpm": "110",
-    "version": "3.1.0 - November 26, 2024",
+    "version": "3.1.0 - November 26, 2025",
     "area": "Central Station",
     "genre": "Pop",
     "vocals": "punipunidenki",
@@ -20524,7 +20524,7 @@
     },
     "time": "2:56",
     "bpm": "160",
-    "version": "3.1.0 - November 26, 2024",
+    "version": "3.1.0 - November 26, 2025",
     "area": "Central Station",
     "genre": "",
     "vocals": "None",
@@ -20618,7 +20618,7 @@
     },
     "time": "2:45",
     "bpm": "120",
-    "version": "3.1.0 - November 26, 2024",
+    "version": "3.1.0 - November 26, 2025",
     "area": "Central Station",
     "genre": "",
     "vocals": "None",
@@ -22502,6 +22502,495 @@
       "This song was an entry to [https://manbow.nothing.sh/event/event.cgi?action=More_def&num=228&event=149 BOF21], where it placed 60th.",
       "This song was made entirely with piano samples, including the percussion and bass.",
       "[https://wikiwiki.jp/lanotagame/Piano...or%20is%20it%3F Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 704,
+    "title": "Fall in Me",
+    "title_outside": "Fall in Me",
+    "artist": "memex",
+    "chapter": "Event-108",
+    "category": "event",
+    "difficulty": {
+      "whisper": "4",
+      "acoustic": "7",
+      "ultra": "12",
+      "master": "14"
+    },
+    "time": "2:15",
+    "bpm": "136",
+    "version": "3.2.6 - July 9, 2026",
+    "area": "Tracklist Mode",
+    "genre": "J-Pop",
+    "vocals": "aran",
+    "chart_design": "",
+    "cover_art": "CloA(Artwork CG), Miu.(Artwork Design)",
+    "notes": {
+      "whisper": "",
+      "acoustic": "",
+      "ultra": "602",
+      "master": "875"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Fall_in_Me",
+    "Trivia": [
+      "This song was released as a single and appears on memex's 3rd EP \"override\". ([https://linkco.re/ByFdSu6b?lang=en Linkcore])",
+      "This song also appears in Rotaeno and [https://arcstarellia.miraheze.org/wiki/Fall_in_Me ELLIA].",
+      "[https://wikiwiki.jp/lanotagame/Fall%20in%20Me Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 705,
+    "title": "Dreadmourn (Gamesize Edit)",
+    "title_outside": "Dreadmourn (Gamesize Edit)",
+    "artist": "Juggernaut.",
+    "chapter": "Event-109",
+    "category": "event",
+    "difficulty": {
+      "whisper": "5",
+      "acoustic": "9",
+      "ultra": "13",
+      "master": "15"
+    },
+    "time": "2:50",
+    "bpm": "220",
+    "version": "3.2.6 - July 9, 2026",
+    "area": "Tracklist Mode",
+    "genre": "Gothic Hardcore",
+    "vocals": "None",
+    "chart_design": "",
+    "cover_art": "Illust : 48OKU, Design : Cube",
+    "notes": {
+      "whisper": "",
+      "acoustic": "953",
+      "ultra": "1350",
+      "master": "1967"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Dreadmourn_(Gamesize_Edit)",
+    "Trivia": [
+      "The full version of this song can be found on Juggernaut.'s album [https://artists.landr.com/991043671947 Archive2].",
+      "[https://wikiwiki.jp/lanotagame/Dreadmourn%20%28Gamesize%20Edit%29 Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 706,
+    "title": "Apotheosis (Lanota Edit)",
+    "title_outside": "Apotheosis (Lanota Edit)",
+    "artist": "Team Grimoire & Laur",
+    "chapter": "Event-110",
+    "category": "event",
+    "difficulty": {
+      "whisper": "5",
+      "acoustic": "10",
+      "ultra": "13+",
+      "master": "15+"
+    },
+    "time": "3:14",
+    "bpm": "185",
+    "version": "3.2.6 - July 9, 2026",
+    "area": "Tracklist Mode",
+    "genre": "Gothic Hardcore",
+    "vocals": "Samples",
+    "chart_design": "",
+    "cover_art": "M1shamo(みしゃも)",
+    "notes": {
+      "whisper": "1052",
+      "acoustic": "1451",
+      "ultra": "2006",
+      "master": "2755"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Apotheosis_(Lanota_Edit)",
+    "Trivia": [
+      "According to Laur, this song was first made for Lanota.",
+      "The full version of this song can be found on Laur and Team Grimoire's dual album [https://laur-teamgrimoire-alisha.tumblr.com/ ALISHA].",
+      "[https://wikiwiki.jp/lanotagame/Apotheosis%20%28Lanota%20Edit%29 Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 707,
+    "title": "ZERO",
+    "title_outside": "ZERO",
+    "artist": "Notorious(Nota & TRIAL)",
+    "chapter": "Inf-382",
+    "category": "subscription",
+    "difficulty": {
+      "whisper": "4",
+      "acoustic": "7",
+      "ultra": "12",
+      "master": "14+"
+    },
+    "time": "2:06",
+    "bpm": "200",
+    "version": "3.2.6 - June 4, 2026",
+    "area": "Ritmo's Library",
+    "genre": "Happy Hardcore",
+    "vocals": "Samples",
+    "chart_design": "",
+    "cover_art": "出前",
+    "notes": {
+      "whisper": "",
+      "acoustic": "",
+      "ultra": "",
+      "master": "1109"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/ZERO",
+    "Trivia": [
+      "This song was an entry in [https://manbow.nothing.sh/event/event.cgi?action=More_def&num=181&event=149 BOF21], where it placed 93rd.",
+      "* Its BMS genre is \"LUSTFUL\".",
+      "[https://wikiwiki.jp/lanotagame/ZERO Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 708,
+    "title": "CHEEZCAKE",
+    "title_outside": "CHEEZCAKE",
+    "artist": "Xeno",
+    "chapter": "Inf-383",
+    "category": "subscription",
+    "difficulty": {
+      "whisper": "4",
+      "acoustic": "6",
+      "ultra": "11",
+      "master": "13"
+    },
+    "time": "2:01",
+    "bpm": "115",
+    "version": "3.2.6 - June 11, 2026",
+    "area": "Ritmo's Library",
+    "genre": "Future Funk",
+    "vocals": "None",
+    "chart_design": "",
+    "cover_art": "BBBBB_old",
+    "notes": {
+      "whisper": "",
+      "acoustic": "",
+      "ultra": "",
+      "master": "787"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/CHEEZCAKE",
+    "Trivia": [
+      "This song was an entry in the FEAT Contest 2025.",
+      "* This is the second song to have been an entry to the FEAT Contest, after Yumetsumugi no Wanderer.",
+      "[https://wikiwiki.jp/lanotagame/CHEEZCAKE Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 709,
+    "title": "Luxe Chain",
+    "title_outside": "Luxe Chain",
+    "artist": "Lundy",
+    "chapter": "Inf-384",
+    "category": "subscription",
+    "difficulty": {
+      "whisper": "4",
+      "acoustic": "8",
+      "ultra": "12",
+      "master": "14"
+    },
+    "time": "2:47",
+    "bpm": "162",
+    "version": "3.2.6 - June 18, 2026",
+    "area": "Ritmo's Library",
+    "genre": "Hardcore",
+    "vocals": "None",
+    "chart_design": "",
+    "cover_art": "Rytas & BuzztoBesmo",
+    "notes": {
+      "whisper": "",
+      "acoustic": "",
+      "ultra": "",
+      "master": "1226"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Luxe_Chain",
+    "Trivia": [
+      "This song's artwork is (as of this posting) incorrectly credited on Lanota's official Twitter to \"RytaRider\" instead of \"RytaRyder\".",
+      "This song also appears in \"EX-XDRiVER\".",
+      "[https://wikiwiki.jp/lanotagame/Luxe%20Chain Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 710,
+    "title": "Starlight Collector",
+    "title_outside": "Starlight Collector",
+    "artist": "A. Ki",
+    "chapter": "Inf-385",
+    "category": "subscription",
+    "difficulty": {
+      "whisper": "3",
+      "acoustic": "7",
+      "ultra": "11",
+      "master": "14"
+    },
+    "time": "2:22",
+    "bpm": "150",
+    "version": "3.2.6 - June 25, 2026",
+    "area": "Ritmo's Library",
+    "genre": "Trance",
+    "vocals": "None",
+    "chart_design": "",
+    "cover_art": "Croca(크로카)",
+    "notes": {
+      "whisper": "",
+      "acoustic": "",
+      "ultra": "",
+      "master": "1028"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Starlight_Collector",
+    "Legacy": {}
+  },
+  {
+    "id": 711,
+    "title": "Stella_teller.exe",
+    "title_outside": "Stella_teller.exe",
+    "artist": "Shiena",
+    "chapter": "Inf-386",
+    "category": "subscription",
+    "difficulty": {
+      "whisper": "4",
+      "acoustic": "7",
+      "ultra": "11",
+      "master": "14"
+    },
+    "time": "1:57",
+    "bpm": "183.33-207",
+    "version": "3.2.6 - July 2, 2026",
+    "area": "Ritmo's Library",
+    "genre": "Hard Renaissance",
+    "vocals": "None",
+    "chart_design": "",
+    "cover_art": "谷鹿タニシ",
+    "notes": {
+      "whisper": "",
+      "acoustic": "",
+      "ultra": "",
+      "master": "1044"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Stella_teller_exe",
+    "Trivia": [
+      "This song can be found on クソデカブラザーズ(仮)(kusodekabro)'s 1st Compilation Album \"漸琴線\".",
+      "[https://wikiwiki.jp/lanotagame/Stella_teller_exe Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 712,
+    "title": "Ave Mary Sue",
+    "title_outside": "Ave Mary Sue",
+    "artist": "Musanuriyu vs. Sa9chan",
+    "chapter": "Inf-387",
+    "category": "subscription",
+    "difficulty": {
+      "whisper": "6",
+      "acoustic": "9",
+      "ultra": "13",
+      "master": "15"
+    },
+    "time": "2:15",
+    "bpm": "154",
+    "version": "3.2.6 - July 9, 2026",
+    "area": "Ritmo's Library",
+    "genre": "Piano Trance",
+    "vocals": "None",
+    "chart_design": "",
+    "cover_art": "Sa9chan",
+    "notes": {
+      "whisper": "",
+      "acoustic": "",
+      "ultra": "",
+      "master": "1184"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Ave_Mary_Sue",
+    "Trivia": [
+      "This song's title in Japanese is \"メアリー・スーを讃えて\".",
+      "This song was an entry to Cosmic Radio 2025.",
+      "[https://wikiwiki.jp/lanotagame/Ave%20Mary%20Sue Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 713,
+    "title": "Rollin Girl",
+    "title_outside": "Rollin Girl",
+    "artist": "wowaka",
+    "chapter": "WS-1",
+    "category": "expansion",
+    "difficulty": {
+      "whisper": "4",
+      "acoustic": "6",
+      "ultra": "10",
+      "master": "13+"
+    },
+    "time": "3:11",
+    "bpm": "195",
+    "version": "3.2.8 - June 16, 2026",
+    "area": "",
+    "genre": "",
+    "vocals": "Hatsune Miku",
+    "chart_design": "",
+    "cover_art": "wowaka",
+    "notes": {
+      "whisper": "733",
+      "acoustic": "1019",
+      "ultra": "1437",
+      "master": "1792"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Rollin_Girl",
+    "Trivia": [
+      "This song's title in Japanese is \"ローリンガール\".",
+      "This song is included on the compilation CDs \"EXIT TUNES PRESENTS Supernova 2\" and \"EXIT TUNES PRESENTS Vocalogenesis feat. Hatsune Miku\".",
+      "* However, the version included on \"Supernova 2\" is the album version. (*Quoted from [https://w.atwiki.jp/hmiku/pages/8759.html Hatsune Miku wiki])",
+      "This song is also featured in #Compass Live Arena, [https://silentblue.remywiki.com/Rolling_girl CHUNITHM], GROOVE COASTER, [https://remywiki.com/Rolling_girl SOUND VOLTEX], [https://silentblue.remywiki.com/Rolling_girl maimai], [https://remywiki.com/Rolling_girl REFLEC BEAT] Daigasso! Band Brothers P, Project SEKAI, Hatsune Miku -Project DIVA extend-, [https://remywiki.com/Rolling_girl jubeat] and Taiko no Tatsujin.",
+      "[https://wikiwiki.jp/lanotagame/Rollin%20Girl Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 714,
+    "title": "Unhappy Refrain",
+    "title_outside": "Unhappy Refrain",
+    "artist": "wowaka",
+    "chapter": "WS-2",
+    "category": "expansion",
+    "difficulty": {
+      "whisper": "6",
+      "acoustic": "8",
+      "ultra": "13+",
+      "master": "15+"
+    },
+    "time": "3:27",
+    "bpm": "205",
+    "version": "3.2.8 - June 16, 2026",
+    "area": "",
+    "genre": "",
+    "vocals": "Hatsune Miku",
+    "chart_design": "",
+    "cover_art": "wowaka",
+    "notes": {
+      "whisper": "910",
+      "acoustic": "1206",
+      "ultra": "1611",
+      "master": "2052"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Unhappy_Refrain",
+    "Trivia": [
+      "This song's title in Japanese is \"アンハッピーリフレイン\".",
+      "This song is the title track from wowaka's first full album, \"Unhappy Refrain\".",
+      "This song is also featured in [https://silentblue.remywiki.com/Unhappy_refrain CHUNITHM], GROOVE COASTER, [https://remywiki.com/Unhappy_refrain SOUND VOLTEX], [https://silentblue.remywiki.com/Unhappy_refrain maimai], [https://silentblue.remywiki.com/Unhappy_refrain O.N.G.E.K.I.], Project SEKAI, Hatsune Miku -Project DIVA- f and Daigasso! Band Brothers P.",
+      "[https://wikiwiki.jp/lanotagame/Unhappy%20Refrain Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 715,
+    "title": "Unknown Mother Goose",
+    "title_outside": "Unknown Mother Goose",
+    "artist": "wowaka",
+    "chapter": "WS-3",
+    "category": "expansion",
+    "difficulty": {
+      "whisper": "5",
+      "acoustic": "10",
+      "ultra": "13",
+      "master": "15"
+    },
+    "time": "2:51",
+    "bpm": "222",
+    "version": "3.2.8 - June 16, 2026",
+    "area": "",
+    "genre": "",
+    "vocals": "Hatsune Miku + wowaka",
+    "chart_design": "",
+    "cover_art": "wowaka",
+    "notes": {
+      "whisper": "681",
+      "acoustic": "853",
+      "ultra": "1343",
+      "master": "1836"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Unknown_Mother_Goose",
+    "Trivia": [
+      "This song's title in Japanese is \"アンノウン・マザーグース\".",
+      "The official announcement on social media stated \"Unknown Mother-Goose,\" but in the actual game, it's written as \"Unknown Mother Goose.\" (The hyphen has been changed to a space.)<br>The reason is unknown.",
+      "This song is also featured in #Compass Live Arena, [https://silentblue.remywiki.com/Unknown_Mother_Goose Sega's GekiChuMai series], [https://remywiki.com/Unknown_Mother-Goose DANCE aROUND], GROOVE COASTER, Muse Dash and Project SEKAI.",
+      "[https://wikiwiki.jp/lanotagame/Unknown%20Mother%20Goose Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 716,
+    "title": "Ura-Omote Lovers",
+    "title_outside": "Ura-Omote Lovers",
+    "artist": "wowaka",
+    "chapter": "WS-4",
+    "category": "expansion",
+    "difficulty": {
+      "whisper": "3",
+      "acoustic": "7",
+      "ultra": "11",
+      "master": "14"
+    },
+    "time": "3:04",
+    "bpm": "159",
+    "version": "3.2.8 - June 16, 2026",
+    "area": "",
+    "genre": "",
+    "vocals": "Hatsune Miku",
+    "chart_design": "",
+    "cover_art": "wowaka",
+    "notes": {
+      "whisper": "619",
+      "acoustic": "993",
+      "ultra": "1472",
+      "master": "1580"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/Ura-Omote_Lovers",
+    "Trivia": [
+      "This song's title in Japanese is \"裏表ラバーズ\".",
+      "This song is included in \"EXIT TUNES PRESENTS Vocalolegend feat. Hatsune Miku,\" the third VOCALOID compilation album from EXIT TUNES.",
+      "This song is also featured in [https://silentblue.remywiki.com/Uraomote_lovers CHUNITHM], [https://silentblue.remywiki.com/Uraomote_lovers maimai], [https://silentblue.remywiki.com/Uraomote_lovers O.N.G.E.K.I.], Project SEKAI, [https://remywiki.com/Uraomote_lovers SOUND VOLTEX], [https://remywiki.com/Uraomote_lovers jubeat], [https://remywiki.com/Uraomote_lovers REFLEC BEAT] GROOVE COASTER, Hatsune Miku -Project DIVA extend-, Hatsune Miku -Project DIVA- F2nd and Daigasso! Band Brothers P.",
+      "[https://wikiwiki.jp/lanotagame/Ura-Omote%20Lovers Japanese wiki]"
+    ],
+    "Legacy": {}
+  },
+  {
+    "id": 717,
+    "title": "World's End Dancehall.",
+    "title_outside": "World's End Dancehall.",
+    "artist": "wowaka",
+    "chapter": "WS-5",
+    "category": "expansion",
+    "difficulty": {
+      "whisper": "4",
+      "acoustic": "8",
+      "ultra": "12",
+      "master": "14+"
+    },
+    "time": "3:32",
+    "bpm": "171",
+    "version": "3.2.8 - June 16, 2026",
+    "area": "",
+    "genre": "",
+    "vocals": "Hatsune Miku and Megurine Luka",
+    "chart_design": "",
+    "cover_art": "wowaka",
+    "notes": {
+      "whisper": "795",
+      "acoustic": "1074",
+      "ultra": "1341",
+      "master": "1971"
+    },
+    "source_url": "https://lanota.fandom.com/wiki/World's_End_Dancehall.",
+    "Trivia": [
+      "This song's title in Japanese is \"ワールズエンド・ダンスホール\".",
+      "This song is included in the compilation album \"VOCAROCK collection feat. Hatsune Miku,\" and a remastered version is included in wowaka's solo album \"Unhappy Refrain\".",
+      "This song is also featured in #Compass Live Arena, Fit Boxing, [https://silentblue.remywiki.com/World%27s_end_dancehall CHUNITHM], [https://silentblue.remywiki.com/World%27s_end_dancehall maimai], [https://silentblue.remywiki.com/World%27s_end_dancehall O.N.G.E.K.I.], Project SEKAI, Hatsune Miku -Project DIVA- f, Initial D THE ARCADE, Daigasso! Band Brothers P, GROOVE COASTER, [https://remywiki.com/World%27s_end_dancehall SOUND VOLTEX], [https://remywiki.com/World%27s_end_dancehall jubeat], [https://remywiki.com/World%27s_end_dancehall REFLEC BEAT] and Taiko no Tatsujin.",
+      "[https://wikiwiki.jp/lanotagame/World%27s%20End%20Dancehall. Japanese wiki]"
     ],
     "Legacy": {}
   }

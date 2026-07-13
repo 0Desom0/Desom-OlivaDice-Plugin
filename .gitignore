@@ -7,3 +7,8 @@
 # 测试用文件
 /测试
 __pycache__
+# OlivOS 运行期配置与缓存
+/plugin/data/
+/娱乐/LanotaPlugin/Data/CoverArt/
+lanota_songs_preview.wikitext
+lanota_songs_preview.diff

@@ -16,6 +16,8 @@ user_data_file_name = 'UserData.json'
 song_list_file_name = 'song_list.json'
 song_alias_file_name = 'song_alias.json'
 song_table_file_name = 'song_table.json'
+cover_index_file_name = 'cover_index.json'
+cover_art_folder_name = 'CoverArt'
 excel_table_folder_name = 'excel_table'
 excel_table_extension_list = ['.xlsx', '.xlsm']
 font_file_name = 'fonts.ttf'
@@ -31,6 +33,9 @@ selection_timeout_seconds = 3600  # 选择会话超时时间（秒）
 api_base_url = 'https://lanota.fandom.com'
 api_url = f'{api_base_url}/api.php'
 api_timeout_seconds = 15
+cover_download_timeout_seconds = 60
+cover_download_max_bytes = 20 * 1024 * 1024
+cover_download_workers = 6
 
 default_global_config = {
     'global_enable_switch': True,
@@ -40,6 +45,12 @@ default_global_config = {
         '1037559220',
         '767569571',
     ],
+    # 真实账号信息只填写到运行期 plugin/data/LanotaPlugin/global_config.json。
+    'wiki_sync_username': '',
+    'wiki_sync_bot_password': '',
+    'wiki_sync_edit_summary': 'Sync song list from individual song pages via MediaWiki API',
+    'send_cover_art': True,
+    'download_cover_on_demand': True,
 }
 
 default_bot_config = {
