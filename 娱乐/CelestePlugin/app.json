@@ -1,0 +1,23 @@
+{
+  "name": "CelestePlugin",
+  "author": "Desom-fu",
+  "namespace": "CelestePlugin",
+  "message_mode": "olivos_string",
+  "info": "Celeste Mod 查询、随机、每日推荐与无尽挑战插件",
+  "version": "1.2.1",
+  "svn": 7,
+  "compatible_svn": 190,
+  "priority": 30000,
+  "support": [
+    {
+      "sdk": "onebot",
+      "platform": "qq",
+      "model": "all"
+    },
+    {
+      "sdk": "all",
+      "platform": "all",
+      "model": "all"
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+# CelestePlugin 社区 YAML 数据源解析依赖
+PyYAML>=6.0
