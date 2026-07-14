@@ -2,6 +2,7 @@
 """CelestePlugin 纯业务逻辑测试。"""
 
 import copy
+import json
 import sys
 import tempfile
 import unittest
@@ -97,6 +98,64 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertEqual(profile['game_id'], 6460)
         self.assertEqual(profile['cover_url'], 'https://images.gamebanana.com/img/ss/mods/cover.jpg')
 
+    def test_cover_priority_wegfan_then_0x0ade_then_gamebanana(self):
+        detail = function.apply_cover_priority(
+            {
+                'mirrored_screenshots': ['https://0x0ade.example/cover.png'],
+                'screenshots': ['https://images.gamebanana.com/cover.jpg'],
+                'cover_url': 'https://images.gamebanana.com/fallback.jpg',
+            },
+            'https://celeste.weg.fan/images/cover.jpg',
+        )
+        self.assertEqual(detail['cover_url'], 'https://celeste.weg.fan/images/cover.jpg')
+        self.assertEqual(
+            detail['cover_urls'],
+            [
+                'https://celeste.weg.fan/images/cover.jpg',
+                'https://0x0ade.example/cover.png',
+                'https://images.gamebanana.com/cover.jpg',
+                'https://images.gamebanana.com/fallback.jpg',
+            ],
+        )
+
+    def test_wegfan_cover_requires_matching_gamebanana_id(self):
+        response_data = {
+            'data': {
+                'content': [
+                    {
+                        'gameBananaId': 2,
+                        'gameBananaSection': 'Mod',
+                        'screenshots': [{'url': 'https://celeste.weg.fan/wrong.jpg'}],
+                    },
+                    {
+                        'gameBananaId': 1,
+                        'gameBananaSection': 'Mod',
+                        'screenshots': [{'url': 'https://celeste.weg.fan/correct.jpg'}],
+                    },
+                ]
+            },
+            'code': 200,
+        }
+        with (
+            mock.patch.object(
+                function,
+                'http_get',
+                return_value={
+                    'ok': True,
+                    'status': 200,
+                    'headers': {},
+                    'content': json.dumps(response_data).encode('utf-8'),
+                },
+            ),
+            mock.patch.object(
+                function.utils,
+                'load_global_config',
+                return_value={'cover_mirror_lookup_timeout_seconds': 6},
+            ),
+        ):
+            cover_url = function.get_wegfan_cover_url('Mod', 1, 'Test Map')
+        self.assertEqual(cover_url, 'https://celeste.weg.fan/correct.jpg')
+
     def test_cover_image_is_first_segment(self):
         detail_text = function.format_detail(
             {
@@ -163,6 +222,71 @@ class CelestePluginFunctionTest(unittest.TestCase):
             first = function.get_daily_mod('2026-07-13')
             second = function.get_daily_mod('2026-07-13')
         self.assertEqual(first['data']['id'], second['data']['id'])
+
+    def test_title_search_short_cache(self):
+        response_data = [{'GameBananaId': 1, 'GameBananaType': 'Mod', 'Name': 'Cached Map'}]
+        function.search_memory_cache.clear()
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with (
+                mock.patch.object(function.utils, 'get_shared_cache_dir', return_value=temporary_dir),
+                mock.patch.object(
+                    function.utils,
+                    'load_global_config',
+                    return_value={'search_cache_seconds': 300},
+                ),
+                mock.patch.object(
+                    function,
+                    'http_get',
+                    return_value={
+                        'ok': True,
+                        'status': 200,
+                        'headers': {},
+                        'content': json.dumps(response_data).encode('utf-8'),
+                    },
+                ) as http_mock,
+            ):
+                first = function.search_title('Cached Map')
+                second = function.search_title('cached map')
+        self.assertEqual(first, second)
+        self.assertEqual(http_mock.call_count, 1)
+
+    def test_full_detail_short_cache(self):
+        response_data = {'GameBananaId': 1, 'GameBananaType': 'Mod', 'Name': 'Cached Detail'}
+        function.detail_memory_cache.clear()
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with (
+                mock.patch.object(function.utils, 'get_shared_cache_dir', return_value=temporary_dir),
+                mock.patch.object(
+                    function.utils,
+                    'load_global_config',
+                    return_value={'detail_cache_seconds': 600},
+                ),
+                mock.patch.object(
+                    function,
+                    'http_get',
+                    return_value={
+                        'ok': True,
+                        'status': 200,
+                        'headers': {},
+                        'content': json.dumps(response_data).encode('utf-8'),
+                    },
+                ) as http_mock,
+                mock.patch.object(function, 'get_profile', return_value={'ok': False, 'error': ''}) as profile_mock,
+                mock.patch.object(function, 'load_updater_index', return_value={'ok': True, 'data': {}, 'error': ''}),
+                mock.patch.object(
+                    function,
+                    'get_wegfan_cover_url',
+                    return_value='https://celeste.weg.fan/cached.jpg',
+                ) as cover_mock,
+            ):
+                first = function.get_item_by_id(1, 'Mod')
+                second = function.get_item_by_id(1, 'Mod')
+        self.assertTrue(first['ok'])
+        self.assertTrue(second['ok'])
+        self.assertEqual(second['data']['cover_url'], 'https://celeste.weg.fan/cached.jpg')
+        self.assertEqual(http_mock.call_count, 1)
+        self.assertEqual(profile_mock.call_count, 1)
+        self.assertEqual(cover_mock.call_count, 1)
 
     def test_random_candidates_only_include_maps(self):
         database = [

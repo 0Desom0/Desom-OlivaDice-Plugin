@@ -36,6 +36,8 @@ yaml_cache_lock_dict = {
 database_memory_cache: dict[str, Any] = {}
 updater_memory_cache: dict[str, Any] = {}
 profile_memory_cache: dict[str, dict[str, Any]] = {}
+search_memory_cache: dict[str, dict[str, Any]] = {}
+detail_memory_cache: dict[str, dict[str, Any]] = {}
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -55,7 +57,7 @@ def get_timeout_seconds() -> int:
 
 def build_headers(extra_headers: dict[str, str] | None = None) -> dict[str, str]:
     headers = {
-        'User-Agent': 'CelestePlugin-OlivOS/1.2',
+        'User-Agent': 'CelestePlugin-OlivOS/1.3',
         'Accept': 'application/json, text/yaml, text/plain, */*',
     }
     if isinstance(extra_headers, dict):
@@ -67,12 +69,14 @@ def http_get(
     url: str,
     extra_headers: dict[str, str] | None = None,
     no_redirect: bool = False,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     """执行 GET，并统一返回状态、响应头和字节内容。"""
     request = urllib.request.Request(url, headers=build_headers(extra_headers), method='GET')
     opener = urllib.request.build_opener(NoRedirectHandler()) if no_redirect else urllib.request.build_opener()
     try:
-        with opener.open(request, timeout=get_timeout_seconds()) as response:
+        timeout = get_timeout_seconds() if timeout_seconds is None else max(1, int(timeout_seconds))
+        with opener.open(request, timeout=timeout) as response:
             return {
                 'ok': True,
                 'status': int(response.status),
@@ -129,6 +133,51 @@ def get_cache_paths(cache_name: str) -> tuple[str, str]:
         os.path.join(cache_dir, f'{cache_name}.yaml'),
         os.path.join(cache_dir, f'{cache_name}.meta.json'),
     )
+
+
+def get_short_cache_path(cache_group: str, cache_key: str) -> str:
+    safe_group = re.sub(r'[^A-Za-z0-9_-]', '', cache_group) or 'short'
+    digest = hashlib.sha256(cache_key.encode('utf-8')).hexdigest()
+    folder = utils.ensure_folder(os.path.join(utils.get_shared_cache_dir(), safe_group))
+    return os.path.join(folder, f'{digest}.json')
+
+
+def load_short_cache(
+    memory_cache: dict[str, dict[str, Any]],
+    cache_group: str,
+    cache_key: str,
+    ttl_seconds: int,
+) -> Any:
+    """读取短期内存/磁盘缓存；返回 None 表示未命中。"""
+    if ttl_seconds <= 0:
+        return None
+    current_time = time.time()
+    with cache_lock:
+        memory_value = memory_cache.get(cache_key)
+        if memory_value and current_time - float(memory_value.get('cached_at', 0) or 0) < ttl_seconds:
+            return copy.deepcopy(memory_value.get('data'))
+    cache_path = get_short_cache_path(cache_group, cache_key)
+    cached_value = utils.read_json_file(cache_path, {})
+    if not isinstance(cached_value, dict):
+        return None
+    if current_time - float(cached_value.get('cached_at', 0) or 0) >= ttl_seconds:
+        return None
+    with cache_lock:
+        memory_cache[cache_key] = cached_value
+    return copy.deepcopy(cached_value.get('data'))
+
+
+def save_short_cache(
+    memory_cache: dict[str, dict[str, Any]],
+    cache_group: str,
+    cache_key: str,
+    data: Any,
+) -> None:
+    """保存短期内存/磁盘缓存，失败时不影响主查询。"""
+    cache_value = {'cached_at': int(time.time()), 'data': copy.deepcopy(data)}
+    with cache_lock:
+        memory_cache[cache_key] = cache_value
+    utils.save_json_file(get_short_cache_path(cache_group, cache_key), cache_value)
 
 
 def parse_yaml_text(yaml_text: str) -> Any:
@@ -321,9 +370,17 @@ def normalize_item(raw_item: Any) -> dict[str, Any]:
         mirrored_screenshots = []
     screenshots = [utils.safe_str(url) for url in screenshots if utils.safe_str(url)]
     mirrored_screenshots = [utils.safe_str(url) for url in mirrored_screenshots if utils.safe_str(url)]
+    provided_cover_urls = raw_item.get('cover_urls', [])
+    if not isinstance(provided_cover_urls, list):
+        provided_cover_urls = []
+    provided_cover_urls = [utils.safe_str(url) for url in provided_cover_urls if utils.safe_str(url)]
     cover_url = utils.safe_str(raw_item.get('cover_url', ''))
-    if not cover_url:
-        cover_url = screenshots[0] if screenshots else (mirrored_screenshots[0] if mirrored_screenshots else '')
+    if provided_cover_urls:
+        cover_url = provided_cover_urls[0]
+    elif mirrored_screenshots:
+        cover_url = mirrored_screenshots[0]
+    elif not cover_url:
+        cover_url = screenshots[0] if screenshots else ''
     return {
         'id': item_id,
         'item_type': utils.safe_str(raw_item.get('GameBananaType', raw_item.get('item_type', 'Mod')), 'Mod'),
@@ -346,6 +403,7 @@ def normalize_item(raw_item: Any) -> dict[str, Any]:
         'files': [normalize_file(file_item) for file_item in files if isinstance(file_item, dict)],
         'screenshots': screenshots,
         'mirrored_screenshots': mirrored_screenshots,
+        'cover_urls': provided_cover_urls,
         'cover_url': cover_url,
         'credits': copy.deepcopy(raw_item.get('credits', [])),
         'tags': list(raw_item.get('tags', [])) if isinstance(raw_item.get('tags', []), list) else [],
@@ -357,6 +415,11 @@ def search_title(query: str) -> dict[str, Any]:
     query_text = utils.safe_str(query).strip()
     if not query_text:
         return {'ok': False, 'results': [], 'count': 0, 'error': '请输入搜索关键词'}
+    cache_key = query_text.casefold()
+    cache_ttl = max(0, int(utils.load_global_config().get('search_cache_seconds', 300)))
+    cached_result = load_short_cache(search_memory_cache, 'searches', cache_key, cache_ttl)
+    if isinstance(cached_result, dict):
+        return cached_result
     url = f'{config.search_api_url}?{urllib.parse.urlencode({"q": query_text, "full": "true"})}'
     try:
         data = decode_json_response(http_get(url))
@@ -364,12 +427,15 @@ def search_title(query: str) -> dict[str, Any]:
         fallback = search_local(['name'], query_text)
         if fallback.get('ok'):
             fallback['notice'] = '标题搜索接口暂时不可用，本次使用本地数据库的普通包含匹配。'
+            save_short_cache(search_memory_cache, 'searches', cache_key, fallback)
             return fallback
         return {'ok': False, 'results': [], 'count': 0, 'error': utils.safe_str(exception_object)}
     if not isinstance(data, list):
         data = []
     results = [normalize_item(item) for item in data if isinstance(item, dict)]
-    return {'ok': True, 'results': results, 'count': len(results), 'error': ''}
+    result = {'ok': True, 'results': results, 'count': len(results), 'error': ''}
+    save_short_cache(search_memory_cache, 'searches', cache_key, result)
+    return result
 
 
 def make_index_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -596,7 +662,88 @@ def get_profile(item_type: str, item_id: int, force_refresh: bool = False) -> di
         return {'ok': False, 'data': {}, 'error': utils.safe_str(exception_object), 'from_cache': False}
 
 
-def get_item_by_id(item_id: int, item_type: str = 'Mod') -> dict[str, Any]:
+def get_wegfan_cover_url(item_type: str, item_id: int, item_name: str) -> str:
+    """通过 WEGFan 搜索接口按标题查询，再用 GameBanana ID 精确核对封面。"""
+    query_name = utils.safe_str(item_name).strip()
+    if item_id <= 0 or not query_name or query_name == '未知标题':
+        return ''
+    query = urllib.parse.urlencode(
+        {
+            'search': query_name,
+            'page': 1,
+            'size': 20,
+            'section': item_type,
+            'sort': 'updateAdded',
+        }
+    )
+    timeout = int(utils.load_global_config().get('cover_mirror_lookup_timeout_seconds', 6))
+    try:
+        response = http_get(f'{config.wegfan_search_url}?{query}', timeout_seconds=max(2, timeout))
+        raw_result = decode_json_response(response)
+    except Exception:
+        return ''
+    data = raw_result.get('data', {}) if isinstance(raw_result, dict) else {}
+    content = data.get('content', []) if isinstance(data, dict) else []
+    for raw_item in content if isinstance(content, list) else []:
+        if not isinstance(raw_item, dict):
+            continue
+        try:
+            gamebanana_id = int(raw_item.get('gameBananaId', 0) or 0)
+        except Exception:
+            continue
+        section = utils.safe_str(raw_item.get('gameBananaSection', '')).casefold()
+        if gamebanana_id != item_id or (section and section != item_type.casefold()):
+            continue
+        screenshots = raw_item.get('screenshots', [])
+        if not isinstance(screenshots, list):
+            return ''
+        for screenshot in screenshots:
+            if not isinstance(screenshot, dict):
+                continue
+            image_url = utils.safe_str(screenshot.get('url', '')).strip()
+            if image_url:
+                return image_url
+    return ''
+
+
+def apply_cover_priority(detail: dict[str, Any], wegfan_cover_url: str = '') -> dict[str, Any]:
+    """按 WEGFan、0x0ade、GameBanana 原站的顺序选择封面。"""
+    result = copy.deepcopy(detail)
+    candidate_urls = []
+    source_groups = [
+        [wegfan_cover_url],
+        result.get('mirrored_screenshots', []),
+        result.get('screenshots', []),
+        [result.get('cover_url', '')],
+    ]
+    for source_group in source_groups:
+        if not isinstance(source_group, list):
+            continue
+        for raw_url in source_group:
+            image_url = utils.safe_str(raw_url).strip()
+            if image_url and image_url not in candidate_urls:
+                candidate_urls.append(image_url)
+    result['cover_urls'] = candidate_urls
+    result['cover_url'] = candidate_urls[0] if candidate_urls else ''
+    return result
+
+
+def get_item_by_id(
+    item_id: int,
+    item_type: str = 'Mod',
+    include_cover_mirror: bool = True,
+) -> dict[str, Any]:
+    detail_cache_key = f'{item_type.casefold()}:{item_id}'
+    detail_cache_ttl = max(0, int(utils.load_global_config().get('detail_cache_seconds', 600)))
+    cached_detail = load_short_cache(
+        detail_memory_cache,
+        'details',
+        detail_cache_key,
+        detail_cache_ttl,
+    )
+    if isinstance(cached_detail, dict) and cached_detail.get('id'):
+        return {'ok': True, 'data': cached_detail, 'error': '', 'from_cache': True}
+
     query = urllib.parse.urlencode({'itemtype': item_type, 'itemid': item_id})
     try:
         raw_item = decode_json_response(http_get(f'{config.info_api_url}?{query}'))
@@ -635,7 +782,13 @@ def get_item_by_id(item_id: int, item_type: str = 'Mod') -> dict[str, Any]:
     updater_result = load_updater_index()
     detail['updater_components'] = updater_result.get('data', {}).get((item_type.lower(), item_id), [])
     detail['stale_warning'] = profile_result.get('error', '') or community_error or updater_result.get('error', '')
-    return {'ok': True, 'data': detail, 'error': ''}
+    wegfan_cover_url = ''
+    if include_cover_mirror:
+        wegfan_cover_url = get_wegfan_cover_url(item_type, item_id, detail.get('name', ''))
+    detail = apply_cover_priority(detail, wegfan_cover_url)
+    if include_cover_mirror:
+        save_short_cache(detail_memory_cache, 'details', detail_cache_key, detail)
+    return {'ok': True, 'data': detail, 'error': '', 'from_cache': False}
 
 
 def hydrate_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -992,7 +1145,7 @@ def get_random_map() -> dict[str, Any]:
         if not matched:
             last_error = '无法从随机地图地址解析 Mod ID'
             continue
-        detail_result = get_item_by_id(int(matched.group(1)), 'Mod')
+        detail_result = get_item_by_id(int(matched.group(1)), 'Mod', include_cover_mirror=False)
         if not detail_result.get('ok'):
             last_error = detail_result.get('error', '随机地图详情获取失败')
             continue

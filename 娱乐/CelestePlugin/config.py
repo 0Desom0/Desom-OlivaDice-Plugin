@@ -21,6 +21,7 @@ random_map_url = 'https://maddie480.ovh/celeste/random-map'
 database_url = 'https://everestapi.github.io/updatermirror/mod_search_database.yaml'
 updater_url = 'https://everestapi.github.io/updatermirror/everest_update.yaml'
 gamebanana_profile_url = 'https://gamebanana.com/apiv11/{item_type}/{item_id}/ProfilePage'
+wegfan_search_url = 'https://celeste.weg.fan/api/v2/submission/search'
 
 default_global_config = {
     'global_enable_switch': True,
@@ -28,6 +29,9 @@ default_global_config = {
     'api_timeout_seconds': 20,
     'database_cache_seconds': 21600,
     'profile_cache_seconds': 21600,
+    'search_cache_seconds': 300,
+    'detail_cache_seconds': 600,
+    'cover_mirror_lookup_timeout_seconds': 6,
     'result_page_size': 8,
     'selection_timeout_seconds': 300,
     'description_max_length': 320,
