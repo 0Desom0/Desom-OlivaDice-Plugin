@@ -379,30 +379,24 @@ def handle_today(plugin_event) -> None:
     today_date = function.get_hong_kong_date()
     cache_path = get_today_file_path(plugin_event)
     cached = utils.read_json_file(cache_path, {})
-    required_category = utils.safe_str(
-        utils.load_global_config().get('random_category_name', 'Maps'),
-        'Maps',
-    ).strip()
     cached_detail = cached.get('detail', {})
     if not isinstance(cached_detail, dict):
         cached_detail = {}
-    cached_category = utils.safe_str(cached_detail.get('category', '')).casefold()
-    cache_matches_category = not required_category or required_category.casefold() in cached_category
-    if cached.get('date') == today_date and cached_detail and cache_matches_category:
+    if (
+        cached.get('date') == today_date
+        and cached.get('source') == 'maddie_random_map'
+        and cached_detail
+    ):
         detail = cached_detail
     else:
         daily_result = function.get_daily_mod(today_date)
         if not daily_result.get('ok'):
             utils.reply_message(plugin_event, f'每日 Mod 获取失败：{daily_result.get("error", "未知错误")}')
             return
-        detail_result = function.hydrate_item(daily_result['data'])
-        if not detail_result.get('ok'):
-            utils.reply_message(plugin_event, f'每日 Mod 详情获取失败：{detail_result.get("error", "未知错误")}')
-            return
-        detail = detail_result['data']
+        detail = daily_result['data']
         utils.save_json_file(
             cache_path,
-            {'date': today_date, 'category_filter': required_category, 'detail': detail},
+            {'date': today_date, 'source': 'maddie_random_map', 'detail': detail},
         )
     text = function.format_detail(detail, heading=f'【{today_date} 每日 Celeste Mod】')
     utils.reply_long_text(plugin_event, text)
@@ -552,14 +546,17 @@ def handle_endless(plugin_event, argument: str) -> None:
         if initial_skips < 0 or initial_skips > 10:
             utils.reply_message(plugin_event, '初始跳过次数应为 0 至 10。')
             return
-        random_map_result = function.get_random_map()
+        random_map_result = function.get_random_map(include_cover_mirror=True)
         if not random_map_result.get('ok'):
             utils.reply_message(plugin_event, f'开始失败：{random_map_result.get("error", "无法抽取地图")}')
             return
         state = function.new_endless_state(initial_skips, random_map_result['data'])
         if not persist_endless_state(plugin_event, state):
             return
-        utils.reply_long_text(plugin_event, '新的 Celeste Endless 已开始。\n' + function.format_endless_state(state))
+        utils.reply_long_text(
+            plugin_event,
+            function.format_endless_state(state, notice='新的 Celeste Endless 已开始。'),
+        )
         return
 
     state = load_endless_state(plugin_event)
@@ -574,7 +571,7 @@ def handle_endless(plugin_event, argument: str) -> None:
         if state.get('status') != 'pending':
             utils.reply_message(plugin_event, '当前没有等待抽取的下一张地图。')
             return
-        random_map_result = function.get_random_map()
+        random_map_result = function.get_random_map(include_cover_mirror=True)
         if not random_map_result.get('ok'):
             utils.reply_message(plugin_event, f'仍未能抽取下一图：{random_map_result.get("error", "未知错误")}')
             return
@@ -583,7 +580,10 @@ def handle_endless(plugin_event, argument: str) -> None:
         state['updated_at'] = int(time.time())
         if not persist_endless_state(plugin_event, state):
             return
-        utils.reply_long_text(plugin_event, '已成功抽取下一图。\n' + function.format_endless_state(state))
+        utils.reply_long_text(
+            plugin_event,
+            function.format_endless_state(state, notice='已成功抽取下一图。'),
+        )
         return
     if action == 'detail':
         current_map = state.get('current_map', {})
@@ -601,7 +601,7 @@ def handle_endless(plugin_event, argument: str) -> None:
         return
 
     if action == 'reroll':
-        random_map_result = function.get_random_map()
+        random_map_result = function.get_random_map(include_cover_mirror=True)
         if not random_map_result.get('ok'):
             utils.reply_message(plugin_event, f'操作未执行：{random_map_result.get("error", "无法抽取下一图")}')
             return
@@ -614,7 +614,7 @@ def handle_endless(plugin_event, argument: str) -> None:
             return
         utils.reply_long_text(
             plugin_event,
-            f'已将当前地图标记为坏图并免费重抽。\n{function.format_endless_state(new_state)}',
+            function.format_endless_state(new_state, notice='已将当前地图标记为坏图并免费重抽。'),
         )
         return
 
@@ -635,7 +635,7 @@ def handle_endless(plugin_event, argument: str) -> None:
         return
 
     if new_state.get('status') == 'pending':
-        random_map_result = function.get_random_map()
+        random_map_result = function.get_random_map(include_cover_mirror=True)
         if random_map_result.get('ok'):
             new_state['current_map'] = function.compact_endless_map(random_map_result['data'])
             new_state['status'] = 'active'
@@ -651,7 +651,10 @@ def handle_endless(plugin_event, argument: str) -> None:
     }
     utils.reply_long_text(
         plugin_event,
-        f'{action_message_dict.get(action, "操作完成。")}\n{function.format_endless_state(new_state)}',
+        function.format_endless_state(
+            new_state,
+            notice=action_message_dict.get(action, '操作完成。'),
+        ),
     )
 
 

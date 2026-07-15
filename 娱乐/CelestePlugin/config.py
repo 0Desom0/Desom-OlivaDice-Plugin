@@ -38,8 +38,6 @@ default_global_config = {
     'credit_max_length': 180,
     'show_cover_image_switch': True,
     'random_max_count': 10,
-    'random_category_name': 'Maps',
-    'endless_category_name': 'Maps',
     'detail_download_component_limit': 6,
     'long_reply_chunk_size': 1800,
 }

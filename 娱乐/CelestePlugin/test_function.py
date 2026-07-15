@@ -208,20 +208,14 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertIn('完整署名：Authors：Col…', text)
         self.assertIn('简介：DDDDDDDDD…', text)
 
-    def test_daily_mod_is_stable(self):
-        candidates = [
-            {'GameBananaId': 1, 'GameBananaType': 'Mod', 'Name': 'A'},
-            {'GameBananaId': 2, 'GameBananaType': 'Mod', 'Name': 'B'},
-        ]
-        normalized = [function.normalize_item(item) for item in candidates]
-        with mock.patch.object(
-            function,
-            'get_eligible_random_items',
-            return_value={'ok': True, 'results': normalized, 'error': ''},
-        ):
-            first = function.get_daily_mod('2026-07-13')
-            second = function.get_daily_mod('2026-07-13')
-        self.assertEqual(first['data']['id'], second['data']['id'])
+    def test_daily_mod_uses_random_map_api(self):
+        random_result = {'ok': True, 'data': {'id': 1, 'item_type': 'Mod', 'name': 'A'}, 'error': ''}
+        with mock.patch.object(function, 'get_random_map', return_value=random_result) as random_mock:
+            result = function.get_daily_mod('2026-07-13')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['data']['id'], 1)
+        self.assertEqual(result['date'], '2026-07-13')
+        random_mock.assert_called_once_with(include_cover_mirror=True)
 
     def test_title_search_short_cache(self):
         response_data = [{'GameBananaId': 1, 'GameBananaType': 'Mod', 'Name': 'Cached Map'}]
@@ -288,60 +282,31 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertEqual(profile_mock.call_count, 1)
         self.assertEqual(cover_mock.call_count, 1)
 
-    def test_random_candidates_only_include_maps(self):
-        database = [
-            {
-                'GameBananaId': 1,
-                'GameBananaType': 'Mod',
-                'Name': 'Map A',
-                'CategoryName': 'Maps',
-            },
-            {
-                'GameBananaId': 2,
-                'GameBananaType': 'Mod',
-                'Name': 'Helper B',
-                'CategoryName': 'Helpers',
-            },
+    def test_random_mods_calls_random_map_and_avoids_duplicates(self):
+        random_results = [
+            {'ok': True, 'data': {'id': 1, 'item_type': 'Mod'}, 'error': ''},
+            {'ok': True, 'data': {'id': 1, 'item_type': 'Mod'}, 'error': ''},
+            {'ok': True, 'data': {'id': 2, 'item_type': 'Mod'}, 'error': ''},
         ]
-        updater_index = {
-            ('mod', 1): [{'InternalName': 'MapA', 'Version': '1.0.0'}],
-            ('mod', 2): [{'InternalName': 'HelperB', 'Version': '1.0.0'}],
-        }
-        with (
-            mock.patch.object(function, 'load_mod_database', return_value={'ok': True, 'data': database}),
-            mock.patch.object(function, 'load_updater_index', return_value={'ok': True, 'data': updater_index}),
-            mock.patch.object(
-                function.utils,
-                'load_global_config',
-                return_value={'random_category_name': 'Maps'},
-            ),
-        ):
-            result = function.get_eligible_random_items()
+        with mock.patch.object(function, 'get_random_map', side_effect=random_results) as random_mock:
+            result = function.random_mods(2)
         self.assertTrue(result['ok'])
-        self.assertEqual([item['id'] for item in result['results']], [1])
+        self.assertEqual([item['id'] for item in result['results']], [1, 2])
+        self.assertEqual(random_mock.call_count, 3)
+        random_mock.assert_called_with(include_cover_mirror=False)
 
-    def test_endless_random_retries_until_maps(self):
-        responses = [
-            {'status': 302, 'headers': {'Location': 'https://gamebanana.com/mods/1'}},
-            {'status': 302, 'headers': {'Location': 'https://gamebanana.com/mods/2'}},
-        ]
-        details = [
-            {'ok': True, 'data': {'id': 1, 'item_type': 'Mod', 'category': 'Helpers'}},
-            {'ok': True, 'data': {'id': 2, 'item_type': 'Mod', 'category': 'Maps'}},
-        ]
+    def test_random_map_trusts_maddie_map_result_without_category_filter(self):
+        response = {'status': 302, 'headers': {'Location': 'https://gamebanana.com/mods/1'}}
+        detail = {'ok': True, 'data': {'id': 1, 'item_type': 'Mod', 'category': 'Helpers'}}
         with (
-            mock.patch.object(function, 'http_get', side_effect=responses) as http_mock,
-            mock.patch.object(function, 'get_item_by_id', side_effect=details),
-            mock.patch.object(
-                function.utils,
-                'load_global_config',
-                return_value={'endless_category_name': 'Maps'},
-            ),
+            mock.patch.object(function, 'http_get', return_value=response) as http_mock,
+            mock.patch.object(function, 'get_item_by_id', return_value=detail) as detail_mock,
         ):
-            result = function.get_random_map()
+            result = function.get_random_map(include_cover_mirror=False)
         self.assertTrue(result['ok'])
-        self.assertEqual(result['data']['id'], 2)
-        self.assertEqual(http_mock.call_count, 2)
+        self.assertEqual(result['data']['id'], 1)
+        self.assertEqual(http_mock.call_count, 1)
+        detail_mock.assert_called_once_with(1, 'Mod', include_cover_mirror=False)
 
     def test_endless_state_machine(self):
         map_a = {'GameBananaId': 1, 'GameBananaType': 'Mod', 'Name': 'A'}
@@ -396,10 +361,39 @@ class CelestePluginFunctionTest(unittest.TestCase):
                 'Name': 'A',
                 'Text': 'x' * 10000,
                 'Files': [{'URL': 'https://gamebanana.com/dl/1'}],
+                'MirroredScreenshots': ['https://mirror.example/cover.png'],
             }
         )
         self.assertNotIn('text', compact)
         self.assertNotIn('files', compact)
+        self.assertEqual(compact['cover_url'], 'https://mirror.example/cover.png')
+
+    def test_endless_state_cover_is_first_segment(self):
+        state = {
+            'status': 'active',
+            'clears': 2,
+            'skips': 1,
+            'current_map': {
+                'name': 'Cover Map',
+                'author': 'Mapper',
+                'page_url': 'https://gamebanana.com/mods/1',
+                'cover_url': 'https://example.com/cover.png?x=1&y=2',
+                'credits': [],
+            },
+        }
+        with mock.patch.object(
+            function.utils,
+            'load_global_config',
+            return_value={'show_cover_image_switch': True},
+        ):
+            text = function.format_endless_state(state, notice='已抽取下一图。')
+        self.assertTrue(
+            text.startswith(
+                '[OP:image,file=https://example.com/cover.png?x=1&amp;y=2]已抽取下一图。\n'
+            )
+        )
+        self.assertFalse(text.startswith('[OP:image,file=https://example.com/cover.png?x=1&amp;y=2]\n'))
+        self.assertFalse(text.endswith('\n'))
 
     def test_user_storage_isolated_by_context(self):
         class Object(object):

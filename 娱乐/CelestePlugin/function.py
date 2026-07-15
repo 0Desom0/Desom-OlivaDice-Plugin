@@ -7,7 +7,6 @@ import hashlib
 import html
 import json
 import os
-import random
 import re
 import threading
 import time
@@ -1059,53 +1058,31 @@ def format_list_item(item: dict[str, Any], index: int) -> str:
     return f'{index}. {item.get("name", "未知标题")}｜{item.get("author", "未知作者")}{suffix}'
 
 
-def item_matches_category(item: dict[str, Any], required_category: str) -> bool:
-    """检查条目的主分类或子分类是否包含指定分类名。"""
-    required = utils.safe_str(required_category).strip().casefold()
-    if not required:
-        return True
-    normalized = normalize_item(item)
-    category_text = ' / '.join(
-        utils.safe_str(value)
-        for value in [normalized.get('category', ''), normalized.get('subcategory', '')]
-        if value
-    ).casefold()
-    return required in category_text
-
-
-def get_eligible_random_items() -> dict[str, Any]:
-    database_result = load_mod_database()
-    updater_result = load_updater_index()
-    if not database_result.get('ok'):
-        return {'ok': False, 'results': [], 'error': database_result.get('error', '')}
-    if not updater_result.get('ok'):
-        return {'ok': False, 'results': [], 'error': updater_result.get('error', '')}
-    updater_index = updater_result.get('data', {})
-    required_category = utils.safe_str(
-        utils.load_global_config().get('random_category_name', 'Maps'),
-        'Maps',
-    ).strip().casefold()
-    result_map = {}
-    for raw_item in database_result.get('data', []):
-        item = normalize_item(raw_item)
-        key = (item.get('item_type', '').lower(), item.get('id', 0))
-        category_matches = item_matches_category(item, required_category)
-        if item.get('item_type', '').lower() == 'mod' and category_matches and key in updater_index:
-            item['updater_components'] = copy.deepcopy(updater_index[key])
-            result_map[key] = item
-    return {'ok': True, 'results': list(result_map.values()), 'error': ''}
-
-
 def random_mods(count: int, excluded_ids: set[int] | None = None) -> dict[str, Any]:
-    candidates_result = get_eligible_random_items()
-    if not candidates_result.get('ok'):
-        return {'ok': False, 'results': [], 'error': candidates_result.get('error', '')}
-    excluded_ids = excluded_ids or set()
-    candidates = [item for item in candidates_result['results'] if item.get('id') not in excluded_ids]
-    if not candidates:
-        return {'ok': False, 'results': [], 'error': '没有可供随机的 Mod'}
-    sample_count = min(max(1, count), len(candidates))
-    return {'ok': True, 'results': random.SystemRandom().sample(candidates, sample_count), 'error': ''}
+    """直接调用 Maddie random-map；批量随机时避免重复 ID。"""
+    target_count = max(1, int(count))
+    excluded = set(excluded_ids or set())
+    results = []
+    last_error = ''
+    for _index in range(target_count):
+        selected = None
+        for _attempt in range(5):
+            random_result = get_random_map(include_cover_mirror=target_count == 1)
+            if not random_result.get('ok'):
+                last_error = random_result.get('error', '随机地图接口不可用')
+                continue
+            item = random_result.get('data', {})
+            item_id = int(item.get('id', 0) or 0)
+            if item_id <= 0 or item_id in excluded:
+                last_error = '随机地图接口连续返回了重复条目'
+                continue
+            selected = item
+            excluded.add(item_id)
+            break
+        if selected is None:
+            return {'ok': False, 'results': [], 'error': last_error or '无法抽取足够数量的地图'}
+        results.append(selected)
+    return {'ok': True, 'results': results, 'error': ''}
 
 
 def get_hong_kong_date() -> str:
@@ -1113,47 +1090,28 @@ def get_hong_kong_date() -> str:
 
 
 def get_daily_mod(date_text: str | None = None) -> dict[str, Any]:
-    candidates_result = get_eligible_random_items()
-    if not candidates_result.get('ok'):
-        return {'ok': False, 'data': {}, 'error': candidates_result.get('error', '')}
-    candidates = sorted(
-        candidates_result['results'],
-        key=lambda item: (item.get('item_type', ''), item.get('id', 0)),
-    )
-    if not candidates:
-        return {'ok': False, 'data': {}, 'error': '每日 Mod 候选为空'}
     date_value = date_text or get_hong_kong_date()
-    digest = hashlib.sha256(f'CelestePlugin|{date_value}'.encode('utf-8')).digest()
-    index = int.from_bytes(digest[:8], 'big') % len(candidates)
-    return {'ok': True, 'data': candidates[index], 'date': date_value, 'error': ''}
+    random_result = get_random_map(include_cover_mirror=True)
+    if not random_result.get('ok'):
+        return {'ok': False, 'data': {}, 'date': date_value, 'error': random_result.get('error', '')}
+    return {'ok': True, 'data': random_result.get('data', {}), 'date': date_value, 'error': ''}
 
 
-def get_random_map() -> dict[str, Any]:
-    required_category = utils.safe_str(
-        utils.load_global_config().get('endless_category_name', 'Maps'),
-        'Maps',
-    ).strip()
-    last_error = '随机地图接口没有返回可用的 Maps 条目'
-    for _attempt in range(5):
-        response = http_get(config.random_map_url, no_redirect=True)
-        if response.get('status') not in [301, 302, 303, 307, 308]:
-            last_error = response.get('error', '随机地图接口没有返回跳转')
-            continue
-        header_dict = {key.lower(): value for key, value in response.get('headers', {}).items()}
-        location = utils.safe_str(header_dict.get('location', ''))
-        matched = re.search(r'/mods/(\d+)', location)
-        if not matched:
-            last_error = '无法从随机地图地址解析 Mod ID'
-            continue
-        detail_result = get_item_by_id(int(matched.group(1)), 'Mod', include_cover_mirror=False)
-        if not detail_result.get('ok'):
-            last_error = detail_result.get('error', '随机地图详情获取失败')
-            continue
-        detail = detail_result.get('data', {})
-        if item_matches_category(detail, required_category):
-            return detail_result
-        last_error = f'随机结果不属于 {required_category or "指定"} 分类'
-    return {'ok': False, 'data': {}, 'error': f'{last_error}；已重试 5 次'}
+def get_random_map(include_cover_mirror: bool = True) -> dict[str, Any]:
+    """Maddie random-map 只返回地图，直接解析跳转 ID 并获取详情。"""
+    response = http_get(config.random_map_url, no_redirect=True)
+    if response.get('status') not in [301, 302, 303, 307, 308]:
+        return {'ok': False, 'data': {}, 'error': response.get('error', '随机地图接口没有返回跳转')}
+    header_dict = {key.lower(): value for key, value in response.get('headers', {}).items()}
+    location = utils.safe_str(header_dict.get('location', ''))
+    matched = re.search(r'/mods/(\d+)', location)
+    if not matched:
+        return {'ok': False, 'data': {}, 'error': '无法从随机地图地址解析 Mod ID'}
+    return get_item_by_id(
+        int(matched.group(1)),
+        'Mod',
+        include_cover_mirror=include_cover_mirror,
+    )
 
 
 def make_endless_snapshot(state: dict[str, Any]) -> dict[str, Any]:
@@ -1171,6 +1129,8 @@ def compact_endless_map(raw_map: dict[str, Any]) -> dict[str, Any]:
         'author': item.get('author', '未知作者'),
         'category': item.get('category', ''),
         'subcategory': item.get('subcategory', ''),
+        'cover_url': item.get('cover_url', ''),
+        'cover_urls': copy.deepcopy(item.get('cover_urls', [])),
         'page_url': item.get('page_url', ''),
         'credits': copy.deepcopy(item.get('credits', [])),
     }
@@ -1368,16 +1328,19 @@ def transition_endless(
     return result
 
 
-def format_endless_state(state: dict[str, Any]) -> str:
+def format_endless_state(state: dict[str, Any], notice: str = '') -> str:
     status_name_dict = {'active': '进行中', 'pending': '等待抽取下一图', 'failed': '已失败'}
     status_text = status_name_dict.get(state.get('status'), '未知')
     current_map = state.get('current_map', {})
-    lines = [
+    lines = []
+    if notice:
+        lines.append(notice)
+    lines.extend([
         '【Celeste Endless】',
         f'状态：{status_text}',
         f'分数：{int(state.get("clears", 0))}',
         f'剩余跳过：{int(state.get("skips", 0))}',
-    ]
+    ])
     if current_map:
         credited_names = []
         for group in current_map.get('credits', []):
@@ -1400,4 +1363,8 @@ def format_endless_state(state: dict[str, Any]) -> str:
         lines.append('上一项成绩已保存；请使用“.clst无尽 继续”重试抽取下一图，或使用“撤销”。')
     else:
         lines.append('可使用“.clst无尽 撤销”恢复，或“.clst无尽 开始”重新挑战。')
-    return '\n'.join(lines)
+    image_prefix = ''
+    cover_url = utils.safe_str(current_map.get('cover_url', ''))
+    if utils.load_global_config().get('show_cover_image_switch', True) and cover_url:
+        image_prefix = f'[OP:image,file={utils.op_escape(cover_url)}]'
+    return image_prefix + '\n'.join(lines)
