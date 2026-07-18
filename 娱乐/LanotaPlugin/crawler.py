@@ -839,6 +839,171 @@ def update_existing_song_from_wiki(session, song: dict[str, Any]):
     return merged, updated_fields
 
 
+
+PRESERVE_ON_FULL_CHECK = {'id', 'chapter', 'chart_design'}
+
+
+def _normalize_compare_value(value: Any) -> Any:
+    """把字段值规整成可比较的结构，避免 list/dict 顺序和空白噪音。"""
+    if isinstance(value, dict):
+        return {str(k): _normalize_compare_value(v) for k, v in sorted(value.items(), key=lambda item: str(item[0]))}
+    if isinstance(value, list):
+        return [_normalize_compare_value(item) for item in value]
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def _song_field_diff(old_song: dict[str, Any], new_song: dict[str, Any], preserve_keys: set[str]) -> list[str]:
+    changed = []
+    keys = set(old_song.keys()) | set(new_song.keys())
+    for key in sorted(keys):
+        if key in preserve_keys:
+            continue
+        if _normalize_compare_value(old_song.get(key)) != _normalize_compare_value(new_song.get(key)):
+            changed.append(key)
+    return changed
+
+
+def overwrite_existing_song_from_wiki(session, song: dict[str, Any]):
+    """用 wiki 数据全量覆盖本地曲目，但保留 id / 章节号 / 谱师。"""
+    source_url = song.get('source_url')
+    page_name = ''
+    if source_url:
+        page_name = wiki_url_to_page_name(source_url)
+    if not page_name:
+        # 没有 source_url 时，尝试用 title_outside / title 作为 wiki 页名
+        page_name = str(song.get('title_outside') or song.get('title') or '').strip()
+    if not page_name:
+        return None, []
+
+    wikitext = fetch_wikitext(session, page_name)
+    if not wikitext:
+        return None, []
+
+    display_title = str(song.get('title_outside') or song.get('title') or page_name)
+    href = str(source_url or wiki_title_to_url(page_name))
+    parsed_song = parse_song_from_wikitext(
+        wikitext,
+        {
+            'display_title': display_title,
+            'href': href,
+            'page_name': page_name,
+        },
+        int(song.get('id', 0) or 0),
+    )
+    if not parsed_song:
+        return None, []
+
+    merged = dict(parsed_song)
+    # 章节号与谱师绝对保留本地值；id 也保持本地
+    for key in PRESERVE_ON_FULL_CHECK:
+        if key in song:
+            merged[key] = song.get(key)
+
+    # Legacy 内的 Chart Design 也属于谱师信息，保持本地
+    local_legacy = song.get('Legacy')
+    wiki_legacy = merged.get('Legacy')
+    if isinstance(local_legacy, dict) and isinstance(wiki_legacy, dict):
+        if 'Chart Design' in local_legacy:
+            wiki_legacy = dict(wiki_legacy)
+            wiki_legacy['Chart Design'] = local_legacy.get('Chart Design', '')
+            merged['Legacy'] = wiki_legacy
+    elif isinstance(local_legacy, dict) and 'Chart Design' in local_legacy and not isinstance(wiki_legacy, dict):
+        # wiki 没有 Legacy 时，不凭空塞整表；仅当本地本身有 Legacy 且 wiki 解析出 Legacy 才处理
+        pass
+
+    changed_fields = _song_field_diff(song, merged, PRESERVE_ON_FULL_CHECK)
+    return merged, changed_fields
+
+
+def run_full_check() -> dict[str, Any]:
+    """对数据库中全部歌曲做 wiki 全量检测覆盖（不改章节号与谱师）。"""
+    if not API_DEPENDENCIES_AVAILABLE:
+        raise RuntimeError('缺少依赖：requests 与 mwparserfromhell')
+
+    session = requests.Session()
+    session.headers.update(
+        {
+            'User-Agent': 'Mozilla/5.0 LanotaPlugin-OlivOS/1.0',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        }
+    )
+
+    data = function.load_song_data()
+    original_count = len(data)
+    checked = 0
+    updated = 0
+    unchanged = 0
+    failed = 0
+    results = []
+
+    for index, song in enumerate(data):
+        checked += 1
+        title = str(song.get('title') or song.get('title_outside') or song.get('chapter') or index)
+        try:
+            overwritten, changed_fields = overwrite_existing_song_from_wiki(session, song)
+            if overwritten is None:
+                failed += 1
+                results.append(
+                    {
+                        'title': title,
+                        'chapter': song.get('chapter', ''),
+                        'success': False,
+                        'changed': [],
+                        'error': 'wiki 页面解析失败或无 source_url/标题',
+                    }
+                )
+            elif changed_fields:
+                data[index] = overwritten
+                updated += 1
+                results.append(
+                    {
+                        'title': title,
+                        'chapter': song.get('chapter', ''),
+                        'success': True,
+                        'changed': changed_fields,
+                    }
+                )
+            else:
+                unchanged += 1
+                results.append(
+                    {
+                        'title': title,
+                        'chapter': song.get('chapter', ''),
+                        'success': True,
+                        'changed': [],
+                    }
+                )
+        except Exception as exception_object:
+            failed += 1
+            results.append(
+                {
+                    'title': title,
+                    'chapter': song.get('chapter', ''),
+                    'success': False,
+                    'changed': [],
+                    'error': f'{type(exception_object).__name__}: {exception_object}',
+                }
+            )
+        time.sleep(0.15)
+
+    function.save_song_data(data)
+    return {
+        'mode': 'full_check',
+        'before': original_count,
+        'checked': checked,
+        'updated': updated,
+        'unchanged': unchanged,
+        'failed': failed,
+        'results': results,
+        'total': len(data),
+    }
+
+
+
 def run_update() -> dict[str, Any]:
     if not API_DEPENDENCIES_AVAILABLE:
         raise RuntimeError('缺少依赖：requests 与 mwparserfromhell')

@@ -158,8 +158,13 @@ def get_bot_hash_from_event(plugin_event, use_linked: bool = False) -> str:
         return 'default'
 
 
+def get_bot_root_dir() -> str:
+    """所有 bot 独立数据统一放在 plugin/data/LanotaPlugin/bot/ 下。"""
+    return ensure_folder(os.path.join(config.plugin_data_dir, 'bot'))
+
+
 def get_bot_config_dir(bot_hash: Any) -> str:
-    return ensure_folder(os.path.join(config.plugin_data_dir, get_config_bot_hash(bot_hash)))
+    return ensure_folder(os.path.join(get_bot_root_dir(), get_config_bot_hash(bot_hash)))
 
 
 def get_bot_config_path(bot_hash: Any) -> str:
@@ -225,35 +230,26 @@ def save_bot_config(bot_hash: Any, bot_config: dict[str, Any]) -> bool:
 
 def get_runtime_bot_dir(bot_hash: Any) -> str:
     """获取 linked 运行期目录，用于个人数据等 storage 内容。"""
-    return ensure_folder(os.path.join(config.plugin_data_dir, get_linked_bot_hash(bot_hash)))
+    return ensure_folder(os.path.join(get_bot_root_dir(), get_linked_bot_hash(bot_hash)))
 
 
 def get_storage_dir(bot_hash: Any = None) -> str:
     return ensure_folder(os.path.join(get_runtime_bot_dir(bot_hash or 'default'), 'storage'))
 
 
-def get_legacy_user_data_path() -> str:
-    """旧版全插件共享个人数据路径，仅用于迁移。"""
-    return os.path.join(config.plugin_data_dir, 'storage', config.user_data_file_name)
-
 
 def get_user_data_path(bot_hash: Any = None) -> str:
     return os.path.join(get_storage_dir(bot_hash), config.user_data_file_name)
 
 
+
+
+
 def ensure_user_data_file(bot_hash: Any = None) -> str:
-    """确保 linked bot 个人数据文件存在，并从旧共享文件做一次兼容迁移。"""
+    """确保 bot 个人数据文件存在于 bot/<hash>/storage/ 下。"""
     user_data_path = get_user_data_path(bot_hash)
     if os.path.exists(user_data_path):
         return user_data_path
-    legacy_path = get_legacy_user_data_path()
-    if os.path.exists(legacy_path):
-        try:
-            ensure_folder(os.path.dirname(user_data_path))
-            shutil.copy2(legacy_path, user_data_path)
-            return user_data_path
-        except Exception:
-            pass
     save_json_file(user_data_path, {})
     return user_data_path
 
@@ -372,6 +368,7 @@ def initialize_plugin(Proc=None) -> None:
     global initialized
     try:
         ensure_folder(config.plugin_data_dir)
+        ensure_folder(get_bot_root_dir())
         ensure_folder(get_storage_dir())
         ensure_folder(get_song_data_dir())
         ensure_folder(get_cover_art_dir())

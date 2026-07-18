@@ -506,9 +506,38 @@ def handle_lagroup(plugin_event, argument: str) -> None:
     reply_text(plugin_event, '用法：/la on 或 /la off')
 
 
-def handle_update(plugin_event) -> None:
+
+def handle_fullcheck(plugin_event, argument: str = '') -> None:
+    """对本地曲库全部歌曲做 wiki 全量检测覆盖（保留章节号与谱师）。"""
+    if not utils.sender_has_master_permission(plugin_event):
+        reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以执行全量检测。')
+        return
+    reply_text(
+        plugin_event,
+        '开始对数据库全部歌曲进行 wiki 全量检测覆盖（保留章节号与谱师），请稍候……',
+    )
+    try:
+        result = crawler.run_full_check()
+        report = function.build_full_check_report(result)
+        # 报告可能很长，走长文本发送
+        try:
+            utils.reply_long_plain_text(plugin_event, report, max_chars=900)
+        except Exception:
+            reply_text(plugin_event, report)
+    except Exception as exception_object:
+        reply_text(
+            plugin_event,
+            f'全量检测过程中发生错误：{type(exception_object).__name__}: {exception_object}',
+        )
+
+
+def handle_update(plugin_event, argument: str = '') -> None:
     if not utils.sender_has_master_permission(plugin_event):
         reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以更新曲库。')
+        return
+    argument_text = str(argument or '').strip().lower()
+    if argument_text in {'full', 'fullcheck', 'all', '全量', '全量检测'}:
+        handle_fullcheck(plugin_event, argument)
         return
     reply_text(plugin_event, '开始通过 Fandom/MediaWiki API 更新乐曲数据，请稍候...')
     try:
@@ -1265,7 +1294,8 @@ help_categories = {
             '/la on - 在当前群开启普通命令',
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
             '/la global status/on/off - 查看或修改全局开关',
-            '/la update - 通过 Fandom/MediaWiki API 更新曲库',
+            '/la update - 通过 Fandom/MediaWiki API 更新曲库（补全缺失+新增）',
+            '/la fullcheck - 全量检测：用 wiki 覆盖本地全部歌曲字段（保留章节号与谱师）',
             '/la sync - 预览 Wiki Songs 页面同步（仅骰主）',
             '/la sync apply - 实际同步 Wiki Songs 页面（仅骰主）',
             '/la cover status - 查看本地曲绘缓存（仅骰主）',
@@ -1274,13 +1304,14 @@ help_categories = {
         ],
         'priority': [
             '1. /la on 和 /la off 需要群主、群管、骰主或本插件管理员',
-            '2. bot/global/update 需要骰主或本插件管理员',
+            '2. bot/global/update/fullcheck 需要骰主或本插件管理员',
             '3. 被关闭的群仍可使用 /la on 重新开启',
         ],
         'examples': [
             '/la off',
             '/la on',
             '/la update',
+            '/la fullcheck',
             '/la sync',
             '/la sync apply',
             '/la cover update',
@@ -1438,7 +1469,11 @@ command_handler_dict = {
     'help': handle_help,
     'time': lambda event, arg: handle_time(event),
     'all': lambda event, arg: handle_all(event),
-    'update': lambda event, arg: handle_update(event),
+    'update': handle_update,
+    'fullcheck': handle_fullcheck,
+    'full': handle_fullcheck,
+    '全量检测': handle_fullcheck,
+    '全量': handle_fullcheck,
     'sync': handle_sync,
     'cover': handle_cover,
     'cal': handle_cal,

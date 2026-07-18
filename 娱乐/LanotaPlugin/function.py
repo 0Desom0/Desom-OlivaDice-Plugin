@@ -717,3 +717,43 @@ def build_update_report(result: dict[str, Any]) -> str:
             message += f'\n……共{len(added_titles)}首'
     message += f'\n\n【总计】\n当前总乐曲: {result.get("total", 0)}首'
     return message
+
+
+def build_full_check_report(result: dict[str, Any]) -> str:
+    """生成全量检测覆盖报告。"""
+    message = '曲库全量检测完成！\n'
+    message += f'检测歌曲: {result.get("checked", 0)}首\n'
+    message += f'已覆盖更新: {result.get("updated", 0)}首\n'
+    message += f'无变化: {result.get("unchanged", 0)}首\n'
+    message += f'失败: {result.get("failed", 0)}首\n'
+    message += '说明: 已用 wiki 数据覆盖本地字段；章节号与谱师保持不变。\n'
+
+    changed_items = [
+        item for item in (result.get('results') or [])
+        if item.get('success') and item.get('changed')
+    ]
+    failed_items = [item for item in (result.get('results') or []) if not item.get('success')]
+
+    if changed_items:
+        message += '\n【有变化的曲目】\n'
+        for item in changed_items[:40]:
+            chapter = item.get('chapter') or '?'
+            title = item.get('title') or '?'
+            fields = ', '.join(str(field) for field in item.get('changed', [])[:12])
+            more = '' if len(item.get('changed', [])) <= 12 else '...'
+            message += f'• {chapter} {title}\n  字段: {fields}{more}\n'
+        if len(changed_items) > 40:
+            message += f'……共{len(changed_items)}首有变化\n'
+
+    if failed_items:
+        message += '\n【失败曲目】\n'
+        for item in failed_items[:20]:
+            chapter = item.get('chapter') or '?'
+            title = item.get('title') or '?'
+            err = item.get('error') or '未知错误'
+            message += f'• {chapter} {title}\n  原因: {err}\n'
+        if len(failed_items) > 20:
+            message += f'……共{len(failed_items)}首失败\n'
+
+    message += f'\n当前总乐曲: {result.get("total", 0)}首'
+    return message
