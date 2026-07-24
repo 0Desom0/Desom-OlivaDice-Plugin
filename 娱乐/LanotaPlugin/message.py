@@ -520,16 +520,26 @@ def handle_lagroup(plugin_event, argument: str) -> None:
 
 
 def handle_fullcheck(plugin_event, argument: str = '') -> None:
-    """对本地曲库全部歌曲做 wiki 全量检测覆盖（保留章节号与谱师）。"""
+    """对本地曲库全部歌曲做 wiki 全量检测；仅 apply 时实际覆盖写入。"""
     if not utils.sender_has_master_permission(plugin_event):
         reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以执行全量检测。')
         return
+    action_text = str(argument or '').strip().lower()
+    if action_text in {'', 'detect', 'check', 'preview', '检测', '检查', '预览'}:
+        apply_edit = False
+    elif action_text in {'apply', '执行', '确认'}:
+        apply_edit = True
+    else:
+        reply_text(plugin_event, '用法：/la fullcheck 或 /la fullcheck apply')
+        return
     reply_text(
         plugin_event,
-        '开始对数据库全部歌曲进行 wiki 全量检测覆盖（保留章节号与谱师），请稍候……',
+        '开始对数据库全部歌曲进行 wiki 全量检测，请稍候……'
+        if not apply_edit
+        else '开始对数据库全部歌曲进行 wiki 全量覆盖写入，请稍候……',
     )
     try:
-        result = crawler.run_full_check()
+        result = crawler.run_full_check(apply=apply_edit)
         report = function.build_full_check_report(result)
         # 报告可能很长，走长文本发送
         try:
@@ -548,8 +558,9 @@ def handle_update(plugin_event, argument: str = '') -> None:
         reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以更新曲库。')
         return
     argument_text = str(argument or '').strip().lower()
-    if argument_text in {'full', 'fullcheck', 'all', '全量', '全量检测'}:
-        handle_fullcheck(plugin_event, argument)
+    fullcheck_action, fullcheck_argument = parse_action(argument_text, ['full', 'fullcheck', 'all', '全量', '全量检测'])
+    if fullcheck_action in {'full', 'fullcheck', 'all', '全量', '全量检测'}:
+        handle_fullcheck(plugin_event, fullcheck_argument)
         return
     reply_text(plugin_event, '开始通过 Fandom/MediaWiki API 更新乐曲数据，请稍候...')
     try:
@@ -1307,7 +1318,8 @@ help_categories = {
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
             '/la global status/on/off - 查看或修改全局开关',
             '/la update - 通过 Fandom/MediaWiki API 更新曲库（补全缺失+新增）',
-            '/la fullcheck - 全量检测：用 wiki 覆盖本地全部歌曲字段（保留章节号与谱师）',
+            '/la fullcheck - 全量检测：只检查 wiki 与本地差异（保留章节号与谱师，不写入）',
+            '/la fullcheck apply - 全量覆盖：用 wiki 覆盖本地全部歌曲字段（保留章节号与谱师）',
             '/la sync - 预览 Wiki Songs 页面同步（仅骰主）',
             '/la sync apply - 实际同步 Wiki Songs 页面（仅骰主）',
             '/la cover status - 查看本地曲绘缓存（仅骰主）',
@@ -1324,6 +1336,7 @@ help_categories = {
             '/la on',
             '/la update',
             '/la fullcheck',
+            '/la fullcheck apply',
             '/la sync',
             '/la sync apply',
             '/la cover update',

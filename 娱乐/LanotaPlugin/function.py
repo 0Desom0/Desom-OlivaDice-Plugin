@@ -723,12 +723,19 @@ def build_update_report(result: dict[str, Any]) -> str:
 
 def build_full_check_report(result: dict[str, Any]) -> str:
     """生成全量检测覆盖报告。"""
-    message = '曲库全量检测完成！\n'
+    apply_mode = bool(result.get('apply', False))
+    message = '曲库全量覆盖完成！\n' if apply_mode else '曲库全量检测完成！\n'
     message += f'检测歌曲: {result.get("checked", 0)}首\n'
-    message += f'已覆盖更新: {result.get("updated", 0)}首\n'
+    if apply_mode:
+        message += f'已覆盖更新: {result.get("updated", 0)}首\n'
+    else:
+        message += f'检测到变化: {result.get("updated", 0)}首\n'
     message += f'无变化: {result.get("unchanged", 0)}首\n'
     message += f'失败: {result.get("failed", 0)}首\n'
-    message += '说明: 已用 wiki 数据覆盖本地字段；章节号与谱师保持不变。\n'
+    if apply_mode:
+        message += '说明: 已用 wiki 数据覆盖本地字段；章节号与谱师保持不变。\n'
+    else:
+        message += '说明: 当前仅检测 wiki 与本地差异，未写入本地；章节号与谱师保持不变。\n'
 
     changed_items = [
         item for item in (result.get('results') or [])
@@ -737,7 +744,7 @@ def build_full_check_report(result: dict[str, Any]) -> str:
     failed_items = [item for item in (result.get('results') or []) if not item.get('success')]
 
     if changed_items:
-        message += '\n【有变化的曲目】\n'
+        message += '\n【已覆盖更新的曲目】\n' if apply_mode else '\n【检测到变化的曲目】\n'
         for item in changed_items[:40]:
             chapter = item.get('chapter') or '?'
             title = item.get('title') or '?'

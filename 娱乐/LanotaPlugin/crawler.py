@@ -919,8 +919,8 @@ def overwrite_existing_song_from_wiki(session, song: dict[str, Any]):
     return merged, changed_fields
 
 
-def run_full_check() -> dict[str, Any]:
-    """对数据库中全部歌曲做 wiki 全量检测覆盖（不改章节号与谱师）。"""
+def run_full_check(apply: bool = False) -> dict[str, Any]:
+    """对数据库中全部歌曲做 wiki 全量检测；仅在 apply=True 时写回本地。"""
     if not API_DEPENDENCIES_AVAILABLE:
         raise RuntimeError('缺少依赖：requests 与 mwparserfromhell')
 
@@ -957,7 +957,8 @@ def run_full_check() -> dict[str, Any]:
                     }
                 )
             elif changed_fields:
-                data[index] = overwritten
+                if apply:
+                    data[index] = overwritten
                 updated += 1
                 results.append(
                     {
@@ -990,9 +991,11 @@ def run_full_check() -> dict[str, Any]:
             )
         time.sleep(0.15)
 
-    function.save_song_data(data)
+    if apply and not function.save_song_data(data):
+        raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
     return {
-        'mode': 'full_check',
+        'mode': 'full_check_apply' if apply else 'full_check_detect',
+        'apply': apply,
         'before': original_count,
         'checked': checked,
         'updated': updated,
