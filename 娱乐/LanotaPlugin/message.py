@@ -28,6 +28,7 @@ command_configs = [
     ('time', '时长'),
     ('all', '全部'),
     ('update', '更新'),
+    ('fullcheck', '全量检测'),
     ('sync', '同步'),
     ('cover', '曲绘'),
     ('cal', '计算'),
@@ -61,6 +62,10 @@ subcommand_alias_dict = {
     '全部': 'all',
     'update': 'update',
     '更新': 'update',
+    'fullcheck': 'fullcheck',
+    'full': 'fullcheck',
+    '全量检测': 'fullcheck',
+    '全量': 'fullcheck',
     'sync': 'sync',
     '同步': 'sync',
     'cover': 'cover',
@@ -173,6 +178,11 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
     page_index = session_data.get('page_index', 0)
     total_pages = max(1, math.ceil(len(results) / page_size))
     page_index = max(0, min(page_index, total_pages - 1))
+
+    if stripped_text.lower() in ['end', '结束']:
+        clear_search_session(plugin_event)
+        reply_text(plugin_event, '已结束本次搜索选择。')
+        return True
     
     # 处理分页命令：下一页/上一页/第X页
     if stripped_text.lower() in ['下一页', 'next', 'down']:
@@ -231,7 +241,9 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
     
     # 如果输入不符合预期的格式
     if len(results) > page_size:
-        reply_text(plugin_event, '请输入序号、"下一页"、"上一页"、"第X页" 或其他命令。')
+        reply_text(plugin_event, '请输入序号、"下一页"、"上一页"、"第X页" 或 "结束"。')
+        return True
+    reply_text(plugin_event, '请输入序号或 "结束"。')
     return True
 
 
@@ -717,7 +729,7 @@ def handle_alias(plugin_event, argument: str) -> None:
             # 多个结果使用分页展示
             save_search_session(plugin_event, matched_songs, '别名添加查询')
             formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
-            header = f'找到多个匹配的乐曲({total_count}个)，请输入序号选择：\n'
+            header = f'找到多个匹配的乐曲({total_count}个)，请输入序号选择，或输入“结束”退出：\n'
             message = header + formatted_results
             reply_text(plugin_event, message, max_chars=config.image_max_chars)
             return
@@ -768,7 +780,7 @@ def handle_alias(plugin_event, argument: str) -> None:
         # 多个结果使用分页展示
         save_search_session(plugin_event, matched_songs, '别名查询')
         formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
-        header = f'找到多个匹配的乐曲({total_count}个)：\n'
+        header = f'找到多个匹配的乐曲({total_count}个)，请输入序号查看别名，或输入“结束”退出：\n'
         message = header + formatted_results
         reply_text(plugin_event, message, max_chars=config.image_max_chars)
         return
@@ -806,7 +818,7 @@ def handle_find(plugin_event, argument: str) -> None:
     save_search_session(plugin_event, matched_songs, match_type)
     formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
     
-    header = f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)：\n'
+    header = f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)，请输入序号查看详情，或输入“结束”退出：\n'
     message = header + formatted_results
     reply_text(plugin_event, message, max_chars=config.image_max_chars)
 

@@ -212,7 +212,7 @@ def render_selection_page(session: dict[str, Any]) -> str:
         lines.append(f'提示：{session["notice"]}')
     for offset, item in enumerate(page_items):
         lines.append(function.format_list_item(item, start_index + offset + 1))
-    lines.append('直接发送本页序号查看详情；发送“下一页”“上一页”“跳页3”翻页。')
+    lines.append('直接发送本页序号查看详情；发送“下一页”“上一页”“跳页3”翻页，或发送“结束”退出选择。')
     return '\n'.join(lines)
 
 
@@ -259,10 +259,10 @@ def handle_selection_input(plugin_event, message_text: str) -> bool:
     if session is None:
         return False
     text = utils.safe_str(message_text).strip().lower()
-    if text in ['取消', 'cancel']:
+    if text in ['取消', 'cancel', 'end', '结束']:
         with selection_lock:
             selection_session_dict.pop(build_selection_key(plugin_event), None)
-        utils.reply_message(plugin_event, '已取消本次 Celeste Mod 选择。')
+        utils.reply_message(plugin_event, '已结束本次 Celeste Mod 选择。')
         return True
 
     page_size = max(1, int(session.get('page_size', 8)))

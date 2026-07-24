@@ -4,8 +4,8 @@
   "namespace": "LanotaPlugin",
   "message_mode": "olivos_string",
   "info": "Lanota 曲库查询、曲绘缓存、随机、今日曲、别名、定数与 Wiki API 同步插件",
-  "version": "1.1.1",
-  "svn": 3,
+  "version": "1.1.2",
+  "svn": 4,
   "compatible_svn": 190,
   "priority": 30000,
   "support": [

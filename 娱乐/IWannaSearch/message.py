@@ -597,6 +597,11 @@ def handle_selection_input(plugin_event, input_text: str) -> bool:
         return False
 
     stripped_text = utils.safe_str(input_text).strip()
+    if stripped_text.lower() in ['end', '结束']:
+        pop_selection_session(plugin_event)
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_selection_ended'))
+        return True
+
     results = session_data.get('results', [])
     page_size = int(session_data.get('page_size', config.result_page_size))
     total_page = max(1, math.ceil(len(results) / max(page_size, 1)))

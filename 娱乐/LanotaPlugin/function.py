@@ -605,7 +605,9 @@ def format_search_results_with_pagination(results: list[dict[str, Any]], page_in
     result_text = result_text.rstrip('\n')
     
     if total_count > page_size:
-        result_text += f'\n\n【输入序号查看详情 | 下一页/上一页/第X页】'
+        result_text += f'\n\n【输入序号查看详情 | 下一页/上一页/第X页 | 结束】'
+    else:
+        result_text += f'\n\n【输入序号查看详情 | 结束】'
     
     return result_text, total_pages, page_index
 

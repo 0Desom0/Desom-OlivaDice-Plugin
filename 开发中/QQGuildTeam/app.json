@@ -1,0 +1,18 @@
+{
+    "name": "QQ官方机器人团队分组与Markdown @插件",
+    "author": "Desom-fu",
+    "namespace": "QQGuildTeam",
+    "info": "仅为QQ官方机器人(qqGuildV2)维护命名分组，.team at 用 Markdown @所有分组成员。（前置：OlivaDiceCore）",
+    "priority": 19990,
+    "svn": 2,
+    "version": "1.1.0",
+    "compatible_svn": 190,
+    "message_mode": "olivos_string",
+    "support": [
+        {
+            "sdk": "qqGuildv2_link",
+            "platform": "qqGuild",
+            "model": "all"
+        }
+    ]
+}
