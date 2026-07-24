@@ -730,12 +730,21 @@ def build_full_check_report(result: dict[str, Any]) -> str:
         message += f'已覆盖更新: {result.get("updated", 0)}首\n'
     else:
         message += f'检测到变化: {result.get("updated", 0)}首\n'
+    message += f'新增歌曲: {result.get("added", 0)}首\n'
     message += f'无变化: {result.get("unchanged", 0)}首\n'
     message += f'失败: {result.get("failed", 0)}首\n'
     if apply_mode:
-        message += '说明: 已用 wiki 数据覆盖本地字段；章节号与谱师保持不变。\n'
+        message += '说明: 已用 wiki 数据覆盖本地字段，并补充新增歌曲；章节号与谱师保持不变。\n'
     else:
-        message += '说明: 当前仅检测 wiki 与本地差异，未写入本地；章节号与谱师保持不变。\n'
+        message += '说明: 当前仅检测 wiki 与本地差异及新增歌曲，未写入本地；章节号与谱师保持不变。\n'
+
+    added_titles = [str(title) for title in (result.get('added_titles') or []) if str(title).strip()]
+    if added_titles:
+        message += '\n【新增歌曲】\n'
+        for title in added_titles[:30]:
+            message += f'• {title}\n'
+        if len(added_titles) > 30:
+            message += f'……共{len(added_titles)}首新增\n'
 
     changed_items = [
         item for item in (result.get('results') or [])
@@ -764,5 +773,11 @@ def build_full_check_report(result: dict[str, Any]) -> str:
         if len(failed_items) > 20:
             message += f'……共{len(failed_items)}首失败\n'
 
-    message += f'\n当前总乐曲: {result.get("total", 0)}首'
+    if apply_mode:
+        message += f'\n当前总乐曲: {result.get("total", 0)}首'
+    else:
+        message += (
+            f'\n当前本地总乐曲: {result.get("total", 0)}首\n'
+            f'应用后预计总乐曲: {result.get("projected_total", result.get("total", 0))}首'
+        )
     return message

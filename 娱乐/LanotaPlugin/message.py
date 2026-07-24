@@ -520,7 +520,7 @@ def handle_lagroup(plugin_event, argument: str) -> None:
 
 
 def handle_fullcheck(plugin_event, argument: str = '') -> None:
-    """对本地曲库全部歌曲做 wiki 全量检测；仅 apply 时实际覆盖写入。"""
+    """对本地曲库做包含新增歌曲在内的全量检测；仅 apply 时实际写入。"""
     if not utils.sender_has_master_permission(plugin_event):
         reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以执行全量检测。')
         return
@@ -534,18 +534,14 @@ def handle_fullcheck(plugin_event, argument: str = '') -> None:
         return
     reply_text(
         plugin_event,
-        '开始对数据库全部歌曲进行 wiki 全量检测，请稍候……'
+        '开始对数据库全部歌曲进行 wiki 全量检测（含新增歌曲检查），请稍候……'
         if not apply_edit
-        else '开始对数据库全部歌曲进行 wiki 全量覆盖写入，请稍候……',
+        else '开始对数据库全部歌曲进行 wiki 全量覆盖写入（含新增歌曲补充），请稍候……',
     )
     try:
         result = crawler.run_full_check(apply=apply_edit)
         report = function.build_full_check_report(result)
-        # 报告可能很长，走长文本发送
-        try:
-            utils.reply_long_plain_text(plugin_event, report, max_chars=900)
-        except Exception:
-            reply_text(plugin_event, report)
+        reply_large_text(plugin_event, report)
     except Exception as exception_object:
         reply_text(
             plugin_event,
@@ -562,7 +558,7 @@ def handle_update(plugin_event, argument: str = '') -> None:
     if fullcheck_action in {'full', 'fullcheck', 'all', '全量', '全量检测'}:
         handle_fullcheck(plugin_event, fullcheck_argument)
         return
-    reply_text(plugin_event, '开始通过 Fandom/MediaWiki API 更新乐曲数据，请稍候...')
+    reply_text(plugin_event, '开始更新乐曲数据，请稍候...')
     try:
         result = crawler.run_update()
         reply_text(plugin_event, function.build_update_report(result))
@@ -590,7 +586,7 @@ def handle_sync(plugin_event, argument: str) -> None:
         return
 
     mode_text = '实际编辑' if apply_edit else '预览'
-    reply_text(plugin_event, f'开始通过 MediaWiki API 进行 Songs {mode_text}，请稍候……')
+    reply_text(plugin_event, f'开始进行 Songs {mode_text}，请稍候……')
     try:
         from . import wiki_sync
 
@@ -1318,8 +1314,8 @@ help_categories = {
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
             '/la global status/on/off - 查看或修改全局开关',
             '/la update - 通过 Fandom/MediaWiki API 更新曲库（补全缺失+新增）',
-            '/la fullcheck - 全量检测：只检查 wiki 与本地差异（保留章节号与谱师，不写入）',
-            '/la fullcheck apply - 全量覆盖：用 wiki 覆盖本地全部歌曲字段（保留章节号与谱师）',
+            '/la fullcheck - 全量检测：检查 wiki 与本地差异，并检测新增歌曲（不写入）',
+            '/la fullcheck apply - 全量覆盖：覆盖本地字段，并补充 wiki 新增歌曲（保留章节号与谱师）',
             '/la sync - 预览 Wiki Songs 页面同步（仅骰主）',
             '/la sync apply - 实际同步 Wiki Songs 页面（仅骰主）',
             '/la cover status - 查看本地曲绘缓存（仅骰主）',

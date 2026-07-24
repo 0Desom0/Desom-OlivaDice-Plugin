@@ -919,6 +919,64 @@ def overwrite_existing_song_from_wiki(session, song: dict[str, Any]):
     return merged, changed_fields
 
 
+def sync_new_songs_from_wiki(session, data: list[dict[str, Any]], apply: bool = False) -> dict[str, Any]:
+    """发现 wiki 新曲并按需写入本地；同时兼容同章节补 title_outside。"""
+    songs_info = fetch_song_list_from_api(session)
+    existing_titles = {str(item.get('title', '')).lower() for item in data}
+    existing_outside = {str(item.get('title_outside', '')).lower() for item in data if item.get('title_outside')}
+    existing_chapters = {str(item.get('chapter', '')).lower() for item in data}
+    candidates = [
+        info
+        for info in songs_info
+        if info['display_title'].lower() not in existing_titles
+        and info['display_title'].lower() not in existing_outside
+    ]
+
+    added_songs = []
+    title_outside_updates = []
+    for info in candidates:
+        page_name = info.get('page_name') or wiki_url_to_page_name(info.get('href', ''))
+        wikitext = fetch_wikitext(session, page_name)
+        if not wikitext:
+            continue
+        parsed_song = parse_song_from_wikitext(wikitext, info, len(data) + len(added_songs) + 1)
+        if not parsed_song:
+            continue
+
+        chapter = str(parsed_song.get('chapter', '')).lower()
+        if chapter in existing_chapters:
+            matched_song = next(
+                (old_song for old_song in data if str(old_song.get('chapter', '')).lower() == chapter),
+                None,
+            )
+            if matched_song and not matched_song.get('title_outside'):
+                display_title = info.get('display_title', '')
+                if display_title:
+                    if apply:
+                        matched_song['title_outside'] = display_title
+                    title_outside_updates.append(
+                        {
+                            'title': matched_song.get('title', ''),
+                            'chapter': matched_song.get('chapter', ''),
+                            'display_title': display_title,
+                        }
+                    )
+            continue
+
+        if apply:
+            data.append(parsed_song)
+        added_songs.append(parsed_song)
+        existing_chapters.add(chapter)
+        existing_titles.add(str(parsed_song.get('title', '')).lower())
+        existing_outside.add(str(parsed_song.get('title_outside', '')).lower())
+        time.sleep(0.2)
+
+    return {
+        'added_songs': added_songs,
+        'title_outside_updates': title_outside_updates,
+    }
+
+
 def run_full_check(apply: bool = False) -> dict[str, Any]:
     """对数据库中全部歌曲做 wiki 全量检测；仅在 apply=True 时写回本地。"""
     if not API_DEPENDENCIES_AVAILABLE:
@@ -991,6 +1049,10 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
             )
         time.sleep(0.15)
 
+    new_song_result = sync_new_songs_from_wiki(session, data, apply=apply)
+    added_songs = new_song_result.get('added_songs', [])
+    title_outside_updates = new_song_result.get('title_outside_updates', [])
+
     if apply and not function.save_song_data(data):
         raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
     return {
@@ -999,10 +1061,15 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
         'before': original_count,
         'checked': checked,
         'updated': updated,
+        'added': len(added_songs),
+        'added_titles': [str(song.get('title', '')) for song in added_songs],
+        'title_outside_updated': len(title_outside_updates),
+        'title_outside_updates': title_outside_updates,
         'unchanged': unchanged,
         'failed': failed,
         'results': results,
         'total': len(data),
+        'projected_total': len(data) if apply else original_count + len(added_songs),
     }
 
 
@@ -1030,17 +1097,6 @@ def run_update() -> dict[str, Any]:
         if check_missing_fields(song)
     ]
 
-    songs_info = fetch_song_list_from_api(session)
-    existing_titles = {str(item.get('title', '')).lower() for item in data}
-    existing_outside = {str(item.get('title_outside', '')).lower() for item in data if item.get('title_outside')}
-    existing_chapters = {str(item.get('chapter', '')).lower() for item in data}
-    candidates = [
-        info
-        for info in songs_info
-        if info['display_title'].lower() not in existing_titles
-        and info['display_title'].lower() not in existing_outside
-    ]
-
     update_results = []
     for item in songs_with_missing:
         song = item['song']
@@ -1062,26 +1118,8 @@ def run_update() -> dict[str, Any]:
         )
         time.sleep(0.2)
 
-    new_titles = []
-    for info in candidates:
-        page_name = info.get('page_name') or wiki_url_to_page_name(info.get('href', ''))
-        wikitext = fetch_wikitext(session, page_name)
-        if not wikitext:
-            continue
-        parsed_song = parse_song_from_wikitext(wikitext, info, len(data) + 1)
-        if not parsed_song:
-            continue
-        chapter = str(parsed_song.get('chapter', '')).lower()
-        if chapter in existing_chapters:
-            for old_song in data:
-                if str(old_song.get('chapter', '')).lower() == chapter and not old_song.get('title_outside'):
-                    old_song['title_outside'] = info.get('display_title', '')
-            continue
-        data.append(parsed_song)
-        existing_chapters.add(chapter)
-        existing_titles.add(str(parsed_song.get('title', '')).lower())
-        new_titles.append(parsed_song.get('title', ''))
-        time.sleep(0.2)
+    new_song_result = sync_new_songs_from_wiki(session, data, apply=True)
+    new_titles = [str(song.get('title', '')) for song in new_song_result.get('added_songs', [])]
 
     function.save_song_data(data)
     return {
