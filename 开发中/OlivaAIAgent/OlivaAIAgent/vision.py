@@ -137,6 +137,11 @@ _MIME_BY_EXT = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png'
 _EXT_BY_MIME = {'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
                 'image/webp': '.webp', 'image/bmp': '.bmp'}
 _VALID_EXT = set(_MIME_BY_EXT)
+_STABLE_IMAGE_NAME = re.compile(r'^img_[0-9a-f]{20}\.(?:jpg|jpeg|png|gif|webp|bmp)$')
+_VOLATILE_URL_PARAMS = {
+    'authkey', 'expire', 'expires', 'rkey', 'sig', 'signature', 'token',
+    'ts', 'timestamp',
+}
 
 
 def _looksLikeImage(b):
@@ -146,6 +151,83 @@ def _looksLikeImage(b):
     return (b[:3] == b'\xff\xd8\xff' or b[:8] == b'\x89PNG\r\n\x1a\n'
             or b[:6] in (b'GIF87a', b'GIF89a') or b[:2] == b'BM'
             or (b[:4] == b'RIFF' and b[8:12] == b'WEBP'))
+
+
+def _mimeFromBytes(content):
+    if not content:
+        return ''
+    if content[:3] == b'\xff\xd8\xff':
+        return 'image/jpeg'
+    if content[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'image/png'
+    if content[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if content[:2] == b'BM':
+        return 'image/bmp'
+    if len(content) >= 12 and content[:4] == b'RIFF' and content[8:12] == b'WEBP':
+        return 'image/webp'
+    return ''
+
+
+def _sourceId(file_name, image_url=None):
+    '''生成不含短期鉴权参数的来源指纹，供重启后定位同一张远程图片。'''
+    source = str(image_url or file_name or '').strip()
+    try:
+        if source.startswith(('http://', 'https://')):
+            from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+            parts = urlsplit(source)
+            query = sorted([
+                (key, value)
+                for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                if key.lower() not in _VOLATILE_URL_PARAMS
+            ])
+            source = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, urlencode(query), ''))
+    except Exception:
+        pass
+    return hashlib.sha256(source.encode('utf-8')).hexdigest()
+
+
+def _stableImageName(content, content_type='', fallback_name=''):
+    mime = _mimeFromBytes(content)
+    if not mime:
+        mime = (content_type or '').split(';')[0].strip().lower()
+        if mime == 'image/jpg':
+            mime = 'image/jpeg'
+    ext = _EXT_BY_MIME.get(mime)
+    if ext is None:
+        fallback_ext = os.path.splitext(_safeImageName(fallback_name))[1].lower()
+        ext = fallback_ext if fallback_ext in _VALID_EXT else '.jpg'
+    digest = hashlib.sha256(content).hexdigest()[:20]
+    return 'img_%s%s' % (digest, ext)
+
+
+def _isStableImageName(file_name):
+    return bool(_STABLE_IMAGE_NAME.fullmatch(str(file_name or '')))
+
+
+def _imageFileExists(file_name):
+    if not _isStableImageName(file_name):
+        return False
+    directory = os.path.abspath(imgDir())
+    path = os.path.abspath(os.path.join(directory, str(file_name)))
+    return path.startswith(directory + os.sep) and os.path.isfile(path)
+
+
+def _publicImageData(data):
+    if not isinstance(data, dict):
+        return data
+    return {key: value for key, value in data.items() if not str(key).startswith('_')}
+
+
+def _dataSourceIds(data):
+    if not isinstance(data, dict):
+        return set()
+    result = {str(item) for item in data.get('_source_ids', []) if str(item)} \
+        if isinstance(data.get('_source_ids'), list) else set()
+    if data.get('_source_id'):
+        result.add(str(data['_source_id']))
+    return result
 
 
 def _safeImageName(file_name, content_type=''):
@@ -194,7 +276,12 @@ def _downloadBase64(url, file_name, trace_id=None):
         )
         return None, None
     ctype = r.headers.get('Content-Type', '')
-    if not ctype.startswith('image/') and not _looksLikeImage(content):
+    detected_mime = _mimeFromBytes(content)
+    header_mime = ctype.split(';')[0].strip().lower()
+    if header_mime == 'image/jpg':
+        header_mime = 'image/jpeg'
+    actual_mime = detected_mime or (header_mime if header_mime in _EXT_BY_MIME else '')
+    if not actual_mime:
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
             'vision.download.rejected',
@@ -203,15 +290,16 @@ def _downloadBase64(url, file_name, trace_id=None):
             content_type=ctype or 'missing',
         )
         return None, None
-    safe = _safeImageName(file_name, ctype)
+    safe = _stableImageName(content, actual_mime, file_name)
     b = base64.b64encode(content).decode('utf-8')
-    data_url = 'data:%s;base64,%s' % (_mimeOf(safe, ctype), b)
+    data_url = 'data:%s;base64,%s' % (actual_mime, b)
     # 存盘=最佳努力：文件名/磁盘问题绝不能让识别失败（官机 URL 曾因此报 SAVE ERR 并回退发原始URL致400）
     path = None
     try:
         p = os.path.join(imgDir(), safe)
-        with open(p, 'wb') as f:
-            f.write(content)
+        if not os.path.exists(p):
+            with open(p, 'wb') as f:
+                f.write(content)
         path = p
     except Exception as e:
         OlivaAIAgent.conf.traceLog(
@@ -314,23 +402,43 @@ def _callOcr(vc, image_url, trace_id=None):
     return None
 
 
-def _cachedOnly(bot_hash, file_name):
-    '''只读缓存（持锁快照），不联网。命中返回 dict，否则 None。'''
+def _cachedOnly(bot_hash, file_name, image_url=None):
+    '''只读缓存（持锁快照），返回 (memory键, 数据, 来源指纹)。'''
+    source_id = _sourceId(file_name, image_url)
     klock = OlivaAIAgent.knowledge._lock
     with klock:
         gc = OlivaAIAgent.knowledge.getMem(bot_hash)['全局'].get('图片缓存', {})
-        v = gc.get(file_name) if isinstance(gc, dict) else None
-        return dict(v) if isinstance(v, dict) else None
+        snap = dict(gc) if isinstance(gc, dict) else {}
+    for candidate in (str(file_name or ''), str(image_url or '')):
+        value = snap.get(candidate)
+        if isinstance(value, dict):
+            return candidate, dict(value), source_id
+    for key, value in reversed(list(snap.items())):
+        if isinstance(value, dict) and source_id in _dataSourceIds(value):
+            return str(key), dict(value), source_id
+    return None, None, source_id
 
 
-def _storeOcr(bot_hash, file_name, data, trace_id=None):
+def _storeOcr(bot_hash, file_name, data, trace_id=None, source_id=None, old_keys=None):
     '''把 OCR 结果写入持久图片缓存（持 knowledge._lock，与 saveMem 一致）。'''
+    if not _isStableImageName(file_name):
+        raise ValueError('图片缓存键不是稳定的本地文件名: %s' % _safeImageName(file_name))
+    stored_data = dict(data)
     klock = OlivaAIAgent.knowledge._lock
     with klock:
         mem = OlivaAIAgent.knowledge.getMem(bot_hash)
         global_cache = mem['全局'].setdefault('图片缓存', {})
+        source_ids = _dataSourceIds(global_cache.get(file_name)) | _dataSourceIds(stored_data)
+        if source_id:
+            source_ids.add(str(source_id))
+        stored_data.pop('_source_id', None)
+        if source_ids:
+            stored_data['_source_ids'] = sorted(source_ids)
+        for old_key in old_keys or ():
+            if old_key != file_name:
+                global_cache.pop(old_key, None)
         global_cache.pop(file_name, None)
-        global_cache[file_name] = data
+        global_cache[file_name] = stored_data
         cap = int(OlivaAIAgent.conf.get('vision', 'persist_cache_max', default=300))
         if cap > 0 and len(global_cache) > cap:
             for k in list(global_cache)[:len(global_cache) - cap]:
@@ -360,7 +468,7 @@ def _isUnfetchableUrl(url):
 
 
 def _runOcr(file_name, image_url, trace_id=None):
-    '''执行下载+OCR，返回 data 或 None。无网络配置直接 None。'''
+    '''执行一次下载和 OCR，返回 (data或None, 实际本地文件名或None)。'''
     vc = _visionConf()
     if not (vc and image_url and vc.get('api_key') and vc.get('model')):
         OlivaAIAgent.conf.traceLog(
@@ -370,7 +478,7 @@ def _runOcr(file_name, image_url, trace_id=None):
             has_image_url=bool(image_url),
             reason='vision_disabled_or_incomplete',
         )
-        return None
+        return None, None
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
         'vision.route',
@@ -379,20 +487,19 @@ def _runOcr(file_name, image_url, trace_id=None):
         mode=vc.get('mode', 'base64'),
         model=vc.get('model', ''),
     )
-    # base64 模式，或识别不了的官机/签名 URL：必须先下成 base64 再喂给识图模型
-    if vc.get('mode', 'base64') == 'base64' or _isUnfetchableUrl(image_url):
-        b64, _ = _downloadBase64(image_url, file_name, trace_id=trace_id)
-        if not b64:
-            # 关键：下载/转码失败时【不回退发原始URL】——官机 URL 第三方模型取不到会 400，宁可占位
-            OlivaAIAgent.conf.traceLog(
-                OlivaAIAgent.conf.gProc,
-                'vision.ocr.skipped',
-                trace_id,
-                reason='download_or_transcode_failed',
-            )
-            return None
-        return _callOcr(vc, b64, trace_id=trace_id)
-    return _callOcr(vc, image_url, trace_id=trace_id)
+    # 无论识图后端用 URL 还是 base64，都先落盘一次，保证 memory 中的文件名重启后仍可发送。
+    b64, local_path = _downloadBase64(image_url, file_name, trace_id=trace_id)
+    if not b64 or not local_path:
+        # 关键：下载/转码失败时不回退官机签名 URL，避免第三方模型返回 400。
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'vision.ocr.skipped',
+            trace_id,
+            reason='download_or_transcode_failed',
+        )
+        return None, None
+    image_input = b64 if vc.get('mode', 'base64') == 'base64' or _isUnfetchableUrl(image_url) else image_url
+    return _callOcr(vc, image_input, trace_id=trace_id), os.path.basename(local_path)
 
 
 def _pushGroupCache(group_id, file_name, data):
@@ -403,11 +510,15 @@ def _pushGroupCache(group_id, file_name, data):
             newq = deque(q or (), maxlen=qsize)
             _imageCache[group_id] = newq
             q = newq
+        kept = [item for item in q if not (isinstance(item, tuple) and item and item[0] == file_name)]
+        q = deque(kept, maxlen=qsize)
         q.append((file_name, data))
+        _imageCache[group_id] = q
 
 
-def _bgIngest(bot_hash, group_id, file_name, image_url, trace_id=None):
-    key = (str(bot_hash), str(file_name))
+def _bgIngest(bot_hash, group_id, file_name, image_url, trace_id=None, cached_key=None, cached_data=None):
+    source_id = _sourceId(file_name, image_url)
+    key = (str(bot_hash), source_id)
     with _ingest_lock:
         if key in _ingesting:
             OlivaAIAgent.conf.traceLog(
@@ -427,10 +538,22 @@ def _bgIngest(bot_hash, group_id, file_name, image_url, trace_id=None):
                 trace_id,
                 file=_safeImageName(file_name),
             )
-            data = _runOcr(file_name, image_url, trace_id=trace_id)
-            if data is not None:
-                _storeOcr(bot_hash, file_name, data, trace_id=trace_id)
-                _pushGroupCache(group_id, file_name, data)
+            if cached_data is not None:
+                _, local_path = _downloadBase64(image_url, file_name, trace_id=trace_id)
+                data = dict(cached_data)
+                local_name = os.path.basename(local_path) if local_path else None
+            else:
+                data, local_name = _runOcr(file_name, image_url, trace_id=trace_id)
+            if data is not None and local_name is not None:
+                _storeOcr(
+                    bot_hash,
+                    local_name,
+                    data,
+                    trace_id=trace_id,
+                    source_id=source_id,
+                    old_keys=[cached_key] if cached_key else None,
+                )
+                _pushGroupCache(group_id, local_name, data)
             OlivaAIAgent.conf.traceLog(
                 OlivaAIAgent.conf.gProc,
                 'vision.background.done',
@@ -454,25 +577,52 @@ def _cacheData(bot_hash, group_id, file_name, image_url, message_text, image_typ
                trace_id=None):
     '''把一张图片转成事实摘要并入群缓存。
     allow_network=False 时不在本线程做下载/OCR（避免阻塞消息总线），改为后台识别、本次先用占位摘要。'''
-    data = _cachedOnly(bot_hash, file_name)
+    cache_key, data, source_id = _cachedOnly(bot_hash, file_name, image_url)
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
         'vision.cache.lookup',
         trace_id,
         allow_network=allow_network,
-        file=_safeImageName(file_name),
+        file=_safeImageName(cache_key or file_name),
         hit=data is not None,
     )
+    local_name = None
+    if data is not None and _imageFileExists(cache_key) and source_id in _dataSourceIds(data):
+        local_name = cache_key
+    if data is not None and local_name is None and image_url:
+        if allow_network:
+            _, local_path = _downloadBase64(image_url, file_name, trace_id=trace_id)
+            local_name = os.path.basename(local_path) if local_path else None
+            if local_name:
+                _storeOcr(
+                    bot_hash,
+                    local_name,
+                    data,
+                    trace_id=trace_id,
+                    source_id=source_id,
+                    old_keys=[cache_key] if cache_key else None,
+                )
+        elif _visionConf():
+            _bgIngest(
+                bot_hash,
+                group_id,
+                file_name,
+                image_url,
+                trace_id=trace_id,
+                cached_key=cache_key,
+                cached_data=data,
+            )
     if data is None and allow_network:
-        data = _runOcr(file_name, image_url, trace_id=trace_id)
-        if data is not None:
-            _storeOcr(bot_hash, file_name, data, trace_id=trace_id)
+        data, local_name = _runOcr(file_name, image_url, trace_id=trace_id)
+        if data is not None and local_name is not None:
+            _storeOcr(bot_hash, local_name, data, trace_id=trace_id, source_id=source_id)
     if data is None:
         # 缓存未命中：非阻塞模式下后台识别，供后续引用；本次先返回占位
         if not allow_network and image_url and _visionConf():
             _bgIngest(bot_hash, group_id, file_name, image_url, trace_id=trace_id)
         data = _basicData(message_text, image_type=image_type, summary=summary)
-    _pushGroupCache(group_id, file_name, data)
+    runtime_name = local_name or ('img_%s.jpg' % source_id[:20])
+    _pushGroupCache(group_id, runtime_name, data)
     return imgcode_format(data)
 
 
@@ -493,7 +643,7 @@ def translateIncoming(message, group_id, bot_hash, allow_network=True, trace_id=
     def proc_image(m):
         original = m.group(0)
         params = _parseParams(original)
-        fn = params.get('file')
+        fn = params.get('file') or params.get('url')
         if not fn:
             return imgcode_format()
         image_url = params.get('url') or (fn if str(fn).startswith(('http://', 'https://')) else None)
@@ -533,12 +683,10 @@ def describeImages(image_urls, group_id, bot_hash, trace_id=None):
     facts = []
     for image_url in list(image_urls or [])[:4]:
         url_text = str(image_url)
-        digest = hashlib.sha256(url_text.encode('utf-8')).hexdigest()[:20]
-        file_name = 'remote_%s.jpg' % digest
         fact = _cacheData(
             bot_hash,
             group_id,
-            file_name,
+            url_text,
             url_text,
             '[远程图片]',
             '图片',
@@ -576,13 +724,14 @@ def imageCacheMap(bot_hash):
             gc = OlivaAIAgent.knowledge.getMem(bot_hash)['全局'].get('图片缓存', {})
             snap = dict(gc) if isinstance(gc, dict) else {}
         for k, v in snap.items():
-            if isinstance(v, dict):
+            if isinstance(v, dict) and _imageFileExists(str(k)):
                 res[str(k)] = v
     with _cache_lock:
         snap_q = [list(q) for q in _imageCache.values()]
     for q in snap_q:
         for item in q:
-            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], dict):
+            if (isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], dict)
+                    and _imageFileExists(str(item[0]))):
                 res[str(item[0])] = item[1]
     return res
 
@@ -593,7 +742,7 @@ def groupImageCacheDict(group_id):
         items = list(_imageCache.get(group_id, []))
     for item in items:
         if isinstance(item, tuple) and len(item) >= 2:
-            res[str(item[0])] = item[1]
+            res[str(item[0])] = _publicImageData(item[1])
     return res
 
 
@@ -906,7 +1055,7 @@ def emojiIntentCache(bot_hash, group_id, max_size):
     random.shuffle(cur_cand)
     random.shuffle(glob_cand)
     selected = cur_cand + glob_cand[:max_size]
-    return {fn: cache_map[fn] for fn in selected if isinstance(cache_map.get(fn), dict)}
+    return {fn: _publicImageData(cache_map[fn]) for fn in selected if isinstance(cache_map.get(fn), dict)}
 
 
 def cleanupImageCache():

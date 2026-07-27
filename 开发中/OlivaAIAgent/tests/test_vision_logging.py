@@ -35,6 +35,17 @@ class FakeErrorResponse:
     text = '{"error":"unsupported image format"}'
 
 
+class FakeImageResponse:
+    status_code = 200
+
+    def __init__(self, content, content_type):
+        self.content = content
+        self.headers = {'Content-Type': content_type}
+
+    def raise_for_status(self):
+        return None
+
+
 class FakeBotInfo:
     hash = 'bot-hash'
 
@@ -219,6 +230,105 @@ class VisionLoggingTest(unittest.TestCase):
         logs = '\n'.join(record[1] for record in self.proc.records)
         self.assertIn('已生成图片消息段', logs)
         self.assertIn('编号=trace-send-image', logs)
+
+    def test_download_uses_content_hash_and_real_gif_extension(self):
+        content = b'GIF89a' + b'\x00' * 32
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(OlivaAIAgent.vision, 'imgDir', return_value=directory), \
+                mock.patch.object(
+                    OlivaAIAgent.vision.requests,
+                    'get',
+                    return_value=FakeImageResponse(content, 'application/octet-stream'),
+                ):
+            data_url, path = OlivaAIAgent.vision._downloadBase64(
+                'https://multimedia.nt.qq.com.cn/download?appid=1&fileid=gif&rkey=temporary',
+                'download',
+            )
+            self.assertTrue(data_url.startswith('data:image/gif;base64,'))
+            self.assertRegex(os.path.basename(path), r'^img_[0-9a-f]{20}\.gif$')
+            with open(path, 'rb') as image_file:
+                self.assertEqual(content, image_file.read())
+
+    def test_different_download_images_do_not_overwrite_each_other(self):
+        first = FakeImageResponse(b'\xff\xd8\xffFIRST_IMAGE', 'image/jpeg')
+        second = FakeImageResponse(b'\xff\xd8\xffSECOND_IMAGE', 'image/jpeg')
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(OlivaAIAgent.vision, 'imgDir', return_value=directory), \
+                mock.patch.object(OlivaAIAgent.vision.requests, 'get', side_effect=[first, second]):
+            _, first_path = OlivaAIAgent.vision._downloadBase64(
+                'https://multimedia.nt.qq.com.cn/download?appid=1&fileid=first',
+                'download',
+            )
+            _, second_path = OlivaAIAgent.vision._downloadBase64(
+                'https://multimedia.nt.qq.com.cn/download?appid=1&fileid=second',
+                'download',
+            )
+        self.assertNotEqual(first_path, second_path)
+        self.assertNotEqual(os.path.basename(first_path), os.path.basename(second_path))
+
+    def test_legacy_url_memory_migrates_without_repeating_ocr(self):
+        image_url = (
+            'https://multimedia.nt.qq.com.cn/download?appid=1&fileid=same-image&rkey=temporary'
+        )
+        memory = {
+            '全局': {
+                '图片缓存': {
+                    image_url: {'content': '旧记录中的白色狐狸', 'intent': '卖萌', 'type': '表情包'},
+                },
+            },
+        }
+        content = b'GIF89a' + b'\x01' * 32
+        OlivaAIAgent.vision.cleanupImageCache()
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(OlivaAIAgent.vision, 'imgDir', return_value=directory), \
+                mock.patch.object(OlivaAIAgent.knowledge, 'getMem', return_value=memory), \
+                mock.patch.object(OlivaAIAgent.knowledge, 'saveMem') as save_memory, \
+                mock.patch.object(
+                    OlivaAIAgent.vision.requests,
+                    'get',
+                    return_value=FakeImageResponse(content, 'image/gif'),
+                ) as download, \
+                mock.patch.object(OlivaAIAgent.vision, '_callOcr') as call_ocr:
+            fact = OlivaAIAgent.vision._cacheData(
+                'bot-hash',
+                'group-1',
+                image_url,
+                image_url,
+                '[图片]',
+                '表情包',
+                allow_network=True,
+            )
+            keys = list(memory['全局']['图片缓存'])
+            self.assertEqual('[图片:旧记录中的白色狐狸]', fact)
+            self.assertEqual(1, len(keys))
+            self.assertRegex(keys[0], r'^img_[0-9a-f]{20}\.gif$')
+            self.assertTrue(os.path.isfile(os.path.join(directory, keys[0])))
+            self.assertIn('_source_ids', memory['全局']['图片缓存'][keys[0]])
+            save_memory.assert_called_once_with('bot-hash')
+            download.assert_called_once()
+            call_ocr.assert_not_called()
+
+            # 模拟插件重启：运行时群队列消失，仍可只靠落盘 memory 找图并生成图片消息段。
+            OlivaAIAgent.vision.cleanupImageCache()
+            cache_map = OlivaAIAgent.vision.imageCacheMap('bot-hash')
+            self.assertIn(keys[0], cache_map)
+            outgoing = OlivaAIAgent.vision.translateOutgoing(['[发图片:白色狐狸]'], 'bot-hash')
+            self.assertEqual(1, len(outgoing))
+            self.assertIn(keys[0], outgoing[0])
+
+            # 再次收到同一来源时直接命中，不再下载，也不再识图。
+            download.reset_mock()
+            OlivaAIAgent.vision._cacheData(
+                'bot-hash',
+                'group-1',
+                image_url.replace('rkey=temporary', 'rkey=renewed'),
+                image_url.replace('rkey=temporary', 'rkey=renewed'),
+                '[图片]',
+                '表情包',
+                allow_network=True,
+            )
+            download.assert_not_called()
+            call_ocr.assert_not_called()
 
     def test_sync_ocr_false_defers_group_vision_to_worker(self):
         parsed = {

@@ -263,7 +263,7 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - `config.json` / `groups.json` — 配置与每群开关
 - `Knowledge/*.json` — 手动维护的静态知识库 `{关键词: 内容}`
 - `skills/<名>/SKILL.md` — Codex 技能/规则书（支持 frontmatter 的 name/description/aliases/keywords/triggers + references/ 资料）
-- `Image/` — 视觉缓存图片；`ambient_history/` — 每群潜行历史；`ambient_memory_*.json` — 知识/侧写/总结/图片缓存；`sessions/` `memory/` — 全接口模式对话与长期记忆
+- `Image/` — 视觉缓存图片（按内容哈希唯一命名）；`ambient_history/` — 每群潜行历史；`ambient_memory_*.json` — 知识/侧写/总结及“本地图片文件名 → OCR描述”映射；`sessions/` `memory/` — 全接口模式对话与长期记忆
 
 ## 说明
 

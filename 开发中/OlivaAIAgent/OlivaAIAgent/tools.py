@@ -10,11 +10,14 @@ OlivaAIAgent 工具注册表
 
 import copy
 import html
+import ipaddress
 import json
 import re
+import socket
 import threading
 import time
 import urllib.parse
+from html.parser import HTMLParser
 
 import requests
 
@@ -613,12 +616,191 @@ def _t_kb_group_brief(ctx, args):
 # 联网工具
 # =========================================================
 
+_WEB_BLOCK_TAGS = {
+    'address', 'article', 'blockquote', 'br', 'dd', 'div', 'dl', 'dt', 'figcaption',
+    'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'li', 'main', 'p', 'pre',
+    'section', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
+}
+_WEB_IGNORED_TAGS = {'aside', 'canvas', 'footer', 'form', 'nav', 'noscript', 'script', 'style', 'svg', 'template'}
+
+
+class _WebTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.all_parts = []
+        self.main_parts = []
+        self.title_parts = []
+        self._ignored_depth = 0
+        self._main_depth = 0
+        self._title_depth = 0
+        self._stack = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        attrs_map = {str(key).lower(): str(value or '').lower() for key, value in attrs}
+        ignored = tag in _WEB_IGNORED_TAGS
+        main = tag in ('article', 'main') or attrs_map.get('role') == 'main'
+        title = tag == 'title'
+        self._stack.append((ignored, main, title))
+        if ignored:
+            self._ignored_depth += 1
+        if main:
+            self._main_depth += 1
+        if title:
+            self._title_depth += 1
+        if tag in _WEB_BLOCK_TAGS:
+            self._append('\n')
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in _WEB_BLOCK_TAGS:
+            self._append('\n')
+        if not self._stack:
+            return
+        ignored, main, title = self._stack.pop()
+        if ignored:
+            self._ignored_depth = max(0, self._ignored_depth - 1)
+        if main:
+            self._main_depth = max(0, self._main_depth - 1)
+        if title:
+            self._title_depth = max(0, self._title_depth - 1)
+
+    def handle_data(self, data):
+        if self._ignored_depth > 0:
+            return
+        self._append(data)
+        if self._title_depth > 0:
+            self.title_parts.append(data)
+
+    def _append(self, value):
+        if self._ignored_depth > 0:
+            return
+        self.all_parts.append(value)
+        if self._main_depth > 0:
+            self.main_parts.append(value)
+
+
+def _cleanWebText(parts):
+    text = html.unescape(''.join(parts)).replace('\r', '\n')
+    lines = []
+    for line in text.split('\n'):
+        line = re.sub(r'[ \t\f\v]+', ' ', line).strip()
+        if line and (not lines or line != lines[-1]):
+            lines.append(line)
+    return '\n'.join(lines)
+
+
+def _extractWebPage(text):
+    parser = _WebTextParser()
+    try:
+        parser.feed(str(text))
+        parser.close()
+    except Exception:
+        pass
+    main_text = _cleanWebText(parser.main_parts)
+    all_text = _cleanWebText(parser.all_parts)
+    title = re.sub(r'\s+', ' ', _cleanWebText(parser.title_parts)).strip()
+    content = main_text if len(main_text) >= 80 else all_text
+    if title and not content.startswith(title):
+        content = title + '\n' + content
+    return title, content.strip()
+
+
 def _strip_html(text):
-    text = re.sub(r'<script[\s\S]*?</script>', ' ', text, flags=re.I)
-    text = re.sub(r'<style[\s\S]*?</style>', ' ', text, flags=re.I)
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = html.unescape(text)
-    return re.sub(r'\s+', ' ', text).strip()
+    return re.sub(r'\s+', ' ', _extractWebPage(text)[1]).strip()
+
+
+def _isPublicWebUrl(url):
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            return False, '仅支持有效的 http/https URL'
+        if OlivaAIAgent.conf.get('search', 'allow_private_network', default=False):
+            return True, ''
+        addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443)}
+        for address in addresses:
+            ip = ipaddress.ip_address(address)
+            if not ip.is_global:
+                return False, '不允许访问本机、局域网或保留地址'
+        return True, ''
+    except Exception as e:
+        return False, '网址解析失败: %s' % e
+
+
+def _requestWebUrl(url):
+    current = str(url)
+    headers = {
+        'Accept': 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5',
+        'User-Agent': 'Mozilla/5.0 (compatible; OlivaAIAgent/2.16; +https://github.com/OlivOS-Team/OlivOS)',
+    }
+    for _ in range(6):
+        allowed, reason = _isPublicWebUrl(current)
+        if not allowed:
+            raise ValueError(reason)
+        response = requests.get(
+            current,
+            headers=headers,
+            timeout=(10, 30),
+            allow_redirects=False,
+            stream=True,
+        )
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get('Location')
+            response.close()
+            if not location:
+                raise ValueError('网页重定向缺少目标地址')
+            current = urllib.parse.urljoin(current, location)
+            continue
+        response.raise_for_status()
+        response._oliva_final_url = current
+        return response
+    raise ValueError('网页重定向次数过多')
+
+
+def _readWebBody(response, max_bytes):
+    chunks = []
+    size = 0
+    truncated = False
+    try:
+        for chunk in response.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            remain = max_bytes - size
+            if remain <= 0:
+                truncated = True
+                break
+            chunks.append(chunk[:remain])
+            size += min(len(chunk), remain)
+            if len(chunk) > remain or size >= max_bytes:
+                truncated = True
+                break
+    finally:
+        response.close()
+    return b''.join(chunks), truncated
+
+
+def _decodeWebBody(content, content_type, response_encoding=None):
+    encodings = []
+    charset = re.search(r'charset\s*=\s*["\']?([\w.-]+)', str(content_type), flags=re.I)
+    if charset:
+        encodings.append(charset.group(1))
+    head = content[:8192].decode('ascii', errors='ignore')
+    meta = re.search(r'<meta[^>]+charset\s*=\s*["\']?([\w.-]+)', head, flags=re.I)
+    if meta:
+        encodings.append(meta.group(1))
+    if response_encoding and str(response_encoding).lower() != 'iso-8859-1':
+        encodings.append(str(response_encoding))
+    encodings.extend(['utf-8', 'gb18030'])
+    for encoding in dict.fromkeys(encodings):
+        try:
+            return content.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return content.decode('utf-8', errors='replace')
 
 
 @_reg(
@@ -683,15 +865,34 @@ def _t_search(ctx, args):
 def _t_fetch(ctx, args):
     if not OlivaAIAgent.conf.get('search', 'enabled', default=True):
         return {'error': '联网功能已在配置中关闭'}
-    url = str(args.get('url', ''))
-    if not url.startswith(('http://', 'https://')):
-        return {'error': '仅支持 http/https URL'}
+    url = str(args.get('url', '')).strip()
     try:
-        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        r = _requestWebUrl(url)
         limit = int(OlivaAIAgent.conf.get('search', 'fetch_url_max_chars', default=5000))
-        ctype = r.headers.get('Content-Type', '')
+        max_bytes = int(OlivaAIAgent.conf.get('search', 'fetch_url_max_bytes', default=2 * 1024 * 1024))
+        ctype = r.headers.get('Content-Type', '').lower()
+        final_url = getattr(r, '_oliva_final_url', url)
+        if ctype and not any(kind in ctype for kind in ('html', 'json', 'text/', 'xml')):
+            r.close()
+            return {'error': '不支持读取此内容类型: %s' % ctype.split(';')[0]}
+        body, bytes_truncated = _readWebBody(r, max(1024, max_bytes))
+        decoded = _decodeWebBody(body, ctype, getattr(r, 'encoding', None))
         if 'json' in ctype:
-            return {'active': True, 'data': r.text[:limit]}
-        return {'active': True, 'data': _strip_html(r.text)[:limit]}
+            try:
+                content = json.dumps(json.loads(decoded), ensure_ascii=False, indent=2)
+            except Exception:
+                content = decoded.strip()
+            title = ''
+        elif 'html' in ctype or re.search(r'<(?:!doctype\s+html|html|body|article|main)\b', decoded[:2048], re.I):
+            title, content = _extractWebPage(decoded)
+        else:
+            title, content = '', re.sub(r'\n{3,}', '\n\n', decoded).strip()
+        chars_truncated = len(content) > limit
+        return {'active': True, 'data': {
+            'url': final_url,
+            'title': title,
+            'content': content[:limit],
+            'truncated': bytes_truncated or chars_truncated,
+        }}
     except Exception as e:
         return {'error': '抓取失败: %s' % e}

@@ -195,6 +195,8 @@ DEFAULT_CONF = {
         'tavily_api_key': '',
         'max_results': 5,
         'fetch_url_max_chars': 5000,
+        'fetch_url_max_bytes': 2097152,
+        'allow_private_network': False,
     },
     'ambient': {
         '_说明': '潜行模式：伪装群友、读全部群消息、择机自行插话（默认关闭，用 .ai stealth on 按群开启）',
