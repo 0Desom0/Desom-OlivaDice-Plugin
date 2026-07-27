@@ -1,7 +1,7 @@
 # -*- encoding: utf-8 -*-
 '''
 OlivaAIAgent 视觉/图片子系统（移植并增强自刺客）
-- OCR/视觉识别: 把消息中的 [CQ/OP:image] / mface 转成 [图片：内容；意图；类型] 事实摘要
+- OCR/视觉识别: 把消息中的 [CQ/OP:image] / mface 原位转成 [图片:识图结果]
 - 图片缓存: 按群保留最近若干张图（内容/意图/类型），供 AI 引用与"发表情包"
 - 表情包主动发送: AI 输出 [发图片:关键词] → 模糊匹配缓存里的真实图片文件发出
 - 视觉否认纠偏: 已有有效摘要时若模型说"看不到图"，自动纠正
@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from collections import deque
+from difflib import SequenceMatcher
 
 import requests
 
@@ -23,7 +24,8 @@ import OlivaAIAgent
 
 OP_IMAGE_PATTERN = re.compile(r'\[(?:CQ|OP):image,[^\]]+\]')
 MFACE_PATTERN = re.compile(r'\[(?:CQ|OP):mface,[^\]]*\]')
-IMAGE_CODE_PATTERN = re.compile(r'\[图片：[^\]]*\]')
+IMAGE_CODE_PATTERN = re.compile(r'\[图片[:：][^\]]*\]')
+IMAGE_PLACEHOLDER_PATTERN = re.compile(r'\[\[OLIVA_IMAGE_([0-9]+)\]\]')
 VISION_DENIAL_PATTERN = re.compile(
     r'(看不到|看不见|无法(查看|识别|看到|读取)|不能识图|不会识图|没有图片|图片打不开|发不了图|还没.*识图)')
 
@@ -43,13 +45,31 @@ def imgDir():
 
 
 def imgcode_format(data=None):
-    res = '[图片：未识别成功，不应回复；意图：不明；类型：不明]'
-    if isinstance(data, dict) and 'content' in data and 'intent' in data and 'type' in data:
-        c = str(data.get('content', '未识别成功')).strip()[:32]
-        i = str(data.get('intent', '不明')).strip()[:32]
-        t = str(data.get('type', '不明')).strip()[:32]
-        res = '[图片：%s；意图：%s；类型：%s]' % (c, i, t)
-    return res
+    content = '未识别成功'
+    if isinstance(data, dict):
+        content = str(data.get('content') or content)
+    content = re.sub(r'[\r\n]+', ' ', content).replace(']', '】').strip()[:160]
+    return '[图片:%s]' % (content or '未识别成功')
+
+
+def imagePlaceholder(index):
+    return '[[OLIVA_IMAGE_%d]]' % int(index)
+
+
+def placeImageFacts(message, facts):
+    '''按消息段顺序把识图结果放回图片原位；无占位符时兼容旧路径追加到末尾。'''
+    text = str(message)
+    fact_list = [str(item) for item in (facts or []) if str(item).strip()]
+    had_placeholder = IMAGE_PLACEHOLDER_PATTERN.search(text) is not None
+
+    def repl(match):
+        index = int(match.group(1))
+        return fact_list[index] if index < len(fact_list) else '[图片]'
+
+    text = IMAGE_PLACEHOLDER_PATTERN.sub(repl, text)
+    if not had_placeholder and fact_list and not any(fact in text for fact in fact_list):
+        text = (text + ' ' + ' '.join(fact_list)).strip()
+    return text
 
 
 def _parseParams(tag):
@@ -529,6 +549,25 @@ def describeImages(image_urls, group_id, bot_hash, trace_id=None):
     return facts
 
 
+def ensureImageFacts(codes, image_urls, group_id, bot_hash, trace_id=None):
+    '''补全图片摘要，但同一流程已经识别失败时不重复请求。'''
+    facts = [str(item) for item in (codes or []) if str(item).strip()]
+    images = list(dict.fromkeys(str(item) for item in (image_urls or []) if str(item).strip()))[:4]
+    if not images:
+        return facts
+    if facts:
+        if all('未识别成功' in fact for fact in facts):
+            OlivaAIAgent.conf.traceLog(
+                OlivaAIAgent.conf.gProc,
+                'vision.ocr.repeat_skipped',
+                trace_id,
+                images=len(images),
+                reason='本轮已识别失败',
+            )
+        return facts
+    return describeImages(images, group_id, bot_hash, trace_id=trace_id)
+
+
 def imageCacheMap(bot_hash):
     res = {}
     if bot_hash is not None:
@@ -565,33 +604,226 @@ def isEmojiData(d):
     return any(x in target for x in ('表情包', '梗图', 'mface', '表情', 'emoji'))
 
 
-def resolveImageRef(image_ref, cache_map):
-    '''把 AI 给的图片引用（文件名或关键词）解析为缓存里的真实文件名。'''
+def resolveImageRef(image_ref, cache_map, trace_id=None):
+    '''按刺客的字段权重和模糊评分，把图片引用解析为缓存中的真实文件名。'''
     image_ref = str(image_ref).strip()
     if image_ref in cache_map:
+        _logImageMatch(image_ref, image_ref, 1000, trace_id)
         return image_ref
-    ref_low = image_ref.lower()
-    best, best_score = None, 0
-    for fn, data in cache_map.items():
-        if not isinstance(data, dict):
+    fixed_name = _normalizeImageFileNameRef(image_ref, cache_map)
+    if fixed_name is not None:
+        _logImageMatch(image_ref, fixed_name, 900, trace_id)
+        return fixed_name
+    normalized_ref = _normalizeImageLookupText(image_ref)
+    if not normalized_ref:
+        _logImageMiss(image_ref, '引用内容为空', trace_id)
+        return None
+    requested_ext = _getImageRefExt(image_ref)
+    candidates = []
+    for file_name, image_data in cache_map.items():
+        if not isinstance(image_data, dict):
             continue
-        text = ('%s %s %s %s' % (fn, data.get('content', ''), data.get('intent', ''),
-                                 data.get('type', ''))).lower()
-        score = 0
-        if ref_low and ref_low in text:
-            score = len(ref_low) * 2
-        else:
-            common = set(ref_low) & set(text)
-            score = len(common)
-        if score > best_score:
-            best_score, best = score, fn
-    if best is not None and best_score >= max(2, len(ref_low) // 2):
-        return best
+        score = _scoreImageLookup(normalized_ref, image_ref, requested_ext, file_name, image_data)
+        if score > 0:
+            candidates.append((score, file_name))
+    if not candidates:
+        _logImageMiss(image_ref, '没有候选图片', trace_id)
+        return None
+    candidates.sort(reverse=True)
+    best_score, best_file_name = candidates[0]
+    if best_score < 100:
+        _logImageMiss(image_ref, '最高评分不足', trace_id, score=best_score)
+        return None
+    if len(candidates) >= 2 and candidates[1][0] == best_score:
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'vision.send.ambiguous',
+            trace_id,
+            candidate=_safeImageName(best_file_name),
+            reference=image_ref,
+            score=best_score,
+            second_candidate=_safeImageName(candidates[1][1]),
+        )
+    _logImageMatch(image_ref, best_file_name, best_score, trace_id)
+    return best_file_name
+
+
+def _logImageMatch(image_ref, file_name, score, trace_id=None):
+    OlivaAIAgent.conf.traceLog(
+        OlivaAIAgent.conf.gProc,
+        'vision.send.match',
+        trace_id,
+        file=_safeImageName(file_name),
+        reference=image_ref,
+        score=score,
+    )
+
+
+def _logImageMiss(image_ref, reason, trace_id=None, score=None):
+    fields = {'reference': image_ref, 'reason': reason}
+    if score is not None:
+        fields['score'] = score
+    OlivaAIAgent.conf.traceLog(
+        OlivaAIAgent.conf.gProc,
+        'vision.send.not_matched',
+        trace_id,
+        **fields,
+    )
+
+
+def _normalizeImageFileNameRef(image_ref, cache_map):
+    if not isinstance(image_ref, str):
+        return None
+    image_ref = image_ref.strip()
+    fixed_ref = re.sub(r'(\.[a-z0-9]{2,5})\1$', r'\1', image_ref, flags=re.IGNORECASE)
+    if fixed_ref in cache_map:
+        return fixed_ref
+    ref_stem = os.path.splitext(fixed_ref)[0].lower()
+    if not ref_stem:
+        return None
+    candidates = [
+        file_name
+        for file_name in cache_map
+        if os.path.splitext(file_name)[0].lower() == ref_stem
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        requested_ext = _getImageRefExt(fixed_ref)
+        for file_name in candidates:
+            if os.path.splitext(file_name)[1].lower().lstrip('.') == requested_ext:
+                return file_name
     return None
 
 
-def translateOutgoing(msg_list, bot_hash):
-    '''把回复里的 [发图片:xxx] 转成真实 OP:image 标签，无法解析则删掉。'''
+def _scoreImageLookup(normalized_ref, image_ref, requested_ext, file_name, image_data):
+    score = 0
+    normalized_file_name = _normalizeImageLookupText(file_name)
+    if normalized_ref == normalized_file_name:
+        score = max(score, 300)
+    elif normalized_ref in normalized_file_name or normalized_file_name in normalized_ref:
+        score = max(score, 180)
+    else:
+        score = max(score, _scoreFuzzyImageText(normalized_ref, normalized_file_name, 180))
+    for key, value_score in (('content', 160), ('intent', 120), ('type', 80)):
+        value = image_data.get(key, '')
+        if not isinstance(value, str):
+            continue
+        normalized_value = _normalizeImageLookupText(value)
+        if not normalized_value:
+            continue
+        if normalized_ref == normalized_value:
+            score = max(score, value_score + 80)
+        elif normalized_ref in normalized_value or normalized_value in normalized_ref:
+            score = max(score, value_score)
+        else:
+            score = max(score, _scoreFuzzyImageText(normalized_ref, normalized_value, value_score))
+    file_stem = os.path.splitext(file_name)[0].lower()
+    ref_stem = os.path.splitext(image_ref.strip())[0].lower()
+    if ref_stem and file_stem == ref_stem:
+        score += 90
+    file_ext = os.path.splitext(file_name)[1].lower().lstrip('.')
+    if requested_ext and file_ext == requested_ext:
+        score += 60
+    elif file_ext == 'gif':
+        score += 20
+    return score
+
+
+def _scoreFuzzyImageText(normalized_ref, normalized_value, max_score):
+    if not normalized_ref or not normalized_value:
+        return 0
+    min_len = min(len(normalized_ref), len(normalized_value))
+    max_len = max(len(normalized_ref), len(normalized_value))
+    if min_len < 2:
+        return 0
+    if min_len / max_len < _imageFuzzyLengthRateLimit(min_len):
+        return 0
+    if min_len == 2 and max_len <= 3:
+        same_position_count = sum(
+            1 for ref_char, value_char in zip(normalized_ref, normalized_value) if ref_char == value_char
+        )
+        if same_position_count >= 1:
+            return int(max_score * 0.75)
+    ratio = SequenceMatcher(None, normalized_ref, normalized_value).ratio()
+    long_text_score = _scoreLongFuzzyImageText(normalized_ref, normalized_value, max_score)
+    if ratio < _imageFuzzyRatioThreshold(min_len):
+        return long_text_score
+    return max(int(max_score * ratio), long_text_score)
+
+
+def _imageFuzzyLengthRateLimit(min_len):
+    if min_len >= 16:
+        return 0.25
+    if min_len >= 10:
+        return 0.32
+    if min_len >= 6:
+        return 0.40
+    return 0.45
+
+
+def _imageFuzzyRatioThreshold(min_len):
+    if min_len >= 24:
+        return 0.48
+    if min_len >= 16:
+        return 0.54
+    if min_len >= 10:
+        return 0.60
+    if min_len >= 6:
+        return 0.68
+    return 0.74
+
+
+def _scoreLongFuzzyImageText(normalized_ref, normalized_value, max_score):
+    min_len = min(len(normalized_ref), len(normalized_value))
+    if min_len < 8:
+        return 0
+    ref_chunks = _imageTextChunks(normalized_ref)
+    value_chunks = _imageTextChunks(normalized_value)
+    if not ref_chunks or not value_chunks:
+        return 0
+    common_chunks = ref_chunks & value_chunks
+    if len(common_chunks) < 3:
+        return 0
+    chunk_cover = len(common_chunks) / min(len(ref_chunks), len(value_chunks))
+    ref_chunk_cover = len(common_chunks) / len(ref_chunks)
+    ref_chars = set(normalized_ref)
+    value_chars = set(normalized_value)
+    char_cover = len(ref_chars & value_chars) / min(len(ref_chars), len(value_chars))
+    if chunk_cover < 0.18 and char_cover < 0.50:
+        return 0
+    score_rate = 0.46 + chunk_cover * 0.35 + ref_chunk_cover * 0.12 + char_cover * 0.12
+    if min_len >= 16:
+        score_rate += 0.05
+    if min_len >= 24:
+        score_rate += 0.04
+    return int(max_score * min(score_rate, 0.95))
+
+
+def _imageTextChunks(text):
+    return {text[index:index + 2] for index in range(0, max(len(text) - 1, 0))}
+
+
+def _getImageRefExt(data):
+    if not isinstance(data, str):
+        return ''
+    ext = os.path.splitext(data.strip())[1].lower().lstrip('.')
+    if re.fullmatch(r'[a-z0-9]{2,5}', ext):
+        return ext
+    return ''
+
+
+def _normalizeImageLookupText(data):
+    if not isinstance(data, str):
+        return ''
+    res = data.strip().lower()
+    res = re.sub(r'\.[a-z0-9]{2,5}$', '', res)
+    res = re.sub(r'表情包|图片|照片|文件|发图片|发送|来一张|一张|这个|那个', '', res)
+    return re.sub(r'[\s\[\]【】()（）:：,，.。;；"“”\'‘’_-]+', '', res)
+
+
+def translateOutgoing(msg_list, bot_hash, trace_id=None):
+    '''把回复里的 [发图片:xxx] 转成真实 CQ:image 标签，无法解析则删掉。'''
     res = []
     cache_map = imageCacheMap(bot_hash)
     directory = os.path.abspath(imgDir())
@@ -603,13 +835,25 @@ def translateOutgoing(msg_list, bot_hash):
 
         def repl(m):
             ref = m.group(1).strip()
-            fn = resolveImageRef(ref, cache_map)
+            fn = resolveImageRef(ref, cache_map, trace_id=trace_id)
             if fn is None:
                 return ''
             path = os.path.abspath(os.path.join(directory, fn))
             if not path.startswith(directory + os.sep) or not os.path.exists(path):
+                OlivaAIAgent.conf.traceLog(
+                    OlivaAIAgent.conf.gProc,
+                    'vision.send.file_missing',
+                    trace_id,
+                    file=_safeImageName(fn),
+                )
                 return ''
             # 与 app.json message_mode=old_string 对齐，用 CQ 码，OlivOS 才会解析成真实图片
+            OlivaAIAgent.conf.traceLog(
+                OlivaAIAgent.conf.gProc,
+                'vision.send.translated',
+                trace_id,
+                file=_safeImageName(fn),
+            )
             return '[CQ:image,file=file:///%s]' % path
 
         s = re.sub(r'\[发图片[:：](.+?)\]', repl, s)
@@ -620,7 +864,7 @@ def translateOutgoing(msg_list, bot_hash):
 def extractVisionFacts(message):
     facts = []
     for m in IMAGE_CODE_PATTERN.finditer(str(message)):
-        cm = re.search(r'\[图片：([^；\]]+)', m.group(0))
+        cm = re.search(r'\[图片[:：]([^；\]]+)', m.group(0))
         if not cm:
             continue
         c = cm.group(1).strip()

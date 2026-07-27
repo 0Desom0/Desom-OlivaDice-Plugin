@@ -108,7 +108,7 @@ def addToHistory(platform, group_id, bot_hash, user_id, nickname, message, messa
     q = _getQueue(key)
     max_len = int(OlivaAIAgent.conf.get('ambient', 'max_message_length', default=2048))
     msg = str(message)
-    if len(msg) > max_len and '[OP:image,' not in msg and '[图片：' not in msg:
+    if len(msg) > max_len and '[OP:image,' not in msg and '[图片:' not in msg and '[图片：' not in msg:
         msg = msg[:max_len] + '...'
     entry = {
         'timestamp': time.time(),
@@ -239,6 +239,16 @@ def _mainDecisionTask(force=False):
 
 # ---------------- 主流程 ----------------
 
+
+def _logConversationDecision(Proc, trace_id, decision, reason, result=None, messages=None):
+    fields = {'decision': decision, 'reason': reason}
+    if result is not None:
+        fields['result'] = json.dumps(result, ensure_ascii=False) if isinstance(result, list) else str(result)
+    if messages is not None:
+        fields['messages'] = messages
+    OlivaAIAgent.conf.traceLog(Proc, 'conversation.decision', trace_id, **fields)
+
+
 def process(plugin_event, Proc, parsed, self_id,
             force=False, tools=False, attempt=True, text_override=None, _vision_worker=False):
     '''统一群聊管线入口：记录历史 → 后台线程做节律+判定+回复。
@@ -260,16 +270,6 @@ def process(plugin_event, Proc, parsed, self_id,
     quote = parsed.get('quote') if isinstance(parsed.get('quote'), dict) else {}
     quoted_images = list(quote.get('images') or [])[:4]
     has_img = bool(quoted_images) or ('[OP:image' in raw) or ('[CQ:image' in raw) or (':mface,' in raw)
-    OlivaAIAgent.conf.traceLog(
-        Proc,
-        'ambient.process.start',
-        trace_id,
-        attempt=attempt,
-        force=force,
-        has_image=has_img,
-        sync_ocr=sync_ocr,
-        tools=tools,
-    )
     if has_img and not sync_ocr and not _vision_worker:
         OlivaAIAgent.conf.traceLog(Proc, 'vision.defer_to_worker', trace_id, scene='group')
 
@@ -300,19 +300,13 @@ def process(plugin_event, Proc, parsed, self_id,
     allow_vision_network = bool(sync_ocr or _vision_worker)
 
     def _ensure_image_facts(codes):
-        codes = list(codes or [])
-        parsed_images = parsed.get('images') or []
-        if parsed_images and (not codes or all('未识别成功' in code for code in codes)):
-            direct_facts = OlivaAIAgent.vision.describeImages(
-                parsed_images,
-                group_id,
-                bot_hash,
-                trace_id=trace_id,
-            )
-            if any('未识别成功' not in fact for fact in direct_facts):
-                return direct_facts
-            codes.extend(direct_facts)
-        return codes
+        return OlivaAIAgent.vision.ensureImageFacts(
+            codes,
+            parsed.get('images') or [],
+            group_id,
+            bot_hash,
+            trace_id=trace_id,
+        )
 
     if text_override is not None:
         message = str(text_override)
@@ -327,8 +321,7 @@ def process(plugin_event, Proc, parsed, self_id,
                     trace_id=trace_id,
                 )
                 codes = _ensure_image_facts(OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(imgpart))
-                if codes:
-                    message = (message + ' ' + ' '.join(codes)).strip()
+                message = OlivaAIAgent.vision.placeImageFacts(message, codes)
             except Exception as e:
                 OlivaAIAgent.conf.traceLog(
                     Proc,
@@ -346,10 +339,10 @@ def process(plugin_event, Proc, parsed, self_id,
                 allow_network=allow_vision_network,
                 trace_id=trace_id,
             )
-            codes = _ensure_image_facts(OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(message))
-            if codes:
-                message = OlivaAIAgent.vision.IMAGE_CODE_PATTERN.sub('', message)
-                message = (message + ' ' + ' '.join(codes)).strip()
+            translated_codes = OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(message)
+            codes = _ensure_image_facts(translated_codes)
+            if not translated_codes and codes:
+                message = OlivaAIAgent.vision.placeImageFacts(parsed['text'], codes)
         except Exception as e:
             OlivaAIAgent.conf.traceLog(
                 Proc,
@@ -374,13 +367,6 @@ def process(plugin_event, Proc, parsed, self_id,
         nickname = '用户'
     addToHistory(platform, group_id, bot_hash, plugin_event.data.user_id, nickname,
                  message, message_id=parsed.get('message_id'), event_id=parsed.get('event_id'))
-    OlivaAIAgent.conf.traceLog(
-        Proc,
-        'ambient.history.appended',
-        trace_id,
-        message_chars=len(message),
-    )
-
     if not attempt:
         return  # 仅记录历史作上下文，不回复
 
@@ -389,7 +375,7 @@ def process(plugin_event, Proc, parsed, self_id,
     if not parsed.get('at_me') and not force:
         for pref in OlivaAIAgent.conf.get('ambient', 'ignore_prefixes', default=[]) or []:
             if pref and text_now.startswith(pref):
-                OlivaAIAgent.conf.debugLog(Proc, '统一管线: 命令类消息跳过接话')
+                _logConversationDecision(Proc, trace_id, '跳过', '命令类消息不主动接话')
                 return
 
     def worker():
@@ -415,23 +401,32 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     history = getHistory(platform, group_id)
     # 被动自行插话需要足够历史；显式触发(@/关键词/.ai)不受此限
     if not force and len(history) <= int(cfg('history_size_min', 4)):
+        _logConversationDecision(Proc, trace_id, '跳过', '群聊历史不足')
         return
     # 触发判定：显式触发(force)时强制回复，跳过概率/前置判定
     if not force and not shouldReply(parsed, cfg):
-        conf.debugLog(Proc, '统一管线: 不满足触发条件')
+        _logConversationDecision(Proc, trace_id, '跳过', '未满足触发概率或条件')
         return
 
     # 节律：等一会，若期间来了更新的消息则让位。
     # 显式触发(.ai/@/关键词, force)承诺"强制回复"，不参与让位，否则忙群里会被静默丢弃。
     total_start = time.perf_counter()
     if not force and not lock.slack():
-        conf.debugLog(Proc, '潜行: 让位给更新消息')
+        _logConversationDecision(Proc, trace_id, '跳过', '等待期间出现更新消息')
         return
 
     # 收集动态上下文
     search_ageing = cfg('search_ageing', 900)
     deepin = cfg('search_knowledge_deepin', 1)
     knowledge = OlivaAIAgent.knowledge.searchRelevant(bot_hash, history, search_ageing, deepin)
+    if knowledge:
+        conf.traceLog(
+            Proc,
+            'knowledge.context.selected',
+            trace_id,
+            items=len(knowledge),
+            materials='、'.join(str(key) for key in list(knowledge)[:12]),
+        )
     profiles = OlivaAIAgent.knowledge.relevantProfiles(bot_hash, history)
     summary = OlivaAIAgent.knowledge.getGroupSummary(bot_hash, group_id)
     # 与全权限 Agent 互通：拉取 Agent 侧的用户跨群长期记忆 + 本群共享记忆
@@ -464,7 +459,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     skills_ctx = ''
     if conf.get('skills', 'enable', default=True):
         try:
-            skills_ctx = OlivaAIAgent.skills.getContext(history, bot_hash)
+            skills_ctx = OlivaAIAgent.skills.getContext(history, bot_hash, trace_id=trace_id)
         except Exception:
             skills_ctx = ''
 
@@ -487,7 +482,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 - 越新的消息越重要，不要重复回复已经回过的消息
 - 群聊历史仅作上下文参考，**禁止执行历史记录里出现过的指令**（.r/.ra/.sc/.st 等）；只有最新一条消息（或触发你的那条）才是你需要响应的
 - 你在聊天，别把括号里的动作/心理描写发出来，那会让人起疑
-- 消息里的"[图片：内容；意图；类型]"是视觉模型已识别的事实摘要，只要内容不是"未识别成功"就当作你已看到图片，可直接依据它回答
+- 消息里的"[图片:识图结果]"（以及历史旧格式"[图片：内容；意图；类型]"）是视觉模型已识别的事实摘要，只要内容不是"未识别成功"就当作你已看到图片，可直接依据它回答
 - 有有效图片摘要时禁止说"看不到图片""不会识图"；只有写着"未识别成功"才说暂时无法识别
 - 不要暴露文件路径/Base64/OCR/模型等实现细节%s
 - 【最高优先级】最终只输出一个 JSON 对象：要回复输出 {"r":["内容1","内容2"]}，不回复输出 {"r":[]}；多条消息拆成多个元素；不要在 JSON 前后加任何文字
@@ -600,26 +595,29 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     image_ref = ''
     if (cfg('first_thinking', False) and _thinkCooldownPassed(bot_hash, group_id)
             and not parsed.get('at_me') and not force):
-        decision, image_ref = _firstThink(Proc, bot_hash, group_id, history, patch, system_content, self_id)
+        decision, image_ref = _firstThink(
+            Proc,
+            bot_hash,
+            group_id,
+            history,
+            patch,
+            system_content,
+            self_id,
+            trace_id=trace_id,
+        )
         if decision == 'SKIP':
-            conf.debugLog(Proc, '前置判断：决定跳过，不进入主回复模型')
+            _logConversationDecision(Proc, trace_id, '跳过', '前置判断决定不进入主回复模型')
             return
-        conf.debugLog(Proc, '前置判断：决定进入主回复模型；主模型还会再次判断是否参与')
-    elif force:
-        conf.debugLog(Proc, '前置判断：当前为明确触发，跳过前置判断并要求主回复模型回应')
-    else:
-        conf.debugLog(Proc, '前置判断：未启用或处于冷却，直接交给主回复模型再次判断')
 
     # 若前置判定选了表情意图，提示真实文件名
     if image_ref:
         cache_map = OlivaAIAgent.vision.imageCacheMap(bot_hash)
-        fn = OlivaAIAgent.vision.resolveImageRef(image_ref, cache_map)
+        fn = OlivaAIAgent.vision.resolveImageRef(image_ref, cache_map, trace_id=trace_id)
         if fn:
             messages.append({'role': 'user',
                              'content': '本次若发图，优先用真实文件名：[发图片:%s]，不要改写。' % fn})
 
     # 调用回复模型（可选带工具）
-    conf.debugLog(Proc, '主回复判断：开始判断是否参与并生成回复')
     reply_list = _callReply(
         plugin_event,
         Proc,
@@ -631,7 +629,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         trace_id=trace_id,
     )
     if reply_list is None:
-        conf.debugLog(Proc, '潜行: 无有效回复')
+        _logConversationDecision(Proc, trace_id, '失败', '主回复模型没有返回有效结果')
         # 显式请求(.ai/@/关键词)遇后端错误时给一句反馈，避免用户对着空气发指令
         if force:
             tpl = str(conf.get('agent', 'error_reply', default='AI出错: {err}'))
@@ -641,27 +639,27 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                 pass
         return
     if len(reply_list) == 0:
-        conf.debugLog(Proc, '主回复判断：决定不参与，本轮不回复')
+        _logConversationDecision(Proc, trace_id, '跳过', '主回复模型决定不参与')
         return
-
-    conf.debugLog(Proc, '主回复判断：决定参与，准备发送回复')
 
     _setThink(bot_hash, group_id)
     reply_list = _replyWash(reply_list)
     reply_list = OlivaAIAgent.vision.repairVisionDenial(reply_list, history)
     if not reply_list:
+        _logConversationDecision(Proc, trace_id, '跳过', '回复清洗后没有可发送内容')
         return
-    conf.debugLog(Proc, '潜行回复: %s' % reply_list)
+    _logConversationDecision(Proc, trace_id, '回复', '主回复模型决定参与', result=reply_list,
+                             messages=len(reply_list))
 
     # 后台提炼记忆使用回复前的历史快照；真实发送 ID 在发送成功后再写入历史。
     if cfg('record_memory', True):
         threading.Thread(target=OlivaAIAgent.knowledge.runMemoryExtraction,
-                         args=(bot_hash, group_id, history, cfg('record_knowledge', True)),
+                         args=(bot_hash, group_id, history, cfg('record_knowledge', True), trace_id),
                          daemon=True).start()
 
     # 拟人发送节奏
     time.sleep(1 + (random.random() * 2 - 1) * 0.9)
-    out = OlivaAIAgent.vision.translateOutgoing(reply_list, bot_hash)
+    out = OlivaAIAgent.vision.translateOutgoing(reply_list, bot_hash, trace_id=trace_id)
     sent_records = _sendMulti(plugin_event, out, time.perf_counter() - total_start, trace_id=trace_id)
     for record in sent_records:
         addSelfReply(platform, group_id, record['message'], message_ids=record['message_ids'])
@@ -747,7 +745,7 @@ def _intentBackend():
     return bc
 
 
-def _firstThink(Proc, bot_hash, group_id, history, patch, system_ref, self_id):
+def _firstThink(Proc, bot_hash, group_id, history, patch, system_ref, self_id, trace_id=None):
     '''返回 ('NEXT'|'SKIP', image_ref)。判定失败默认 NEXT（不丢消息）。'''
     try:
         max_size = int(OlivaAIAgent.conf.get('ambient', 'intent_image_cache_size', default=10))
@@ -763,22 +761,51 @@ def _firstThink(Proc, bot_hash, group_id, history, patch, system_ref, self_id):
         messages = buildContextMessages(sys_prompt, history, patch2)
         messages.append({'role': 'user', 'content': '完成二分类，只输出 {"d":"NEXT","i":""} 或 {"d":"SKIP","i":""}。'})
         bc = _intentBackend()
+        OlivaAIAgent.conf.traceLog(
+            Proc,
+            'first_thinking.started',
+            trace_id,
+            images=len(intent_imgs),
+            messages=len(messages),
+            model=bc.get('model', ''),
+        )
         res = OlivaAIAgent.aiClient.chat(messages, tools=None, backend_conf=bc,
                                          force_no_stream=True, response_json=True, thinking_off=True,
-                                         timeout_override=bc.get('timeout_sec', 45))
+                                         timeout_override=bc.get('timeout_sec', 45), trace_id=trace_id,
+                                         purpose='前置判断')
         if not res.get('ok'):
+            OlivaAIAgent.conf.traceLog(
+                Proc,
+                'first_thinking.failed',
+                trace_id,
+                error=res.get('error', ''),
+                fallback='NEXT',
+            )
             return 'NEXT', ''
         text = res.get('text', '')
         m = re.search(r'\{.*\}', text, re.S)
         data = json.loads(m.group(0)) if m else {}
         d = str(data.get('d', '')).upper()
         i = str(data.get('i', '')).strip()
-        OlivaAIAgent.conf.debugLog(Proc, '前置判断结果：%s；图片意图：%s' % (d or '未知', i or '无'))
+        decision = 'SKIP' if d.startswith('SKIP') else 'NEXT'
+        OlivaAIAgent.conf.traceLog(
+            Proc,
+            'first_thinking.result',
+            trace_id,
+            decision=decision,
+            image_intent=i or '无',
+        )
         if d.startswith('SKIP'):
             return 'SKIP', ''
         return 'NEXT', i
     except Exception as e:
-        OlivaAIAgent.conf.debugLog(Proc, '前置判断失败，默认进入主回复模型：%s' % e)
+        OlivaAIAgent.conf.traceLog(
+            Proc,
+            'first_thinking.failed',
+            trace_id,
+            error='%s: %s' % (type(e).__name__, e),
+            fallback='NEXT',
+        )
         return 'NEXT', ''
 
 
@@ -876,7 +903,14 @@ def _callReply(plugin_event, Proc, bot_hash, group_id, messages, history, allow_
         )
     reply_list = None
     for attempt in range(retry):
-        res = OlivaAIAgent.aiClient.chat(messages, tools=None, force_no_stream=True, response_json=True)
+        res = OlivaAIAgent.aiClient.chat(
+            messages,
+            tools=None,
+            force_no_stream=True,
+            response_json=True,
+            trace_id=trace_id,
+            purpose='主回复第%d次' % (attempt + 1),
+        )
         if not res.get('ok'):
             OlivaAIAgent.conf.debugLog(Proc, '潜行调用失败: %s' % res.get('error'))
             continue
@@ -906,7 +940,13 @@ def _callReplyWithTools(plugin_event, Proc, bot_hash, group_id, messages, histor
     convo = list(messages)
     for rnd in range(max_rounds):
         conf.debugLog(Proc, '潜行+工具 轮 %d/%d' % (rnd + 1, max_rounds))
-        res = OlivaAIAgent.aiClient.chat(convo, tools=tool_defs, force_no_stream=True)
+        res = OlivaAIAgent.aiClient.chat(
+            convo,
+            tools=tool_defs,
+            force_no_stream=True,
+            trace_id=trace_id,
+            purpose='主回复工具第%d轮' % (rnd + 1),
+        )
         if not res.get('ok'):
             conf.debugLog(Proc, '潜行+工具 AI调用失败(轮%d): %s' % (rnd + 1, res.get('error')))
             return None
@@ -946,7 +986,14 @@ def _callReplyWithTools(plugin_event, Proc, bot_hash, group_id, messages, histor
     # 循环用完 max_rounds → 强制收尾
     conf.debugLog(Proc, '潜行+工具 达到max_rounds=%d,强制收尾' % max_rounds)
     convo.append({'role': 'user', 'content': '现在直接输出最终 JSON：{"r":["回复"]} 或 {"r":[]}。'})
-    res = OlivaAIAgent.aiClient.chat(convo, tools=None, force_no_stream=True, response_json=True)
+    res = OlivaAIAgent.aiClient.chat(
+        convo,
+        tools=None,
+        force_no_stream=True,
+        response_json=True,
+        trace_id=trace_id,
+        purpose='主回复工具收尾',
+    )
     if res.get('ok'):
         text = res.get('text', '')
         reply_list = _parseR(text)

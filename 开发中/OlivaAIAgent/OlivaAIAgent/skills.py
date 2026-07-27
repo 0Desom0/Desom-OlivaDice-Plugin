@@ -233,8 +233,9 @@ def _translateSkillMeta(name, description, metaterms, headings):
                 [{'role': 'system',
                   'content': '你是翻译器。把用户给出的技能库元数据逐行翻译成简体中文，'
                              '严格保持"序号|译文"格式且行数与输入一致，不要输出任何解释。'},
-                 {'role': 'user', 'content': numbered}],
-                force_no_stream=True, thinking_off=True, timeout_override=timeout)
+                  {'role': 'user', 'content': numbered}],
+                force_no_stream=True, thinking_off=True, timeout_override=timeout,
+                purpose='技能元数据翻译')
             text = str(resp.get('text', '')) if (resp and resp.get('ok')) else ''
             mapping = {}
             for m in re.finditer(r'^\s*(\d+)\s*\|\s*(.*?)\s*$', text, re.M):
@@ -567,7 +568,30 @@ def _rankChunks(query_tokens, chunks, bm25, priority_tokens):
     return ranked
 
 
-def getContext(history, bot_hash):
+def _logContextSelection(context, trace_id=None, cached=False):
+    headers = re.findall(r'^\[Skill:\s*(.*?)\s*\|\s*Section:\s*(.*?)\]$', str(context), re.M)
+    if not headers:
+        return
+    skill_names = list(dict.fromkeys(skill.strip() for skill, _heading in headers if skill.strip()))
+    materials = list(dict.fromkeys(
+        '%s/%s' % (skill.strip(), heading.strip())
+        for skill, heading in headers
+        if skill.strip() or heading.strip()
+    ))
+    OlivaAIAgent.conf.traceLog(
+        OlivaAIAgent.conf.gProc,
+        'skills.context.selected',
+        trace_id,
+        backend=backendName(),
+        cache_hit=cached,
+        chars=len(context),
+        chunks=len(headers),
+        materials='、'.join(materials),
+        skills='、'.join(skill_names),
+    )
+
+
+def getContext(history, bot_hash, trace_id=None):
     if not OlivaAIAgent.conf.get('skills', 'enable', default=True):
         return ''
     if not _index:
@@ -581,6 +605,7 @@ def getContext(history, bot_hash):
     cache_key = '%s|%s' % (bot_hash, latest[:120])
     cached = _query_cache.get(cache_key)
     if cached and time.time() - cached[0] <= 900:
+        _logContextSelection(cached[1], trace_id=trace_id, cached=True)
         return cached[1]
     selections = selectSkills(history, bot_hash, size, max_matches, match_rate)
     if not selections:
@@ -628,7 +653,5 @@ def getContext(history, bot_hash):
     context = '\n\n'.join(blocks)
     _query_cache[cache_key] = (time.time(), context)
     _capCache(_query_cache, 2000)
-    OlivaAIAgent.conf.debugLog(OlivaAIAgent.conf.gProc,
-                               '[Skills %s] sel=%s chunks=%d chars=%d'
-                               % (backendName(), [s['skill'] for s in selections], len(chosen), len(context)))
+    _logContextSelection(context, trace_id=trace_id, cached=False)
     return context

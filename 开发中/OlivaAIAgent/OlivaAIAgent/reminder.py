@@ -236,7 +236,7 @@ def _generateReply(job):
         res = OlivaAIAgent.aiClient.chat(
             [{'role': 'system', 'content': sys_prompt},
              {'role': 'user', 'content': '（时间到了，请生成这条主动提醒消息）'}],
-            tools=None, force_no_stream=True, thinking_off=True)
+            tools=None, force_no_stream=True, thinking_off=True, purpose='定时提醒生成')
         if res.get('ok') and str(res.get('text', '')).strip():
             return _clean(res['text'])
     except Exception:

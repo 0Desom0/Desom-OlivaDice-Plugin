@@ -2,6 +2,8 @@
 
 import copy
 import json
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -126,16 +128,97 @@ class VisionLoggingTest(unittest.TestCase):
         with mock.patch.object(
             OlivaAIAgent.vision,
             'translateIncoming',
-            return_value='[图片：一只白色狐狸；意图：展示图片；类型：插画]',
+            return_value='[图片:一只白色狐狸]',
         ):
             text, images = OlivaAIAgent.msgReply._prepareAgentVision(
                 FakeEvent(),
                 ctx,
-                '这是什么？',
+                '这是什么？[[OLIVA_IMAGE_0]]你看到了吗？',
                 parsed,
             )
-        self.assertIn('一只白色狐狸', text)
+        self.assertEqual('这是什么？[图片:一只白色狐狸]你看到了吗？', text)
         self.assertEqual([], images)
+
+    def test_failed_summary_does_not_retry_same_image(self):
+        failed = '[图片:未识别成功]'
+        with mock.patch.object(OlivaAIAgent.vision, 'describeImages') as describe:
+            facts = OlivaAIAgent.vision.ensureImageFacts(
+                [failed],
+                ['https://example.invalid/test.jpg'],
+                'group-1',
+                'bot-hash',
+                trace_id='trace-no-repeat',
+            )
+        self.assertEqual([failed], facts)
+        describe.assert_not_called()
+        logs = '\n'.join(record[1] for record in self.proc.records)
+        self.assertIn('已跳过重复图片识别', logs)
+        self.assertIn('原因=本轮已识别失败', logs)
+
+    def test_missing_summary_uses_parsed_image_once(self):
+        expected = ['[图片:一只白色狐狸]']
+        with mock.patch.object(OlivaAIAgent.vision, 'describeImages', return_value=expected) as describe:
+            facts = OlivaAIAgent.vision.ensureImageFacts(
+                [],
+                ['https://example.invalid/test.jpg'],
+                'group-1',
+                'bot-hash',
+                trace_id='trace-fallback',
+            )
+        self.assertEqual(expected, facts)
+        describe.assert_called_once_with(
+            ['https://example.invalid/test.jpg'],
+            'group-1',
+            'bot-hash',
+            trace_id='trace-fallback',
+        )
+
+    def test_image_format_contains_only_result(self):
+        result = OlivaAIAgent.vision.imgcode_format({
+            'content': '一只白色狐狸站在雪地里',
+            'intent': '展示图片',
+            'type': '插画',
+        })
+        self.assertEqual('[图片:一只白色狐狸站在雪地里]', result)
+
+    def test_old_image_fact_format_remains_readable(self):
+        message = '[图片：一只橘猫；意图：卖萌；类型：照片]'
+        self.assertEqual(['一只橘猫'], OlivaAIAgent.vision.extractVisionFacts(message))
+
+    def test_assassin_image_score_matches_content_and_rejects_weak_overlap(self):
+        cache = {
+            'fox.gif': {'content': '白色小狐狸捂脸哭泣', 'intent': '无奈卖萌', 'type': '表情包'},
+            'cat.png': {'content': '橘猫趴在桌上睡觉', 'intent': '困倦', 'type': '照片'},
+        }
+        self.assertEqual('fox.gif', OlivaAIAgent.vision.resolveImageRef('狐狸捂脸哭泣', cache))
+        self.assertIsNone(OlivaAIAgent.vision.resolveImageRef('火箭升空', cache))
+        logs = '\n'.join(record[1] for record in self.proc.records)
+        self.assertIn('发送图片匹配成功', logs)
+        self.assertIn('发送图片未匹配', logs)
+
+    def test_assassin_image_score_repairs_repeated_extension(self):
+        cache = {'reaction.gif': {'content': '无奈', 'intent': '吐槽', 'type': '表情包'}}
+        self.assertEqual('reaction.gif', OlivaAIAgent.vision.resolveImageRef('reaction.gif.gif', cache))
+
+    def test_translate_outgoing_creates_real_cq_image_segment(self):
+        cache = {'fox.gif': {'content': '狐狸捂脸', 'intent': '无奈', 'type': '表情包'}}
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = os.path.join(directory, 'fox.gif')
+            with open(image_path, 'wb') as image_file:
+                image_file.write(b'GIF89a')
+            with mock.patch.object(OlivaAIAgent.vision, 'imageCacheMap', return_value=cache), \
+                    mock.patch.object(OlivaAIAgent.vision, 'imgDir', return_value=directory):
+                result = OlivaAIAgent.vision.translateOutgoing(
+                    ['[发图片:狐狸捂脸]'],
+                    'bot-hash',
+                    trace_id='trace-send-image',
+                )
+        self.assertEqual(1, len(result))
+        self.assertTrue(result[0].startswith('[CQ:image,file=file:///'))
+        self.assertTrue(result[0].endswith('fox.gif]'))
+        logs = '\n'.join(record[1] for record in self.proc.records)
+        self.assertIn('已生成图片消息段', logs)
+        self.assertIn('编号=trace-send-image', logs)
 
     def test_sync_ocr_false_defers_group_vision_to_worker(self):
         parsed = {

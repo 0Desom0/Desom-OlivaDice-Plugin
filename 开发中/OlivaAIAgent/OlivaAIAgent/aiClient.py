@@ -10,7 +10,7 @@ OlivaAIAgent AI 后端客户端
     {'role':'assistant','content':str|None,'tool_calls':[{'id','name','arguments'}]}   # arguments 为 JSON 字符串
     {'role':'tool','tool_call_id':str,'name':str,'content':str}
 返回统一结果:
-    {'ok':bool, 'text':str, 'tool_calls':[{'id','name','arguments'}], 'error':str}
+    {'ok':bool, 'text':str, 'tool_calls':[{'id','name','arguments'}], 'error':str, 'usage':dict}
 '''
 
 import json
@@ -49,7 +49,7 @@ def getBackendConf():
 
 
 def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
-         response_json=False, thinking_off=False, timeout_override=None):
+         response_json=False, thinking_off=False, timeout_override=None, trace_id=None, purpose=None):
     '''执行一次模型调用。
     response_json=True 请求 JSON 输出；thinking_off=True 本次强制关闭思考；
     timeout_override 覆盖超时秒数。'''
@@ -58,19 +58,26 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
     started = time.perf_counter()
     request_id = 'ai-%08x' % (time.time_ns() & 0xffffffff)
     image_count = sum(len(message.get('images') or []) for message in messages if isinstance(message, dict))
+    log_id = trace_id or request_id
+    request_fields = {
+        'backend': bc.get('_name', 'override'),
+        'images': image_count,
+        'messages': len(messages),
+        'model': bc.get('model', ''),
+        'request_id': request_id,
+        'response_json': response_json,
+        'stream': bool(bc.get('stream', False)) and not force_no_stream,
+        'tools': len(tools or []),
+        'vision': bool(bc.get('vision', False)),
+        'wire': bc.get('wire', ''),
+    }
+    if purpose:
+        request_fields['purpose'] = purpose
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
         'ai.request',
-        request_id,
-        backend=bc.get('_name', 'override'),
-        images=image_count,
-        messages=len(messages),
-        model=bc.get('model', ''),
-        response_json=response_json,
-        stream=bool(bc.get('stream', False)) and not force_no_stream,
-        tools=len(tools or []),
-        vision=bool(bc.get('vision', False)),
-        wire=bc.get('wire', ''),
+        log_id,
+        **request_fields,
     )
     try:
         if not str(bc.get('api_key', '')) and not str(bc.get('api_url', '')):
@@ -87,35 +94,63 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
         result = {'ok': False, 'text': '', 'tool_calls': [], 'error': '请求超时'}
     except Exception as e:
         result = {'ok': False, 'text': '', 'tool_calls': [], 'error': '%s: %s' % (type(e).__name__, e)}
+    usage = _normalizeUsage(result.pop('_usage', None))
+    result['usage'] = usage
+    response_fields = {
+        'elapsed_ms': int((time.perf_counter() - started) * 1000),
+        'error': result.get('error', ''),
+        'ok': result.get('ok', False),
+        'request_id': request_id,
+        'text_chars': len(result.get('text', '')),
+        'tool_calls': len(result.get('tool_calls') or []),
+    }
+    response_fields.update(usage)
+    if purpose:
+        response_fields['purpose'] = purpose
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
         'ai.response',
-        request_id,
-        elapsed_ms=int((time.perf_counter() - started) * 1000),
-        error=result.get('error', ''),
-        ok=result.get('ok', False),
-        text_chars=len(result.get('text', '')),
-        tool_calls=len(result.get('tool_calls') or []),
+        log_id,
+        **response_fields,
     )
     return result
 
 
-def _log_cache_usage(usage):
-    '''记录 DeepSeek 前缀缓存命中率。'''
-    try:
-        if not isinstance(usage, dict):
-            return
-        hit = usage.get('prompt_cache_hit_tokens')
-        miss = usage.get('prompt_cache_miss_tokens')
-        if isinstance(hit, int) and isinstance(miss, int):
-            total = hit + miss
-            rate = (hit / total * 100) if total > 0 else 0
-            OlivaAIAgent.conf.debugLog(
-                OlivaAIAgent.conf.gProc,
-                '前缀缓存命中率 - %.1f%%（命中%d / 未命中%d）' % (rate, hit, miss),
-            )
-    except Exception:
-        pass
+def _normalizeUsage(usage):
+    '''统一 OpenAI、Anthropic、Responses 与 DeepSeek 的 token 用量字段。'''
+    if not isinstance(usage, dict):
+        return {}
+
+    def first_int(*values):
+        return next((value for value in values if isinstance(value, int)), None)
+
+    input_details = usage.get('input_tokens_details') or {}
+    prompt_details = usage.get('prompt_tokens_details') or {}
+    input_tokens = first_int(usage.get('input_tokens'), usage.get('prompt_tokens'))
+    output_tokens = first_int(usage.get('output_tokens'), usage.get('completion_tokens'))
+    total_tokens = first_int(usage.get('total_tokens'))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    cached_tokens = first_int(
+        usage.get('prompt_cache_hit_tokens'),
+        usage.get('cache_read_input_tokens'),
+        input_details.get('cached_tokens'),
+        prompt_details.get('cached_tokens'),
+    )
+    cache_miss_tokens = first_int(usage.get('prompt_cache_miss_tokens'))
+    cache_creation_tokens = first_int(usage.get('cache_creation_input_tokens'))
+    result = {}
+    for key, value in (
+        ('input_tokens', input_tokens),
+        ('output_tokens', output_tokens),
+        ('total_tokens', total_tokens),
+        ('cached_tokens', cached_tokens),
+        ('cache_miss_tokens', cache_miss_tokens),
+        ('cache_creation_tokens', cache_creation_tokens),
+    ):
+        if value is not None:
+            result[key] = value
+    return result
 
 
 # ---------------- OpenAI 兼容 ----------------
@@ -207,9 +242,7 @@ def _chat_openai(bc, messages, tools, force_no_stream, opts=None):
                 'error': 'HTTP %s: %s' % (resp.status_code, resp.text[:300])}
     if stream:
         return _parse_openai_stream(resp)
-    data = resp.json()
-    _log_cache_usage(data.get('usage') if isinstance(data, dict) else None)
-    return _parse_openai_response(data)
+    return _parse_openai_response(resp.json())
 
 
 def _parse_openai_response(data):
@@ -230,7 +263,13 @@ def _parse_openai_response(data):
         if not tool_calls and msg.get('function_call'):
             fc = msg['function_call']
             tool_calls.append({'id': 'call_0', 'name': fc.get('name', ''), 'arguments': fc.get('arguments', '{}')})
-        return {'ok': True, 'text': text, 'tool_calls': tool_calls, 'error': ''}
+        return {
+            'ok': True,
+            'text': text,
+            'tool_calls': tool_calls,
+            'error': '',
+            '_usage': data.get('usage'),
+        }
     except Exception as e:
         return {'ok': False, 'text': '', 'tool_calls': [], 'error': '响应解析失败: %s | %s' % (e, str(data)[:300])}
 
@@ -238,6 +277,7 @@ def _parse_openai_response(data):
 def _parse_openai_stream(resp):
     text = ''
     tool_calls = {}
+    usage = None
     try:
         resp.encoding = 'utf-8'   # SSE 恒为 UTF-8；无 charset 时 requests 会误按 ISO-8859-1 解码致中文乱码
     except Exception:
@@ -260,6 +300,8 @@ def _parse_openai_stream(resp):
                 # 流中途报错（200 头已发出，状态码守卫拦不到）：显式失败，不冒充成功
                 return {'ok': False, 'text': text, 'tool_calls': [],
                         'error': '流式错误: %s' % str(chunk.get('error'))[:300]}
+            if isinstance(chunk.get('usage'), dict):
+                usage = chunk['usage']
             choices = chunk.get('choices') or []
             if len(choices) == 0:
                 continue
@@ -285,7 +327,7 @@ def _parse_openai_stream(resp):
             if slot['arguments'] == '':
                 slot['arguments'] = '{}'
             result_calls.append(slot)
-        return {'ok': True, 'text': text, 'tool_calls': result_calls, 'error': ''}
+        return {'ok': True, 'text': text, 'tool_calls': result_calls, 'error': '', '_usage': usage}
     except Exception as e:
         return {'ok': False, 'text': text, 'tool_calls': [], 'error': '流式解析失败: %s' % e}
     finally:
@@ -398,7 +440,13 @@ def _parse_anthropic_response(data):
                     'name': block.get('name', ''),
                     'arguments': json.dumps(block.get('input', {}), ensure_ascii=False),
                 })
-        return {'ok': True, 'text': text, 'tool_calls': tool_calls, 'error': ''}
+        return {
+            'ok': True,
+            'text': text,
+            'tool_calls': tool_calls,
+            'error': '',
+            '_usage': data.get('usage'),
+        }
     except Exception as e:
         return {'ok': False, 'text': '', 'tool_calls': [], 'error': '响应解析失败: %s | %s' % (e, str(data)[:300])}
 
@@ -406,6 +454,7 @@ def _parse_anthropic_response(data):
 def _parse_anthropic_stream(resp):
     text = ''
     blocks = {}
+    usage = {}
     try:
         resp.encoding = 'utf-8'
     except Exception:
@@ -425,7 +474,11 @@ def _parse_anthropic_stream(resp):
             if etype == 'error':
                 return {'ok': False, 'text': text, 'tool_calls': [],
                         'error': '流式错误: %s' % str(event.get('error'))[:300]}
-            if etype == 'content_block_start':
+            if etype == 'message_start':
+                usage.update((event.get('message') or {}).get('usage') or {})
+            elif etype == 'message_delta':
+                usage.update(event.get('usage') or {})
+            elif etype == 'content_block_start':
                 idx = event.get('index', 0)
                 cb = event.get('content_block') or {}
                 if cb.get('type') == 'tool_use':
@@ -451,7 +504,7 @@ def _parse_anthropic_stream(resp):
                     'name': slot.get('name', ''),
                     'arguments': slot.get('json') or '{}',
                 })
-        return {'ok': True, 'text': text, 'tool_calls': tool_calls, 'error': ''}
+        return {'ok': True, 'text': text, 'tool_calls': tool_calls, 'error': '', '_usage': usage}
     except Exception as e:
         return {'ok': False, 'text': text, 'tool_calls': [], 'error': '流式解析失败: %s' % e}
     finally:
@@ -498,23 +551,6 @@ def _to_responses_input(messages, vision):
     return '\n'.join([s for s in instructions if s]), inp
 
 
-def _log_cache_usage_responses(usage):
-    try:
-        if not isinstance(usage, dict):
-            return
-        det = usage.get('input_tokens_details') or {}
-        cached = det.get('cached_tokens')
-        total_in = usage.get('input_tokens')
-        if isinstance(cached, int) and isinstance(total_in, int) and total_in > 0:
-            OlivaAIAgent.conf.debugLog(
-                OlivaAIAgent.conf.gProc,
-                '前缀缓存命中率（Responses）- %.1f%%（命中%d / 总输入%d）'
-                % (cached / total_in * 100, cached, total_in),
-            )
-    except Exception:
-        pass
-
-
 def _chat_responses(bc, messages, tools, force_no_stream, opts=None):
     opts = opts or {}
     instructions, inp = _to_responses_input(messages, bool(bc.get('vision', False)))
@@ -559,9 +595,7 @@ def _chat_responses(bc, messages, tools, force_no_stream, opts=None):
                 'error': 'HTTP %s: %s' % (resp.status_code, resp.text[:300])}
     if stream:
         return _parse_responses_stream(resp)
-    data = resp.json()
-    _log_cache_usage_responses(data.get('usage') if isinstance(data, dict) else None)
-    return _parse_responses(data)
+    return _parse_responses(resp.json())
 
 
 def _parse_responses(data):
@@ -583,7 +617,13 @@ def _parse_responses(data):
         # 兜底：部分实现提供 output_text 快捷聚合字段
         if not text and isinstance(data.get('output_text'), str):
             text = data['output_text']
-        return {'ok': True, 'text': text, 'tool_calls': tool_calls, 'error': ''}
+        return {
+            'ok': True,
+            'text': text,
+            'tool_calls': tool_calls,
+            'error': '',
+            '_usage': data.get('usage'),
+        }
     except Exception as e:
         return {'ok': False, 'text': '', 'tool_calls': [], 'error': '响应解析失败: %s | %s' % (e, str(data)[:300])}
 
@@ -643,7 +683,8 @@ def _parse_responses_stream(resp):
             if slot.get('arguments') == '':
                 slot['arguments'] = '{}'
             result_calls.append(slot)
-        return {'ok': True, 'text': text, 'tool_calls': result_calls, 'error': ''}
+        usage = final.get('usage') if isinstance(final, dict) else None
+        return {'ok': True, 'text': text, 'tool_calls': result_calls, 'error': '', '_usage': usage}
     except Exception as e:
         return {'ok': False, 'text': text, 'tool_calls': [], 'error': '流式解析失败: %s' % e}
     finally:

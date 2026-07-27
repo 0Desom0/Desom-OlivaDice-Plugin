@@ -310,7 +310,7 @@ def buildMemoryTask(bot_hash, group_id, history, record_knowledge=True):
     return '\n\n'.join(parts)
 
 
-def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True):
+def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True, trace_id=None):
     '''同步执行一次记忆提炼（调用便宜/主模型），写入长期库。供后台线程调用。'''
     try:
         sys_prompt = buildMemoryTask(bot_hash, group_id, history, record_knowledge)
@@ -325,7 +325,8 @@ def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True):
         bc['stream'] = False
         bc['temperature'] = 0.7
         res = OlivaAIAgent.aiClient.chat(messages, tools=None, backend_conf=bc,
-                                         force_no_stream=True, response_json=True, thinking_off=True)
+                                         force_no_stream=True, response_json=True, thinking_off=True,
+                                         trace_id=trace_id, purpose='后台记忆提炼')
         if not res.get('ok'):
             return
         data = _parseJson(res.get('text', ''))
@@ -347,27 +348,40 @@ def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True):
                 result[key] = item
             return result
 
+        knowledge_data = safe_map(data.get('k')) if record_knowledge else {}
+        profile_data = safe_map(data.get('u'))
+        summary_saved = False
         with _lock:
-            if record_knowledge and isinstance(data.get('k'), dict):
-                removed = updateKnowledge(bot_hash, safe_map(data['k']))
+            if knowledge_data:
+                removed = updateKnowledge(bot_hash, knowledge_data)
                 if removed:
                     OlivaAIAgent.conf.debugLog(OlivaAIAgent.conf.gProc, '知识淘汰 %d 条' % len(removed))
-            if isinstance(data.get('u'), dict):
-                updateProfiles(bot_hash, safe_map(data['u']))
+            if profile_data:
+                updateProfiles(bot_hash, profile_data)
             if isinstance(data.get('g'), str) and data['g'].strip():
                 group_summary = data['g'].strip()
                 if OlivaAIAgent.conf.isPersonaMutationText(group_summary):
                     blocked_count += 1
                 else:
                     setGroupSummary(bot_hash, group_id, group_summary)
+                    summary_saved = True
         if blocked_count:
             OlivaAIAgent.conf.traceLog(
                 OlivaAIAgent.conf.gProc,
                 'security.memory.blocked',
+                trace_id,
                 source='后台记忆提炼',
                 items=blocked_count,
             )
         saveMem(bot_hash)
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'memory.extraction.result',
+            trace_id,
+            knowledge_items=len(knowledge_data),
+            profile_items=len(profile_data),
+            summary_saved=summary_saved,
+        )
     except Exception as e:
         OlivaAIAgent.conf.log(OlivaAIAgent.conf.gProc, 3, '记忆提炼异常: %s' % e)
 

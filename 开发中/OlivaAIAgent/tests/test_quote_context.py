@@ -86,10 +86,11 @@ class QuoteContextTest(unittest.TestCase):
         self.assertEqual(['https://example.com/a.png'], parsed['quote']['images'])
 
         with mock.patch.object(OlivaAIAgent.vision, 'getVisionStatus', return_value={'ready': True}), \
-                mock.patch.object(OlivaAIAgent.vision, 'describeImages', return_value=['[图片：一只橘猫]']):
+                mock.patch.object(OlivaAIAgent.vision, 'describeImages', return_value=['[图片:一只橘猫]']):
             facts = OlivaAIAgent.msgReply.prepareQuotedImages(parsed, 'group-1', 'bot-1', 'trace-1')
         context = OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text'], facts)
-        self.assertIn('引用图片：[图片：一只橘猫]', context)
+        self.assertIn('内容：[图片:一只橘猫]', context)
+        self.assertNotIn('引用图片：', context)
 
     def test_unresolved_quote_does_not_invent_content(self):
         event = FakeEvent('[CQ:reply,id=missing]还记得吗？', {'active': False, 'data': {}})
