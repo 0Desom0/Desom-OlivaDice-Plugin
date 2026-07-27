@@ -90,8 +90,8 @@ class VisionLoggingTest(unittest.TestCase):
             )
         self.assertEqual('一只白色狐狸站在雪地里', result['content'])
         logs = '\n'.join(record[1] for record in self.proc.records)
-        self.assertIn('vision.ocr.request', logs)
-        self.assertIn('vision.ocr.success', logs)
+        self.assertIn('图片识别请求', logs)
+        self.assertIn('图片识别成功', logs)
         self.assertNotIn('VERY_LONG_IMAGE_DATA', logs)
         self.assertNotIn('secret-key', logs)
 
@@ -105,8 +105,8 @@ class VisionLoggingTest(unittest.TestCase):
             )
         self.assertIsNone(result)
         logs = '\n'.join(record[1] for record in self.proc.records)
-        self.assertIn('vision.ocr.http_error', logs)
-        self.assertIn('status=400', logs)
+        self.assertIn('图片识别接口错误', logs)
+        self.assertIn('状态码=400', logs)
         self.assertIn('unsupported image format', logs)
         self.assertNotIn('ERROR_IMAGE_DATA', logs)
         self.assertNotIn('secret-key', logs)
@@ -160,8 +160,8 @@ class VisionLoggingTest(unittest.TestCase):
             image='data:image/png;base64,IMAGE_SECRET',
         )
         message = self.proc.records[-1][1]
-        self.assertIn('api_key=<redacted>', message)
-        self.assertIn('<image-data-url:', message)
+        self.assertIn('api_key=<已隐藏>', message)
+        self.assertIn('<图片数据:', message)
         self.assertNotIn('top-secret', message)
         self.assertNotIn('IMAGE_SECRET', message)
 

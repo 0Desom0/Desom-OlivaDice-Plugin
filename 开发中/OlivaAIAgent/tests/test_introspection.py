@@ -121,6 +121,28 @@ class IntrospectionTest(unittest.TestCase):
         self.assertIn('sdk.qqGuildv2SDK.event_action.create_markdown_message', paths)
         self.assertEqual(['qqGuildv2SDK'], result['data']['current_sdk_modules'])
 
+    def test_prompt_summary_exposes_current_qqguild_markdown(self):
+        summary = OlivaAIAgent.introspection.prompt_interface_summary(make_context())
+        self.assertIn('inde.create_markdown_message', summary)
+        self.assertIn('chat_type', summary)
+        self.assertIn('markdown', summary)
+
+    def test_system_prompt_injects_verified_current_interfaces(self):
+        ctx = make_context()
+        ctx.update({
+            'func_type': 'group_message',
+            'platform': 'qqGuild',
+            'trace_id': 'trace-markdown-prompt',
+        })
+        with (
+            mock.patch.object(OlivaAIAgent.conf, 'getMasters', return_value=[]),
+            mock.patch.object(OlivaAIAgent.conf, 'loadedPlugins', return_value=[]),
+        ):
+            prompt = OlivaAIAgent.msgReply._buildSystemPrompt(ctx['plugin_event'], ctx, False)
+        self.assertIn('当前协议已验证接口', prompt)
+        self.assertIn('inde.create_markdown_message', prompt)
+        self.assertIn('不得与模型训练知识冲突时擅自否认', prompt)
+
     def test_invokes_real_sdk_helper(self):
         result = OlivaAIAgent.introspection.invoke(
             make_context(),
@@ -175,6 +197,71 @@ class IntrospectionTest(unittest.TestCase):
             )
         self.assertTrue(result['active'])
         self.assertEqual('message-1', result['data']['result']['data']['message_id'])
+
+    def test_normalizes_guessed_markdown_target_to_current_context(self):
+        api_result = {'active': True, 'data': {'message_id': 'message-current'}}
+        ctx = make_context()
+        with mock.patch.object(
+            OlivOS.qqGuildv2SDK.event_action,
+            '_send_qq_api',
+            return_value=api_result,
+        ):
+            result = OlivaAIAgent.introspection.invoke(
+                ctx,
+                'inde.create_markdown_message',
+                kwargs={
+                    'chat_type': 'channel',
+                    'chat_id': 'CURRENT_CHANNEL',
+                    'markdown': {'content': '# hello'},
+                },
+            )
+        self.assertTrue(result['active'])
+        self.assertEqual(
+            {'chat_type': 'guild_channel', 'chat_id': 'group-1'},
+            result['data']['normalized_context'],
+        )
+
+    def test_qq_group_context_is_derived_from_event_flags(self):
+        ctx = make_context()
+        ctx['plugin_event'].data.extend = {
+            'flag_from_qq': True,
+            'flag_from_direct': False,
+        }
+        ctx['plugin_event'].data.host_id = None
+        chat_context = OlivaAIAgent.introspection.current_chat_context(ctx)
+        self.assertEqual({'chat_type': 'qq_group', 'chat_id': 'group-1'}, chat_context)
+        prompt = OlivaAIAgent.introspection.prompt_chat_context_summary(ctx)
+        self.assertIn('chat_type=qq_group', prompt)
+        self.assertIn('chat_id=group-1', prompt)
+
+    def test_normalizes_markdown_target_for_public_qq_group_event(self):
+        api_result = {'active': True, 'data': {'message_id': 'message-qq-group'}}
+        ctx = make_context()
+        ctx['plugin_event'].data.extend = {
+            'flag_from_qq': True,
+            'flag_from_direct': False,
+        }
+        ctx['plugin_event'].data.host_id = None
+        with mock.patch.object(
+            OlivOS.qqGuildv2SDK.event_action,
+            '_send_qq_api',
+            return_value=api_result,
+        ):
+            result = OlivaAIAgent.introspection.invoke(
+                ctx,
+                'inde.create_markdown_message',
+                kwargs={
+                    'chat_type': 'guild',
+                    'chat_id': 'CURRENT_CHANNEL',
+                    'markdown': {'content': '## 我不是串子'},
+                },
+            )
+        self.assertTrue(result['active'])
+        self.assertEqual(
+            {'chat_type': 'qq_group', 'chat_id': 'group-1'},
+            result['data']['normalized_context'],
+        )
+        self.assertEqual('message-qq-group', result['data']['result']['data']['message_id'])
 
     def test_rejects_private_and_unknown_paths(self):
         private_result = OlivaAIAgent.introspection.invoke(

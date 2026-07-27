@@ -365,9 +365,87 @@ def discover(ctx, query='', scope='all', limit=12):
     }
 
 
+def current_chat_context(ctx):
+    '''从当前事件的标准字段推导发送目标；qqGuildv2 同时覆盖 QQ 群/C2C 与频道/频道私信。'''
+    plugin_event = ctx.get('plugin_event')
+    data = getattr(plugin_event, 'data', None)
+    extend = getattr(data, 'extend', None)
+    extend = extend if isinstance(extend, dict) else {}
+    func_type = str(
+        ctx.get('func_type')
+        or getattr(plugin_event, 'plugin_info', {}).get('func_type', '')
+    )
+    group_id = ctx.get('group_id') or getattr(data, 'group_id', None)
+    user_id = ctx.get('user_id') or getattr(data, 'user_id', None)
+    host_id = extend.get('host_group_id') or getattr(data, 'host_id', None)
+    flag_direct = bool(extend.get('flag_from_direct', func_type == 'private_message'))
+
+    # qqGuildv2 在 Event.data.extend 中明确标记消息来自 QQ 群/C2C 还是频道。
+    if 'flag_from_qq' in extend:
+        flag_from_qq = bool(extend.get('flag_from_qq'))
+        if flag_from_qq:
+            return {
+                'chat_type': 'qq_private' if flag_direct else 'qq_group',
+                'chat_id': user_id if flag_direct else group_id,
+            }
+        return {
+            'chat_type': 'guild_private' if flag_direct else 'guild_channel',
+            'chat_id': (host_id or group_id) if flag_direct else group_id,
+        }
+
+    try:
+        platform_name = str(plugin_event.platform.get('platform', '')).lower()
+    except Exception:
+        platform_name = ''
+    if platform_name == 'qqguild':
+        if host_id:
+            return {
+                'chat_type': 'guild_private' if flag_direct else 'guild_channel',
+                'chat_id': (host_id or group_id) if flag_direct else group_id,
+            }
+        return {
+            'chat_type': 'qq_private' if flag_direct else 'qq_group',
+            'chat_id': user_id if flag_direct else group_id,
+        }
+    return {
+        'chat_type': 'private' if flag_direct else 'group',
+        'chat_id': user_id if flag_direct else group_id,
+    }
+
+
+def prompt_chat_context_summary(ctx):
+    '''生成当前会话的可调用上下文提示，阻止模型编造 CURRENT_CHANNEL 一类占位符。'''
+    chat_context = current_chat_context(ctx)
+    chat_type = chat_context.get('chat_type')
+    chat_id = chat_context.get('chat_id')
+    if not chat_type or chat_id in [None, '']:
+        return ''
+    return (
+        '当前会话发送参数（由事件运行时推导）：chat_type=%s，chat_id=%s。'
+        '接口签名包含 chat_type/chat_id 时必须使用这两个真实值，或分别传 '
+        '{"$ctx":"chat_type"}/{"$ctx":"chat_id"}；禁止填写 CURRENT_CHANNEL 等占位符。'
+    ) % (chat_type, chat_id)
+
+
+def prompt_interface_summary(ctx, limit=40, max_chars=6000):
+    '''把当前事件真实 indeAPI 的公开接口压缩成提示词摘要，不执行任何接口。'''
+    result = discover(ctx, query='', scope='inde', limit=limit)
+    interfaces = result.get('data', {}).get('interfaces', [])
+    lines = []
+    used_chars = 0
+    for item in interfaces:
+        line = '%s%s' % (item.get('path', ''), item.get('signature', '(...)'))
+        if not line.strip() or used_chars + len(line) > max_chars:
+            break
+        lines.append(line)
+        used_chars += len(line) + 1
+    return '\n'.join(lines)
+
+
 def _context_value(ctx, name):
     plugin_event = ctx.get('plugin_event')
     data = getattr(plugin_event, 'data', None)
+    chat_context = current_chat_context(ctx)
     values = {
         'plugin_event': plugin_event,
         'event': plugin_event,
@@ -383,6 +461,8 @@ def _context_value(ctx, name):
         'self_id': ctx.get('self_id'),
         'host_id': getattr(data, 'host_id', None),
         'control_queue': getattr(plugin_event, 'plugin_info', {}).get('control_queue'),
+        'chat_type': chat_context.get('chat_type'),
+        'chat_id': chat_context.get('chat_id'),
     }
     if name not in values:
         raise ValueError('未知上下文占位符: %s' % name)
@@ -442,12 +522,33 @@ def _resolve(ctx, path):
 def _prepare_call(ctx, target, args, kwargs):
     call_args = [_convert_value(ctx, item) for item in args]
     call_kwargs = {key: _convert_value(ctx, value) for key, value in kwargs.items()}
+    normalized_context = {}
     try:
         signature = inspect.signature(target)
     except (TypeError, ValueError):
-        return call_args, call_kwargs, None
+        return call_args, call_kwargs, None, normalized_context
 
     parameters = list(signature.parameters.values())
+    parameter_names = {parameter.name for parameter in parameters}
+    target_module = str(getattr(target, '__module__', '')).lower()
+    if {'chat_type', 'chat_id'} <= parameter_names and 'qqguildv2sdk' in target_module:
+        chat_context = current_chat_context(ctx)
+        current_type = chat_context.get('chat_type')
+        current_id = chat_context.get('chat_id')
+        valid_types = {'qq_group', 'qq_private', 'guild_channel', 'guild_private'}
+        supplied_type = str(call_kwargs.get('chat_type', '')).strip().lower()
+        if current_type in valid_types and supplied_type not in valid_types:
+            call_kwargs['chat_type'] = current_type
+            normalized_context['chat_type'] = current_type
+        supplied_id = str(call_kwargs.get('chat_id', '')).strip()
+        placeholder_id = supplied_id.lower() in {
+            '', 'current', 'current_chat', 'current_channel', 'current_group',
+            '当前会话', '当前频道', '当前群',
+        }
+        if current_id not in [None, ''] and placeholder_id:
+            call_kwargs['chat_id'] = current_id
+            normalized_context['chat_id'] = current_id
+
     if call_args:
         leading_context = []
         for parameter in parameters:
@@ -465,7 +566,7 @@ def _prepare_call(ctx, target, args, kwargs):
     try:
         bound = signature.bind_partial(*call_args, **call_kwargs)
     except TypeError as e:
-        return None, None, '参数预绑定失败: %s' % e
+        return None, None, '参数预绑定失败: %s' % e, normalized_context
     for parameter in parameters:
         if parameter.name in bound.arguments or parameter.name not in _AUTO_CONTEXT:
             continue
@@ -473,8 +574,8 @@ def _prepare_call(ctx, target, args, kwargs):
     try:
         signature.bind(*call_args, **call_kwargs)
     except TypeError as e:
-        return None, None, '参数不符合 %s: %s' % (signature, e)
-    return call_args, call_kwargs, None
+        return None, None, '参数不符合 %s: %s' % (signature, e), normalized_context
+    return call_args, call_kwargs, None, normalized_context
 
 
 def invoke(ctx, path, args=None, kwargs=None):
@@ -496,7 +597,7 @@ def invoke(ctx, path, args=None, kwargs=None):
             },
         }
     target = _resolve(ctx, path)
-    call_args, call_kwargs, error = _prepare_call(ctx, target, args, kwargs)
+    call_args, call_kwargs, error, normalized_context = _prepare_call(ctx, target, args, kwargs)
     if error is not None:
         return {
             'active': False,
@@ -508,10 +609,13 @@ def invoke(ctx, path, args=None, kwargs=None):
         }
     result = target(*call_args, **call_kwargs)
     active = result.get('active', True) if isinstance(result, dict) else True
+    data = {
+        'interface': path,
+        'result': result if result is not None else '已执行（接口无返回值）',
+    }
+    if normalized_context:
+        data['normalized_context'] = normalized_context
     return {
         'active': bool(active),
-        'data': {
-            'interface': path,
-            'result': result if result is not None else '已执行（接口无返回值）',
-        },
+        'data': data,
     }

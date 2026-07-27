@@ -29,10 +29,13 @@ class Event(object):
             OlivaAIAgent.conf.log(
                 Proc,
                 2 if not vision_status['enabled'] or vision_status['ready'] else 3,
-                '视觉配置: enabled=%s ready=%s route=%s model=%s mode=%s' % (
-                    vision_status['enabled'],
-                    vision_status['ready'],
-                    vision_status['route'],
+                '视觉配置：启用=%s | 就绪=%s | 路由=%s | 模型=%s | 模式=%s' % (
+                    '是' if vision_status['enabled'] else '否',
+                    '是' if vision_status['ready'] else '否',
+                    {'main': '主模型', 'independent': '独立视觉模型', 'disabled': '已关闭'}.get(
+                        vision_status['route'],
+                        vision_status['route'],
+                    ),
                     vision_status['model'] or '-',
                     vision_status['mode'] or '-',
                 ),

@@ -50,6 +50,10 @@
 
 SDK、Event、Proc 和所有已加载 SDK 的 `indeAPI` 元数据在 `init_after` 一次性扫描并常驻内存；初始化之后才出现的未知 `indeAPI` 类型会在首次使用时补入。目录不保存旧事件对象，每次执行仍绑定当前消息事件。目录包含真实签名、docstring、所属模块、当前适配器标识和自动注入参数；`target_event`、`plugin_event`、`Proc` 会自动注入。私有成员、导入进 SDK 的外部 callable、以及必须先构造并保存实例的有状态方法不会进入目录。
 
+每次请求还会把当前 `plugin_event.indeAPI` 的精简公开接口清单从内存目录自动注入系统提示。模型不能再凭训练知识直接声称“平台不支持”：当前清单已有的接口可直接按精确路径调用，未列出的能力必须先用 `olivos_discover` 查证，只有目录不存在或真实接口返回不支持时才能判定不可用。该清单来自当前协议对象，不是按平台名称写死。
+
+调用签名中出现 `chat_type/chat_id` 时，插件会从当前事件上下文生成真实参数。qqGuildv2 公域连接同时承载 QQ 群/C2C 和频道消息：插件依据事件里的 `flag_from_qq/flag_from_direct` 自动选择 `qq_group`、`qq_private`、`guild_channel` 或 `guild_private`，并注入当前真实目标 ID。模型误填 `guild`、`channel`、`CURRENT_CHANNEL` 等值时，调用器也会纠正为当前事件参数，不再让 SDK 因猜错场景而拒绝。
+
 以本地 `qqGuildv2` 为例，搜 `markdown` 会自动命中：
 
 ```text
@@ -130,8 +134,15 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 
 - 群聊在 `vision.sync_ocr:false` 时，会把整条图片消息交给独立后台线程：先下载、识图并生成事实摘要，再继续本轮 AI 回复。这样不阻塞 OlivOS 消息总线，同时不会再让本轮回复只拿到“未识别成功”的占位；`true` 才会直接在消息总线线程识图。
 - 私聊与 `.ai` 附图也走同一视觉子系统。主后端是纯文本模型时，图片会先由独立视觉模型转成 `[图片：内容；意图；类型]`，然后把摘要而不是原始图片 URL 交给主模型。
-- `debug_log:true` 时，OlivOS Logger 会输出带同一 `id` 的 `TRACE`：消息接收/路由、图片下载、视觉路由、OCR 请求与结果、模型请求、工具调用、发送和会话保存均可串联查看。API Key、token、Authorization、Base64/data URL 会自动遮蔽，长字段会截断。
-- 启动后会打印一条不含密钥的视觉状态，例如 `视觉配置: enabled=True ready=True route=independent model=kimi-k2.6 mode=base64`。识图失败时可按同一个 `id` 查 `vision.download.failed`、`vision.ocr.http_error`、`vision.ocr.invalid_result` 或 `vision.ocr.exception`。
+- `debug_log:true` 时，OlivOS Logger 会输出带同一“编号”的中文流程日志：消息接收/路由、图片下载、视觉路由、图片识别、模型请求、工具调用、发送和会话保存均可串联查看。API Key、token、Authorization、Base64/data URL 会自动遮蔽，长字段会截断。
+- 启动后会打印一条不含密钥的视觉状态。识图流程会显示为“图片下载开始/完成”“图片识别请求/成功/接口错误/异常”等中文阶段；技术标识如模型名、SDK 名和接口路径保持原文，便于精确排查。
+
+## 人设锁定与提示注入防护（v2.13）
+
+- 配置中的系统提示和 `ambient.personality` 是机器人身份、性格、语气、称呼习惯与行为边界的唯一来源。用户可以提出正常问题、操作和一次性输出格式要求，但不能用“以后改成文言文”“每次先叫昵称”“忘掉原人设”等话术永久改写机器人。
+- 防护同时覆盖最新消息、历史、引用、用户侧写、群总结、长期记忆、知识库、技能、网页、图片文字和工具结果；这些内容均作为不可信数据使用，不能覆盖系统人设。
+- `memory_save`、`kb_save` 会拒绝人格控制内容；后台知识/侧写/群总结提炼在提示阶段与落盘阶段各过滤一次。升级前已经写入的数据也会在注入模型前过滤，不必立即手工删除。
+- `ambient.first_thinking` 仅处理普通潜行消息：前置模型返回 `NEXT` 后，主回复模型仍会二次判断是否参与；返回 `SKIP` 则不进入主模型。@、关键词和 `.ai` 属于明确触发，跳过前置判断并要求主模型回应。
 
 ## 支持 OpenAI Responses API（v2.7.1）
 

@@ -110,8 +110,10 @@ def _log_cache_usage(usage):
         if isinstance(hit, int) and isinstance(miss, int):
             total = hit + miss
             rate = (hit / total * 100) if total > 0 else 0
-            OlivaAIAgent.conf.debugLog(OlivaAIAgent.conf.gProc,
-                                       'CACHE - %.1f%% (%d/%d)' % (rate, hit, miss))
+            OlivaAIAgent.conf.debugLog(
+                OlivaAIAgent.conf.gProc,
+                '前缀缓存命中率 - %.1f%%（命中%d / 未命中%d）' % (rate, hit, miss),
+            )
     except Exception:
         pass
 
@@ -504,8 +506,11 @@ def _log_cache_usage_responses(usage):
         cached = det.get('cached_tokens')
         total_in = usage.get('input_tokens')
         if isinstance(cached, int) and isinstance(total_in, int) and total_in > 0:
-            OlivaAIAgent.conf.debugLog(OlivaAIAgent.conf.gProc,
-                                       'CACHE(responses) - %.1f%% (%d/%d)' % (cached / total_in * 100, cached, total_in))
+            OlivaAIAgent.conf.debugLog(
+                OlivaAIAgent.conf.gProc,
+                '前缀缓存命中率（Responses）- %.1f%%（命中%d / 总输入%d）'
+                % (cached / total_in * 100, cached, total_in),
+            )
     except Exception:
         pass
 

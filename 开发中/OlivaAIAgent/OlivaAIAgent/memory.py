@@ -203,7 +203,11 @@ def hotReload():
 
 
 def memFormat(key, title):
-    mem = memList(key)
+    mem = [
+        item
+        for item in memList(key)
+        if not OlivaAIAgent.conf.isPersonaMutationText(item.get('content', ''))
+    ]
     if len(mem) == 0:
         return ''
     lines = ['%d. [%s] %s' % (i, m.get('time', ''), m.get('content', '')) for i, m in enumerate(mem)]
