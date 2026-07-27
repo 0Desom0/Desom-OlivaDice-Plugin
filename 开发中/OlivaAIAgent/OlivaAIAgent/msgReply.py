@@ -122,7 +122,8 @@ def _resolveQuotedMessage(plugin_event, reply_id):
             platform = plugin_event.platform.get('platform', '')
             group_id = plugin_event.data.group_id
             for entry in reversed(OlivaAIAgent.ambient.getHistory(platform, group_id)):
-                if str(entry.get('message_id', '')) != reply_id:
+                entry_ids = [entry.get('message_id')] + list(entry.get('message_ids') or [])
+                if reply_id not in [str(item) for item in entry_ids if item not in [None, '']]:
                     continue
                 return {
                     'message_id': reply_id,
@@ -150,7 +151,7 @@ def _resolveQuotedMessage(plugin_event, reply_id):
             'message_id': reply_id,
             'sender_id': sender.get('user_id') or sender.get('id'),
             'sender_name': sender.get('nickname') or sender.get('name'),
-            'source': 'OlivOS get_msg',
+            'source': 'OlivOS消息接口',
         })
         if parsed['text'] or parsed['image_count'] > 0:
             return parsed
@@ -193,7 +194,17 @@ def prepareQuotedImages(parsed, cache_scope, bot_hash, trace_id=None):
     images = list(quote.get('images') or [])[:4] if isinstance(quote, dict) else []
     if not images or not OlivaAIAgent.vision.getVisionStatus().get('ready'):
         return []
-    facts = OlivaAIAgent.vision.describeImages(images, cache_scope, bot_hash, trace_id=trace_id)
+    try:
+        facts = OlivaAIAgent.vision.describeImages(images, cache_scope, bot_hash, trace_id=trace_id)
+    except Exception as e:
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'message.quote.images_failed',
+            trace_id,
+            error='%s: %s' % (type(e).__name__, e),
+            images=len(images),
+        )
+        return []
     facts = list(dict.fromkeys(str(item) for item in facts if str(item).strip()))
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
@@ -260,6 +271,13 @@ def parseMessage(plugin_event):
             message_id = str(mid)
     except Exception:
         message_id = None
+    event_id = None
+    try:
+        extend = plugin_event.data.extend
+        if isinstance(extend, dict) and extend.get('event_id') not in [None, '']:
+            event_id = str(extend['event_id'])
+    except Exception:
+        event_id = None
     quote = _resolveQuotedMessage(plugin_event, reply_id)
     return {
         'trace_id': '%012x' % (time.time_ns() & 0xffffffffffff),
@@ -271,6 +289,7 @@ def parseMessage(plugin_event):
         'quote': quote,
         'raw': raw,
         'message_id': message_id,
+        'event_id': event_id,
     }
 
 
@@ -335,6 +354,7 @@ def _onGroupMessage(plugin_event, Proc):
         at_me=parsed.get('at_me'),
         group_id=group_id,
         images=len(parsed.get('images') or []),
+        event_id=parsed.get('event_id'),
         message_id=parsed.get('message_id'),
         model=plugin_event.platform.get('model', ''),
         sdk=plugin_event.platform.get('sdk', ''),
@@ -431,6 +451,7 @@ def _onPrivateMessage(plugin_event, Proc):
         'message.private.received',
         trace_id,
         images=len(parsed.get('images') or []),
+        event_id=parsed.get('event_id'),
         message_id=parsed.get('message_id'),
         model=plugin_event.platform.get('model', ''),
         sdk=plugin_event.platform.get('sdk', ''),
@@ -898,10 +919,12 @@ def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
     '''在 Agent 工作线程中完成当前图片识别，统一覆盖私聊和未来的非潜行入口。'''
     trace_id = parsed.get('trace_id')
     images = list(parsed.get('images') or [])[:4]
+    quote = parsed.get('quote') if isinstance(parsed.get('quote'), dict) else {}
+    quoted_images = list(quote.get('images') or [])[:4]
     raw = str(parsed.get('raw', ''))
-    has_visual = bool(images) or '[OP:image' in raw or '[CQ:image' in raw or ':mface,' in raw
+    has_visual = bool(images or quoted_images) or '[OP:image' in raw or '[CQ:image' in raw or ':mface,' in raw
     if not has_visual:
-        return str(user_text), []
+        return attachQuotedContext(parsed, user_text), []
 
     status = OlivaAIAgent.vision.getVisionStatus()
     OlivaAIAgent.conf.traceLog(
@@ -916,7 +939,7 @@ def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
     )
     if not status.get('ready'):
         # 视觉子系统未就绪时保留原图；主后端若声明 vision=true 仍可直接接收。
-        return str(user_text), images
+        return attachQuotedContext(parsed, user_text), images
 
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     cache_scope = ctx.get('group_id') or ('private:%s' % ctx.get('user_id'))
@@ -952,6 +975,8 @@ def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
     result_text = str(user_text)
     if facts:
         result_text = (result_text + ' ' + ' '.join(facts)).strip()
+    quote_facts = prepareQuotedImages(parsed, cache_scope, bot_hash, trace_id=trace_id)
+    result_text = attachQuotedContext(parsed, result_text, image_facts=quote_facts)
     OlivaAIAgent.conf.traceLog(
         ctx.get('Proc'),
         'agent.vision.ready',
@@ -1009,6 +1034,20 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
         messages = [{'role': 'system', 'content': sys_prompt}] + history
         if volatile:
             messages.append({'role': 'user', 'content': '【动态上下文】\n' + volatile})
+        sender_identity = conf.senderIdentity(plugin_event, parsed.get('at_list'))
+        messages.append({
+            'role': 'system',
+            'content': conf.senderIdentityPrompt(plugin_event, parsed.get('at_list')),
+        })
+        conf.traceLog(
+            Proc,
+            'identity.sender.bound',
+            trace_id,
+            is_master=sender_identity['is_master'],
+            mentions=len(sender_identity['mentioned_user_ids']),
+            name=sender_identity['nickname'],
+            user_id=sender_identity['user_id'],
+        )
         if conf.isPersonaMutationText(user_text):
             messages.append({
                 'role': 'system',

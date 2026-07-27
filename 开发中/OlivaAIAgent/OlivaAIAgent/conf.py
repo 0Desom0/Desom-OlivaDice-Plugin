@@ -705,6 +705,50 @@ def isMaster(plugin_event):
     return user_id in getMasters(plugin_event)
 
 
+def senderIdentity(plugin_event, at_list=None):
+    '''只从当前事件发送者字段构造身份，@、引用与历史均不得参与。'''
+    try:
+        user_id = str(plugin_event.data.user_id)
+    except Exception:
+        user_id = ''
+    sender = {}
+    try:
+        if isinstance(plugin_event.data.sender, dict):
+            sender = plugin_event.data.sender
+    except Exception:
+        pass
+    nickname = str(sender.get('nickname') or sender.get('name') or user_id or '未知用户')
+    mentions = [str(item) for item in (at_list or []) if str(item) not in ['', '-1']]
+    return {
+        'user_id': user_id,
+        'nickname': nickname,
+        'is_master': bool(isMaster(plugin_event)),
+        'mentioned_user_ids': list(dict.fromkeys(mentions)),
+    }
+
+
+def senderIdentityPrompt(plugin_event, at_list=None):
+    '''生成当前轮发送者绑定规则，防止模型把被 @ 者误当成发送者。'''
+    identity = senderIdentity(plugin_event, at_list)
+    mentions = identity['mentioned_user_ids']
+    mention_text = '、'.join(mentions) if mentions else '无'
+    master_text = '是' if identity['is_master'] else '否'
+    owner_rule = (
+        '- 骰主身份只表示操作权限，不等于“主人”身份。仅当当前发送者ID与人格配置中的主人ID明确匹配时，'
+        '才可称当前发送者为“主人”；未匹配或不确定时禁止这样称呼。'
+    )
+    return (
+        '# 当前发言者身份绑定（最高优先级）\n'
+        '- 当前消息唯一发送者ID：%s\n'
+        '- 当前消息发送者昵称：%s\n'
+        '- 当前发送者是否为骰主：%s\n'
+        '- 当前消息提及的用户ID：%s\n'
+        '- 发送者身份只能取自当前事件的 user_id。被 @ 者、引用消息作者、昵称、群聊历史和回复对象都不是发送者。\n'
+        '- 判断人格中的“主人”时，只能拿当前发送者ID与人格配置的主人ID比较；绝不能把被 @ 者的主人身份套给发送者。\n'
+        '%s'
+    ) % (identity['user_id'], identity['nickname'], master_text, mention_text, owner_rule)
+
+
 def log(Proc, level, msg):
     try:
         if Proc is not None:
@@ -734,6 +778,12 @@ _TRACE_STAGE_ZH = {
     'message.group.received': '收到群消息',
     'message.group.duplicate': '忽略重复群消息',
     'message.private.received': '收到私聊消息',
+    'message.quote.resolved': '已读取引用消息',
+    'message.quote.unresolved': '未能读取引用消息',
+    'message.quote.images': '引用消息图片摘要就绪',
+    'message.quote.images_failed': '引用消息图片识别失败',
+    'identity.sender.bound': '已绑定当前消息发送者身份',
+    'message.outgoing.sent': '机器人消息发送完成',
     'route.group.prefix': '群消息命中前缀',
     'route.group.control_command': '进入群控制指令',
     'route.group.disabled': '群消息路由已禁用',
@@ -801,6 +851,7 @@ _TRACE_FIELD_ZH = {
     'elapsed_ms': '耗时毫秒',
     'enabled': '已启用',
     'error': '错误',
+    'event_id': '事件ID',
     'facts': '图片摘要数',
     'file': '文件',
     'flight_key': '并发键',
@@ -813,10 +864,12 @@ _TRACE_FIELD_ZH = {
     'images': '图片数',
     'intent': '意图',
     'interfaces': '接口数',
+    'is_master': '是骰主',
     'items': '拦截条数',
     'message_chars': '消息长度',
     'message_id': '消息ID',
     'messages': '消息数',
+    'mentions': '提及人数',
     'mode': '模式',
     'model': '模型',
     'name': '名称',

@@ -102,7 +102,7 @@ def getGroupLock(platform, group_id):
         return _group_locks[key]
 
 
-def addToHistory(platform, group_id, bot_hash, user_id, nickname, message, message_id=None):
+def addToHistory(platform, group_id, bot_hash, user_id, nickname, message, message_id=None, event_id=None):
     '''把一条消息（图片已转摘要）加入历史并持久化。'''
     key = _hkey(platform, group_id)
     q = _getQueue(key)
@@ -119,12 +119,14 @@ def addToHistory(platform, group_id, bot_hash, user_id, nickname, message, messa
     }
     if message_id not in [None, '', '-1', -1]:
         entry['message_id'] = str(message_id)
+    if event_id not in [None, '']:
+        entry['event_id'] = str(event_id)
     with _history_lock:
         q.append(entry)
         _persist(key)
 
 
-def addSelfReply(platform, group_id, text):
+def addSelfReply(platform, group_id, text, message_ids=None):
     '''把自己的回复以 assistant 身份记入历史（nickname=None 标记自己）。'''
     key = _hkey(platform, group_id)
     q = _getQueue(key)
@@ -133,6 +135,11 @@ def addSelfReply(platform, group_id, text):
     entry = {'timestamp': time.time(),
              'time': datetime.now().astimezone().replace(microsecond=0).isoformat(),
              'user_id': None, 'nickname': None, 'message': clean}
+    ids = [str(item) for item in (message_ids or []) if item not in [None, '', '-1', -1]]
+    ids = list(dict.fromkeys(ids))
+    if ids:
+        entry['message_id'] = ids[0]
+        entry['message_ids'] = ids
     with _history_lock:
         q.append(entry)
         _persist(key)
@@ -166,6 +173,27 @@ def buildContextMessages(system_content, history, patch=None):
     if isinstance(patch, dict) and patch:
         messages.append({'role': 'user', 'content': '当前动态上下文：' + json.dumps(patch, ensure_ascii=False)})
     return messages
+
+
+def messageIdContext(history, limit=12):
+    '''提取近期收发消息的真实平台标识，供 get_msg/delete_msg 等接口使用。'''
+    records = []
+    for entry in history:
+        ids = [entry.get('message_id')] + list(entry.get('message_ids') or [])
+        ids = list(dict.fromkeys(str(item) for item in ids if item not in [None, '', '-1', -1]))
+        event_id = entry.get('event_id')
+        if not ids and event_id in [None, '']:
+            continue
+        record = {
+            '方向': '机器人发送' if entry.get('nickname') is None else '用户发送',
+            '发送者ID': entry.get('user_id'),
+            '消息ID列表': ids,
+            '内容摘要': str(entry.get('message', ''))[:160],
+        }
+        if event_id not in [None, '']:
+            record['事件ID'] = str(event_id)
+        records.append(record)
+    return records[-max(1, int(limit)):]
 
 
 # ---------------- 触发判定 ----------------
@@ -229,7 +257,9 @@ def process(plugin_event, Proc, parsed, self_id,
     # 这样不会阻塞 OlivOS 消息总线，也不会让当前回复只看到“未识别”占位。
     sync_ocr = bool(OlivaAIAgent.conf.get('vision', 'sync_ocr', default=False))
     raw = parsed.get('raw', '')
-    has_img = ('[OP:image' in raw) or ('[CQ:image' in raw) or (':mface,' in raw)
+    quote = parsed.get('quote') if isinstance(parsed.get('quote'), dict) else {}
+    quoted_images = list(quote.get('images') or [])[:4]
+    has_img = bool(quoted_images) or ('[OP:image' in raw) or ('[CQ:image' in raw) or (':mface,' in raw)
     OlivaAIAgent.conf.traceLog(
         Proc,
         'ambient.process.start',
@@ -328,13 +358,22 @@ def process(plugin_event, Proc, parsed, self_id,
                 error='%s: %s' % (type(e).__name__, e),
             )
             message = parsed['text']
+    # reply 消息段只表示引用关系；正文改用已解析出的完整引用内容。
+    message = re.sub(r'\[(?:CQ|OP):reply[^\]]*\]', ' ', str(message), flags=re.I).strip()
+    quote_facts = OlivaAIAgent.msgReply.prepareQuotedImages(
+        parsed,
+        group_id,
+        bot_hash,
+        trace_id=trace_id,
+    )
+    message = OlivaAIAgent.msgReply.attachQuotedContext(parsed, message, image_facts=quote_facts)
     nickname = ''
     try:
         nickname = plugin_event.data.sender.get('nickname') or plugin_event.data.sender.get('name') or '用户'
     except Exception:
         nickname = '用户'
     addToHistory(platform, group_id, bot_hash, plugin_event.data.user_id, nickname,
-                 message, message_id=parsed.get('message_id'))
+                 message, message_id=parsed.get('message_id'), event_id=parsed.get('event_id'))
     OlivaAIAgent.conf.traceLog(
         Proc,
         'ambient.history.appended',
@@ -511,16 +550,35 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     now_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     patch = {
         '当前上下文': {'群号': group_id, '当前本地时间': now_text,
-                   '说明': '群聊历史中最后一条是最新消息；本动态上下文不是群聊消息'},
+                   '说明': ('群聊历史中最后一条是最新消息；本动态上下文不是群聊消息。'
+                          '撤回和获取消息必须使用消息ID，事件ID只用于平台事件/被动响应，不能代替消息ID撤回。')},
+        '当前发言者': conf.senderIdentity(plugin_event, parsed.get('at_list')),
         '当前记忆': {'知识': knowledge, '用户侧写': profiles, '前情提要': summary},
         '图片缓存': OlivaAIAgent.vision.groupImageCacheDict(group_id),
     }
+    message_ids = messageIdContext(history)
+    if message_ids:
+        patch['近期收发消息标识'] = message_ids
     if agent_mem:
         patch['当前记忆']['互通记忆'] = agent_mem
     if skills_ctx:
         patch['技能片段'] = skills_ctx.strip()
 
     messages = buildContextMessages(system_content, history, patch)
+    sender_identity = conf.senderIdentity(plugin_event, parsed.get('at_list'))
+    messages.append({
+        'role': 'system',
+        'content': conf.senderIdentityPrompt(plugin_event, parsed.get('at_list')),
+    })
+    conf.traceLog(
+        Proc,
+        'identity.sender.bound',
+        trace_id,
+        is_master=sender_identity['is_master'],
+        mentions=len(sender_identity['mentioned_user_ids']),
+        name=sender_identity['nickname'],
+        user_id=sender_identity['user_id'],
+    )
     if conf.isPersonaMutationText(message):
         messages.append({
             'role': 'system',
@@ -595,8 +653,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         return
     conf.debugLog(Proc, '潜行回复: %s' % reply_list)
 
-    # 记入自己的历史 + 后台提炼记忆
-    addSelfReply(platform, group_id, ''.join(str(x) for x in reply_list))
+    # 后台提炼记忆使用回复前的历史快照；真实发送 ID 在发送成功后再写入历史。
     if cfg('record_memory', True):
         threading.Thread(target=OlivaAIAgent.knowledge.runMemoryExtraction,
                          args=(bot_hash, group_id, history, cfg('record_knowledge', True)),
@@ -605,7 +662,9 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     # 拟人发送节奏
     time.sleep(1 + (random.random() * 2 - 1) * 0.9)
     out = OlivaAIAgent.vision.translateOutgoing(reply_list, bot_hash)
-    _sendMulti(plugin_event, out, time.perf_counter() - total_start)
+    sent_records = _sendMulti(plugin_event, out, time.perf_counter() - total_start, trace_id=trace_id)
+    for record in sent_records:
+        addSelfReply(platform, group_id, record['message'], message_ids=record['message_ids'])
 
 
 def _replyWash(reply_list):
@@ -622,10 +681,21 @@ def _replyWash(reply_list):
     return res
 
 
-def _sendMulti(plugin_event, msg_list, total_past):
+def _sendResultMessageIds(result):
+    if not isinstance(result, dict):
+        return []
+    data = result.get('data') if isinstance(result.get('data'), dict) else {}
+    ids = list(data.get('message_ids') or [])
+    if data.get('message_id') not in [None, '', '-1', -1]:
+        ids.insert(0, data['message_id'])
+    return list(dict.fromkeys(str(item) for item in ids if item not in [None, '', '-1', -1]))
+
+
+def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
     # 逐条打字延迟上限：长回复不应让群锁休眠数分钟（会拖住该群后续所有回复）
     cap = float(OlivaAIAgent.conf.get('ambient', 'max_send_delay', default=6.0))
     first = True
+    sent_records = []
     for i in msg_list:
         if not i or len(str(i)) == 0:
             continue
@@ -638,13 +708,28 @@ def _sendMulti(plugin_event, msg_list, total_past):
             delay = cap
         if delay > 0:
             time.sleep(delay)
+        result = None
+        sent = False
         try:
-            plugin_event.send('group', str(plugin_event.data.group_id), i)
+            result = plugin_event.send('group', str(plugin_event.data.group_id), i)
+            sent = not isinstance(result, dict) or bool(result.get('active'))
         except Exception:
             try:
-                plugin_event.reply(i)
+                result = plugin_event.reply(i)
+                sent = not isinstance(result, dict) or bool(result.get('active'))
             except Exception:
                 pass
+        message_ids = _sendResultMessageIds(result)
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'message.outgoing.sent',
+            trace_id,
+            message_id=message_ids[0] if message_ids else None,
+            ok=sent,
+        )
+        if sent:
+            sent_records.append({'message': str(i), 'message_ids': message_ids})
+    return sent_records
 
 
 # ---------------- first_thinking ----------------
