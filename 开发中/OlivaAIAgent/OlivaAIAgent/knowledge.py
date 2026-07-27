@@ -1,0 +1,335 @@
+# -*- encoding: utf-8 -*-
+'''
+OlivaAIAgent 知识/记忆库子系统（移植并增强自刺客插件）
+- 静态知识库: data/OlivaAIAgent/Knowledge/*.json 手动维护
+- 动态知识缓存: AI 聊天中自动提炼的知识点（LRU 上限）
+- 用户侧写: 对群友的心理画像（跨群跟随）
+- 群前情提要: 对本群对话的滚动总结
+- 后台记忆提炼线程: 每次发言后异步抽取 {k(知识), u(侧写), g(总结)}
+- 模糊检索: 用 pacing.peak_up_recommendMatch 从上述库中召回与当前对话相关的条目
+所有长期数据存于 ambient_memory.json（按 bot 隔离），与骰系插件的 memory 分开互不干扰。
+'''
+
+import json
+import os
+import threading
+
+import OlivaAIAgent
+
+_lock = threading.RLock()
+_mem = {}                 # bot_hash -> {'全局': {知识缓存,用户侧写,人物关系,图片缓存}, group_id: summary}
+_static = {}              # 静态知识库（全 bot 共享）
+_dirty = set()
+_mem_mtime = {}           # bot_hash -> 最近一次 load/save 时的文件 mtime
+_static_sig = 0.0         # 静态知识目录的签名(最大 mtime)
+
+GLOBAL_SUB_KEYS = ['知识缓存', '用户侧写', '人物关系', '图片缓存', '知识搜索']
+GROUP_SUMMARY_DEFAULT = '（暂无前情提要）'
+
+
+def _memPath(bot_hash):
+    return OlivaAIAgent.conf.dataPath + '/ambient_memory_%s.json' % _safe(bot_hash)
+
+
+def _safe(s):
+    import re
+    return re.sub(r'[^0-9A-Za-z_\-]', '_', str(s))
+
+
+def _defaultMem():
+    return {'全局': {k: {} for k in GLOBAL_SUB_KEYS}}
+
+
+def loadStatic():
+    '''加载静态知识库目录下所有 json（{关键词: 内容} 结构）。'''
+    global _static, _static_sig
+    _static = {}
+    kdir = OlivaAIAgent.conf.dataPath + '/Knowledge'
+    OlivaAIAgent.conf.releaseDir(kdir)
+    sig = 0.0
+    try:
+        for fn in os.listdir(kdir):
+            if not fn.endswith('.json'):
+                continue
+            try:
+                path = kdir + '/' + fn
+                sig = max(sig, os.path.getmtime(path))
+                with open(path, 'r', encoding='utf-8') as f:
+                    obj = json.load(f)
+                if isinstance(obj, dict):
+                    _static.update({str(k): v for k, v in obj.items()})
+            except Exception:
+                pass
+    except Exception:
+        pass
+    _static_sig = sig
+    return len(_static)
+
+
+def _staticDirSig():
+    kdir = OlivaAIAgent.conf.dataPath + '/Knowledge'
+    sig = 0.0
+    try:
+        for fn in os.listdir(kdir):
+            if fn.endswith('.json'):
+                sig = max(sig, os.path.getmtime(kdir + '/' + fn))
+    except Exception:
+        pass
+    return sig
+
+
+def getMem(bot_hash):
+    bot_hash = OlivaAIAgent.conf.dataBotHash(bot_hash)   # 群链：从账号数据写入/读取主账号
+    with _lock:
+        if bot_hash not in _mem:
+            data = _defaultMem()
+            try:
+                p = _memPath(bot_hash)
+                if os.path.exists(p):
+                    with open(p, 'r', encoding='utf-8') as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
+                        data.setdefault('全局', {})
+                        for k in GLOBAL_SUB_KEYS:
+                            data['全局'].setdefault(k, {})
+                    _mem_mtime[bot_hash] = os.path.getmtime(p)
+            except Exception:
+                pass
+            _mem[bot_hash] = data
+        return _mem[bot_hash]
+
+
+def saveMem(bot_hash):
+    bot_hash = OlivaAIAgent.conf.dataBotHash(bot_hash)   # 群链：写入主账号
+    with _lock:
+        if bot_hash not in _mem:
+            return
+        try:
+            p = _memPath(bot_hash)
+            OlivaAIAgent.conf.atomicDump(_mem[bot_hash], p)
+            _mem_mtime[bot_hash] = os.path.getmtime(p)
+        except Exception:
+            pass
+
+
+def hotReload():
+    '''检测静态知识库目录与各 bot 记忆文件的外部修改并重载。返回变化项列表。'''
+    global _static_sig
+    changed = []
+    try:
+        sig = _staticDirSig()
+        if sig > _static_sig:
+            loadStatic()
+            changed.append('知识库')
+    except Exception:
+        pass
+    with _lock:
+        bots = list(_mem.keys())
+    for bh in bots:
+        try:
+            p = _memPath(bh)
+            m = os.path.getmtime(p) if os.path.exists(p) else 0.0
+            if m > _mem_mtime.get(bh, 0.0):
+                with open(p, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    loaded.setdefault('全局', {})
+                    for k in GLOBAL_SUB_KEYS:
+                        loaded['全局'].setdefault(k, {})
+                    with _lock:
+                        _mem[bh] = loaded
+                        _mem_mtime[bh] = m
+                    changed.append('记忆')
+        except Exception:
+            pass
+    return changed
+
+
+def saveAll():
+    with _lock:
+        for bh in list(_mem.keys()):
+            saveMem(bh)
+
+
+# ---------------- 知识缓存 LRU ----------------
+
+def _knowledgeCacheMax():
+    try:
+        return max(0, int(OlivaAIAgent.conf.get('knowledge', 'cache_max', default=0)))
+    except Exception:
+        return 0
+
+
+def updateKnowledge(bot_hash, updates):
+    '''写入知识并移到末尾；超上限淘汰最旧。返回被淘汰的键。'''
+    if not isinstance(updates, dict):
+        return []
+    with _lock:
+        mem = getMem(bot_hash)
+        cache = mem['全局'].setdefault('知识缓存', {})
+        for k, v in updates.items():
+            if isinstance(k, str) and isinstance(v, str):
+                cache.pop(k, None)
+                cache[k] = v
+        limit = _knowledgeCacheMax()
+        removed = []
+        if limit > 0 and len(cache) > limit:
+            removed = list(cache)[:len(cache) - limit]
+            for k in removed:
+                cache.pop(k, None)
+    return removed
+
+
+def updateProfiles(bot_hash, updates):
+    if not isinstance(updates, dict):
+        return
+    with _lock:
+        mem = getMem(bot_hash)
+        prof = mem['全局'].setdefault('用户侧写', {})
+        for k, v in updates.items():
+            if isinstance(k, str) and isinstance(v, str):
+                prof[k] = v
+
+
+def setGroupSummary(bot_hash, group_id, summary):
+    with _lock:
+        mem = getMem(bot_hash)
+        mem[str(group_id)] = str(summary)
+
+
+def getGroupSummary(bot_hash, group_id):
+    return getMem(bot_hash).get(str(group_id), GROUP_SUMMARY_DEFAULT)
+
+
+# ---------------- 模糊检索 ----------------
+
+def searchRelevant(bot_hash, history, search_ageing, deepin=1):
+    '''对每条历史消息在 知识缓存/知识库/知识搜索 中模糊召回，返回 {关键词: 内容}。'''
+    import re
+    mem = getMem(bot_hash)
+    found = {}
+    # 在锁内快照，避免后台记忆提炼线程并发写入时"dict changed size during iteration"
+    with _lock:
+        snap_cache = dict(mem['全局'].get('知识缓存', {}))
+        snap_search = dict(mem['全局'].get('知识搜索', {}))
+        snap_static = dict(_static)
+    sources = [
+        ('知识缓存', snap_cache, 0.1),
+        ('知识库', snap_static, 0.15),
+        ('知识搜索', snap_search, 0.1),
+    ]
+    for name, dmap, rate in sources:
+        if not isinstance(dmap, dict) or not dmap:
+            continue
+        patch = {}
+        for entry in history:
+            msg = re.sub(r'\[(?:CQ|OP):[^\]]*\]', '', str(entry.get('message', ''))).strip()
+            if not msg:
+                continue
+            nick = entry.get('nickname')
+            target = ('%s(%s)：%s' % (nick, entry.get('user_id', ''), msg)) if nick else msg
+            patch.update(OlivaAIAgent.pacing.peak_up_recommendMatch(
+                target=target, dictMap=dmap, dictName='oa_' + name,
+                ageing=search_ageing, rate=rate, matchedList=list(patch.keys())))
+        for _ in range(max(0, int(deepin))):
+            deep = {}
+            for k in list(patch.keys()):
+                val = patch[k]
+                if not isinstance(val, str):
+                    continue
+                deep.update(OlivaAIAgent.pacing.peak_up_recommendMatch(
+                    target=val, dictMap=dmap, dictName='oa_' + name,
+                    ageing=search_ageing, rate=rate,
+                    matchedList=list(patch.keys()) + list(deep.keys()), father=k))
+            patch.update(deep)
+        found.update(patch)
+    return found
+
+
+def relevantProfiles(bot_hash, history):
+    '''召回本轮出现的用户侧写（按 user_id 命中）。'''
+    mem = getMem(bot_hash)
+    with _lock:
+        prof = dict(mem['全局'].get('用户侧写', {}))
+    ids = set(str(e.get('user_id', '')) for e in history if e.get('user_id') is not None)
+    return {k: v for k, v in prof.items() if str(k) in ids}
+
+
+# ---------------- 后台记忆提炼 ----------------
+
+_EXAMPLE = {
+    'k': {'中国': '五千年文明古国，正推进民族复兴'},
+    'u': {'123456789': '小明：阳光开朗，乐于社交，推测为男孩'},
+    'g': '刚刚聊到了中国',
+}
+
+
+def buildMemoryTask(bot_hash, group_id, history, record_knowledge=True):
+    '''构造记忆提炼的 system prompt。'''
+    parts = ['# 当前任务\n从聊天记录中提炼要长期记住的信息，只输出严格 JSON 对象。']
+    if record_knowledge:
+        parts.append(
+            '## 知识点 → k 键\n'
+            '- 提炼常识性/设定性知识（非现状流水账），优先转发卡片里的可信信息\n'
+            '- 每条≤32字，键为2~8字关键词，值为内容')
+    parts.append(
+        '## 用户侧写 → u 键\n'
+        '- 对出现的每个用户做心理侧写，键用 user_id，值≤32字且带名称，可据语言推断性别')
+    parts.append(
+        '## 群总结 → g 键\n- 总结本群近期对话，≤128字，决定该记住什么，杜绝流水账')
+    parts.append('# 参考输出\n' + json.dumps(_EXAMPLE, ensure_ascii=False))
+    return '\n\n'.join(parts)
+
+
+def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True):
+    '''同步执行一次记忆提炼（调用便宜/主模型），写入长期库。供后台线程调用。'''
+    try:
+        sys_prompt = buildMemoryTask(bot_hash, group_id, history, record_knowledge)
+        summary = getGroupSummary(bot_hash, group_id)
+        chat = OlivaAIAgent.ambient.formatHistoryForModel(history)
+        messages = [
+            {'role': 'system', 'content': sys_prompt},
+            {'role': 'user', 'content': '前情提要：%s\n\n聊天记录：\n%s\n\n现在提炼，只输出 JSON。' % (summary, chat)},
+        ]
+        bc = OlivaAIAgent.aiClient.getBackendConf()
+        bc = dict(bc)
+        bc['stream'] = False
+        bc['temperature'] = 0.7
+        res = OlivaAIAgent.aiClient.chat(messages, tools=None, backend_conf=bc,
+                                         force_no_stream=True, response_json=True, thinking_off=True)
+        if not res.get('ok'):
+            return
+        data = _parseJson(res.get('text', ''))
+        if not isinstance(data, dict):
+            return
+        with _lock:
+            if record_knowledge and isinstance(data.get('k'), dict):
+                removed = updateKnowledge(bot_hash, {k: v for k, v in data['k'].items()
+                                                     if isinstance(k, str) and isinstance(v, str)})
+                if removed:
+                    OlivaAIAgent.conf.debugLog(OlivaAIAgent.conf.gProc, '知识淘汰 %d 条' % len(removed))
+            if isinstance(data.get('u'), dict):
+                updateProfiles(bot_hash, {k: v for k, v in data['u'].items()
+                                          if isinstance(k, str) and isinstance(v, str)})
+            if isinstance(data.get('g'), str) and data['g'].strip():
+                setGroupSummary(bot_hash, group_id, data['g'].strip())
+        saveMem(bot_hash)
+    except Exception as e:
+        OlivaAIAgent.conf.log(OlivaAIAgent.conf.gProc, 3, '记忆提炼异常: %s' % e)
+
+
+def _parseJson(text):
+    import re
+    text = str(text)
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    m = re.search(r'\{.*\}', text, re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    return None

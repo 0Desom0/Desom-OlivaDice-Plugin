@@ -1,0 +1,909 @@
+# -*- encoding: utf-8 -*-
+'''
+OlivaAIAgent 触发判定 / .ai 指令 / agent 主循环
+'''
+
+import json
+import re
+import threading
+import time
+import traceback
+
+import OlivOS
+import OlivaAIAgent
+
+_inflight = set()
+_inflight_lock = threading.Lock()
+_concurrent_sem = None
+
+# 去重：同一条消息(按 bot|群|消息id)只处理一次，防止重复投递或未来路径重叠导致双回复
+import collections  # noqa: E402
+_processed = collections.OrderedDict()
+_processed_lock = threading.Lock()
+
+
+def _seenMessage(bot_hash, group_id, message_id):
+    '''首次见到返回 False 并登记；重复返回 True。message_id 为空则不去重(放行)。'''
+    if message_id in [None, '', '-1', -1]:
+        return False
+    key = '%s|%s|%s' % (bot_hash, group_id, message_id)
+    with _processed_lock:
+        if key in _processed:
+            return True
+        _processed[key] = 1
+        while len(_processed) > 4000:
+            _processed.popitem(last=False)
+    return False
+
+
+def _getSem():
+    global _concurrent_sem
+    if _concurrent_sem is None:
+        _concurrent_sem = threading.Semaphore(int(OlivaAIAgent.conf.get('agent', 'max_concurrent', default=4)))
+    return _concurrent_sem
+
+
+# ---------------- 消息解析 ----------------
+
+def parseMessage(plugin_event):
+    '''解析 old_string(CQ) 消息 → 纯文本 / at列表 / 图片URL列表 / 是否at了机器人'''
+    raw = str(plugin_event.data.message)
+    self_id = str(plugin_event.base_info.get('self_id', ''))
+    at_list = []
+    images = []
+    reply_id = None
+    text_parts = []
+    try:
+        msg_obj = OlivOS.messageAPI.Message_templet('old_string', raw)
+        for para in msg_obj.data:
+            if isinstance(para, OlivOS.messageAPI.PARA.at):
+                at_list.append(str(para.data.get('id', '')))
+            elif isinstance(para, OlivOS.messageAPI.PARA.image):
+                url = para.data.get('url') or para.data.get('file') or ''
+                if str(url).startswith(('http://', 'https://')):
+                    images.append(str(url))
+            elif isinstance(para, OlivOS.messageAPI.PARA.reply):
+                reply_id = para.data.get('id')
+            elif isinstance(para, OlivOS.messageAPI.PARA.text):
+                text_parts.append(str(para.data.get('text', '')))
+            else:
+                try:
+                    text_parts.append(para.CQ())
+                except Exception:
+                    pass
+    except Exception:
+        text_parts = [re.sub(r'\[CQ:[^\]]*\]', ' ', raw)]
+    text = ' '.join([t for t in text_parts if t.strip() != '']).strip()
+    message_id = None
+    try:
+        mid = plugin_event.data.message_id
+        if mid not in [None, '', '-1', -1]:
+            message_id = str(mid)
+    except Exception:
+        message_id = None
+    return {
+        'trace_id': '%012x' % (time.time_ns() & 0xffffffffffff),
+        'text': text,
+        'at_list': at_list,
+        'at_me': self_id in at_list,
+        'images': images,
+        'reply_id': reply_id,
+        'raw': raw,
+        'message_id': message_id,
+    }
+
+
+def _matchPrefix(text):
+    '''命中触发前缀则返回剩余文本，否则 None'''
+    for prefix in OlivaAIAgent.conf.get('trigger', 'prefix', default=['.ai']) or []:
+        if text.lower().startswith(str(prefix).lower()):
+            return text[len(prefix):].strip()
+    return None
+
+
+def _keywordHit(text, keywords):
+    '''文本是否命中任一关键词(子串匹配)。'''
+    for kw in keywords or []:
+        w = str(kw).strip()
+        if w != '' and w in text:
+            return True
+    return False
+
+
+def _unionKeywords():
+    '''统一触发关键词：只用 trigger.keywords（潜行开/关都用它触发，命中即强制回复）。'''
+    return list(OlivaAIAgent.conf.get('trigger', 'keywords', default=[]) or [])
+
+
+def _isIgnorableCommand(text):
+    '''普通消息里疑似其他指令(.开头)的不当作聊天内容'''
+    pattern = OlivaAIAgent.conf.get('trigger', 'ignore_command_regex', default='^[.。/].+')
+    try:
+        return re.match(pattern, text) is not None
+    except Exception:
+        return text.startswith(('.', '。', '/'))
+
+
+# ---------------- 事件入口 ----------------
+
+def onGroupMessage(plugin_event, Proc):
+    try:
+        OlivaAIAgent.conf.hotReload()   # 配置/群开关/群记忆/知识 有改动则自动载入
+        _onGroupMessage(plugin_event, Proc)
+    except Exception:
+        OlivaAIAgent.conf.log(Proc, 3, 'group_message 处理异常:\n' + traceback.format_exc())
+
+
+def _onGroupMessage(plugin_event, Proc):
+    # 路由是单一决策，每条消息只产出一条回复，且都走同一条"统一管线"(潜行上下文 + 全权限工具)：
+    #   1) .ai 前缀 → 始终触发（显式命令/对话），强制回复 + 全部工具
+    #   2) 潜行开启 → 额外响应 @ / 关键词(强制回复) 与 概率被动插话；记录群历史作上下文
+    #   3) 潜行关闭 → 纯助手模式：只有 .ai 前缀触发；@、关键词、概率都不触发，也不记录群历史
+    platform = plugin_event.platform['platform']
+    group_id = plugin_event.data.group_id
+    user_id = plugin_event.data.user_id
+    self_id = str(plugin_event.base_info.get('self_id', ''))
+    if str(user_id) == self_id:
+        return
+    parsed = parseMessage(plugin_event)
+    trace_id = parsed['trace_id']
+    OlivaAIAgent.conf.traceLog(
+        Proc,
+        'message.group.received',
+        trace_id,
+        at_me=parsed.get('at_me'),
+        group_id=group_id,
+        images=len(parsed.get('images') or []),
+        message_id=parsed.get('message_id'),
+        model=plugin_event.platform.get('model', ''),
+        sdk=plugin_event.platform.get('sdk', ''),
+        text_chars=len(parsed.get('text', '')),
+        user_id=user_id,
+    )
+    # 去重：同一条消息若被重复投递(或未来路径重叠)，只处理一次
+    bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
+    OlivaAIAgent.reminder.registerSender(plugin_event)   # 刷新该bot的主动发送器(供定时提醒推送)
+    if _seenMessage(bot_hash, group_id, parsed.get('message_id')):
+        OlivaAIAgent.conf.traceLog(Proc, 'message.group.duplicate', trace_id)
+        return
+    text = parsed['text']
+
+    rest = _matchPrefix(text)
+    is_master = OlivaAIAgent.conf.isMaster(plugin_event)
+
+    # .ai 控制指令(骰主控制类即使全局关闭也响应)
+    if rest is not None:
+        OlivaAIAgent.conf.traceLog(Proc, 'route.group.prefix', trace_id, command_chars=len(rest))
+        if handleCommand(plugin_event, Proc, rest, is_master, in_group=True):
+            OlivaAIAgent.conf.traceLog(Proc, 'route.group.control_command', trace_id)
+            plugin_event.set_block()
+            return
+        if not _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=True):
+            plugin_event.set_block()
+            return
+        if rest == '':
+            plugin_event.reply(_helpText(is_master))
+            plugin_event.set_block()
+            return
+        # .ai <正文> → 统一管线，显式请求，强制回复并启用全部工具
+        OlivaAIAgent.ambient.process(plugin_event, Proc, parsed, self_id,
+                                     force=True, tools=True, attempt=True, text_override=rest)
+        plugin_event.set_block()
+        return
+
+    # 非前缀路径：仅在潜行开启时才响应 @ / 关键词 / 概率
+    if not _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=False):
+        OlivaAIAgent.conf.traceLog(Proc, 'route.group.disabled', trace_id)
+        return
+    if not OlivaAIAgent.conf.isAmbientEnabled(platform, group_id):
+        # 潜行关闭 = 纯助手模式：只有 .ai 前缀触发；@、关键词、概率都不触发，也不记录群历史
+        OlivaAIAgent.conf.traceLog(Proc, 'route.group.ambient_off', trace_id)
+        return
+
+    # 潜行开启：记录群滚动上下文缓冲(供自由唤醒/上下文注入)，再做触发判定
+    sender_name = ''
+    try:
+        sender_name = plugin_event.data.sender.get('name', '') or plugin_event.data.sender.get('nickname', '')
+    except Exception:
+        pass
+    if text != '':
+        OlivaAIAgent.memory.bufferAppend(platform, group_id, user_id, sender_name, text)
+
+    # 潜行开启：@ / 关键词 = 强制回复(force)，否则按概率被动自行插话；都走同一条统一管线
+    hard = bool(parsed.get('at_me') and OlivaAIAgent.conf.get('trigger', 'at_trigger', default=True)) \
+        or _keywordHit(text, _unionKeywords())
+    tools = (hard and OlivaAIAgent.conf.get('ambient', 'integrate_hard_trigger', default=True)) \
+        or OlivaAIAgent.conf.get('ambient', 'allow_tools', default=False)
+    OlivaAIAgent.conf.traceLog(Proc, 'route.group.ambient', trace_id, hard=hard, tools=tools)
+    try:
+        OlivaAIAgent.ambient.process(plugin_event, Proc, parsed, self_id,
+                                     force=hard, tools=tools, attempt=True)
+    except Exception:
+        OlivaAIAgent.conf.log(Proc, 3, '统一管线分发异常:\n' + traceback.format_exc())
+
+
+def onPrivateMessage(plugin_event, Proc):
+    try:
+        OlivaAIAgent.conf.hotReload()
+        _onPrivateMessage(plugin_event, Proc)
+    except Exception:
+        OlivaAIAgent.conf.log(Proc, 3, 'private_message 处理异常:\n' + traceback.format_exc())
+
+
+def _onPrivateMessage(plugin_event, Proc):
+    self_id = str(plugin_event.base_info.get('self_id', ''))
+    if str(plugin_event.data.user_id) == self_id:
+        return
+    OlivaAIAgent.reminder.registerSender(plugin_event)   # 刷新该bot的主动发送器(供定时提醒推送)
+    is_master = OlivaAIAgent.conf.isMaster(plugin_event)
+    # 私聊总开关：关闭则私聊完全不可用(含 .ai 指令)
+    if not OlivaAIAgent.conf.get('trigger', 'private_chat', default=True):
+        return
+    # 仅骰主：默认私聊只有骰主能用；非骰主直接忽略(不回复不泄露)
+    if OlivaAIAgent.conf.get('trigger', 'private_master_only', default=True) and not is_master:
+        return
+    parsed = parseMessage(plugin_event)
+    trace_id = parsed['trace_id']
+    OlivaAIAgent.conf.traceLog(
+        Proc,
+        'message.private.received',
+        trace_id,
+        images=len(parsed.get('images') or []),
+        message_id=parsed.get('message_id'),
+        model=plugin_event.platform.get('model', ''),
+        sdk=plugin_event.platform.get('sdk', ''),
+        text_chars=len(parsed.get('text', '')),
+        user_id=plugin_event.data.user_id,
+    )
+    text = parsed['text']
+    rest = _matchPrefix(text)
+    if rest is not None:
+        OlivaAIAgent.conf.traceLog(Proc, 'route.private.prefix', trace_id, command_chars=len(rest))
+        if handleCommand(plugin_event, Proc, rest, is_master, in_group=False):
+            return
+        if not OlivaAIAgent.conf.get('enable', 'global', default=True):
+            return
+        if rest == '':
+            plugin_event.reply(_helpText(is_master))
+            return
+        _startAgent(plugin_event, Proc, rest, parsed, trigger='prefix')
+        return
+    if not OlivaAIAgent.conf.get('enable', 'global', default=True):
+        return
+    if text == '' and len(parsed['images']) == 0:
+        return
+    if _isIgnorableCommand(text):
+        return
+    _startAgent(plugin_event, Proc, text, parsed, trigger='private')
+
+
+def _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=False):
+    if not OlivaAIAgent.conf.get('enable', 'global', default=True):
+        if reply_on_fail:
+            plugin_event.reply('AI 已全局关闭，骰主可用 .ai global on 开启')
+        return False
+    if not OlivaAIAgent.conf.isWhitelisted(platform, group_id):
+        if reply_on_fail and is_master:
+            plugin_event.reply('本群不在白名单内，骰主可用 .ai wl add %s 添加' % group_id)
+        return False
+    if not OlivaAIAgent.conf.isGroupEnabled(platform, group_id):
+        if reply_on_fail:
+            plugin_event.reply('本群 AI 已关闭，骰主可用 .ai on 开启')
+        return False
+    return True
+
+
+# ---------------- .ai 指令 ----------------
+
+def _helpText(is_master):
+    lines = [
+        '【OlivaAIAgent 指令】',
+        '.ai <内容>  与AI对话(AI可执行骰点与全部OlivOS接口)',
+        '.ai clear  清空我在本处的对话记录',
+        '.ai mem  查看长期记忆 | .ai mem clear 清空我的跨群记忆',
+        '.ai status  查看当前状态',
+    ]
+    if is_master:
+        lines += [
+            '——以下为骰主指令——',
+            '.ai on/off  本群开关 | .ai global on/off  全局开关',
+            '.ai stealth on/off  本群潜行(群友融入)模式开关',
+            '.ai stealth think on/off  潜行前置判定 | .ai stealth tools on/off  潜行开工具',
+            '.ai admin on/off  本群高危接口开关',
+            '.ai admin global on/off  高危接口全局开关',
+            '.ai admin role everyone/group_admin/master  高危接口角色门槛',
+            '.ai wl on/off | .ai wl add/del <群号> | .ai wl list  白名单管理',
+            '.ai clear group  清空本群所有人对话',
+            '.ai mem clear group  清空本群群记忆',
+            '.ai skills reload  重建技能索引 | .ai kb reload  重载知识库',
+            '.ai model <模型名>  切换模型 | .ai reload  重载配置',
+        ]
+    return '\n'.join(lines)
+
+
+def _onoff(arg):
+    if arg in ['on', '开', '开启', 'true', '1']:
+        return True
+    if arg in ['off', '关', '关闭', 'false', '0']:
+        return False
+    return None
+
+
+def handleCommand(plugin_event, Proc, rest, is_master, in_group):
+    '''处理 .ai 子指令；返回 True 表示已作为指令处理完毕'''
+    platform = plugin_event.platform['platform']
+    group_id = plugin_event.data.group_id if in_group else None
+    user_id = plugin_event.data.user_id
+    parts = rest.split()
+    cmd = parts[0].lower() if len(parts) > 0 else ''
+    args = parts[1:]
+
+    if cmd in ['help', '帮助']:
+        plugin_event.reply(_helpText(is_master))
+        return True
+
+    if cmd == 'status':
+        bc = OlivaAIAgent.aiClient.getBackendConf()
+        lines = [
+            '后端: %s | 模型: %s | 流式: %s' % (bc.get('_name'), bc.get('model'), bc.get('stream')),
+            '全局: %s' % ('开' if OlivaAIAgent.conf.get('enable', 'global', default=True) else '关'),
+            '高危接口: 全局%s 角色门槛=%s' % (
+                '开' if OlivaAIAgent.conf.get('permissions', 'admin_tools_global', default=True) else '关',
+                {'everyone': '所有人', 'group_admin': '群管理/群主/骰主', 'master': '仅骰主'}.get(
+                    OlivaAIAgent.tools._adminMinRole(), '所有人')),
+            '白名单: %s' % ('开' if OlivaAIAgent.conf.get('whitelist', 'enabled', default=False) else '关'),
+        ]
+        thinking = bc.get('thinking')
+        if isinstance(thinking, dict) and thinking.get('type') == 'enabled':
+            lines.append('思考模式: 开 (%s)' % bc.get('reasoning_effort', 'high'))
+        lines.append('技能库: %s (%s引擎) | 视觉识图: %s' % (
+            '开' if OlivaAIAgent.conf.get('skills', 'enable', default=True) else '关',
+            OlivaAIAgent.skills.backendName(),
+            '开' if OlivaAIAgent.conf.get('vision', 'enable', default=False) else '关'))
+        if in_group:
+            lines.append('本群: %s | 本群高危: %s' % (
+                '开' if OlivaAIAgent.conf.isGroupEnabled(platform, group_id) else '关',
+                '开' if OlivaAIAgent.conf.isGroupAdminTools(platform, group_id) else '关'))
+            lines.append('本群潜行模式: %s | 前置判定: %s | 潜行工具: %s' % (
+                '开' if OlivaAIAgent.conf.isAmbientEnabled(platform, group_id) else '关',
+                '开' if OlivaAIAgent.conf.get('ambient', 'first_thinking', default=False) else '关',
+                '开' if OlivaAIAgent.conf.get('ambient', 'allow_tools', default=False) else '关'))
+        # 私聊模式 + 群链主账号
+        pc_on = OlivaAIAgent.conf.get('trigger', 'private_chat', default=True)
+        pc_master = OlivaAIAgent.conf.get('trigger', 'private_master_only', default=True)
+        lines.append('私聊: %s' % ('关' if not pc_on else ('仅骰主' if pc_master else '所有人')))
+        try:
+            raw = OlivaAIAgent.conf._rawBotHash(plugin_event)
+            master = OlivaAIAgent.conf.dataBotHash(raw)
+            if str(master) != str(raw):
+                lines.append('群链: 本bot数据已并入主账号 %s' % str(master)[:12])
+        except Exception:
+            pass
+        lines.append('你的身份: %s' % ('骰主' if is_master else '普通用户'))
+        plugin_event.reply('\n'.join(lines))
+        return True
+
+    if cmd == 'clear':
+        if len(args) > 0 and args[0].lower() == 'group' and in_group:
+            if not is_master:
+                plugin_event.reply('仅骰主可清空本群全部对话')
+                return True
+            n = OlivaAIAgent.memory.clearGroupSessions(platform, group_id)
+            try:
+                OlivaAIAgent.ambient.clearGroupHistory(platform, group_id)   # 群统一管线读的是潜行历史，一并清掉
+            except Exception:
+                pass
+            plugin_event.reply('已清空本群 %d 份对话记录及群聊上下文' % n)
+            return True
+        key = OlivaAIAgent.memory.sessionKey(platform, group_id if in_group else 'private', user_id)
+        OlivaAIAgent.memory.clearSession(key)
+        plugin_event.reply('已清空你的对话记录')
+        return True
+
+    if cmd == 'mem':
+        sub = args[0].lower() if len(args) > 0 else 'show'
+        user_key = OlivaAIAgent.memory.userMemKey(platform, user_id)
+        if sub == 'show':
+            out = OlivaAIAgent.memory.memFormat(user_key, '你的跨群记忆')
+            if in_group:
+                out += OlivaAIAgent.memory.memFormat(
+                    OlivaAIAgent.memory.groupMemKey(platform, group_id), '本群记忆')
+            plugin_event.reply(out if out else '暂无记忆')
+            return True
+        if sub == 'clear':
+            if len(args) > 1 and args[1].lower() == 'group' and in_group:
+                if not is_master:
+                    plugin_event.reply('仅骰主可清空群记忆')
+                    return True
+                OlivaAIAgent.memory.memClear(OlivaAIAgent.memory.groupMemKey(platform, group_id))
+                plugin_event.reply('已清空本群群记忆')
+                return True
+            OlivaAIAgent.memory.memClear(user_key)
+            plugin_event.reply('已清空你的跨群记忆')
+            return True
+        return True
+
+    # ---- 以下均为骰主指令 ----
+    master_cmds = ['on', 'off', 'global', 'stealth', 'admin', 'wl', 'reload', 'model', 'skills', 'kb']
+    if cmd in master_cmds:
+        if not is_master:
+            plugin_event.reply('该指令仅骰主可用')
+            return True
+
+    if cmd == 'stealth':
+        if not in_group:
+            plugin_event.reply('请在群内使用')
+            return True
+        sub = args[0].lower() if len(args) > 0 else ''
+        if sub in ['think', 'tools']:
+            val = _onoff(args[1].lower()) if len(args) > 1 else None
+            if val is None:
+                plugin_event.reply('用法: .ai stealth %s on/off' % sub)
+                return True
+            key = 'first_thinking' if sub == 'think' else 'allow_tools'
+            OlivaAIAgent.conf.setConf(val, 'ambient', key)
+            OlivaAIAgent.conf.save()
+            plugin_event.reply('潜行%s已%s' % ('前置判定' if sub == 'think' else '工具调用', '开启' if val else '关闭'))
+            return True
+        val = _onoff(sub)
+        if val is None:
+            plugin_event.reply('用法: .ai stealth on/off | think on/off | tools on/off')
+            return True
+        OlivaAIAgent.conf.setGroupSwitch(platform, group_id, 'ambient', val)
+        if val:
+            plugin_event.reply('本群潜行模式已开启：我会当作群友潜伏其中，读群聊并择机自行插话。'
+                               '（人格/概率/记忆/技能等在配置文件 ambient 段调整）')
+        else:
+            plugin_event.reply('本群潜行模式已关闭')
+        return True
+
+    if cmd == 'skills':
+        sub = args[0].lower() if len(args) > 0 else ''
+        if sub == 'reload':
+            n = 0
+            try:
+                idx = OlivaAIAgent.skills.buildIndex()
+                n = len(idx)
+            except Exception as e:
+                plugin_event.reply('技能索引重建失败: %s' % e)
+                return True
+            plugin_event.reply('技能索引已重建：%d 个技能（引擎 %s）' % (n, OlivaAIAgent.skills.backendName()))
+            return True
+        plugin_event.reply('用法: .ai skills reload')
+        return True
+
+    if cmd == 'kb':
+        sub = args[0].lower() if len(args) > 0 else ''
+        if sub == 'reload':
+            n = OlivaAIAgent.knowledge.loadStatic()
+            plugin_event.reply('静态知识库已重载：%d 条' % n)
+            return True
+        plugin_event.reply('用法: .ai kb reload')
+        return True
+
+    if cmd in ['on', 'off']:
+        if not in_group:
+            plugin_event.reply('请在群内使用')
+            return True
+        OlivaAIAgent.conf.setGroupSwitch(platform, group_id, 'enabled', cmd == 'on')
+        plugin_event.reply('本群 AI 已%s' % ('开启' if cmd == 'on' else '关闭'))
+        return True
+
+    if cmd == 'global':
+        val = _onoff(args[0].lower()) if len(args) > 0 else None
+        if val is None:
+            plugin_event.reply('用法: .ai global on/off')
+            return True
+        OlivaAIAgent.conf.setConf(val, 'enable', 'global')
+        OlivaAIAgent.conf.save()
+        plugin_event.reply('AI 已全局%s' % ('开启' if val else '关闭'))
+        return True
+
+    if cmd == 'admin':
+        sub = args[0].lower() if len(args) > 0 else ''
+        if sub == 'role':
+            r = args[1].lower() if len(args) > 1 else ''
+            alias = {'all': 'everyone', 'everyone': 'everyone', '所有人': 'everyone',
+                     'admin': 'group_admin', 'group_admin': 'group_admin', '群管理': 'group_admin',
+                     'master': 'master', '骰主': 'master'}
+            if r not in alias:
+                plugin_event.reply('用法: .ai admin role everyone/group_admin/master\n'
+                                   '(everyone=所有人 group_admin=群管理+群主+骰主 master=仅骰主；'
+                                   '此项只管本插件直连接口，骰系官方指令仍由骰系自身权限判定)')
+                return True
+            OlivaAIAgent.conf.setConf(alias[r], 'permissions', 'admin_tools_min_role')
+            OlivaAIAgent.conf.save()
+            label = {'everyone': '所有人', 'group_admin': '群管理/群主/骰主', 'master': '仅骰主'}[alias[r]]
+            plugin_event.reply('高危接口角色门槛已设为：%s' % label)
+            return True
+        if sub in ['global', 'masteronly'] and len(args) > 1:
+            val = _onoff(args[1].lower())
+            if val is None:
+                plugin_event.reply('用法: .ai admin %s on/off' % sub)
+                return True
+            if sub == 'global':
+                OlivaAIAgent.conf.setConf(val, 'permissions', 'admin_tools_global')
+            else:
+                # masteronly(旧指令) → 映射到 admin_tools_min_role(新字段)
+                # 不再写 admin_tools_master_only(已弃用)，避免把过期字段又写回 config.json
+                OlivaAIAgent.conf.setConf('master' if val else 'everyone', 'permissions', 'admin_tools_min_role')
+            OlivaAIAgent.conf.save()
+            plugin_event.reply('高危接口%s已%s' % ('全局开关' if sub == 'global' else '仅骰主模式', '开启' if val else '关闭'))
+            return True
+        val = _onoff(sub)
+        if val is not None and in_group:
+            OlivaAIAgent.conf.setGroupSwitch(platform, group_id, 'admin_tools', val)
+            plugin_event.reply('本群高危接口已%s' % ('开启' if val else '关闭'))
+            return True
+        plugin_event.reply('用法: .ai admin on/off | global on/off | role everyone/group_admin/master')
+        return True
+
+    if cmd == 'wl':
+        sub = args[0].lower() if len(args) > 0 else 'list'
+        val = _onoff(sub)
+        if val is not None:
+            OlivaAIAgent.conf.setConf(val, 'whitelist', 'enabled')
+            OlivaAIAgent.conf.save()
+            plugin_event.reply('白名单模式已%s' % ('开启' if val else '关闭'))
+            return True
+        groups = [str(x) for x in (OlivaAIAgent.conf.get('whitelist', 'groups', default=[]) or [])]
+        if sub == 'add':
+            gid = args[1] if len(args) > 1 else (str(group_id) if in_group else '')
+            if gid and gid not in groups:
+                groups.append(gid)
+            OlivaAIAgent.conf.setConf(groups, 'whitelist', 'groups')
+            OlivaAIAgent.conf.save()
+            plugin_event.reply('已添加白名单: %s' % gid)
+            return True
+        if sub == 'del':
+            gid = args[1] if len(args) > 1 else (str(group_id) if in_group else '')
+            if gid in groups:
+                groups.remove(gid)
+            OlivaAIAgent.conf.setConf(groups, 'whitelist', 'groups')
+            OlivaAIAgent.conf.save()
+            plugin_event.reply('已移除白名单: %s' % gid)
+            return True
+        plugin_event.reply('白名单(%s): %s' % (
+            '开' if OlivaAIAgent.conf.get('whitelist', 'enabled', default=False) else '关',
+            ', '.join(groups) if groups else '空'))
+        return True
+
+    if cmd == 'reload':
+        OlivaAIAgent.conf.load()
+        try:
+            n_kb = OlivaAIAgent.knowledge.loadStatic()
+            n_sk = len(OlivaAIAgent.skills.buildIndex())
+            plugin_event.reply('配置已重载 | 知识库 %d 条 | 技能 %d 个' % (n_kb, n_sk))
+        except Exception:
+            plugin_event.reply('配置已重载')
+        return True
+
+    if cmd == 'model':
+        if len(args) == 0:
+            plugin_event.reply('用法: .ai model <模型名>')
+            return True
+        backend = OlivaAIAgent.conf.get('backend', default='openai')
+        OlivaAIAgent.conf.setConf(args[0], backend, 'model')
+        OlivaAIAgent.conf.save()
+        plugin_event.reply('模型已切换为: %s' % args[0])
+        return True
+
+    return False
+
+
+# ---------------- Agent 主循环 ----------------
+
+def _startAgent(plugin_event, Proc, user_text, parsed, trigger):
+    OlivaAIAgent.conf.traceLog(
+        Proc,
+        'agent.queued',
+        parsed.get('trace_id'),
+        images=len(parsed.get('images') or []),
+        text_chars=len(str(user_text)),
+        trigger=trigger,
+    )
+
+    def worker():
+        _runAgent(plugin_event, Proc, user_text, parsed, trigger)
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _buildSystemPrompt(plugin_event, ctx, is_master):
+    '''只放【稳定】内容作为前缀缓存命中率的基础：人设/规则/平台/插件/骰系速查/骰主列表。
+    易变内容(时间/记忆/侧写/前情提要)由 _buildVolatileContext 放到历史之后的尾部 turn。'''
+    conf = OlivaAIAgent.conf
+    parts = [str(conf.get('prompt', 'system', default=''))]
+    # 潜行人设也用于私聊，让"两边"在私聊同样合一(人设 + 能力)
+    persona = str(conf.get('ambient', 'personality', default=''))
+    if persona:
+        parts.append('# 人设\n%s' % persona)
+    persona_map = conf.get('prompt', 'group_persona', default={}) or {}
+    if ctx['func_type'] == 'group_message' and str(ctx['group_id']) in persona_map:
+        parts.append('【本群人设】\n%s' % persona_map[str(ctx['group_id'])])
+    cheat = str(conf.get('prompt', 'dice_cheatsheet', default=''))
+    if cheat:
+        parts.append('【官方指令速查(用 run_command 执行；也能调用其他已加载插件指令)】\n%s' % cheat)
+    env_lines = [
+        '【当前环境(固定部分)】',
+        '平台场景: %s' % ('群聊' if ctx['func_type'] == 'group_message' else '私聊'),
+        '机器人id: %s' % ctx.get('self_id'),
+    ]
+    if ctx['func_type'] == 'group_message':
+        env_lines.append('当前群id: %s' % ctx.get('group_id'))
+    masters = conf.getMasters(plugin_event)
+    if masters:
+        env_lines.append('骰主列表: %s' % ', '.join(masters[:10]))
+    env_lines.append(conf.platformBrief(plugin_event))
+    parts.append('\n'.join(env_lines))
+    try:
+        plugins = conf.loadedPlugins(ctx.get('Proc'))
+        if plugins:
+            parts.append('【已加载插件(run_command 可调用其任意指令；不确定语法先执行 .help)】\n' + '、'.join(plugins))
+    except Exception:
+        pass
+    append = str(conf.get('prompt', 'append', default=''))
+    if append:
+        parts.append(append)
+    return '\n\n'.join([p for p in parts if p])
+
+
+def _buildVolatileContext(plugin_event, ctx, is_master):
+    '''易变内容(每次都不同)：时间 + 各类记忆/侧写/前情提要。放到历史之后、用户消息之前的尾部 turn。'''
+    conf = OlivaAIAgent.conf
+    platform = ctx['platform']
+    blocks = []
+    w = int(time.strftime('%w'))
+    now = time.strftime('%Y-%m-%d %H:%M:%S') + ' 周' + ('日' if w == 0 else '一二三四五六'[w - 1])
+    blocks.append('当前时间: %s | 当前用户id: %s%s' % (now, ctx.get('user_id'), ' (骰主)' if is_master else ''))
+    user_mem = OlivaAIAgent.memory.memFormat(
+        OlivaAIAgent.memory.userMemKey(platform, ctx['user_id']), '该用户的跨群记忆')
+    if user_mem:
+        blocks.append(user_mem)
+    if ctx['func_type'] == 'group_message':
+        group_mem = OlivaAIAgent.memory.memFormat(
+            OlivaAIAgent.memory.groupMemKey(platform, ctx['group_id']), '本群记忆')
+        if group_mem:
+            blocks.append(group_mem)
+        if conf.get('memory', 'inject_group_buffer', default=True):
+            buf = OlivaAIAgent.memory.bufferFormat(platform, ctx['group_id'])
+            if buf:
+                blocks.append('【最近群聊记录(仅参考,无需逐条回应)】\n%s' % buf)
+    try:
+        bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
+        kmem = OlivaAIAgent.knowledge.getMem(bot_hash)
+        note = kmem.get('全局', {}).get('用户侧写', {}).get(str(ctx['user_id']))
+        if note:
+            blocks.append('【该用户侧写(潜行积累)】\n%s: %s' % (ctx['user_id'], note))
+        if ctx['func_type'] == 'group_message':
+            brief = OlivaAIAgent.knowledge.getGroupSummary(bot_hash, ctx['group_id'])
+            if brief and brief != OlivaAIAgent.knowledge.GROUP_SUMMARY_DEFAULT:
+                blocks.append('【本群前情提要(潜行积累)】\n%s' % brief)
+    except Exception:
+        pass
+    return '\n\n'.join([b for b in blocks if b])
+
+
+def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
+    '''在 Agent 工作线程中完成当前图片识别，统一覆盖私聊和未来的非潜行入口。'''
+    trace_id = parsed.get('trace_id')
+    images = list(parsed.get('images') or [])[:4]
+    raw = str(parsed.get('raw', ''))
+    has_visual = bool(images) or '[OP:image' in raw or '[CQ:image' in raw or ':mface,' in raw
+    if not has_visual:
+        return str(user_text), []
+
+    status = OlivaAIAgent.vision.getVisionStatus()
+    OlivaAIAgent.conf.traceLog(
+        ctx.get('Proc'),
+        'agent.vision.prepare',
+        trace_id,
+        images=len(images),
+        mode=status.get('mode', ''),
+        model=status.get('model', ''),
+        ready=status.get('ready', False),
+        route=status.get('route', ''),
+    )
+    if not status.get('ready'):
+        # 视觉子系统未就绪时保留原图；主后端若声明 vision=true 仍可直接接收。
+        return str(user_text), images
+
+    bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
+    cache_scope = ctx.get('group_id') or ('private:%s' % ctx.get('user_id'))
+    facts = []
+    try:
+        translated = OlivaAIAgent.vision.translateIncoming(
+            raw,
+            cache_scope,
+            bot_hash,
+            allow_network=True,
+            trace_id=trace_id,
+        )
+        facts.extend(OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(translated))
+        if images and (not facts or all('未识别成功' in fact for fact in facts)):
+            direct_facts = OlivaAIAgent.vision.describeImages(
+                images,
+                cache_scope,
+                bot_hash,
+                trace_id=trace_id,
+            )
+            if any('未识别成功' not in fact for fact in direct_facts):
+                facts = direct_facts
+            else:
+                facts.extend(direct_facts)
+    except Exception as e:
+        OlivaAIAgent.conf.traceLog(
+            ctx.get('Proc'),
+            'agent.vision.exception',
+            trace_id,
+            error='%s: %s' % (type(e).__name__, e),
+        )
+    facts = list(dict.fromkeys(str(item) for item in facts if str(item).strip()))
+    result_text = str(user_text)
+    if facts:
+        result_text = (result_text + ' ' + ' '.join(facts)).strip()
+    OlivaAIAgent.conf.traceLog(
+        ctx.get('Proc'),
+        'agent.vision.ready',
+        trace_id,
+        facts=len(facts),
+    )
+    # 已转成事实摘要，不再把签名 URL 重复交给主模型。
+    return result_text, []
+
+
+def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
+    conf = OlivaAIAgent.conf
+    trace_id = parsed.get('trace_id')
+    agent_started = time.perf_counter()
+    platform = plugin_event.platform['platform']
+    func_type = plugin_event.plugin_info['func_type']
+    in_group = func_type == 'group_message'
+    group_id = plugin_event.data.group_id if in_group else 'private'
+    user_id = plugin_event.data.user_id
+    flight_key = '%s|%s|%s' % (platform, group_id, user_id)
+
+    with _inflight_lock:
+        if flight_key in _inflight:
+            conf.traceLog(Proc, 'agent.busy', trace_id, flight_key=flight_key)
+            busy = str(conf.get('agent', 'busy_reply', default=''))
+            if busy and trigger in ['prefix', 'at']:
+                _safeReply(plugin_event, busy, parsed)
+            return
+        _inflight.add(flight_key)
+    sem = _getSem()
+    sem.acquire()
+    conf.traceLog(Proc, 'agent.started', trace_id, trigger=trigger)
+    try:
+        is_master = conf.isMaster(plugin_event)
+        ctx = {
+            'plugin_event': plugin_event,
+            'Proc': Proc,
+            'trace_id': trace_id,
+            'platform': platform,
+            'func_type': func_type,
+            'group_id': plugin_event.data.group_id if in_group else None,
+            'user_id': user_id,
+            'is_master': is_master,
+            'self_id': str(plugin_event.base_info.get('self_id', '')),
+        }
+        user_text, agent_images = _prepareAgentVision(plugin_event, ctx, user_text, parsed)
+        session_key = OlivaAIAgent.memory.sessionKey(platform, group_id, user_id)
+        history = OlivaAIAgent.memory.getSession(session_key)
+        # 缓存友好排序：稳定 system 前缀 → 会话历史 → 易变上下文尾部 turn → 本轮用户消息
+        sys_prompt = _buildSystemPrompt(plugin_event, ctx, is_master)
+        volatile = _buildVolatileContext(plugin_event, ctx, is_master)
+        user_msg = {'role': 'user', 'content': user_text}
+        if agent_images:
+            user_msg['images'] = agent_images
+        messages = [{'role': 'system', 'content': sys_prompt}] + history
+        if volatile:
+            messages.append({'role': 'user', 'content': '【动态上下文】\n' + volatile})
+        messages.append(user_msg)
+        tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx)
+        new_msgs = [user_msg]
+        final_text = ''
+        max_rounds = int(conf.get('agent', 'max_tool_rounds', default=8))
+        for round_i in range(max_rounds + 1):
+            conf.traceLog(
+                Proc,
+                'agent.round.request',
+                trace_id,
+                messages=len(messages),
+                round=round_i + 1,
+                tools=len(tool_defs),
+            )
+            result = OlivaAIAgent.aiClient.chat(messages, tools=tool_defs)
+            if not result['ok']:
+                conf.traceLog(Proc, 'agent.round.failed', trace_id, error=result.get('error', ''), round=round_i + 1)
+                err_tpl = str(conf.get('agent', 'error_reply', default='AI出错: {err}'))
+                _safeReply(plugin_event, err_tpl.replace('{err}', result.get('error', '未知错误')[:200]), parsed)
+                return
+            tool_calls = result.get('tool_calls') or []
+            conf.traceLog(
+                Proc,
+                'agent.round.response',
+                trace_id,
+                round=round_i + 1,
+                text_chars=len(result.get('text', '')),
+                tool_calls=len(tool_calls),
+            )
+            asst_msg = {'role': 'assistant', 'content': result.get('text', '')}
+            if tool_calls:
+                asst_msg['tool_calls'] = tool_calls
+            messages.append(asst_msg)
+            new_msgs.append(asst_msg)
+            if not tool_calls:
+                final_text = result.get('text', '')
+                break
+            if round_i >= max_rounds:
+                final_text = result.get('text', '') or '(已达到最大工具调用轮数)'
+                break
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc.get('arguments') or '{}')
+                except Exception:
+                    args = {}
+                conf.debugLog(Proc, '工具调用: %s(%s)' % (tc.get('name'), str(args)[:200]))
+                tool_result = OlivaAIAgent.tools.execTool(tc.get('name', ''), args, ctx)
+                tool_msg = {
+                    'role': 'tool',
+                    'tool_call_id': tc.get('id', ''),
+                    'name': tc.get('name', ''),
+                    'content': tool_result,
+                }
+                messages.append(tool_msg)
+                new_msgs.append(tool_msg)
+        if final_text.strip() != '':
+            conf.traceLog(Proc, 'agent.reply.send', trace_id, text_chars=len(final_text.strip()))
+            _safeReply(plugin_event, final_text.strip(), parsed)
+        # 会话里只保留干净问答(移除中途 tool_calls/tool 消息与空回复)，避免跨请求 tool_call 引用失效
+        # 并剥离图片 URL：CDN 链接会过期，若持久化后逐轮重放会让整个会话每次请求都 400（毒会话）
+        clean = []
+        for m in new_msgs:
+            if m.get('role') == 'user':
+                clean.append({'role': 'user', 'content': m.get('content', '')})
+            elif m.get('role') == 'assistant' and not m.get('tool_calls') and str(m.get('content', '')).strip() != '':
+                clean.append(m)
+        if len(clean) > 0:
+            OlivaAIAgent.memory.appendSession(session_key, clean)
+            conf.traceLog(Proc, 'agent.session.saved', trace_id, messages=len(clean))
+    except Exception:
+        OlivaAIAgent.conf.log(Proc, 3, 'agent 异常:\n' + traceback.format_exc())
+        try:
+            _safeReply(plugin_event, 'AI 处理异常，请查看日志', parsed)
+        except Exception:
+            pass
+    finally:
+        conf.traceLog(
+            Proc,
+            'agent.finished',
+            trace_id,
+            elapsed_ms=int((time.perf_counter() - agent_started) * 1000),
+        )
+        sem.release()
+        with _inflight_lock:
+            _inflight.discard(flight_key)
+
+
+def _safeReply(plugin_event, text, parsed=None):
+    conf = OlivaAIAgent.conf
+    text = str(text)
+    split_len = int(conf.get('reply', 'split_length', default=1500))
+    max_count = int(conf.get('reply', 'max_split_count', default=3))
+    prefix = ''
+    try:
+        if (
+            conf.get('reply', 'quote_reply', default=True)
+            and parsed is not None
+            and plugin_event.plugin_info.get('func_type') == 'group_message'
+        ):
+            msg_id = plugin_event.data.message_id
+            if msg_id not in [None, '', '-1', -1]:
+                prefix = '[CQ:reply,id=%s]' % str(msg_id)
+    except Exception:
+        prefix = ''
+    chunks = [text[i:i + split_len] for i in range(0, len(text), split_len)][:max_count]
+    for i, chunk in enumerate(chunks):
+        plugin_event.reply((prefix if i == 0 else '') + chunk)
+        if len(chunks) > 1:
+            time.sleep(0.6)
