@@ -4,6 +4,9 @@ class Event(object):
     def init(plugin_event, Proc):
         pass
 
+    def private_message(plugin_event, Proc):
+        unity_reply(plugin_event, Proc)
+
     def group_message(plugin_event, Proc):
         unity_reply(plugin_event, Proc)
 
@@ -11,15 +14,29 @@ def unity_reply(plugin_event, Proc):
     is_reply_flag = False
     is_at_self_flag = False
     is_delete_flag = False
+    is_recall_flag = False
+    at_id_list = []
     message_id = None
     tmp_reast_str = plugin_event.data.message
     tmp_id_str = str(plugin_event.base_info['self_id'])
     tmp_id_str_sub = None
-    
+    tmp_id_str_sub_open = None
+
     if 'sub_self_id' in plugin_event.data.extend:
         if plugin_event.data.extend['sub_self_id'] is not None:
             tmp_id_str_sub = str(plugin_event.data.extend['sub_self_id'])
-    
+
+    # 与 OlivaDiceCore 一致，QQ Guild V2 群聊使用独立的机器人 member_openid
+    if 'sub_self_open_id' in plugin_event.data.extend:
+        if plugin_event.data.extend['sub_self_open_id'] is not None:
+            tmp_id_str_sub_open = str(plugin_event.data.extend['sub_self_open_id'])
+
+    # 私聊无需at；QQ Guild V2非全量群消息到达插件时必然已经at机器人
+    if plugin_event.plugin_info['func_type'] == 'private_message':
+        is_at_self_flag = True
+    elif plugin_event.data.extend.get('qq_event_type') == 'GROUP_AT_MESSAGE_CREATE':
+        is_at_self_flag = True
+
     # 检测回复标识
     if isMatchWordStart(tmp_reast_str, '[OP:reply,id='):
         message_id = extractMessageId(tmp_reast_str)
@@ -48,8 +65,13 @@ def unity_reply(plugin_event, Proc):
             at_id = at_content[:comma_pos]
         else:
             at_id = at_content
+        at_id_list.append(at_id)
         # 检查是否at的是机器人自己
-        if at_id == tmp_id_str or (tmp_id_str_sub and at_id == tmp_id_str_sub):
+        if (
+            at_id == tmp_id_str
+            or (tmp_id_str_sub and at_id == tmp_id_str_sub)
+            or (tmp_id_str_sub_open and at_id == tmp_id_str_sub_open)
+        ):
             is_at_self_flag = True
         # 继续检查下一个at
         message_parts = message_parts[at_end + 1:]
@@ -64,8 +86,14 @@ def unity_reply(plugin_event, Proc):
         else:
             break
     
-    # 双标识都有执行撤回
-    if isMatchWordStart(tmp_reast_str, '撤回') and is_reply_flag is True and is_at_self_flag is True:
+    # 原路径要求at机器人；额外允许只有reply和撤回指令、没有任何at的消息
+    is_recall_flag = isMatchWordStart(tmp_reast_str, ['撤回', 'recall'])
+    is_delete_flag = (
+        is_recall_flag is True
+        and is_reply_flag is True
+        and (is_at_self_flag is True or len(at_id_list) == 0)
+    )
+    if is_delete_flag is True:
         plugin_event.delete_msg(message_id)
         plugin_event.set_block()
 

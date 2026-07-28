@@ -2,10 +2,10 @@
     "name" : "撤回消息插件",
     "author" : "Desom-fu",
     "namespace" : "messageRecall",
-    "info" : "通过回复+撤回进行强制撤回操作，撤回他人消息需要管理员权限",
+    "info" : "群聊通过回复并@机器人撤回，单聊通过回复撤回，支持撤回和recall",
     "priority" : 29999,
-    "svn" : 1,
-    "version" : "1.0.0",
+    "svn" : 6,
+    "version" : "1.2.3",
     "compatible_svn" : 190,
     "message_mode" : "olivos_string",
     "support" : [
