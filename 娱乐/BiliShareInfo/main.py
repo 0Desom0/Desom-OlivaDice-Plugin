@@ -48,7 +48,7 @@ HTTP_TIMEOUT = 8
 RECENT_TTL_SECONDS = 30
 
 
-class Event(object):
+class Event:
     def init(plugin_event, Proc):
         global gProc
         gProc = Proc
@@ -79,7 +79,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
         if not is_group_enabled(plugin_event):
             return
 
-        video_ref_list = extract_video_refs_from_message(message)
+        video_ref_list = extract_video_refs_from_event(plugin_event, message)
         if not video_ref_list:
             return
 
@@ -663,6 +663,63 @@ def is_probable_bili_card(card_data: dict[str, Any]) -> bool:
     )
 
 
+def extract_video_refs_from_event(plugin_event, message: str) -> list[dict[str, str]]:
+    video_ref_list = extract_video_refs_from_message(message)
+    seen_key_set = {
+        video_key
+        for video_ref in video_ref_list
+        if (video_key := get_video_ref_key(video_ref))
+    }
+    url_ref_cache = {}
+
+    for card_index, card_data in enumerate(extract_qq_ark_cards(plugin_event), start=1):
+        add_video_refs_from_card(
+            card_data,
+            video_ref_list,
+            seen_key_set,
+            url_ref_cache,
+            f'QQ官机ARK卡片#{card_index}',
+        )
+
+    log_resolved_video_refs(video_ref_list)
+    return video_ref_list
+
+
+def extract_qq_ark_cards(plugin_event) -> list[dict[str, Any]]:
+    try:
+        event_extend = getattr(plugin_event.data, 'extend', {})
+    except Exception:
+        return []
+    if not isinstance(event_extend, dict):
+        return []
+
+    card_data_list = []
+    add_unique_card_data(card_data_list, event_extend.get('qq_ark_data'))
+
+    qq_event_data = event_extend.get('qq_event_data')
+    if isinstance(qq_event_data, dict):
+        add_unique_card_data(card_data_list, qq_event_data.get('ark_data'))
+        collect_ark_cards_from_message_elements(qq_event_data.get('msg_elements'), card_data_list)
+
+    collect_ark_cards_from_message_elements(event_extend.get('qq_msg_elements'), card_data_list)
+    return card_data_list
+
+
+def collect_ark_cards_from_message_elements(message_elements: Any, card_data_list: list[dict[str, Any]]) -> None:
+    if not isinstance(message_elements, list):
+        return
+    for message_element in message_elements:
+        if not isinstance(message_element, dict):
+            continue
+        add_unique_card_data(card_data_list, message_element.get('ark_data'))
+        collect_ark_cards_from_message_elements(message_element.get('msg_elements'), card_data_list)
+
+
+def add_unique_card_data(card_data_list: list[dict[str, Any]], card_data: Any) -> None:
+    if isinstance(card_data, dict) and card_data not in card_data_list:
+        card_data_list.append(card_data)
+
+
 def extract_video_refs_from_message(message: str) -> list[dict[str, str]]:
     video_ref_list = []
     seen_key_set = set()
@@ -690,39 +747,53 @@ def extract_video_refs_from_message(message: str) -> list[dict[str, str]]:
     if not card_data:
         if message_url_list or text_video_ref_list:
             parse_log(f'未解析到JSON卡片，当前refs={format_video_ref_list(video_ref_list)}')
-        log_resolved_video_refs(video_ref_list)
         return video_ref_list
 
+    add_video_refs_from_card(
+        card_data,
+        video_ref_list,
+        seen_key_set,
+        url_ref_cache,
+        'JSON卡片',
+    )
+    return video_ref_list
+
+
+def add_video_refs_from_card(
+    card_data: dict[str, Any],
+    video_ref_list: list[dict[str, str]],
+    seen_key_set: set[str],
+    url_ref_cache: dict[str, dict[str, str] | None],
+    card_label: str,
+) -> None:
     is_bili_card = is_probable_bili_card(card_data)
     parse_log(
-        f'JSON卡片 probable_bili={is_bili_card} keys={format_log_list(list(card_data.keys()), 12)} '
+        f'{card_label} probable_bili={is_bili_card} keys={format_log_list(list(card_data.keys()), 12)} '
         f'title_hint={shorten_log_text(get_title_hint(card_data), 120)}'
     )
     if not is_bili_card:
-        log_resolved_video_refs(video_ref_list)
-        return video_ref_list
+        return
 
     card_url_list = extract_urls_from_card(card_data)
-    parse_log(f'卡片URL count={len(card_url_list)} urls={format_log_list(card_url_list, 8)}')
+    parse_log(f'{card_label} URL count={len(card_url_list)} urls={format_log_list(card_url_list, 8)}')
 
     card_video_ref_list = find_video_refs(card_data, url_ref_cache)
-    parse_log(f'卡片字段解析refs={format_video_ref_list(card_video_ref_list)}')
+    parse_log(f'{card_label} 字段解析refs={format_video_ref_list(card_video_ref_list)}')
     for video_ref in card_video_ref_list:
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
     if not card_video_ref_list:
         title_hint = get_title_hint(card_data)
-        parse_log(f'卡片未解析到显式视频引用，进入标题搜索 keyword={shorten_log_text(title_hint, 120)}')
+        parse_log(f'{card_label} 未解析到显式视频引用，进入标题搜索 keyword={shorten_log_text(title_hint, 120)}')
         video_ref = search_video_by_keyword(title_hint)
-        parse_log(f'标题搜索结果 ref={format_video_ref(video_ref)}')
+        parse_log(f'{card_label} 标题搜索结果 ref={format_video_ref(video_ref)}')
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
-    parse_log(f'最终refs={format_video_ref_list(video_ref_list)}')
-    log_resolved_video_refs(video_ref_list)
-    return video_ref_list
 
-
-def find_video_refs(card_data: dict[str, Any], url_ref_cache: dict[str, dict[str, str] | None] | None = None) -> list[dict[str, str]]:
+def find_video_refs(
+    card_data: dict[str, Any],
+    url_ref_cache: dict[str, dict[str, str] | None] | None = None,
+) -> list[dict[str, str]]:
     video_ref_list = []
     seen_key_set = set()
     string_list = collect_strings(card_data)
@@ -950,15 +1021,29 @@ def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
     if not keyword:
         return None
 
-    try:
-        query = urllib.parse.urlencode({'search_type': 'video', 'keyword': keyword})
-        api_url = f'https://api.bilibili.com/x/web-interface/search/type?{query}'
-        response_text = http_get_json_text(api_url, referer='https://search.bilibili.com/')
-        response_data = json.loads(response_text)
-        result_list = response_data.get('data', {}).get('result', [])
-        if not isinstance(result_list, list):
-            return None
+    search_url_list = [
+        'https://api.bilibili.com/x/web-interface/search/all/v2?'
+        + urllib.parse.urlencode({'keyword': keyword}),
+        'https://api.bilibili.com/x/web-interface/search/type?'
+        + urllib.parse.urlencode({'search_type': 'video', 'keyword': keyword}),
+    ]
+    for api_url in search_url_list:
+        try:
+            response_text = http_get_json_text(api_url, referer='https://search.bilibili.com/')
+            response_data = json.loads(response_text)
+            if response_data.get('code') != 0:
+                continue
+            result_list = extract_video_search_results(response_data)
+        except Exception as exception_object:
+            parse_log(
+                f'标题搜索请求失败 url={shorten_log_text(api_url, 180)} '
+                f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 160)}'
+            )
+            continue
+
         for item in result_list[:10]:
+            if not isinstance(item, dict):
+                continue
             bvid = safe_str(item.get('bvid', ''))
             title = clean_search_result_title(safe_str(item.get('title', '')))
             if re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid) and is_search_result_title_match(keyword, title):
@@ -968,9 +1053,21 @@ def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
                     f'标题搜索候选不匹配 bvid={bvid} title={shorten_log_text(title, 120)} '
                     f'keyword={shorten_log_text(keyword, 120)}'
                 )
-    except Exception:
-        return None
     return None
+
+
+def extract_video_search_results(response_data: dict[str, Any]) -> list[dict[str, Any]]:
+    result_data = response_data.get('data', {}).get('result', [])
+    if not isinstance(result_data, list):
+        return []
+
+    for result_bucket in result_data:
+        if not isinstance(result_bucket, dict) or result_bucket.get('result_type') != 'video':
+            continue
+        video_result_list = result_bucket.get('data', [])
+        return video_result_list if isinstance(video_result_list, list) else []
+
+    return result_data
 
 
 def clean_search_result_title(title: str) -> str:
@@ -1213,6 +1310,8 @@ def format_count(value: Any) -> str:
 def get_title_hint(card_data: dict[str, Any]) -> str:
     for key_path in [
         ['meta', 'detail_1', 'desc'],
+        ['fields', 'title'],
+        ['fields', 'desc'],
         ['prompt'],
         ['desc'],
         ['title'],
