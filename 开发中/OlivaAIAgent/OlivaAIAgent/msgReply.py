@@ -447,7 +447,6 @@ def _onGroupMessage(plugin_event, Proc):
 
     # 非前缀路径：明确 @ / 关键词始终触发；潜行只控制概率插话和群聊融入。
     if not _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=False):
-        OlivaAIAgent.conf.traceLog(Proc, 'route.group.disabled', trace_id)
         return
     hard = bool(
         parsed.get('at_me')

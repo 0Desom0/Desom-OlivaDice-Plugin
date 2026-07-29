@@ -1010,7 +1010,6 @@ _TRACE_STAGE_ZH = {
     'message.outgoing.sent': '机器人消息发送完成',
     'route.group.prefix': '群消息命中前缀',
     'route.group.control_command': '进入群控制指令',
-    'route.group.disabled': '群消息路由已禁用',
     'route.private.prefix': '私聊消息命中前缀',
     'agent.queued': '智能体已排队',
     'agent.busy': '智能体正忙',

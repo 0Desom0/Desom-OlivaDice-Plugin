@@ -120,6 +120,7 @@ class SignalLoggingTest(unittest.TestCase):
         source = inspect.getsource(OlivaAIAgent.msgReply._onGroupMessage)
         self.assertNotIn('message.group.received', source)
         self.assertNotIn('route.group.ambient_off', source)
+        self.assertNotIn('route.group.disabled', source)
 
 
 if __name__ == '__main__':
