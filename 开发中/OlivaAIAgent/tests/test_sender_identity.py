@@ -56,7 +56,10 @@ class SenderIdentityTest(unittest.TestCase):
                 'user_id': 'sender-openid',
                 'message': '狐啊',
                 'message_id': 'received-message',
+                'reference_message_id': 'quoted-message',
                 'event_id': 'gateway-event',
+                'msg_idx': 'REFIDX_CURRENT',
+                'ref_msg_idx': 'REFIDX_QUOTED',
             },
             {
                 'nickname': None,
@@ -69,6 +72,9 @@ class SenderIdentityTest(unittest.TestCase):
         self.assertEqual('用户发送', context[0]['方向'])
         self.assertEqual(['received-message'], context[0]['消息ID列表'])
         self.assertEqual('gateway-event', context[0]['事件ID'])
+        self.assertEqual('quoted-message', context[0]['引用消息ID'])
+        self.assertEqual('REFIDX_CURRENT', context[0]['平台消息索引'])
+        self.assertEqual('REFIDX_QUOTED', context[0]['平台引用索引'])
         self.assertEqual('机器人发送', context[1]['方向'])
         self.assertEqual(['sent-message-1', 'sent-message-2'], context[1]['消息ID列表'])
         self.assertNotIn('事件ID', context[1])

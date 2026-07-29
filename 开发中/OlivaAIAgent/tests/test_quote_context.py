@@ -99,6 +99,36 @@ class QuoteContextTest(unittest.TestCase):
         self.assertIsNone(parsed['quote'])
         self.assertEqual('还记得吗？', OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text']))
 
+    def test_uses_qqguild_extend_identifiers_without_confusing_passive_reply_token(self):
+        event = FakeEvent(
+            '继续说说',
+            {
+                'active': True,
+                'data': {'message': '扩展字段引用的正文', 'sender': {'id': 'user-9', 'name': '引用者'}},
+            },
+        )
+        event.data.message_id = None
+        event.data.extend = {
+            'event_id': 'event-extend',
+            'qq_message_id': 'current-extend',
+            'qq_reference_message_id': 'quoted-extend',
+            'qq_msg_idx': 'REFIDX_CURRENT',
+            'qq_ref_msg_idx': 'REFIDX_QUOTED',
+            'reply_msg_id': 'passive-token-must-not-be-used',
+        }
+        with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+
+        self.assertEqual('current-extend', parsed['message_id'])
+        self.assertEqual('quoted-extend', parsed['reference_message_id'])
+        self.assertEqual('event-extend', parsed['event_id'])
+        self.assertEqual('REFIDX_CURRENT', parsed['msg_idx'])
+        self.assertEqual('REFIDX_QUOTED', parsed['ref_msg_idx'])
+        self.assertEqual(['quoted-extend'], event.get_msg_calls)
+        context = OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text'])
+        self.assertIn('引用消息ID：quoted-extend', context)
+        self.assertNotIn('passive-token-must-not-be-used', context)
+
 
 if __name__ == '__main__':
     unittest.main()

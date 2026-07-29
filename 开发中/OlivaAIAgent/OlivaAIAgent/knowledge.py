@@ -284,10 +284,24 @@ _EXAMPLE = {
     'k': {'中国': '五千年文明古国，正推进民族复兴'},
     'u': {'123456789': '小明：阳光开朗，乐于社交，推测为男孩'},
     'g': '刚刚聊到了中国',
+    'f': [{
+        'subject': '调查员小明',
+        'content': '小明正在追查旧城区失踪案',
+        'keywords': ['小明', '旧城区', '失踪案'],
+        'source_message_id': '平台消息ID',
+    }],
 }
 
 
-def buildMemoryTask(bot_hash, group_id, history, record_knowledge=True):
+def buildMemoryTask(
+    bot_hash,
+    group_id,
+    history,
+    record_knowledge=True,
+    record_summary=True,
+    record_vector=False,
+    record_profiles=True,
+):
     '''构造记忆提炼的 system prompt。'''
     parts = ['# 当前任务\n从聊天记录中提炼要长期记住的信息，只输出严格 JSON 对象。']
     parts.append(
@@ -301,20 +315,48 @@ def buildMemoryTask(bot_hash, group_id, history, record_knowledge=True):
             '## 知识点 → k 键\n'
             '- 提炼常识性/设定性知识（非现状流水账），优先转发卡片里的可信信息\n'
             '- 每条≤32字，键为2~8字关键词，值为内容')
-    parts.append(
-        '## 用户侧写 → u 键\n'
-        '- 对出现的每个用户做心理侧写，键用 user_id，值≤32字且带名称，可据语言推断性别')
-    parts.append(
-        '## 群总结 → g 键\n- 总结本群近期对话，≤128字，决定该记住什么，杜绝流水账')
+    if record_profiles:
+        parts.append(
+            '## 用户侧写 → u 键\n'
+            '- 对出现的每个用户做心理侧写，键用 user_id，值≤32字且带名称，可据语言推断性别')
+    if record_summary:
+        parts.append(
+            '## 群滚动摘要 → g 键\n'
+            '- 结合上一版摘要与本批新增聊天，输出更新后的本群前情提要，≤256字\n'
+            '- 保留仍有后续价值的剧情、约定、人物与未解决事项，删除失效细节，杜绝流水账')
+    if record_vector:
+        parts.append(
+            '## 长期事实 → f 键（数组）\n'
+            '- 只记录未来再次提及时有用、可独立理解的稳定事实，不记录寒暄和机器人行为指令\n'
+            '- 每项包含 subject、content、keywords；若能定位，source_message_id 必须原样使用聊天记录标出的消息ID\n'
+            '- content≤160字，keywords 为2~8个短关键词；没有值得保存的事实时输出空数组')
     parts.append('# 参考输出\n' + json.dumps(_EXAMPLE, ensure_ascii=False))
     return '\n\n'.join(parts)
 
 
-def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True, trace_id=None):
+def runMemoryExtraction(
+    bot_hash,
+    group_id,
+    history,
+    record_knowledge=True,
+    trace_id=None,
+    record_summary=True,
+    record_vector=False,
+    record_profiles=True,
+    platform='',
+):
     '''同步执行一次记忆提炼（调用便宜/主模型），写入长期库。供后台线程调用。'''
     try:
-        sys_prompt = buildMemoryTask(bot_hash, group_id, history, record_knowledge)
-        summary = getGroupSummary(bot_hash, group_id)
+        sys_prompt = buildMemoryTask(
+            bot_hash,
+            group_id,
+            history,
+            record_knowledge=record_knowledge,
+            record_summary=record_summary,
+            record_vector=record_vector,
+            record_profiles=record_profiles,
+        )
+        summary = getGroupSummary(bot_hash, group_id) if record_summary else GROUP_SUMMARY_DEFAULT
         chat = OlivaAIAgent.ambient.formatHistoryForModel(history)
         messages = [
             {'role': 'system', 'content': sys_prompt},
@@ -328,10 +370,10 @@ def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True, trac
                                          force_no_stream=True, response_json=True, thinking_off=True,
                                          trace_id=trace_id, purpose='后台记忆提炼')
         if not res.get('ok'):
-            return
+            return {'summary_processed': False, 'vector_processed': False}
         data = _parseJson(res.get('text', ''))
         if not isinstance(data, dict):
-            return
+            return {'summary_processed': False, 'vector_processed': False}
         blocked_count = 0
 
         def safe_map(value):
@@ -349,7 +391,7 @@ def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True, trac
             return result
 
         knowledge_data = safe_map(data.get('k')) if record_knowledge else {}
-        profile_data = safe_map(data.get('u'))
+        profile_data = safe_map(data.get('u')) if record_profiles else {}
         summary_saved = False
         with _lock:
             if knowledge_data:
@@ -358,7 +400,7 @@ def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True, trac
                     OlivaAIAgent.conf.debugLog(OlivaAIAgent.conf.gProc, '知识淘汰 %d 条' % len(removed))
             if profile_data:
                 updateProfiles(bot_hash, profile_data)
-            if isinstance(data.get('g'), str) and data['g'].strip():
+            if record_summary and isinstance(data.get('g'), str) and data['g'].strip():
                 group_summary = data['g'].strip()
                 if OlivaAIAgent.conf.isPersonaMutationText(group_summary):
                     blocked_count += 1
@@ -373,7 +415,41 @@ def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True, trac
                 source='后台记忆提炼',
                 items=blocked_count,
             )
-        saveMem(bot_hash)
+        facts_saved = 0
+        if record_vector:
+            fact_data = data.get('f') if isinstance(data.get('f'), list) else []
+            valid_message_ids = {
+                str(item.get('message_id'))
+                for item in history
+                if item.get('message_id') not in [None, '']
+            }
+            valid_reference_ids = {
+                str(item.get('reference_message_id'))
+                for item in history
+                if item.get('reference_message_id') not in [None, '']
+            }
+            for fact in fact_data:
+                if not isinstance(fact, dict):
+                    continue
+                if str(fact.get('source_message_id')) not in valid_message_ids:
+                    fact.pop('source_message_id', None)
+                if str(fact.get('source_reference_id')) not in valid_reference_ids:
+                    fact.pop('source_reference_id', None)
+            source_entry = next((item for item in reversed(history) if item.get('nickname') is not None), {})
+            facts_saved = OlivaAIAgent.semantic.upsertFacts(
+                bot_hash,
+                platform,
+                group_id,
+                fact_data,
+                source={
+                    'message_id': source_entry.get('message_id'),
+                    'reference_message_id': source_entry.get('reference_message_id'),
+                    'event_id': source_entry.get('event_id'),
+                    'time': source_entry.get('time'),
+                },
+            )
+        if knowledge_data or profile_data or summary_saved:
+            saveMem(bot_hash)
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
             'memory.extraction.result',
@@ -381,9 +457,16 @@ def runMemoryExtraction(bot_hash, group_id, history, record_knowledge=True, trac
             knowledge_items=len(knowledge_data),
             profile_items=len(profile_data),
             summary_saved=summary_saved,
+            vector_items=facts_saved,
         )
+        return {
+            'summary_processed': bool(record_summary),
+            'vector_processed': bool(record_vector),
+            'facts_saved': facts_saved,
+        }
     except Exception as e:
         OlivaAIAgent.conf.log(OlivaAIAgent.conf.gProc, 3, '记忆提炼异常: %s' % e)
+        return {'summary_processed': False, 'vector_processed': False}
 
 
 def _parseJson(text):

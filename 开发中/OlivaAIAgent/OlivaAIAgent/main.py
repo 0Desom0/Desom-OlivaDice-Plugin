@@ -61,6 +61,15 @@ class Event(object):
             OlivaAIAgent.conf.log(Proc, 2, '静态知识库: %d 条' % n_kb)
         except Exception as e:
             OlivaAIAgent.conf.log(Proc, 3, '知识库加载失败: %s' % e)
+        try:
+            OlivaAIAgent.semantic.initialize()
+            semantic_status = OlivaAIAgent.semantic.getStatus()
+            OlivaAIAgent.conf.log(Proc, 2, '长期事实库: SQLite 就绪 | 检索=%s | 模型=%s' % (
+                '向量' if semantic_status['mode'] == 'vector' else '关键词降级',
+                semantic_status['model'] or '-',
+            ))
+        except Exception as e:
+            OlivaAIAgent.conf.log(Proc, 3, '长期事实库初始化失败: %s' % e)
 
         def _load_skills():
             try:

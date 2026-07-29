@@ -22,6 +22,10 @@ _history_lock = threading.RLock()
 _group_locks = {}      # "platform|group_id" -> SlackableFairLock
 _glock_lock = threading.Lock()
 _think_ts = {}         # "bot|group" -> perf_counter (last reply time, for first_thinking cooldown)
+_memory_state = {}
+_memory_state_loaded = False
+_memory_jobs = set()
+_memory_state_lock = threading.RLock()
 
 
 def _hkey(platform, group_id):
@@ -37,6 +41,37 @@ def _histDir():
 def _histPath(key):
     from urllib.parse import quote
     return os.path.join(_histDir(), quote(key, safe='') + '.json')
+
+
+def _memoryStatePath():
+    return os.path.join(OlivaAIAgent.conf.dataPath, 'memory_extraction_state.json')
+
+
+def _loadMemoryState():
+    global _memory_state_loaded, _memory_state
+    with _memory_state_lock:
+        if _memory_state_loaded:
+            return
+        try:
+            with open(_memoryStatePath(), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            _memory_state = data if isinstance(data, dict) else {}
+        except Exception:
+            _memory_state = {}
+        _memory_state_loaded = True
+
+
+def _saveMemoryState():
+    with _memory_state_lock:
+        try:
+            OlivaAIAgent.conf.atomicDump(_memory_state, _memoryStatePath())
+        except Exception:
+            pass
+
+
+def _memoryStateKey(bot_hash, platform, group_id):
+    data_bot_hash = OlivaAIAgent.conf.dataBotHash(bot_hash)
+    return '%s|%s|%s' % (data_bot_hash, platform, group_id)
 
 
 def _historyLimits():
@@ -66,8 +101,17 @@ def _getQueue(key):
                     with open(p, 'r', encoding='utf-8') as f:
                         loaded = json.load(f)
                     if isinstance(loaded, list):
+                        last_seq = 0
                         for m in loaded:
                             if isinstance(m, dict):
+                                try:
+                                    current_seq = int(m.get('history_seq', 0))
+                                except Exception:
+                                    current_seq = 0
+                                if current_seq <= last_seq:
+                                    current_seq = last_seq + 1
+                                    m['history_seq'] = current_seq
+                                last_seq = current_seq
                                 q.append(m)
             except Exception:
                 pass
@@ -88,6 +132,12 @@ def clearGroupHistory(platform, group_id):
     with _history_lock:
         _history[key] = _newQueue()
         _persist(key)
+    _loadMemoryState()
+    suffix = '|%s|%s' % (platform, group_id)
+    with _memory_state_lock:
+        for state_key in [item for item in _memory_state if item.endswith(suffix)]:
+            _memory_state.pop(state_key, None)
+        _saveMemoryState()
 
 
 def getGroupLock(platform, group_id):
@@ -102,7 +152,20 @@ def getGroupLock(platform, group_id):
         return _group_locks[key]
 
 
-def addToHistory(platform, group_id, bot_hash, user_id, nickname, message, message_id=None, event_id=None):
+def addToHistory(
+    platform,
+    group_id,
+    bot_hash,
+    user_id,
+    nickname,
+    message,
+    message_id=None,
+    reference_message_id=None,
+    event_id=None,
+    msg_idx=None,
+    ref_msg_idx=None,
+    trace_id=None,
+):
     '''把一条消息（图片已转摘要）加入历史并持久化。'''
     key = _hkey(platform, group_id)
     q = _getQueue(key)
@@ -110,20 +173,29 @@ def addToHistory(platform, group_id, bot_hash, user_id, nickname, message, messa
     msg = str(message)
     if len(msg) > max_len and '[OP:image,' not in msg and '[图片:' not in msg and '[图片：' not in msg:
         msg = msg[:max_len] + '...'
-    entry = {
-        'timestamp': time.time(),
-        'time': datetime.now().astimezone().replace(microsecond=0).isoformat(),
-        'user_id': user_id,
-        'nickname': nickname,
-        'message': msg,
-    }
-    if message_id not in [None, '', '-1', -1]:
-        entry['message_id'] = str(message_id)
-    if event_id not in [None, '']:
-        entry['event_id'] = str(event_id)
     with _history_lock:
+        last_seq = max((int(item.get('history_seq', 0)) for item in q), default=0)
+        entry = {
+            'history_seq': last_seq + 1,
+            'timestamp': time.time(),
+            'time': datetime.now().astimezone().replace(microsecond=0).isoformat(),
+            'user_id': user_id,
+            'nickname': nickname,
+            'message': msg,
+        }
+        identifiers = {
+            'message_id': message_id,
+            'reference_message_id': reference_message_id,
+            'event_id': event_id,
+            'msg_idx': msg_idx,
+            'ref_msg_idx': ref_msg_idx,
+        }
+        for name, value in identifiers.items():
+            if value not in [None, '', '-1', -1]:
+                entry[name] = str(value)
         q.append(entry)
         _persist(key)
+    _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=trace_id)
 
 
 def addSelfReply(platform, group_id, text, message_ids=None):
@@ -132,15 +204,21 @@ def addSelfReply(platform, group_id, text, message_ids=None):
     q = _getQueue(key)
     clean = re.sub(r'\[发图片[:：].*?\]', '[发图片]', str(text))
     clean = re.sub(r'\[(?:CQ|OP):image[^\]]*\]', '[发图片]', clean)
-    entry = {'timestamp': time.time(),
-             'time': datetime.now().astimezone().replace(microsecond=0).isoformat(),
-             'user_id': None, 'nickname': None, 'message': clean}
     ids = [str(item) for item in (message_ids or []) if item not in [None, '', '-1', -1]]
     ids = list(dict.fromkeys(ids))
-    if ids:
-        entry['message_id'] = ids[0]
-        entry['message_ids'] = ids
     with _history_lock:
+        last_seq = max((int(item.get('history_seq', 0)) for item in q), default=0)
+        entry = {
+            'history_seq': last_seq + 1,
+            'timestamp': time.time(),
+            'time': datetime.now().astimezone().replace(microsecond=0).isoformat(),
+            'user_id': None,
+            'nickname': None,
+            'message': clean,
+        }
+        if ids:
+            entry['message_id'] = ids[0]
+            entry['message_ids'] = ids
         q.append(entry)
         _persist(key)
 
@@ -153,10 +231,18 @@ def formatHistoryForModel(history):
     lines = []
     for e in history:
         nick = e.get('nickname')
+        identifiers = []
+        if e.get('message_id') not in [None, '']:
+            identifiers.append('消息ID=%s' % e['message_id'])
+        if e.get('reference_message_id') not in [None, '']:
+            identifiers.append('引用ID=%s' % e['reference_message_id'])
+        id_text = (' [' + ' '.join(identifiers) + ']') if identifiers else ''
         if nick is None:
-            lines.append('[我] 说: "%s"' % e.get('message', ''))
+            lines.append('[我]%s 说: "%s"' % (id_text, e.get('message', '')))
         else:
-            lines.append('%s [%s](%s) 说: "%s"' % (e.get('time', ''), nick, e.get('user_id', ''), e.get('message', '')))
+            lines.append('%s [%s](%s)%s 说: "%s"' % (
+                e.get('time', ''), nick, e.get('user_id', ''), id_text, e.get('message', ''),
+            ))
     return '\n'.join(lines)
 
 
@@ -192,8 +278,85 @@ def messageIdContext(history, limit=12):
         }
         if event_id not in [None, '']:
             record['事件ID'] = str(event_id)
+        reference_message_id = entry.get('reference_message_id')
+        if reference_message_id not in [None, '']:
+            record['引用消息ID'] = str(reference_message_id)
+        if entry.get('msg_idx') not in [None, '']:
+            record['平台消息索引'] = str(entry['msg_idx'])
+        if entry.get('ref_msg_idx') not in [None, '']:
+            record['平台引用索引'] = str(entry['ref_msg_idx'])
         records.append(record)
     return records[-max(1, int(limit)):]
+
+
+def _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=None):
+    '''按群水位批量调度摘要/事实提炼；同一群同时只运行一个任务。'''
+    summary_enabled = OlivaAIAgent.conf.isGroupHistoryMemory(platform, group_id)
+    vector_enabled = OlivaAIAgent.conf.isGroupLongMemory(platform, group_id)
+    if not summary_enabled and not vector_enabled:
+        return
+    history = getHistory(platform, group_id)
+    if not history:
+        return
+    batch = max(1, int(OlivaAIAgent.conf.get('memory', 'extraction_batch_size', default=8)))
+    latest_seq = max(int(item.get('history_seq', 0)) for item in history)
+    state_key = _memoryStateKey(bot_hash, platform, group_id)
+    _loadMemoryState()
+    with _memory_state_lock:
+        state = _memory_state.setdefault(state_key, {})
+        summary_watermark = int(state.get('summary_seq', 0))
+        vector_watermark = int(state.get('vector_seq', 0))
+        summary_due = summary_enabled and sum(
+            int(item.get('history_seq', 0)) > summary_watermark for item in history
+        ) >= batch
+        vector_due = vector_enabled and sum(
+            int(item.get('history_seq', 0)) > vector_watermark for item in history
+        ) >= batch
+        if not summary_due and not vector_due:
+            return
+        if state_key in _memory_jobs:
+            return
+        _memory_jobs.add(state_key)
+    first_seq = min(
+        watermark
+        for due, watermark in [(summary_due, summary_watermark), (vector_due, vector_watermark)]
+        if due
+    )
+    extraction_history = [item for item in history if int(item.get('history_seq', 0)) > first_seq]
+    record_legacy_memory = bool(OlivaAIAgent.conf.get('ambient', 'record_memory', default=True))
+
+    def worker():
+        try:
+            result = OlivaAIAgent.knowledge.runMemoryExtraction(
+                bot_hash,
+                group_id,
+                extraction_history,
+                record_knowledge=record_legacy_memory and bool(OlivaAIAgent.conf.get(
+                    'ambient', 'record_knowledge', default=True,
+                )),
+                trace_id=trace_id,
+                record_summary=summary_due,
+                record_vector=vector_due,
+                record_profiles=record_legacy_memory,
+                platform=platform,
+            )
+            if isinstance(result, dict):
+                with _memory_state_lock:
+                    current = _memory_state.setdefault(state_key, {})
+                    if summary_due and result.get('summary_processed'):
+                        current['summary_seq'] = latest_seq
+                    if vector_due and result.get('vector_processed'):
+                        current['vector_seq'] = latest_seq
+                    _saveMemoryState()
+        finally:
+            with _memory_state_lock:
+                _memory_jobs.discard(state_key)
+            # 只在任务运行期间确实又收到消息时复查；失败任务等下一条消息再重试，避免紧密重试循环。
+            current_history = getHistory(platform, group_id)
+            if any(int(item.get('history_seq', 0)) > latest_seq for item in current_history):
+                _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=trace_id)
+
+    threading.Thread(target=worker, daemon=True, name='OlivaAIAgent-Memory').start()
 
 
 # ---------------- 触发判定 ----------------
@@ -366,7 +529,10 @@ def process(plugin_event, Proc, parsed, self_id,
     except Exception:
         nickname = '用户'
     addToHistory(platform, group_id, bot_hash, plugin_event.data.user_id, nickname,
-                 message, message_id=parsed.get('message_id'), event_id=parsed.get('event_id'))
+                 message, message_id=parsed.get('message_id'),
+                 reference_message_id=parsed.get('reference_message_id'),
+                 event_id=parsed.get('event_id'), msg_idx=parsed.get('msg_idx'),
+                 ref_msg_idx=parsed.get('ref_msg_idx'), trace_id=trace_id)
     if not attempt:
         return  # 仅记录历史作上下文，不回复
 
@@ -427,8 +593,25 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             items=len(knowledge),
             materials='、'.join(str(key) for key in list(knowledge)[:12]),
         )
+    semantic_facts = []
+    if conf.isGroupLongMemory(platform, group_id):
+        query = '\n'.join(
+            str(item.get('message', ''))
+            for item in history[-4:]
+            if item.get('nickname') is not None
+        )
+        semantic_facts = OlivaAIAgent.semantic.searchFacts(bot_hash, platform, group_id, query)
+        if semantic_facts:
+            conf.traceLog(
+                Proc,
+                'semantic.context.selected',
+                trace_id,
+                items=len(semantic_facts),
+                materials='、'.join(item['subject'] for item in semantic_facts),
+            )
     profiles = OlivaAIAgent.knowledge.relevantProfiles(bot_hash, history)
-    summary = OlivaAIAgent.knowledge.getGroupSummary(bot_hash, group_id)
+    summary = OlivaAIAgent.knowledge.getGroupSummary(bot_hash, group_id) \
+        if conf.isGroupHistoryMemory(platform, group_id) else OlivaAIAgent.knowledge.GROUP_SUMMARY_DEFAULT
     # 与全权限 Agent 互通：拉取 Agent 侧的用户跨群长期记忆 + 本群共享记忆
     agent_mem = {}
     try:
@@ -554,6 +737,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     message_ids = messageIdContext(history)
     if message_ids:
         patch['近期收发消息标识'] = message_ids
+    if semantic_facts:
+        patch['当前记忆']['长期事实'] = semantic_facts
     if agent_mem:
         patch['当前记忆']['互通记忆'] = agent_mem
     if skills_ctx:
@@ -650,12 +835,6 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         return
     _logConversationDecision(Proc, trace_id, '回复', '主回复模型决定参与', result=reply_list,
                              messages=len(reply_list))
-
-    # 后台提炼记忆使用回复前的历史快照；真实发送 ID 在发送成功后再写入历史。
-    if cfg('record_memory', True):
-        threading.Thread(target=OlivaAIAgent.knowledge.runMemoryExtraction,
-                         args=(bot_hash, group_id, history, cfg('record_knowledge', True), trace_id),
-                         daemon=True).start()
 
     # 拟人发送节奏
     time.sleep(1 + (random.random() * 2 - 1) * 0.9)

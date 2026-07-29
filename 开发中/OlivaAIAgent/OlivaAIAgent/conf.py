@@ -188,6 +188,24 @@ DEFAULT_CONF = {
         'group_memory_limit': 40,
         'context_buffer': 20,
         'inject_group_buffer': True,
+        '_群记忆说明': '群历史摘要和长期事实记忆可由骰主用 .ai memory history/long on/off 按群独立控制',
+        'history_summary_default': True,
+        'long_term_default': True,
+        'extraction_batch_size': 8,
+    },
+    'semantic_memory': {
+        '_说明': '长期事实库存于 semantic_memory.sqlite3；embedding 接口兼容 OpenAI /v1/embeddings',
+        'embedding_api_url': '',
+        'embedding_api_key': '',
+        'embedding_model': 'qwen3.7-text-embedding',
+        'embedding_timeout_sec': 30,
+        'embedding_extra_headers': {},
+        'failure_backoff_sec': 300,
+        'request_batch_size': 32,
+        'cache_size': 256,
+        'top_k': 6,
+        'min_score': 0.25,
+        'max_scope_facts': 2000,
     },
     'search': {
         'enabled': True,
@@ -550,6 +568,18 @@ def isGroupEnabled(platform, group_id):
 
 def isGroupAdminTools(platform, group_id):
     return bool(getGroupSwitch(platform, group_id, 'admin_tools', True))
+
+
+def isGroupHistoryMemory(platform, group_id):
+    '''本群滚动摘要开关；与潜行模式互相独立。'''
+    default = get('memory', 'history_summary_default', default=True)
+    return bool(getGroupSwitch(platform, group_id, 'memory_history', default))
+
+
+def isGroupLongMemory(platform, group_id):
+    '''本群长期事实/向量检索开关；默认开启，未配置 embedding 时自动降级关键词检索。'''
+    default = get('memory', 'long_term_default', default=True)
+    return bool(getGroupSwitch(platform, group_id, 'memory_long', default))
 
 
 def isWhitelisted(platform, group_id):

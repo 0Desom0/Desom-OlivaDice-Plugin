@@ -34,7 +34,7 @@
 
 **触发之后两边不再分开，永远合一。** 群里一旦触发——`.ai` 前缀、@机器人、命中关键词、还是潜行自行插话——都走**同一条请求**，这条请求同时带上潜行的人设/群历史/知识/技能/视觉/记忆 与 全权限 Agent 的全部工具与骰点。不再"要么潜行要么 Agent"。
 - 潜行**开启**的群：`.ai`/@/关键词 → 强制回复 + 全部工具；普通闲聊按概率自行插话；同时记录群滚动历史作上下文。
-- 潜行**关闭**的群 = 纯助手模式（v2.6）：**只有 `.ai` / 前缀触发**，@、关键词、概率一律不触发，也不再静默采集群消息。关掉潜行 = 安静的助手，只有你显式 `.ai` 叫它才应答。
+- 潜行**关闭**的群 = 纯助手模式（v2.17）：**只有 `.ai` / 前缀触发回复**，@、关键词、概率一律不触发。群记忆与潜行独立：若本群滚动摘要或长期事实记忆开启，普通消息只会后台入库，不会触发回复。
 - 私聊同样合一：套用同一人设 + 全部工具。
 
 **固定内容前置，缓存命中更高。** 提示词按"稳定→易变"排布：人设、规则、平台说明、已加载插件、骰系速查、固定记忆等**稳定内容放在最前面作为前缀**；时间、检索到的知识/侧写/前情提要、图片缓存、当前消息等**易变内容放到历史之后的尾部**。配合前缀缓存历史队列（DynamicQueue，增长到上限再批量换代），连续请求的公共前缀最大化，DeepSeek/OpenAI 前缀缓存命中率显著提升、省 token。（开启 `debug_log` 后，模型响应日志会显示输入、输出、总 token 及缓存命中 token。）
@@ -95,6 +95,13 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - Agent 里 `.ai mem` / `memory_save` 记的 **用户跨群长期记忆 / 本群共享记忆**，潜行 AI 也会读到并纳入上下文。
 
 实现上各自的写入仍落在原生存储（Agent → `sessions/`+`memory/`，潜行 → `ambient_memory_*.json`），但两边读取时都读取合集——所以数据不会互相覆盖、结构不冲突，却能彼此看见。
+
+### 群滚动摘要与长期事实记忆（v2.17）
+
+- `.ai memory history on/off`：按群控制滚动摘要，默认开。每新增 `memory.extraction_batch_size` 条记录才后台更新一次，使用“上一版摘要 + 新增消息”，潜行关闭时也能积累。
+- `.ai memory long on/off`：按群控制长期事实，默认开。事实写入 `semantic_memory.sqlite3`，包含来源消息 ID、引用 ID、事件 ID和时间。
+- `semantic_memory.embedding_*`：独立配置 OpenAI-compatible `/embeddings`。配置可用时按 cosine 相似度、关键词和时效混合排序；未配置或接口失败时自动降级关键词检索，并有失败退避，不会每条消息持续请求坏端点。
+- `.ai memory status` / `.ai status`：查看两项群开关及当前是“向量就绪”还是“关键词降级”。开关写入 `groups.json`，无需改全局配置。
 
 ## 定时提醒 / 定时主动消息（v2.7）
 
@@ -221,6 +228,18 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 
   "trigger": { "keywords": ["骰娘"] },   // ← 统一触发关键词(潜行开/关都用它，配一处即可)
 
+  "memory": {
+    "history_summary_default": true,   // 新群默认开启滚动摘要
+    "long_term_default": true,         // 新群默认开启长期事实
+    "extraction_batch_size": 8         // 累积多少条新记录后提炼
+  },
+  "semantic_memory": {
+    "embedding_api_url": "https://api.openai.com/v1", // 自动追加 /embeddings；也可填完整路径
+    "embedding_api_key": "",
+    "embedding_model": "qwen3.7-text-embedding",
+    "top_k": 6
+  },
+
   "ambient": {                       // ← 潜行模式（刺客同款+增强）
     "personality": "冷静温和的群友人设…",
     "reply_probability": 1.0,        // 随机插话概率(建议连同 first_thinking 一起调)
@@ -249,6 +268,8 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 |---|---|---|
 | `.ai <内容>` | 与全接口 AI 对话（可骰点+全接口） | 所有人 |
 | `.ai clear` / `.ai mem` / `.ai status` | 清对话 / 看记忆 / 看状态 | 所有人 |
+| `.ai memory status` | 查看本群滚动摘要、长期事实与向量状态 | 所有人 |
+| `.ai memory history on/off` / `.ai memory long on/off` | 独立控制本群滚动摘要 / 长期事实 | 骰主 |
 | `.ai on/off`、`.ai global on/off` | 本群/全局开关 | 骰主 |
 | `.ai stealth on/off` | 本群潜行（群友融入）模式；**off = 纯助手，仅 `.ai` 触发**，@/关键词/概率均不触发 | 骰主 |
 | `.ai stealth think on/off` | 潜行前置判定开关 | 骰主 |
@@ -263,7 +284,7 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - `config.json` / `groups.json` — 配置与每群开关
 - `Knowledge/*.json` — 手动维护的静态知识库 `{关键词: 内容}`
 - `skills/<名>/SKILL.md` — Codex 技能/规则书（支持 frontmatter 的 name/description/aliases/keywords/triggers + references/ 资料）
-- `Image/` — 视觉缓存图片（按内容哈希唯一命名）；`ambient_history/` — 每群潜行历史；`ambient_memory_*.json` — 知识/侧写/总结及“本地图片文件名 → OCR描述”映射；`sessions/` `memory/` — 全接口模式对话与长期记忆
+- `Image/` — 视觉缓存图片；`ambient_history/` — 每群历史；`ambient_memory_*.json` — 知识/侧写/滚动摘要；`semantic_memory.sqlite3` — 长期事实与向量；`memory_extraction_state.json` — 提炼水位；`sessions/` `memory/` — Agent 对话与手动记忆
 
 ## 说明
 

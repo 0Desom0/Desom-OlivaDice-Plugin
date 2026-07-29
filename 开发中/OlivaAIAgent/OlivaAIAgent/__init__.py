@@ -2,6 +2,7 @@
 from OlivaAIAgent import conf  # noqa: F401
 from OlivaAIAgent import pacing  # noqa: F401
 from OlivaAIAgent import memory  # noqa: F401
+from OlivaAIAgent import semantic  # noqa: F401
 from OlivaAIAgent import knowledge  # noqa: F401
 from OlivaAIAgent import skills  # noqa: F401
 from OlivaAIAgent import aiClient  # noqa: F401
