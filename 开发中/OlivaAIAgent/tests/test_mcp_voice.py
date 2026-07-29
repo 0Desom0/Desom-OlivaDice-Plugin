@@ -150,6 +150,7 @@ class McpVoiceTest(unittest.TestCase):
     def test_send_voice_tool_is_visible_only_when_ready_and_sends_record_segment(self):
         OlivaAIAgent.conf.gConf['voice'].update({
             'enabled': True,
+            'provider': 'openai_compatible',
             'api_url': 'https://voice.example.invalid/v1/audio/speech',
             'api_key': 'secret-key',
             'model': 'qwen-tts',
@@ -179,6 +180,75 @@ class McpVoiceTest(unittest.TestCase):
         self.assertEqual('Bearer secret-key', request['headers']['Authorization'])
         self.assertEqual('今晚八点开团。', request['json']['input'])
         record_outgoing.assert_called_once()
+
+    def test_dashscope_non_streaming_tts_uses_official_payload_and_audio_url(self):
+        OlivaAIAgent.conf.gConf['voice'].update({
+            'enabled': True,
+            'provider': 'dashscope_multimodal',
+            'api_key': 'dashscope-key',
+            'optimize_instructions': True,
+        })
+        event = FakeVoiceEvent()
+        response = FakeHttpResponse(data={
+            'status_code': 200,
+            'output': {
+                'audio': {
+                    'url': 'https://dashscope-result.example.invalid/generated.wav?Expires=1',
+                },
+            },
+        })
+        download = FakeHttpResponse(
+            content=b'RIFF\x00\x00\x00\x00WAVEfmt FAKEAUDIO',
+            content_type='audio/wav',
+        )
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(OlivaAIAgent.voice, 'outputDir', return_value=directory), \
+                mock.patch.object(OlivaAIAgent.voice.requests, 'post', return_value=response) as post, \
+                mock.patch.object(OlivaAIAgent.voice.requests, 'get', return_value=download) as get, \
+                mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'):
+            result = OlivaAIAgent.voice.sendVoice(
+                {'plugin_event': event, 'Proc': None, 'trace_id': 'dashscope-voice-test'},
+                '今晚八点开团。',
+                '语速轻快，语调自然上扬。',
+            )
+
+        self.assertTrue(result['active'])
+        self.assertEqual('wav', result['data']['format'])
+        request = post.call_args.kwargs
+        self.assertEqual(
+            'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+            post.call_args.args[0],
+        )
+        self.assertEqual('Bearer dashscope-key', request['headers']['Authorization'])
+        self.assertEqual({
+            'model': 'qwen3-tts-instruct-flash',
+            'input': {
+                'text': '今晚八点开团。',
+                'voice': 'Cherry',
+                'language_type': 'Chinese',
+            },
+            'parameters': {
+                'instructions': '语速轻快，语调自然上扬。',
+                'optimize_instructions': True,
+                'stream': False,
+            },
+        }, request['json'])
+        get.assert_called_once_with(
+            'https://dashscope-result.example.invalid/generated.wav?Expires=1',
+            timeout=120.0,
+        )
+        self.assertTrue(event.replies[0].data[0].data['file'].endswith('.wav'))
+
+    def test_send_voice_tool_requires_contextual_performance_instructions(self):
+        OlivaAIAgent.conf.gConf['voice']['enabled'] = True
+        definition = next(
+            item for item in OlivaAIAgent.tools.getToolsForRequest({}) if item['name'] == 'send_voice'
+        )
+        self.assertEqual(['text', 'instructions'], definition['params']['required'])
+        instruction_schema = definition['params']['properties']['instructions']
+        self.assertIn('当前上下文', instruction_schema['description'])
+        self.assertIn('语速', instruction_schema['description'])
 
     def test_voice_tool_is_hidden_when_disabled(self):
         OlivaAIAgent.conf.gConf['voice']['enabled'] = False

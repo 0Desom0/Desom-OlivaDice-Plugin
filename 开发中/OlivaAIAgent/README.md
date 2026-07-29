@@ -1,4 +1,4 @@
-# OlivaAIAgent v2.19.0 — AI 全能群聊插件（OlivOS / 青果）
+# OlivaAIAgent v2.20.1 — AI 全能群聊插件（OlivOS / 青果）
 
 一个插件，两种形态，且都比市面同类更强：
 
@@ -110,10 +110,12 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - Milky 的 reply 段若只有会话内 `message_seq`，插件会利用当前完整消息 ID 补成 `scene|peer_id|seq` 后再调用 `get_msg`。
 - 上述兼容全部位于 OlivaAIAgent，不要求修改 OlivOS 主项目。平台从未向机器人上报过的消息仍无法恢复。
 
-### MCP 工具与语音回复（v2.19）
+### MCP 工具与语音回复（v2.20）
 
 - GUI 新增“MCP 服务”分类，支持 Streamable HTTP 和 stdio；连接后远端工具以 `mcp_<服务>_<工具>` 动态加入 Agent，服务可单独设置 `danger` 并复用现有三级权限管控。运行维护页可手动刷新工具目录。
-- GUI 新增“语音模型”分类，兼容 OpenAI `/audio/speech` 请求。启用并填写接口后，模型会看到 `send_voice` 工具，可根据语境自行决定发送语音；成功后不会再重复同样文字。
+- GUI 的“语音模型”默认直连阿里云百炼 `MultiModalConversation` 原生 HTTP 接口，使用 `qwen3-tts-instruct-flash`、`Cherry` 和非流式输出；同时保留 OpenAI `/audio/speech` 兼容模式。启用后模型会看到 `send_voice` 工具，可根据语境自行决定发送语音；成功后不会再重复同样文字。
+- 阿里云模式支持 `language_type`、`instructions` 与 `optimize_instructions`。每次 `instructions` 都由主模型在调用 `send_voice` 时根据当前上下文动态生成，只描述本次语速、情绪、音量、停顿和语调，不写入配置或记忆，也不是第二套人格提示词；接口返回的临时音频 URL 会立即下载，并按 URL、Content-Type 或音频头识别真实格式。
+- 原生请求体与官方 `dashscope.MultiModalConversation.call(..., stream=False)` 等价，但继续使用插件已有的 `requests` 直连，无需额外安装 `dashscope` SDK。
 - 语音与潜行不维护第二套提示词，全部继续使用唯一的 `prompt.system`。本地语音缓存位于 `voice/`，按 `max_files` 自动淘汰。
 - `qqGuildv2` 被 @ 判定兼容 `GROUP_AT_MESSAGE_CREATE`、`sub_self_id` 和群机器人 `sub_self_open_id`，与 MessageRecall 的官机处理方式一致。
 
@@ -275,8 +277,10 @@ OlivOS 托盘菜单选择“打开设置面板”，即可在一个窗口完成�
   },
   "voice": {
     "enabled": false,
-    "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/audio/speech",
-    "api_key": "", "model": "qwen3-tts-flash", "voice": "Cherry", "response_format": "mp3"
+    "provider": "dashscope_multimodal",
+    "api_url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    "api_key": "", "model": "qwen3-tts-instruct-flash", "voice": "Cherry",
+    "language_type": "Chinese", "optimize_instructions": true
   },
 
   "ambient": {                       // ← 潜行模式（刺客同款+增强）

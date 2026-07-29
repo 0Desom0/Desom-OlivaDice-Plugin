@@ -26,6 +26,11 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertTrue(default_conf['memory']['long_term_default'])
         self.assertIn('mcp', default_conf)
         self.assertIn('voice', default_conf)
+        self.assertEqual('dashscope_multimodal', default_conf['voice']['provider'])
+        self.assertEqual('qwen3-tts-instruct-flash', default_conf['voice']['model'])
+        self.assertEqual('Chinese', default_conf['voice']['language_type'])
+        self.assertTrue(default_conf['voice']['optimize_instructions'])
+        self.assertNotIn('instructions', default_conf['voice'])
 
     def test_legacy_prompts_and_permissions_are_migrated_once(self):
         config = {
@@ -53,6 +58,20 @@ class ConfigMigrationTest(unittest.TestCase):
         legacy_groups = OlivaAIAgent.conf._migrate(config)
         self.assertEqual([], legacy_groups)
         self.assertTrue(config['ambient']['enable_default'])
+
+    def test_legacy_voice_config_keeps_openai_compatible_wire(self):
+        config = {
+            'prompt': {},
+            'ambient': {},
+            'permissions': {},
+            'voice': {
+                'api_url': 'https://example.invalid/v1/audio/speech',
+                'instructions': '旧的固定表现指令',
+            },
+        }
+        OlivaAIAgent.conf._migrate(config)
+        self.assertEqual('openai_compatible', config['voice']['provider'])
+        self.assertNotIn('instructions', config['voice'])
 
     def test_persisted_config_omits_description_metadata(self):
         clean = OlivaAIAgent.conf._persistableConfig({
@@ -102,6 +121,7 @@ class ConfigMigrationTest(unittest.TestCase):
                             '_说明': '旧说明',
                             'prompt': {'system': '旧系统', 'append': '旧附加'},
                             'ambient': {'personality': '旧人设', 'enabled_groups': ['20002']},
+                            'voice': {'api_url': 'https://example.invalid/v1/audio/speech'},
                         },
                         config_file,
                         ensure_ascii=False,
@@ -118,6 +138,7 @@ class ConfigMigrationTest(unittest.TestCase):
                 self.assertNotIn('personality', persisted['ambient'])
                 self.assertNotIn('enabled_groups', persisted['ambient'])
                 self.assertNotIn('_说明', persisted)
+                self.assertEqual('openai_compatible', persisted['voice']['provider'])
                 self.assertTrue(conf.gGroups['*']['20002']['ambient'])
         finally:
             for name, value in old_state.items():
@@ -151,6 +172,10 @@ class ConfigGuiSchemaTest(unittest.TestCase):
     def test_mcp_and_voice_have_visible_gui_sections(self):
         self.assertIn('mcp', OlivaAIAgent.gui.SECTION_ORDER)
         self.assertIn('voice', OlivaAIAgent.gui.SECTION_ORDER)
+        self.assertEqual(
+            ('dashscope_multimodal', 'openai_compatible'),
+            OlivaAIAgent.gui.ENUM_VALUES[('voice', 'provider')],
+        )
         self.assertEqual(
             [{'name': 'demo', 'transport': 'streamable_http'}],
             OlivaAIAgent.gui._parseValue(

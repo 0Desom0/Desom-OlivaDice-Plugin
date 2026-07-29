@@ -195,12 +195,20 @@ def getToolsForRequest(ctx, voice_only=False):
 
 @_reg(
     'send_voice',
-    '把指定文本合成为语音并立即发送到当前会话。仅在语音比文字更自然时调用；调用成功后，最终回复不要重复发送同样文字。',
-    params={'text': _p('string', '要说出的自然口语文本，不要包含 CQ/OP 码、Markdown 或动作描写')},
-    required=['text'],
+    '结合当前完整上下文生成语音文本及本次声音表现指令，再合成为语音并立即发送。'
+    '仅在语音比文字更自然时调用；调用成功后，最终回复不要重复发送同样文字。',
+    params={
+        'text': _p('string', '要说出的自然口语文本，不要包含 CQ/OP 码、Markdown 或动作描写'),
+        'instructions': _p(
+            'string',
+            '根据当前上下文为这一次朗读生成的声音表现要求，只描述语速、情绪、音量、停顿和语调；'
+            '不要写人物身份、消息内容、动作描写或长期规则，使用一句简洁的中文或英文指令',
+        ),
+    },
+    required=['text', 'instructions'],
 )
 def _t_send_voice(ctx, args):
-    return OlivaAIAgent.voice.sendVoice(ctx, args.get('text', ''))
+    return OlivaAIAgent.voice.sendVoice(ctx, args.get('text', ''), args.get('instructions', ''))
 
 
 # =========================================================

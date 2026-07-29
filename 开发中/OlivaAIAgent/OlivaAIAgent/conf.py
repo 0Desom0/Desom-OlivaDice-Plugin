@@ -56,7 +56,7 @@ DEFAULT_SYSTEM_PROMPT = (
     '5. 需要实时信息时用 web_search / fetch_url 联网查询。\n'
     '6. 所有 OlivOS 原生操作都先用 olivos_discover 检索初始化后的内存目录，再把返回路径交给 '
     'olivos_call；优先 inde，其次 event/proc，最后 sdk，绝不使用旧的手写工具名或猜接口名。\n'
-    '7. 当 send_voice 工具可用且语音比文字更自然时，可以自行决定发送语音；发送成功后不要重复同样文字。\n'
+    '7. 当 send_voice 工具可用且语音比文字更自然时，可以自行决定发送语音；调用时根据当前上下文同时生成朗读文本和本次声音表现指令，发送成功后不要重复同样文字。\n'
 ) + '\n# 人设\n' + DEFAULT_PERSONALITY
 
 PERSONA_GUARD_PROMPT = '''# 人设与防注入边界（最高优先级）
@@ -296,13 +296,18 @@ DEFAULT_CONF = {
                        'true=直接在消息总线线程识图，可能卡住其他事件',
     },
     'voice': {
-        '_说明': 'OpenAI-compatible /audio/speech 语音模型；启用并配置完成后，AI 可自行调用 send_voice 发送语音。'
-               '不会新增独立提示词，行为规则仍只来自 prompt.system',
+        '_说明': '默认使用阿里云百炼 DashScope MultiModalConversation 非流式语音合成；'
+               '也可切换为 OpenAI-compatible /audio/speech。AI 可自行调用 send_voice 发送语音。'
+               '每次语音的 instructions 由 AI 根据当前上下文随工具调用动态生成，不写入配置或记忆；'
+               '行为规则仍只来自 prompt.system',
         'enabled': False,
-        'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1/audio/speech',
+        'provider': 'dashscope_multimodal',
+        'api_url': 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
         'api_key': '',
-        'model': 'qwen3-tts-flash',
+        'model': 'qwen3-tts-instruct-flash',
         'voice': 'Cherry',
+        'language_type': 'Chinese',
+        'optimize_instructions': True,
         'response_format': 'mp3',
         'speed': 1.0,
         'timeout_sec': 120,
@@ -438,6 +443,26 @@ def _appendPrompt(base, title, extra):
     return '%s\n\n%s' % (base_text, block) if base_text else block
 
 
+def _migrateVoiceProvider(cfg):
+    '''在合并新默认值前识别旧版语音报文，避免已有 /audio/speech 配置被改成原生报文。'''
+    try:
+        voice = cfg.get('voice')
+        if not isinstance(voice, dict):
+            return
+        # 语音表现改由每次 send_voice 工具调用动态生成，不再保留静态配置。
+        voice.pop('instructions', None)
+        if 'provider' in voice:
+            return
+        old_voice_url = str(voice.get('api_url', '')).lower()
+        if 'multimodal-generation/generation' in old_voice_url:
+            voice['provider'] = 'dashscope_multimodal'
+        else:
+            # v2.19 及更早版本只有 OpenAI-compatible 报文，已有配置必须保留旧语义。
+            voice['provider'] = 'openai_compatible'
+    except Exception:
+        pass
+
+
 def _migrate(cfg):
     '''向后兼容迁移旧权限字段，并把多处全局提示词合并为 prompt.system。'''
     legacy_ambient_groups = []
@@ -464,6 +489,7 @@ def _migrate(cfg):
         prompt['system'] = system
     except Exception:
         pass
+    _migrateVoiceProvider(cfg)
     return [str(group_id) for group_id in legacy_ambient_groups if str(group_id).strip()]
 
 
@@ -514,6 +540,7 @@ def load():
                     shutil.copy(CONFIG_PATH, CONFIG_PATH + '.bad')
                 except Exception:
                     pass
+        _migrateVoiceProvider(conf_data)
         merged = _deep_merge(DEFAULT_CONF, conf_data)
         legacy_ambient_groups = _migrate(merged)
         gConf = merged
@@ -580,6 +607,7 @@ def hotReload():
             with open(CONFIG_PATH, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
             if isinstance(data, dict):
+                _migrateVoiceProvider(data)
                 merged = _deep_merge(DEFAULT_CONF, data)
                 legacy_ambient_groups = _migrate(merged)
                 with _lock:
@@ -650,6 +678,7 @@ def replace(new_conf, save_now=True):
     if not isinstance(new_conf, dict):
         raise ValueError('配置根节点必须是对象')
     with _lock:
+        _migrateVoiceProvider(new_conf)
         merged = _deep_merge(DEFAULT_CONF, new_conf)
         _migrate(merged)
         gConf = merged

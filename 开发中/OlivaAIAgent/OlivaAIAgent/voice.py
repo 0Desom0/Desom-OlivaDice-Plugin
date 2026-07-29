@@ -1,11 +1,12 @@
 # -*- encoding: utf-8 -*-
-'''OpenAI-compatible 语音合成与 OlivOS 语音消息发送。'''
+'''DashScope / OpenAI-compatible 语音合成与 OlivOS 语音消息发送。'''
 
 import base64
 import hashlib
 import os
 import re
 import time
+from urllib.parse import urlsplit
 
 import requests
 
@@ -21,6 +22,25 @@ _FORMAT_EXTENSIONS = {
     'pcm': '.pcm',
     'wav': '.wav',
 }
+_CONTENT_TYPE_FORMATS = {
+    'audio/aac': 'aac',
+    'audio/flac': 'flac',
+    'audio/mpeg': 'mp3',
+    'audio/mp3': 'mp3',
+    'audio/ogg': 'ogg',
+    'audio/opus': 'opus',
+    'audio/wav': 'wav',
+    'audio/wave': 'wav',
+    'audio/x-wav': 'wav',
+}
+_DASHSCOPE_PROVIDER = 'dashscope_multimodal'
+_OPENAI_PROVIDER = 'openai_compatible'
+_PROVIDER_ALIASES = {
+    'dashscope': _DASHSCOPE_PROVIDER,
+    _DASHSCOPE_PROVIDER: _DASHSCOPE_PROVIDER,
+    'openai': _OPENAI_PROVIDER,
+    _OPENAI_PROVIDER: _OPENAI_PROVIDER,
+}
 
 
 def outputDir():
@@ -34,12 +54,20 @@ def getStatus():
     enabled = bool(cfg.get('enabled', False))
     api_url = str(cfg.get('api_url', '')).strip()
     model = str(cfg.get('model', '')).strip()
+    voice = str(cfg.get('voice', '')).strip()
+    provider_value = str(cfg.get('provider', _DASHSCOPE_PROVIDER)).strip().lower()
+    provider = _PROVIDER_ALIASES.get(provider_value, provider_value)
+    provider_ready = provider in [_DASHSCOPE_PROVIDER, _OPENAI_PROVIDER]
+    if provider == _DASHSCOPE_PROVIDER:
+        provider_ready = provider_ready and bool(voice)
     return {
         'enabled': enabled,
-        'ready': enabled and bool(api_url and model),
+        'ready': enabled and provider_ready and bool(api_url and model),
+        'provider': provider,
         'api_url': api_url,
         'model': model,
-        'voice': str(cfg.get('voice', '')).strip(),
+        'voice': voice,
+        'language_type': str(cfg.get('language_type', 'Chinese')).strip(),
         'response_format': str(cfg.get('response_format', 'mp3')).strip().lower(),
     }
 
@@ -62,13 +90,56 @@ def _cleanOldFiles():
         pass
 
 
+def _normalizeFormat(value):
+    fmt = str(value or '').strip().lower().lstrip('.')
+    return {
+        'mpeg': 'mp3',
+        'mpeg3': 'mp3',
+        'wave': 'wav',
+        'x-wav': 'wav',
+    }.get(fmt, fmt)
+
+
+def _formatFromContentType(content_type):
+    mime = str(content_type or '').split(';', 1)[0].strip().lower()
+    return _CONTENT_TYPE_FORMATS.get(mime, '')
+
+
+def _formatFromUrl(url):
+    try:
+        extension = os.path.splitext(urlsplit(str(url)).path)[1]
+    except Exception:
+        return ''
+    fmt = _normalizeFormat(extension)
+    return fmt if fmt in _FORMAT_EXTENSIONS else ''
+
+
+def _formatFromBytes(content):
+    if not isinstance(content, bytes):
+        return ''
+    if content.startswith(b'RIFF') and content[8:12] == b'WAVE':
+        return 'wav'
+    if content.startswith(b'fLaC'):
+        return 'flac'
+    if content.startswith(b'OggS'):
+        return 'opus' if b'OpusHead' in content[:128] else 'ogg'
+    if content.startswith(b'ID3'):
+        return 'mp3'
+    if len(content) >= 2 and content[0] == 0xFF:
+        if content[1] & 0xF6 == 0xF0:
+            return 'aac'
+        if content[1] & 0xE0 == 0xE0:
+            return 'mp3'
+    return ''
+
+
 def _saveAudio(content, response_format):
     if not isinstance(content, bytes) or not content:
         raise ValueError('语音接口没有返回音频数据')
     max_bytes = max(1024, int(OlivaAIAgent.conf.get('voice', 'max_bytes', default=15 * 1024 * 1024)))
     if len(content) > max_bytes:
         raise ValueError('语音文件超过大小限制（%d 字节）' % max_bytes)
-    fmt = str(response_format or 'mp3').lower()
+    fmt = _normalizeFormat(response_format) or _formatFromBytes(content) or 'mp3'
     ext = _FORMAT_EXTENSIONS.get(fmt, '.mp3')
     digest = hashlib.sha256(content).hexdigest()[:16]
     path = os.path.join(outputDir(), 'voice_%d_%s%s' % (int(time.time()), digest, ext))
@@ -98,15 +169,18 @@ def _findAudioValue(value):
         for key in ('url', 'audio_url'):
             item = value.get(key)
             if isinstance(item, str) and item.startswith(('http://', 'https://')):
-                return 'url', item
+                return 'url', item, _formatFromUrl(item)
         for key in ('b64_json', 'base64', 'audio', 'data'):
             item = value.get(key)
             if isinstance(item, str):
                 if item.startswith(('http://', 'https://')):
-                    return 'url', item
+                    return 'url', item, _formatFromUrl(item)
                 content = _decodeBase64(item)
                 if content:
-                    return 'bytes', content
+                    data_format = ''
+                    if item.startswith('data:'):
+                        data_format = _formatFromContentType(item[5:].split(';', 1)[0])
+                    return 'bytes', content, data_format or _formatFromBytes(content)
         for item in value.values():
             found = _findAudioValue(item)
             if found:
@@ -122,28 +196,78 @@ def _findAudioValue(value):
 def _audioFromResponse(response, timeout):
     content_type = str(response.headers.get('Content-Type', '')).lower()
     if content_type.startswith('audio/') or 'application/octet-stream' in content_type:
-        return response.content
+        return response.content, _formatFromContentType(content_type) or _formatFromBytes(response.content)
     try:
         data = response.json()
     except Exception as e:
         raise ValueError('语音接口返回的不是音频或有效 JSON') from e
     found = _findAudioValue(data)
     if not found:
+        if isinstance(data, dict):
+            error_code = data.get('code') or data.get('status_code')
+            error_message = data.get('message') or data.get('msg')
+            if error_code or error_message:
+                raise RuntimeError('语音接口返回错误 %s: %s' % (error_code or '-', error_message or '-'))
         raise ValueError('语音接口 JSON 中没有可用的音频 URL 或 Base64')
-    kind, value = found
+    kind, value, format_hint = found
     if kind == 'bytes':
-        return value
+        return value, format_hint or _formatFromBytes(value)
     download = requests.get(value, timeout=timeout)
     download.raise_for_status()
-    return download.content
+    download_type = str(download.headers.get('Content-Type', ''))
+    audio_format = (
+        _formatFromContentType(download_type)
+        or format_hint
+        or _formatFromUrl(value)
+        or _formatFromBytes(download.content)
+    )
+    return download.content, audio_format
 
 
-def synthesize(text):
+def _dashscopePayload(status, cfg, content, instructions):
+    extra_body = cfg.get('extra_body', {})
+    payload = dict(extra_body) if isinstance(extra_body, dict) else {}
+    input_data = dict(payload.get('input')) if isinstance(payload.get('input'), dict) else {}
+    parameters = dict(payload.get('parameters')) if isinstance(payload.get('parameters'), dict) else {}
+    input_data.update({'text': content, 'voice': status['voice']})
+    if status['language_type']:
+        input_data['language_type'] = status['language_type']
+    voice_instructions = str(instructions or '').strip()
+    if voice_instructions and 'instruct' in status['model'].lower():
+        parameters['instructions'] = voice_instructions
+        parameters['optimize_instructions'] = bool(cfg.get('optimize_instructions', True))
+    parameters['stream'] = False
+    payload.update({
+        'model': status['model'],
+        'input': input_data,
+        'parameters': parameters,
+    })
+    return payload
+
+
+def _openaiPayload(status, cfg, content):
+    payload = {
+        'model': status['model'],
+        'input': content,
+        'response_format': status['response_format'],
+    }
+    if status['voice']:
+        payload['voice'] = status['voice']
+    speed = cfg.get('speed', 1.0)
+    if speed not in [None, '']:
+        payload['speed'] = float(speed)
+    extra_body = cfg.get('extra_body', {})
+    if isinstance(extra_body, dict):
+        payload.update(extra_body)
+    return payload
+
+
+def synthesize(text, instructions=''):
     status = getStatus()
     if not status['enabled']:
         raise RuntimeError('语音模型未启用')
     if not status['ready']:
-        raise RuntimeError('语音模型缺少 api_url 或 model')
+        raise RuntimeError('语音模型的接口类型、api_url、model 或 voice 配置不完整')
     cfg = OlivaAIAgent.conf.get('voice', default={}) or {}
     max_chars = max(1, int(cfg.get('max_chars', 500)))
     content = str(text or '').strip()
@@ -158,24 +282,19 @@ def synthesize(text):
     extra_headers = cfg.get('extra_headers', {})
     if isinstance(extra_headers, dict):
         headers.update({str(key): str(value) for key, value in extra_headers.items()})
-    payload = {
-        'model': status['model'],
-        'input': content,
-        'response_format': status['response_format'],
-    }
-    if status['voice']:
-        payload['voice'] = status['voice']
-    speed = cfg.get('speed', 1.0)
-    if speed not in [None, '']:
-        payload['speed'] = float(speed)
-    extra_body = cfg.get('extra_body', {})
-    if isinstance(extra_body, dict):
-        payload.update(extra_body)
+    if status['provider'] == _DASHSCOPE_PROVIDER:
+        payload = _dashscopePayload(status, cfg, content, instructions)
+    elif status['provider'] == _OPENAI_PROVIDER:
+        payload = _openaiPayload(status, cfg, content)
+    else:
+        raise ValueError('不支持的语音接口类型: %s' % status['provider'])
     timeout = max(1.0, float(cfg.get('timeout_sec', 120)))
     response = requests.post(status['api_url'], headers=headers, json=payload, timeout=timeout)
     if response.status_code < 200 or response.status_code >= 300:
         raise RuntimeError('语音接口 HTTP %s: %s' % (response.status_code, str(response.text)[:300]))
-    return _saveAudio(_audioFromResponse(response, timeout), status['response_format'])
+    audio_content, audio_format = _audioFromResponse(response, timeout)
+    fallback_format = status['response_format'] if status['provider'] == _OPENAI_PROVIDER else ''
+    return _saveAudio(audio_content, audio_format or fallback_format)
 
 
 def _messageIds(result):
@@ -188,7 +307,7 @@ def _messageIds(result):
     return list(dict.fromkeys(str(item) for item in values if item not in [None, '', '-1', -1]))
 
 
-def sendVoice(ctx, text):
+def sendVoice(ctx, text, instructions=''):
     plugin_event = ctx.get('plugin_event')
     if plugin_event is None:
         return {'error': '当前上下文没有可用的消息事件，无法发送语音'}
@@ -197,11 +316,12 @@ def sendVoice(ctx, text):
         ctx.get('Proc'),
         'voice.send.start',
         ctx.get('trace_id'),
+        instruction_chars=len(str(instructions or '')),
         model=status.get('model', ''),
         text_chars=len(str(text or '')),
     )
     try:
-        path = synthesize(text)
+        path = synthesize(text, instructions=instructions)
         message = OlivOS.messageAPI.Message_templet(
             'olivos_para',
             [OlivOS.messageAPI.PARA.record(file=os.path.abspath(path))],
@@ -215,12 +335,14 @@ def sendVoice(ctx, text):
                 '[语音消息:%s]' % str(text)[:200],
                 message_ids,
             )
+        actual_format = os.path.splitext(path)[1].lstrip('.').lower()
         return {
             'active': active,
             'data': {
                 'message_ids': message_ids,
+                'instruction_chars': len(str(instructions or '')),
                 'text_chars': len(str(text)),
-                'format': status.get('response_format', ''),
+                'format': actual_format,
             },
             'error': '' if active else '平台返回发送失败',
         }

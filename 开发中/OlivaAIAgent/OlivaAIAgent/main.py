@@ -45,12 +45,14 @@ class Event(object):
             OlivaAIAgent.conf.log(
                 Proc,
                 2 if not voice_status['enabled'] or voice_status['ready'] else 3,
-                '语音配置：启用=%s | 就绪=%s | 模型=%s | 音色=%s | 格式=%s' % (
+                '语音配置：启用=%s | 就绪=%s | 接口=%s | 模型=%s | 音色=%s | 格式=%s' % (
                     '是' if voice_status['enabled'] else '否',
                     '是' if voice_status['ready'] else '否',
+                    voice_status['provider'] or '-',
                     voice_status['model'] or '-',
                     voice_status['voice'] or '-',
-                    voice_status['response_format'] or '-',
+                    '自动识别' if voice_status['provider'] == 'dashscope_multimodal'
+                    else (voice_status['response_format'] or '-'),
                 ),
             )
         except Exception as e:
