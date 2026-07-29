@@ -1,0 +1,29 @@
+{
+  "name": "跑团日志分析",
+  "author": "歌靡",
+  "namespace": "DeepSeekLogSummary",
+  "message_mode": "olivos_string",
+  "info": "使用可配置的OpenAI兼容API分析跑团日志，支持群文件与qqGuildv2附件输入，并可输出合并转发或txt/md文件",
+  "version": "1.1.0",
+  "svn": 2,
+  "compatible_svn": 190,
+  "priority": 30000,
+  "support": [
+    {
+      "sdk": "onebot",
+      "platform": "qq",
+      "model": "all"
+    },
+    {
+      "sdk": "all",
+      "platform": "all",
+      "model": "all"
+    }
+  ],
+  "menu_config": [
+    {
+      "title": "日志分析设置",
+      "event": "DeepSeekLogSummary_Menu_001"
+    }
+  ]
+}
