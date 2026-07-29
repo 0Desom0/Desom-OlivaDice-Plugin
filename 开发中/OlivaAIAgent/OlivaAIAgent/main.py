@@ -3,8 +3,6 @@
 OlivaAIAgent 事件回调入口
 '''
 
-import os
-
 import OlivaAIAgent
 
 gProc = None
@@ -42,6 +40,21 @@ class Event(object):
             )
         except Exception as e:
             OlivaAIAgent.conf.log(Proc, 3, '视觉配置检查失败: %s' % e)
+        try:
+            voice_status = OlivaAIAgent.voice.getStatus()
+            OlivaAIAgent.conf.log(
+                Proc,
+                2 if not voice_status['enabled'] or voice_status['ready'] else 3,
+                '语音配置：启用=%s | 就绪=%s | 模型=%s | 音色=%s | 格式=%s' % (
+                    '是' if voice_status['enabled'] else '否',
+                    '是' if voice_status['ready'] else '否',
+                    voice_status['model'] or '-',
+                    voice_status['voice'] or '-',
+                    voice_status['response_format'] or '-',
+                ),
+            )
+        except Exception as e:
+            OlivaAIAgent.conf.log(Proc, 3, '语音配置检查失败: %s' % e)
         # 所有 OlivOS 接口在初始化阶段扫描并写入内存目录。
         try:
             stats = OlivaAIAgent.introspection.initialize(plugin_event, Proc, force=True)
@@ -70,6 +83,11 @@ class Event(object):
             ))
         except Exception as e:
             OlivaAIAgent.conf.log(Proc, 3, '长期事实库初始化失败: %s' % e)
+        try:
+            OlivaAIAgent.identifiers.initialize()
+            OlivaAIAgent.conf.log(Proc, 2, '消息标识注册表: SQLite 就绪（插件内实现，不修改 OlivOS）')
+        except Exception as e:
+            OlivaAIAgent.conf.log(Proc, 3, '消息标识注册表初始化失败: %s' % e)
 
         def _load_skills():
             try:
@@ -80,6 +98,20 @@ class Event(object):
                 OlivaAIAgent.conf.log(Proc, 3, '技能索引构建失败: %s' % e)
         import threading
         threading.Thread(target=_load_skills, daemon=True).start()
+
+        def _load_mcp():
+            try:
+                status = OlivaAIAgent.mcp.refresh(force=True)
+                if status['enabled'] and status['servers'] == 0:
+                    OlivaAIAgent.conf.log(Proc, 3, 'MCP 已启用，但尚未配置服务')
+            except Exception as e:
+                OlivaAIAgent.conf.log(Proc, 3, 'MCP 工具目录构建失败: %s' % e)
+
+        if (
+            OlivaAIAgent.conf.get('mcp', 'enabled', default=False)
+            and OlivaAIAgent.conf.get('mcp', 'connect_on_start', default=True)
+        ):
+            threading.Thread(target=_load_mcp, daemon=True).start()
 
         # 载入并重新挂起持久化的定时提醒(重启/重载后不丢)
         try:
@@ -123,9 +155,10 @@ class Event(object):
         if plugin_event.data.event == 'OlivaAIAgent_Menu_OpenConf':
             try:
                 OlivaAIAgent.conf.initDataPath()
-                os.startfile(os.path.abspath(OlivaAIAgent.conf.dataPath))
+                OlivaAIAgent.gui.openConfigWindow(Proc=Proc)
             except Exception as e:
-                OlivaAIAgent.conf.log(Proc, 3, '打开配置目录失败: %s' % e)
+                OlivaAIAgent.conf.log(Proc, 3, '打开设置面板失败: %s' % e)
         elif plugin_event.data.event == 'OlivaAIAgent_Menu_Reload':
             OlivaAIAgent.conf.load()
+            OlivaAIAgent.mcp.invalidate()
             OlivaAIAgent.conf.log(Proc, 2, '配置已重载')

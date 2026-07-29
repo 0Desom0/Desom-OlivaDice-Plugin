@@ -1,4 +1,4 @@
-# OlivaAIAgent v2 — AI 全能群聊插件（OlivOS / 青果）
+# OlivaAIAgent v2.19.0 — AI 全能群聊插件（OlivOS / 青果）
 
 一个插件，两种形态，且都比市面同类更强：
 
@@ -34,7 +34,7 @@
 
 **触发之后两边不再分开，永远合一。** 群里一旦触发——`.ai` 前缀、@机器人、命中关键词、还是潜行自行插话——都走**同一条请求**，这条请求同时带上潜行的人设/群历史/知识/技能/视觉/记忆 与 全权限 Agent 的全部工具与骰点。不再"要么潜行要么 Agent"。
 - 潜行**开启**的群：`.ai`/@/关键词 → 强制回复 + 全部工具；普通闲聊按概率自行插话；同时记录群滚动历史作上下文。
-- 潜行**关闭**的群 = 纯助手模式（v2.17）：**只有 `.ai` / 前缀触发回复**，@、关键词、概率一律不触发。群记忆与潜行独立：若本群滚动摘要或长期事实记忆开启，普通消息只会后台入库，不会触发回复。
+- 潜行**关闭**的群 = 纯助手模式：`.ai` / 前缀、明确 @ 或统一关键词触发；概率插话不触发。群记忆与潜行独立：若本群滚动摘要或长期事实记忆开启，普通消息只会后台入库，不会触发回复。
 - 私聊同样合一：套用同一人设 + 全部工具。
 
 **固定内容前置，缓存命中更高。** 提示词按"稳定→易变"排布：人设、规则、平台说明、已加载插件、骰系速查、固定记忆等**稳定内容放在最前面作为前缀**；时间、检索到的知识/侧写/前情提要、图片缓存、当前消息等**易变内容放到历史之后的尾部**。配合前缀缓存历史队列（DynamicQueue，增长到上限再批量换代），连续请求的公共前缀最大化，DeepSeek/OpenAI 前缀缓存命中率显著提升、省 token。（开启 `debug_log` 后，模型响应日志会显示输入、输出、总 token 及缓存命中 token。）
@@ -103,6 +103,20 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - `semantic_memory.embedding_*`：独立配置 OpenAI-compatible `/embeddings`。配置可用时按 cosine 相似度、关键词和时效混合排序；未配置或接口失败时自动降级关键词检索，并有失败退避，不会每条消息持续请求坏端点。
 - `.ai memory status` / `.ai status`：查看两项群开关及当前是“向量就绪”还是“关键词降级”。开关写入 `groups.json`，无需改全局配置。
 
+### 消息 ID 与引用 ID（插件内实现）
+
+- 当前消息 ID、引用消息 ID、事件 ID、`msg_idx/ref_msg_idx` 和出站消息 ID 统一写入 `message_registry.sqlite3`，默认保留 7 天。
+- QQ 群/C2C 在 OlivOS 重启后若只给出 `ref_msg_idx`，插件会用自己的持久化注册表恢复被引用消息 ID 和正文。
+- Milky 的 reply 段若只有会话内 `message_seq`，插件会利用当前完整消息 ID 补成 `scene|peer_id|seq` 后再调用 `get_msg`。
+- 上述兼容全部位于 OlivaAIAgent，不要求修改 OlivOS 主项目。平台从未向机器人上报过的消息仍无法恢复。
+
+### MCP 工具与语音回复（v2.19）
+
+- GUI 新增“MCP 服务”分类，支持 Streamable HTTP 和 stdio；连接后远端工具以 `mcp_<服务>_<工具>` 动态加入 Agent，服务可单独设置 `danger` 并复用现有三级权限管控。运行维护页可手动刷新工具目录。
+- GUI 新增“语音模型”分类，兼容 OpenAI `/audio/speech` 请求。启用并填写接口后，模型会看到 `send_voice` 工具，可根据语境自行决定发送语音；成功后不会再重复同样文字。
+- 语音与潜行不维护第二套提示词，全部继续使用唯一的 `prompt.system`。本地语音缓存位于 `voice/`，按 `max_files` 自动淘汰。
+- `qqGuildv2` 被 @ 判定兼容 `GROUP_AT_MESSAGE_CREATE`、`sub_self_id` 和群机器人 `sub_self_open_id`，与 MessageRecall 的官机处理方式一致。
+
 ## 定时提醒 / 定时主动消息（v2.7）
 
 让 AI 真正“到点主动来找你”，而不是被动回复。对某人说「三小时后提醒我喝水」「12:52 给我发开会」，AI 会调用 `schedule_reminder` 工具**真的创建一个定时任务**；到了那个时间点，把你当时要提醒的内容交给 AI 生成一句自然的话，然后**主动推送**给你（群里会顺带 @ 你）。
@@ -142,12 +156,12 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - 群聊在 `vision.sync_ocr:false` 时，会把整条图片消息交给独立后台线程：先下载、识图并生成事实摘要，再继续本轮 AI 回复。这样不阻塞 OlivOS 消息总线，同时不会再让本轮回复只拿到“未识别成功”的占位；`true` 才会直接在消息总线线程识图。
 - 私聊与 `.ai` 附图也走同一视觉子系统。主后端是纯文本模型时，图片会先由独立视觉模型原位转成 `[图片:识图结果]`，然后把摘要而不是原始图片 URL 交给主模型；已写盘的旧格式仍兼容。
 - 开启 `ambient.first_thinking` 后，前置模型可从表情缓存选择图片意图；插件使用与群聊刺客一致的字段权重和模糊评分解析真实文件名，再交由主回复模型决定本轮是否发送。最终的 `[发图片:...]` 会转换成与 `old_string` 模式一致的真实 `[CQ:image,...]` 图片消息段。
-- `debug_log:true` 时，OlivOS Logger 会输出带同一“编号”的中文关键流程日志：前置判断、模型及 token 用量、命中的技能/知识资料、工具调用、本轮回复或跳过决定、图片处理和发送结果均可串联查看；普通群消息接收及“未开启潜行”不再逐条刷屏。API Key、token、Authorization、Base64/data URL 会自动遮蔽，长字段会截断。
-- 启动后会打印一条不含密钥的视觉状态。识图流程会显示为“图片下载开始/完成”“图片识别请求/成功/接口错误/异常”等中文阶段；技术标识如模型名、SDK 名和接口路径保持原文，便于精确排查。
+- `debug_log:true` 时，OlivOS Logger 会输出带同一“编号”的中文关键流程日志：前置判断、模型及 token 用量、命中的技能/知识资料、工具调用、本轮回复或跳过决定均可串联查看；普通群消息接收及“未开启潜行”不再逐条刷屏。API Key、token、Authorization、Base64/data URL 会自动遮蔽，长字段会截断。
+- 图片识别日志精简为“图片下载”“图片识别请求”“图片识别结果”三类；缓存查询、路由选择、后台转交、摘要转换和缓存落盘不再逐步刷屏。失败结果仍保留状态码和简短错误。
 
 ## 人设锁定与提示注入防护（v2.13）
 
-- 配置中的系统提示和 `ambient.personality` 是机器人身份、性格、语气、称呼习惯与行为边界的唯一来源。用户可以提出正常问题、操作和一次性输出格式要求，但不能用“以后改成文言文”“每次先叫昵称”“忘掉原人设”等话术永久改写机器人。
+- `prompt.system` 是机器人身份、性格、语气、称呼习惯与行为边界的唯一全局配置来源。用户可以提出正常问题、操作和一次性输出格式要求，但不能用“以后改成文言文”“每次先叫昵称”“忘掉原人设”等话术永久改写机器人。
 - 防护同时覆盖最新消息、历史、引用、用户侧写、群总结、长期记忆、知识库、技能、网页、图片文字和工具结果；这些内容均作为不可信数据使用，不能覆盖系统人设。
 - `memory_save`、`kb_save` 会拒绝人格控制内容；后台知识/侧写/群总结提炼在提示阶段与落盘阶段各过滤一次。升级前已经写入的数据也会在注入模型前过滤，不必立即手工删除。
 - `ambient.first_thinking` 仅处理普通潜行消息：前置模型返回 `NEXT` 后，主回复模型仍会二次判断是否参与；返回 `SKIP` 则不进入主模型。@、关键词和 `.ai` 属于明确触发，跳过前置判断并要求主模型回应。
@@ -176,11 +190,22 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 
 回归测试 9 套共 **259 项全绿**，打包后 OPK 亦通过端到端加载验证。
 
+## 统一设置面板（v2.18）
+
+OlivOS 托盘菜单选择“打开设置面板”，即可在一个窗口完成全部配置：
+
+- “全部配置”按功能分类覆盖 `config.json` 的所有运行字段，布尔值、枚举、数值和 JSON 列表分别使用对应控件；API Key 默认遮蔽。
+- “群级设置”管理 `groups.json` 中的插件启用、潜行、高危工具、滚动摘要和长期事实覆盖。
+- “运行维护”可查看当前模型、工具、技能、向量、视觉和提醒状态，并重建技能索引或重载静态知识库。
+- 保存后立即更新插件内存并原子写盘；原配置文件仍可手工编辑和热重载。
+
+全局提示词已统一为唯一字段 `prompt.system`。升级时旧 `ambient.personality` 与 `prompt.append` 会自动合并进去；旧 `ambient.enabled_groups` 会迁移到 `groups.json`，旧权限布尔字段也会转换并移除。迁移过程保留原内容。
+
 ## 安装
 
 1. 将 `OlivaAIAgent.opk` 放入 OlivOS 的 `plugin/app/`（或整个文件夹放入）
-2. 启动一次，自动生成 `plugin/data/OlivaAIAgent/config.json`
-3. 填 `openai.api_key`（默认后端 openai 兼容，示例指向 DeepSeek），`.ai reload`
+2. 启动后从 OlivOS 托盘菜单选择“打开设置面板”
+3. 在“OpenAI / 千问兼容”中填写 API Key 与模型，点击“保存并应用”
 4. `.ai 你好` 测试全接口模式；`.ai stealth on` 在某群开启潜行模式
 
 ### 依赖（核心零额外依赖）
@@ -226,6 +251,8 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
   },
   "anthropic": { "api_url": "...", "api_key": "", "model": "claude-sonnet-4-20250514" },
 
+  "prompt": { "system": "系统规则与统一人设……" }, // ← 全局提示词只配置这一处
+
   "trigger": { "keywords": ["骰娘"] },   // ← 统一触发关键词(潜行开/关都用它，配一处即可)
 
   "memory": {
@@ -239,9 +266,20 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
     "embedding_model": "qwen3.7-text-embedding",
     "top_k": 6
   },
+  "mcp": {
+    "enabled": true,
+    "servers": [
+      {"name":"remote", "transport":"streamable_http", "url":"https://example.com/mcp", "headers":{}, "danger":true},
+      {"name":"local", "transport":"stdio", "command":"npx", "args":["-y", "@example/mcp-server"], "env":{}, "danger":true}
+    ]
+  },
+  "voice": {
+    "enabled": false,
+    "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/audio/speech",
+    "api_key": "", "model": "qwen3-tts-flash", "voice": "Cherry", "response_format": "mp3"
+  },
 
   "ambient": {                       // ← 潜行模式（刺客同款+增强）
-    "personality": "冷静温和的群友人设…",
     "reply_probability": 1.0,        // 随机插话概率(建议连同 first_thinking 一起调)
     "history_size": 8,
     "prompt_cache_optimized": true,  // DeepSeek 前缀缓存优化
@@ -271,7 +309,7 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 | `.ai memory status` | 查看本群滚动摘要、长期事实与向量状态 | 所有人 |
 | `.ai memory history on/off` / `.ai memory long on/off` | 独立控制本群滚动摘要 / 长期事实 | 骰主 |
 | `.ai on/off`、`.ai global on/off` | 本群/全局开关 | 骰主 |
-| `.ai stealth on/off` | 本群潜行（群友融入）模式；**off = 纯助手，仅 `.ai` 触发**，@/关键词/概率均不触发 | 骰主 |
+| `.ai stealth on/off` | 本群潜行（群友融入）模式；**off = 纯助手，由 `.ai`、明确 @ 或统一关键词触发**，不概率插话 | 骰主 |
 | `.ai stealth think on/off` | 潜行前置判定开关 | 骰主 |
 | `.ai stealth tools on/off` | 潜行是否可调工具/骰点 | 骰主 |
 | `.ai admin [global/masteronly] on/off` | 高危接口全局开关 / 旧式仅骰主开关（推荐用 `.ai admin role master`） | 骰主 |
@@ -284,7 +322,7 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - `config.json` / `groups.json` — 配置与每群开关
 - `Knowledge/*.json` — 手动维护的静态知识库 `{关键词: 内容}`
 - `skills/<名>/SKILL.md` — Codex 技能/规则书（支持 frontmatter 的 name/description/aliases/keywords/triggers + references/ 资料）
-- `Image/` — 视觉缓存图片；`ambient_history/` — 每群历史；`ambient_memory_*.json` — 知识/侧写/滚动摘要；`semantic_memory.sqlite3` — 长期事实与向量；`memory_extraction_state.json` — 提炼水位；`sessions/` `memory/` — Agent 对话与手动记忆
+- `Image/` — 视觉缓存图片；`voice/` — AI 生成语音缓存；`ambient_history/` — 每群历史；`ambient_memory_*.json` — 知识/侧写/滚动摘要；`semantic_memory.sqlite3` — 长期事实与向量；`message_registry.sqlite3` — 消息 ID、引用及正文；`memory_extraction_state.json` — 提炼水位；`sessions/` `memory/` — Agent 对话与手动记忆
 
 ## 说明
 

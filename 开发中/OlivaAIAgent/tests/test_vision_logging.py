@@ -104,7 +104,8 @@ class VisionLoggingTest(unittest.TestCase):
         self.assertEqual('一只白色狐狸站在雪地里', result['content'])
         logs = '\n'.join(record[1] for record in self.proc.records)
         self.assertIn('图片识别请求', logs)
-        self.assertIn('图片识别成功', logs)
+        self.assertIn('图片识别结果', logs)
+        self.assertIn('结果=成功', logs)
         self.assertNotIn('VERY_LONG_IMAGE_DATA', logs)
         self.assertNotIn('secret-key', logs)
 
@@ -118,7 +119,8 @@ class VisionLoggingTest(unittest.TestCase):
             )
         self.assertIsNone(result)
         logs = '\n'.join(record[1] for record in self.proc.records)
-        self.assertIn('图片识别接口错误', logs)
+        self.assertIn('图片识别结果', logs)
+        self.assertIn('结果=失败', logs)
         self.assertIn('状态码=400', logs)
         self.assertIn('unsupported image format', logs)
         self.assertNotIn('ERROR_IMAGE_DATA', logs)
@@ -162,9 +164,29 @@ class VisionLoggingTest(unittest.TestCase):
             )
         self.assertEqual([failed], facts)
         describe.assert_not_called()
-        logs = '\n'.join(record[1] for record in self.proc.records)
-        self.assertIn('已跳过重复图片识别', logs)
-        self.assertIn('原因=本轮已识别失败', logs)
+        self.assertEqual([], self.proc.records)
+
+    def test_full_ocr_pipeline_only_logs_download_request_and_result(self):
+        image = FakeImageResponse(b'\xff\xd8\xffIMAGE', 'image/jpeg')
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(OlivaAIAgent.vision, 'imgDir', return_value=directory), \
+                mock.patch.object(OlivaAIAgent.vision.requests, 'get', return_value=image), \
+                mock.patch.object(OlivaAIAgent.vision.requests, 'post', return_value=FakeResponse()):
+            result, local_name = OlivaAIAgent.vision._runOcr(
+                'download.jpg',
+                'https://example.invalid/download.jpg',
+                trace_id='trace-three-lines',
+            )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(local_name.endswith('.jpg'))
+        flow_logs = [record[1] for record in self.proc.records if '流程' in record[1]]
+        self.assertEqual(3, len(flow_logs))
+        self.assertIn('图片下载', flow_logs[0])
+        self.assertIn('图片识别请求', flow_logs[1])
+        self.assertIn('图片识别结果', flow_logs[2])
+        self.assertNotIn('图片识别路由', '\n'.join(flow_logs))
+        self.assertNotIn('图片缓存', '\n'.join(flow_logs))
 
     def test_missing_summary_uses_parsed_image_once(self):
         expected = ['[图片:一只白色狐狸]']

@@ -141,6 +141,21 @@ def _resolveQuotedMessage(plugin_event, reply_id):
         pass
 
     try:
+        registered = OlivaAIAgent.identifiers.getByMessageId(plugin_event, reply_id)
+        if isinstance(registered, dict) and str(registered.get('content') or '').strip():
+            return {
+                'message_id': reply_id,
+                'sender_id': registered.get('sender_id'),
+                'sender_name': registered.get('sender_name'),
+                'text': str(registered.get('content') or '')[:4000],
+                'images': [],
+                'image_count': 0,
+                'source': '插件消息注册表',
+            }
+    except Exception:
+        pass
+
+    try:
         result = plugin_event.get_msg(reply_id)
         if not isinstance(result, dict) or not result.get('active'):
             return None
@@ -241,10 +256,31 @@ def _logQuotedMessage(Proc, parsed):
     )
 
 
+def _isAtCurrentBot(plugin_event, at_list, extend):
+    '''兼容 qqGuildv2 的应用 ID、子账号 ID 与群机器人 member_openid。'''
+    self_ids = set()
+    try:
+        self_id = plugin_event.base_info.get('self_id')
+        if self_id not in [None, '']:
+            self_ids.add(str(self_id))
+    except Exception:
+        pass
+    for key in ('sub_self_id', 'sub_self_open_id'):
+        value = extend.get(key) if isinstance(extend, dict) else None
+        if value not in [None, '']:
+            self_ids.add(str(value))
+    try:
+        is_qqguild_v2 = plugin_event.platform.get('sdk') == 'qqGuildv2_link'
+    except Exception:
+        is_qqguild_v2 = False
+    if is_qqguild_v2 and extend.get('qq_event_type') == 'GROUP_AT_MESSAGE_CREATE':
+        return True
+    return any(str(item) in self_ids for item in at_list)
+
+
 def parseMessage(plugin_event):
     '''解析 old_string(CQ) 消息 → 纯文本 / at列表 / 图片URL列表 / 是否at了机器人'''
     raw = str(plugin_event.data.message)
-    self_id = str(plugin_event.base_info.get('self_id', ''))
     at_list = []
     images = []
     reply_id = None
@@ -295,16 +331,21 @@ def parseMessage(plugin_event):
         message_id = str(extend['qq_message_id'])
     if reply_id in [None, '', '-1', -1] and extend.get('qq_reference_message_id') not in [None, '', '-1', -1]:
         reply_id = str(extend['qq_reference_message_id'])
-    reference_message_id = None if reply_id in [None, '', '-1', -1] else str(reply_id)
     event_id = str(extend['event_id']) if extend.get('event_id') not in [None, ''] else None
     msg_idx = str(extend['qq_msg_idx']) if extend.get('qq_msg_idx') not in [None, ''] else None
     ref_msg_idx = str(extend['qq_ref_msg_idx']) if extend.get('qq_ref_msg_idx') not in [None, ''] else None
+    reference_message_id = OlivaAIAgent.identifiers.normalizeReferenceId(
+        plugin_event,
+        reply_id,
+        current_message_id=message_id,
+        reference_index=ref_msg_idx,
+    )
     quote = _resolveQuotedMessage(plugin_event, reference_message_id)
     return {
         'trace_id': '%012x' % (time.time_ns() & 0xffffffffffff),
         'text': text,
         'at_list': at_list,
-        'at_me': self_id in at_list,
+        'at_me': _isAtCurrentBot(plugin_event, at_list, extend),
         'images': images,
         'reply_id': reference_message_id,
         'reference_message_id': reference_message_id,
@@ -361,8 +402,8 @@ def onGroupMessage(plugin_event, Proc):
 def _onGroupMessage(plugin_event, Proc):
     # 路由是单一决策，每条消息只产出一条回复，且都走同一条"统一管线"(潜行上下文 + 全权限工具)：
     #   1) .ai 前缀 → 始终触发（显式命令/对话），强制回复 + 全部工具
-    #   2) 潜行开启 → 额外响应 @ / 关键词(强制回复) 与 概率被动插话；记录群历史作上下文
-    #   3) 潜行关闭 → 纯助手模式：只有 .ai 前缀触发；开启记忆时仍只记录，不主动回复
+    #   2) @ / 关键词 → 潜行开关不影响明确触发，强制回复
+    #   3) 潜行开启 → 额外支持概率被动插话；关闭后普通消息仅按需记录记忆
     platform = plugin_event.platform['platform']
     group_id = plugin_event.data.group_id
     user_id = plugin_event.data.user_id
@@ -371,6 +412,7 @@ def _onGroupMessage(plugin_event, Proc):
         return
     parsed = parseMessage(plugin_event)
     trace_id = parsed['trace_id']
+    OlivaAIAgent.identifiers.recordIncoming(plugin_event, parsed)
     _logQuotedMessage(Proc, parsed)
     # 去重：同一条消息若被重复投递(或未来路径重叠)，只处理一次
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
@@ -403,9 +445,29 @@ def _onGroupMessage(plugin_event, Proc):
         plugin_event.set_block()
         return
 
-    # 非前缀路径：仅在潜行开启时才响应 @ / 关键词 / 概率
+    # 非前缀路径：明确 @ / 关键词始终触发；潜行只控制概率插话和群聊融入。
     if not _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=False):
         OlivaAIAgent.conf.traceLog(Proc, 'route.group.disabled', trace_id)
+        return
+    hard = bool(
+        parsed.get('at_me')
+        and OlivaAIAgent.conf.get('trigger', 'at_trigger', default=True)
+    ) or _keywordHit(text, _unionKeywords())
+    if hard:
+        hard_tools = (
+            OlivaAIAgent.conf.get('ambient', 'integrate_hard_trigger', default=True)
+            or OlivaAIAgent.conf.get('ambient', 'allow_tools', default=False)
+        )
+        OlivaAIAgent.ambient.process(
+            plugin_event,
+            Proc,
+            parsed,
+            self_id,
+            force=True,
+            tools=hard_tools,
+            attempt=True,
+        )
+        plugin_event.set_block()
         return
     if not OlivaAIAgent.conf.isAmbientEnabled(platform, group_id):
         # 记忆与潜行独立：潜行关闭时普通消息仍可进入摘要/事实管线，但绝不触发回复。
@@ -434,14 +496,11 @@ def _onGroupMessage(plugin_event, Proc):
     if buffer_text != '':
         OlivaAIAgent.memory.bufferAppend(platform, group_id, user_id, sender_name, buffer_text)
 
-    # 潜行开启：@ / 关键词 = 强制回复(force)，否则按概率被动自行插话；都走同一条统一管线
-    hard = bool(parsed.get('at_me') and OlivaAIAgent.conf.get('trigger', 'at_trigger', default=True)) \
-        or _keywordHit(text, _unionKeywords())
-    tools = (hard and OlivaAIAgent.conf.get('ambient', 'integrate_hard_trigger', default=True)) \
-        or OlivaAIAgent.conf.get('ambient', 'allow_tools', default=False)
+    # 潜行开启：此处只剩普通消息，按概率被动自行插话。
+    tools = OlivaAIAgent.conf.get('ambient', 'allow_tools', default=False)
     try:
         OlivaAIAgent.ambient.process(plugin_event, Proc, parsed, self_id,
-                                     force=hard, tools=tools, attempt=True)
+                                     force=False, tools=tools, attempt=True)
     except Exception:
         OlivaAIAgent.conf.log(Proc, 3, '统一管线分发异常:\n' + traceback.format_exc())
 
@@ -468,6 +527,7 @@ def _onPrivateMessage(plugin_event, Proc):
         return
     parsed = parseMessage(plugin_event)
     trace_id = parsed['trace_id']
+    OlivaAIAgent.identifiers.recordIncoming(plugin_event, parsed)
     OlivaAIAgent.conf.traceLog(
         Proc,
         'message.private.received',
@@ -588,6 +648,15 @@ def handleCommand(plugin_event, Proc, rest, is_master, in_group):
             '开' if OlivaAIAgent.conf.get('skills', 'enable', default=True) else '关',
             OlivaAIAgent.skills.backendName(),
             '开' if OlivaAIAgent.conf.get('vision', 'enable', default=False) else '关'))
+        voice_status = OlivaAIAgent.voice.getStatus()
+        mcp_status = OlivaAIAgent.mcp.getStatus()
+        lines.append('语音: %s | MCP: %s（服务 %d/%d，工具 %d）' % (
+            '就绪' if voice_status['ready'] else ('未就绪' if voice_status['enabled'] else '关'),
+            '开' if mcp_status['enabled'] else '关',
+            mcp_status['connected'],
+            mcp_status['servers'],
+            mcp_status['tools'],
+        ))
         if in_group:
             lines.append('本群: %s | 本群高危: %s' % (
                 '开' if OlivaAIAgent.conf.isGroupEnabled(platform, group_id) else '关',
@@ -834,6 +903,7 @@ def handleCommand(plugin_event, Proc, rest, is_master, in_group):
 
     if cmd == 'reload':
         OlivaAIAgent.conf.load()
+        OlivaAIAgent.mcp.invalidate()
         try:
             n_kb = OlivaAIAgent.knowledge.loadStatic()
             n_sk = len(OlivaAIAgent.skills.buildIndex())
@@ -880,10 +950,6 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
     persona_guard = conf.personaGuardPrompt()
     if persona_guard:
         parts.append(persona_guard)
-    # 潜行人设也用于私聊，让"两边"在私聊同样合一(人设 + 能力)
-    persona = str(conf.get('ambient', 'personality', default=''))
-    if persona:
-        parts.append('# 人设\n%s' % persona)
     persona_map = conf.get('prompt', 'group_persona', default={}) or {}
     if ctx['func_type'] == 'group_message' and str(ctx['group_id']) in persona_map:
         parts.append('【本群人设】\n%s' % persona_map[str(ctx['group_id'])])
@@ -933,9 +999,6 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
             parts.append('【已加载插件(run_command 可调用其任意指令；不确定语法先执行 .help)】\n' + '、'.join(plugins))
     except Exception:
         pass
-    append = str(conf.get('prompt', 'append', default=''))
-    if append:
-        parts.append(append)
     return '\n\n'.join([p for p in parts if p])
 
 
@@ -997,17 +1060,7 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
                         ensure_ascii=False,
                     ))
         else:
-            session_key = OlivaAIAgent.memory.sessionKey(platform, 'private', ctx['user_id'])
-            recent_ids = []
-            for entry in OlivaAIAgent.memory.getSession(session_key)[-12:]:
-                ids = entry.get('message_ids') or []
-                if entry.get('message_id') not in [None, '']:
-                    ids = [entry['message_id']] + list(ids)
-                if ids:
-                    recent_ids.append({
-                        '方向': '机器人发送' if entry.get('role') == 'assistant' else '用户发送',
-                        '消息ID列表': list(dict.fromkeys(str(item) for item in ids)),
-                    })
+            recent_ids = OlivaAIAgent.identifiers.recent(plugin_event, limit=12)
             if recent_ids:
                 blocks.append('【近期私聊收发消息标识】\n' + json.dumps(recent_ids, ensure_ascii=False))
     except Exception:
@@ -1275,6 +1328,7 @@ def _safeReply(plugin_event, text, parsed=None):
     split_len = int(conf.get('reply', 'split_length', default=1500))
     max_count = int(conf.get('reply', 'max_split_count', default=3))
     prefix = ''
+    outgoing_reference_id = None
     try:
         if (
             conf.get('reply', 'quote_reply', default=True)
@@ -1286,6 +1340,7 @@ def _safeReply(plugin_event, text, parsed=None):
                 msg_id = plugin_event.data.message_id
             if msg_id not in [None, '', '-1', -1]:
                 prefix = '[CQ:reply,id=%s]' % str(msg_id)
+                outgoing_reference_id = str(msg_id)
     except Exception:
         prefix = ''
     chunks = [text[i:i + split_len] for i in range(0, len(text), split_len)][:max_count]
@@ -1299,6 +1354,12 @@ def _safeReply(plugin_event, text, parsed=None):
         if len(chunks) > 1:
             time.sleep(0.6)
     message_ids = list(dict.fromkeys(message_ids))
+    OlivaAIAgent.identifiers.recordOutgoing(
+        plugin_event,
+        text,
+        message_ids,
+        reference_message_id=outgoing_reference_id,
+    )
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
         'message.outgoing.sent',

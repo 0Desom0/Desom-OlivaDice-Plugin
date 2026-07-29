@@ -1,6 +1,9 @@
 # -*- encoding: utf-8 -*-
 
+import copy
+import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import OlivaAIAgent
@@ -21,15 +24,34 @@ class FakeEvent:
         self.plugin_info = {'func_type': 'group_message'}
         self.data = FakeData(message)
         self.base_info = {'self_id': 'bot-1'}
+        self.bot_info = SimpleNamespace(hash='bot-hash')
         self.result = result
         self.get_msg_calls = []
+        self.blocked = False
 
     def get_msg(self, message_id):
         self.get_msg_calls.append(str(message_id))
         return self.result
 
+    def set_block(self):
+        self.blocked = True
+
 
 class QuoteContextTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.old_data_path = OlivaAIAgent.conf.dataPath
+        self.old_conf = OlivaAIAgent.conf.gConf
+        OlivaAIAgent.conf.dataPath = self.temp_dir.name
+        OlivaAIAgent.conf.gConf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+        OlivaAIAgent.identifiers._initialized_path = None
+
+    def tearDown(self):
+        OlivaAIAgent.conf.dataPath = self.old_data_path
+        OlivaAIAgent.conf.gConf = self.old_conf
+        OlivaAIAgent.identifiers._initialized_path = None
+        self.temp_dir.cleanup()
+
     def test_resolves_quote_through_olivos_get_msg(self):
         event = FakeEvent(
             '[CQ:reply,id=quoted-1]这个结论是什么意思？',
@@ -68,6 +90,41 @@ class QuoteContextTest(unittest.TestCase):
         self.assertEqual([], event.get_msg_calls)
         self.assertEqual('潜行历史', parsed['quote']['source'])
         self.assertEqual('已写盘的群聊内容', parsed['quote']['text'])
+
+    def test_qqguildv2_group_at_event_is_treated_as_at_bot_without_segment(self):
+        event = FakeEvent('机器人在吗')
+        event.data.extend['qq_event_type'] = 'GROUP_AT_MESSAGE_CREATE'
+        with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+        self.assertTrue(parsed['at_me'])
+
+    def test_qqguildv2_sub_self_open_id_is_treated_as_bot_mention(self):
+        event = FakeEvent('[CQ:at,qq=bot-member-openid] 机器人在吗')
+        event.data.extend['sub_self_open_id'] = 'bot-member-openid'
+        with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+        self.assertTrue(parsed['at_me'])
+        self.assertIn('bot-member-openid', parsed['at_list'])
+
+    def test_qqguildv2_at_event_routes_to_agent_when_ambient_is_disabled(self):
+        event = FakeEvent('机器人在吗')
+        event.data.extend['qq_event_type'] = 'GROUP_AT_MESSAGE_CREATE'
+        with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
+                mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+                mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
+                mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=False), \
+                mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
+            OlivaAIAgent.msgReply._onGroupMessage(event, None)
+
+        process.assert_called_once()
+        self.assertTrue(process.call_args.kwargs['force'])
+        self.assertTrue(process.call_args.kwargs['tools'])
+        self.assertTrue(process.call_args.kwargs['attempt'])
+        self.assertTrue(process.call_args.args[2]['at_me'])
+        self.assertTrue(event.blocked)
 
     def test_quoted_image_uses_existing_vision_pipeline(self):
         event = FakeEvent(

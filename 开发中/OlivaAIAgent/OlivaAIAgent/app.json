@@ -2,10 +2,10 @@
     "name": "OlivaAIAgent",
     "author": "Desom",
     "namespace": "OlivaAIAgent",
-    "info": "AI全能群聊插件：自动内省OlivOS接口，兼具骰点、潜行群友、滚动摘要、长期事实向量检索、视觉、提醒及消息引用标识。",
+    "info": "AI全能群聊插件：自动内省OlivOS接口，兼具骰点、MCP、语音、潜行群友、长期事实、视觉、提醒及消息引用标识。",
     "priority": 30000,
-    "svn": 31,
-    "version": "2.17.0",
+    "svn": 34,
+    "version": "2.19.0",
     "compatible_svn": 190,
     "message_mode": "old_string",
     "support": [
@@ -17,7 +17,7 @@
     ],
     "menu_config": [
         {
-            "title": "打开配置目录",
+            "title": "打开设置面板",
             "event": "OlivaAIAgent_Menu_OpenConf"
         },
         {

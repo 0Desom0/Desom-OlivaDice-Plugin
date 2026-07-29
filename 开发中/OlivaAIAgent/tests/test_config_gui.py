@@ -1,0 +1,171 @@
+import copy
+import json
+import os
+import tempfile
+import unittest
+from unittest import mock
+
+import OlivaAIAgent
+
+
+class FakeProc:
+    def __init__(self):
+        self.records = []
+
+    def log(self, level, message, segments=None):
+        self.records.append((level, message, segments))
+
+
+class ConfigMigrationTest(unittest.TestCase):
+    def test_default_config_has_one_global_prompt(self):
+        default_conf = OlivaAIAgent.conf.DEFAULT_CONF
+        self.assertIn('system', default_conf['prompt'])
+        self.assertNotIn('append', default_conf['prompt'])
+        self.assertNotIn('personality', default_conf['ambient'])
+        self.assertNotIn('enabled_groups', default_conf['ambient'])
+        self.assertTrue(default_conf['memory']['long_term_default'])
+        self.assertIn('mcp', default_conf)
+        self.assertIn('voice', default_conf)
+
+    def test_legacy_prompts_and_permissions_are_migrated_once(self):
+        config = {
+            'prompt': {'system': '基础规则', 'append': '补充规则'},
+            'ambient': {'personality': '自定义人设', 'enabled_groups': ['10001']},
+            'permissions': {'admin_tools_master_only': True, 'admin_tools_min_role': 'everyone'},
+        }
+
+        legacy_groups = OlivaAIAgent.conf._migrate(config)
+        first_prompt = config['prompt']['system']
+        OlivaAIAgent.conf._migrate(config)
+
+        self.assertIn('基础规则', first_prompt)
+        self.assertIn('自定义人设', first_prompt)
+        self.assertIn('补充规则', first_prompt)
+        self.assertEqual(first_prompt, config['prompt']['system'])
+        self.assertNotIn('append', config['prompt'])
+        self.assertNotIn('personality', config['ambient'])
+        self.assertNotIn('admin_tools_master_only', config['permissions'])
+        self.assertEqual('master', config['permissions']['admin_tools_min_role'])
+        self.assertEqual(['10001'], legacy_groups)
+
+    def test_legacy_all_group_switch_becomes_default(self):
+        config = {'prompt': {}, 'ambient': {'enabled_groups': 'all'}, 'permissions': {}}
+        legacy_groups = OlivaAIAgent.conf._migrate(config)
+        self.assertEqual([], legacy_groups)
+        self.assertTrue(config['ambient']['enable_default'])
+
+    def test_persisted_config_omits_description_metadata(self):
+        clean = OlivaAIAgent.conf._persistableConfig({
+            '_说明': '不落盘',
+            'normal': 1,
+            'nested': {'_提示': '不落盘', 'value': True},
+        })
+        self.assertEqual({'normal': 1, 'nested': {'value': True}}, clean)
+
+    def test_wildcard_group_migration_preserves_platform_override_priority(self):
+        old_groups = copy.deepcopy(OlivaAIAgent.conf.gGroups)
+        try:
+            OlivaAIAgent.conf.gGroups = {'*': {'10001': {'ambient': True}}}
+            self.assertTrue(OlivaAIAgent.conf.getGroupSwitch('qq', '10001', 'ambient', False))
+            OlivaAIAgent.conf.gGroups['qq'] = {'10001': {'ambient': False}}
+            self.assertFalse(OlivaAIAgent.conf.getGroupSwitch('qq', '10001', 'ambient', True))
+        finally:
+            OlivaAIAgent.conf.gGroups = old_groups
+
+    def test_load_migrates_old_file_without_losing_prompt_text(self):
+        conf = OlivaAIAgent.conf
+        old_state = {
+            name: copy.deepcopy(getattr(conf, name))
+            for name in (
+                'dataPath',
+                'tmpPath',
+                'CONFIG_PATH',
+                'GROUPS_PATH',
+                'LOG_DIR',
+                'gConf',
+                'gGroups',
+                '_config_mtime',
+                '_groups_mtime',
+            )
+        }
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                conf.dataPath = os.path.join(temp_dir, 'data')
+                conf.tmpPath = os.path.join(temp_dir, 'tmp')
+                conf.CONFIG_PATH = os.path.join(conf.dataPath, 'config.json')
+                conf.GROUPS_PATH = os.path.join(conf.dataPath, 'groups.json')
+                conf.LOG_DIR = os.path.join(conf.dataPath, 'logs')
+                os.makedirs(conf.dataPath, exist_ok=True)
+                with open(conf.CONFIG_PATH, 'w', encoding='utf-8') as config_file:
+                    json.dump(
+                        {
+                            '_说明': '旧说明',
+                            'prompt': {'system': '旧系统', 'append': '旧附加'},
+                            'ambient': {'personality': '旧人设', 'enabled_groups': ['20002']},
+                        },
+                        config_file,
+                        ensure_ascii=False,
+                    )
+
+                conf.load()
+                with open(conf.CONFIG_PATH, encoding='utf-8') as config_file:
+                    persisted = json.load(config_file)
+
+                self.assertIn('旧系统', persisted['prompt']['system'])
+                self.assertIn('旧人设', persisted['prompt']['system'])
+                self.assertIn('旧附加', persisted['prompt']['system'])
+                self.assertNotIn('append', persisted['prompt'])
+                self.assertNotIn('personality', persisted['ambient'])
+                self.assertNotIn('enabled_groups', persisted['ambient'])
+                self.assertNotIn('_说明', persisted)
+                self.assertTrue(conf.gGroups['*']['20002']['ambient'])
+        finally:
+            for name, value in old_state.items():
+                setattr(conf, name, value)
+
+
+class ConfigGuiSchemaTest(unittest.TestCase):
+    def test_gui_action_has_one_clear_log(self):
+        proc = FakeProc()
+        window = OlivaAIAgent.gui.ConfigWindow(Proc=proc)
+        window._logAction('正在保存并应用配置')
+        self.assertEqual(1, len(proc.records))
+        self.assertIn('GUI | 正在保存并应用配置', proc.records[0][1])
+
+    def test_gui_sections_cover_every_runtime_config_section(self):
+        expected = {
+            key
+            for key, value in OlivaAIAgent.conf.DEFAULT_CONF.items()
+            if isinstance(value, dict) and not key.startswith('_')
+        }
+        actual = set(OlivaAIAgent.gui.SECTION_ORDER)
+        actual.discard('general')
+        self.assertEqual(expected, actual)
+
+    def test_typed_editor_values(self):
+        self.assertEqual(12, OlivaAIAgent.gui._parseValue('12', 1, ('agent', 'max_tool_rounds')))
+        self.assertEqual(0.25, OlivaAIAgent.gui._parseValue('0.25', 0.0, ('semantic_memory', 'min_score')))
+        self.assertEqual(['a', 'b'], OlivaAIAgent.gui._parseValue('["a", "b"]', [], ('trigger', 'keywords')))
+        self.assertIs(True, OlivaAIAgent.gui._parseValue('true', 'auto', ('vision', 'use_main')))
+
+    def test_mcp_and_voice_have_visible_gui_sections(self):
+        self.assertIn('mcp', OlivaAIAgent.gui.SECTION_ORDER)
+        self.assertIn('voice', OlivaAIAgent.gui.SECTION_ORDER)
+        self.assertEqual(
+            [{'name': 'demo', 'transport': 'streamable_http'}],
+            OlivaAIAgent.gui._parseValue(
+                '[{"name":"demo","transport":"streamable_http"}]',
+                [],
+                ('mcp', 'servers'),
+            ),
+        )
+
+    def test_mcp_maintenance_action_uses_logged_runner(self):
+        window = OlivaAIAgent.gui.ConfigWindow()
+        with mock.patch.object(window, '_runMaintenance') as runner:
+            window.refreshMcp()
+        self.assertEqual('MCP 工具刷新', runner.call_args.args[0])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -127,6 +127,11 @@ def execTool(name, args, ctx):
         path=(args or {}).get('path', ''),
     )
     item = _TOOL_MAP.get(name)
+    mcp_item = None
+    if item is None:
+        mcp_item = OlivaAIAgent.mcp.getToolItem(name)
+        if mcp_item is not None:
+            item = {'name': name, 'danger': bool(mcp_item.get('danger', True))}
     if item is None:
         OlivaAIAgent.conf.traceLog(ctx.get('Proc'), 'tool.unknown', trace_id, name=name)
         return _trunc({'error': '未知工具: %s' % name})
@@ -135,7 +140,10 @@ def execTool(name, args, ctx):
         OlivaAIAgent.conf.traceLog(ctx.get('Proc'), 'tool.denied', trace_id, name=name, reason=why)
         return _trunc({'error': '权限不足: %s' % why})
     try:
-        result = item['exec'](ctx, args or {})
+        if mcp_item is not None:
+            result = OlivaAIAgent.mcp.execute(name, args or {}, ctx)
+        else:
+            result = item['exec'](ctx, args or {})
         normalized_context = None
         if isinstance(result, dict):
             normalized_context = result.get('data', {}).get('normalized_context')
@@ -168,9 +176,31 @@ def execTool(name, args, ctx):
         return _trunc({'error': '工具执行异常: %s: %s' % (type(e).__name__, e)})
 
 
-def getToolsForRequest(ctx):
+def getToolsForRequest(ctx, voice_only=False):
     '''按当前上下文返回可见工具列表(权限不足的高危工具仍暴露，调用时报错并提示，便于AI向用户解释)'''
-    return [{'name': t['name'], 'desc': t['desc'], 'params': t['params']} for t in TOOLS]
+    if voice_only:
+        return [
+            {'name': item['name'], 'desc': item['desc'], 'params': item['params']}
+            for item in TOOLS
+            if item['name'] == 'send_voice' and OlivaAIAgent.voice.getStatus()['ready']
+        ]
+    tools = [
+        {'name': item['name'], 'desc': item['desc'], 'params': item['params']}
+        for item in TOOLS
+        if item['name'] != 'send_voice' or OlivaAIAgent.voice.getStatus()['ready']
+    ]
+    tools.extend(OlivaAIAgent.mcp.getToolDefs())
+    return tools
+
+
+@_reg(
+    'send_voice',
+    '把指定文本合成为语音并立即发送到当前会话。仅在语音比文字更自然时调用；调用成功后，最终回复不要重复发送同样文字。',
+    params={'text': _p('string', '要说出的自然口语文本，不要包含 CQ/OP 码、Markdown 或动作描写')},
+    required=['text'],
+)
+def _t_send_voice(ctx, args):
+    return OlivaAIAgent.voice.sendVoice(ctx, args.get('text', ''))
 
 
 # =========================================================

@@ -646,7 +646,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         except Exception:
             skills_ctx = ''
 
-    persona = cfg('personality', '')
+    # 潜行与显式 Agent 共用唯一的 prompt.system，不再维护第二套可配置人设。
+    persona = conf.get('prompt', 'system', default='')
     # 与 app.json message_mode=old_string 对齐，用 CQ @ 码，OlivOS 才会解析成真实 @
     mention_str = '[CQ:at,qq=%s]' % self_id
     dice_cheat = conf.get('prompt', 'dice_cheatsheet', default='')
@@ -737,6 +738,9 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     message_ids = messageIdContext(history)
     if message_ids:
         patch['近期收发消息标识'] = message_ids
+    registry_ids = OlivaAIAgent.identifiers.recent(plugin_event, limit=12)
+    if registry_ids:
+        patch['插件消息标识注册表'] = registry_ids
     if semantic_facts:
         patch['当前记忆']['长期事实'] = semantic_facts
     if agent_mem:
@@ -905,6 +909,7 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
             ok=sent,
         )
         if sent:
+            OlivaAIAgent.identifiers.recordOutgoing(plugin_event, str(i), message_ids)
             sent_records.append({'message': str(i), 'message_ids': message_ids})
     return sent_records
 
@@ -1070,7 +1075,8 @@ def _makeToolContext(plugin_event, Proc, group_id, trace_id=None):
 
 def _callReply(plugin_event, Proc, bot_hash, group_id, messages, history, allow_tools, trace_id=None):
     retry = int(OlivaAIAgent.conf.get('ambient', 'retry_count', default=3))
-    if allow_tools:
+    voice_only = not allow_tools and OlivaAIAgent.voice.getStatus()['ready']
+    if allow_tools or voice_only:
         return _callReplyWithTools(
             plugin_event,
             Proc,
@@ -1079,6 +1085,7 @@ def _callReply(plugin_event, Proc, bot_hash, group_id, messages, history, allow_
             messages,
             history,
             trace_id=trace_id,
+            voice_only=voice_only,
         )
     reply_list = None
     for attempt in range(retry):
@@ -1106,7 +1113,16 @@ def _callReply(plugin_event, Proc, bot_hash, group_id, messages, history, allow_
     return reply_list
 
 
-def _callReplyWithTools(plugin_event, Proc, bot_hash, group_id, messages, history, trace_id=None):
+def _callReplyWithTools(
+    plugin_event,
+    Proc,
+    bot_hash,
+    group_id,
+    messages,
+    history,
+    trace_id=None,
+    voice_only=False,
+):
     '''潜行 + 工具：让 AI 可调用 run_command/查询等，最终强制 JSON 输出。
     修复要点：
     1. 每一步加 debugLog，让 debug_log=true 时能看到失败原因(之前静默 return None)
@@ -1114,7 +1130,7 @@ def _callReplyWithTools(plugin_event, Proc, bot_hash, group_id, messages, histor
     3. 工具调用记录到 debugLog，方便排查"调了工具但没回复"的问题'''
     conf = OlivaAIAgent.conf
     ctx = _makeToolContext(plugin_event, Proc, group_id, trace_id)
-    tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx)
+    tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx, voice_only=voice_only)
     max_rounds = int(conf.get('ambient', 'agent_max_turns', default=4))
     convo = list(messages)
     for rnd in range(max_rounds):

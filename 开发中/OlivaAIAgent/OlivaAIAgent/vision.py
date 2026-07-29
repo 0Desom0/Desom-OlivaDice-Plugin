@@ -284,10 +284,11 @@ def _downloadBase64(url, file_name, trace_id=None):
     if not actual_mime:
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
-            'vision.download.rejected',
+            'vision.download.failed',
             trace_id,
             bytes=len(content),
             content_type=ctype or 'missing',
+            reason='not_image',
         )
         return None, None
     safe = _stableImageName(content, actual_mime, file_name)
@@ -310,7 +311,7 @@ def _downloadBase64(url, file_name, trace_id=None):
         )
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
-        'vision.download.done',
+        'vision.download',
         trace_id,
         bytes=len(content),
         content_type=ctype or _mimeOf(safe),
@@ -361,10 +362,11 @@ def _callOcr(vc, image_url, trace_id=None):
         if r.status_code != 200:
             OlivaAIAgent.conf.traceLog(
                 OlivaAIAgent.conf.gProc,
-                'vision.ocr.http_error',
+                'vision.ocr.result',
                 trace_id,
                 body=str(r.text)[:300],
                 elapsed_ms=int((time.perf_counter() - started) * 1000),
+                result='失败',
                 status=r.status_code,
             )
             return None
@@ -376,28 +378,29 @@ def _callOcr(vc, image_url, trace_id=None):
                       'type': obj['type'].strip()[:32]}
             OlivaAIAgent.conf.traceLog(
                 OlivaAIAgent.conf.gProc,
-                'vision.ocr.success',
+                'vision.ocr.result',
                 trace_id,
-                content=result['content'],
                 elapsed_ms=int((time.perf_counter() - started) * 1000),
-                intent=result['intent'],
+                result='成功',
                 type=result['type'],
             )
             return result
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
-            'vision.ocr.invalid_result',
+            'vision.ocr.result',
             trace_id,
             elapsed_ms=int((time.perf_counter() - started) * 1000),
-            response=content[:300],
+            reason='invalid_response',
+            result='失败',
         )
     except Exception as e:
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
-            'vision.ocr.exception',
+            'vision.ocr.result',
             trace_id,
             elapsed_ms=int((time.perf_counter() - started) * 1000),
             error='%s: %s' % (type(e).__name__, e),
+            result='失败',
         )
     return None
 

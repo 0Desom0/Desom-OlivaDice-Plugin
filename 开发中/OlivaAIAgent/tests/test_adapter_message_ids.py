@@ -1,64 +1,94 @@
 # -*- encoding: utf-8 -*-
 
-import os
+import copy
 import tempfile
 import unittest
 
-import OlivOS
-from OlivOS.adapter.milky import milkySDK
-from OlivOS.adapter.qqGuild import qqGuildv2SDK
+import OlivaAIAgent
+
+
+class FakeBot:
+    hash = 'bot-hash'
+
+
+class FakeData:
+    def __init__(self, message, message_id, extend):
+        self.message = message
+        self.message_id = message_id
+        self.group_id = 'group-1'
+        self.user_id = 'user-1'
+        self.extend = extend
+        self.sender = {'nickname': '测试用户'}
+
+
+class FakeEvent:
+    def __init__(self, sdk, message, message_id, extend, result=None):
+        self.platform = {'sdk': sdk, 'platform': 'qq', 'model': 'test'}
+        self.plugin_info = {'func_type': 'group_message'}
+        self.data = FakeData(message, message_id, extend)
+        self.base_info = {'self_id': 'bot-1'}
+        self.bot_info = FakeBot()
+        self.result = result
+        self.get_msg_calls = []
+
+    def get_msg(self, message_id):
+        self.get_msg_calls.append(str(message_id))
+        return self.result or {'active': False, 'data': {}}
 
 
 class AdapterMessageIdTest(unittest.TestCase):
-    def test_milky_reply_uses_complete_message_id(self):
-        segments = milkySDK.completeRxReplyMessageIds(
-            [{'type': 'reply', 'data': {'message_seq': 42}}, {'type': 'text', 'data': {'text': '继续'}}],
-            'group',
-            123456,
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.old_data_path = OlivaAIAgent.conf.dataPath
+        self.old_conf = OlivaAIAgent.conf.gConf
+        OlivaAIAgent.conf.dataPath = self.temp_dir.name
+        OlivaAIAgent.conf.gConf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+        OlivaAIAgent.identifiers._initialized_path = None
+        OlivaAIAgent.identifiers._last_cleanup = 0.0
+
+    def tearDown(self):
+        OlivaAIAgent.conf.dataPath = self.old_data_path
+        OlivaAIAgent.conf.gConf = self.old_conf
+        OlivaAIAgent.identifiers._initialized_path = None
+        OlivaAIAgent.identifiers._last_cleanup = 0.0
+        self.temp_dir.cleanup()
+
+    def test_milky_reply_is_completed_inside_plugin(self):
+        event = FakeEvent(
+            'milky_link',
+            '[CQ:reply,id=42]继续',
+            'group|123456|99',
+            {},
         )
-        message = OlivOS.messageAPI.Message_templet('milky_para_rx', segments)
-        reply = next(item for item in message.data if isinstance(item, OlivOS.messageAPI.PARA.reply))
-        self.assertEqual('group|123456|42', reply.data['id'])
+        parsed = OlivaAIAgent.msgReply.parseMessage(event)
 
-    def test_qqguild_reference_mapping_survives_memory_cache_reset(self):
-        old_cwd = os.getcwd()
-        old_db = qqGuildv2SDK.sdkPersistentMessageDB
-        with tempfile.TemporaryDirectory() as temp_dir:
-            try:
-                os.chdir(temp_dir)
-                qqGuildv2SDK.sdkPersistentMessageDB = None
-                qqGuildv2SDK.sdkPersistentMessageLastCleanup = 0.0
-                qqGuildv2SDK.sdkRxMessageInfo.clear()
-                qqGuildv2SDK.sdkMsgIdxInfo.clear()
-                qqGuildv2SDK._register_qq_rx_message(
-                    'bot-hash',
-                    'qq_group',
-                    'group-openid',
-                    'message-id-1',
-                    content='持久化正文',
-                    raw_content='持久化正文',
-                    msg_idx='REFIDX_123',
-                )
-                qqGuildv2SDK.sdkRxMessageInfo.clear()
-                qqGuildv2SDK.sdkMsgIdxInfo.clear()
-                qqGuildv2SDK.sdkPersistentMessageDB.close()
-                qqGuildv2SDK.sdkPersistentMessageDB = None
+        self.assertEqual('group|123456|42', parsed['reference_message_id'])
+        self.assertEqual(['group|123456|42'], event.get_msg_calls)
 
-                self.assertEqual(
-                    'message-id-1',
-                    qqGuildv2SDK._get_qq_message_id_by_idx(
-                        'bot-hash', 'qq_group', 'group-openid', 'REFIDX_123',
-                    ),
-                )
-                restored = qqGuildv2SDK._get_qq_rx_message('bot-hash', 'message-id-1')
-                self.assertEqual('持久化正文', restored['message'])
-            finally:
-                if qqGuildv2SDK.sdkPersistentMessageDB is not None:
-                    qqGuildv2SDK.sdkPersistentMessageDB.close()
-                qqGuildv2SDK.sdkPersistentMessageDB = old_db
-                qqGuildv2SDK.sdkRxMessageInfo.clear()
-                qqGuildv2SDK.sdkMsgIdxInfo.clear()
-                os.chdir(old_cwd)
+    def test_qq_reference_index_survives_plugin_restart(self):
+        source_event = FakeEvent(
+            'qqGuildv2_link',
+            '持久化正文',
+            'message-id-1',
+            {'qq_msg_idx': 'REFIDX_123', 'event_id': 'event-1'},
+        )
+        source = OlivaAIAgent.msgReply.parseMessage(source_event)
+        OlivaAIAgent.identifiers.recordIncoming(source_event, source)
+
+        # 模拟插件重载：只保留磁盘 SQLite，不保留模块初始化状态。
+        OlivaAIAgent.identifiers._initialized_path = None
+        quoted_event = FakeEvent(
+            'qqGuildv2_link',
+            '继续说说',
+            'message-id-2',
+            {'qq_ref_msg_idx': 'REFIDX_123', 'event_id': 'event-2'},
+        )
+        parsed = OlivaAIAgent.msgReply.parseMessage(quoted_event)
+
+        self.assertEqual('message-id-1', parsed['reference_message_id'])
+        self.assertEqual('插件消息注册表', parsed['quote']['source'])
+        self.assertEqual('持久化正文', parsed['quote']['text'])
+        self.assertEqual([], quoted_event.get_msg_calls)
 
 
 if __name__ == '__main__':
