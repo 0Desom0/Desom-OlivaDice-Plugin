@@ -5,6 +5,7 @@ import base64
 import hashlib
 import os
 import re
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -41,6 +42,30 @@ _PROVIDER_ALIASES = {
     'openai': _OPENAI_PROVIDER,
     _OPENAI_PROVIDER: _OPENAI_PROVIDER,
 }
+_VOICE_DEDUPE_CTX_KEY = '_oliva_ai_voice_texts'
+_voiceDedupeLock = threading.Lock()
+
+
+def _voiceTextKey(text):
+    normalized = re.sub(r'\s+', ' ', str(text or '').strip())
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
+def _claimVoiceText(ctx, text):
+    key = _voiceTextKey(text)
+    with _voiceDedupeLock:
+        sent_keys = ctx.setdefault(_VOICE_DEDUPE_CTX_KEY, set())
+        if key in sent_keys:
+            return False, key
+        sent_keys.add(key)
+    return True, key
+
+
+def _releaseVoiceText(ctx, key):
+    with _voiceDedupeLock:
+        sent_keys = ctx.get(_VOICE_DEDUPE_CTX_KEY)
+        if isinstance(sent_keys, set):
+            sent_keys.discard(key)
 
 
 def outputDir():
@@ -311,6 +336,23 @@ def sendVoice(ctx, text, instructions=''):
     plugin_event = ctx.get('plugin_event')
     if plugin_event is None:
         return {'error': '当前上下文没有可用的消息事件，无法发送语音'}
+    claimed, text_key = _claimVoiceText(ctx, text)
+    if not claimed:
+        OlivaAIAgent.conf.traceLog(
+            ctx.get('Proc'),
+            'voice.send.duplicate',
+            ctx.get('trace_id'),
+            text_chars=len(str(text or '')),
+        )
+        return {
+            'active': True,
+            'data': {
+                'duplicate_skipped': True,
+                'message': '相同语音已在本轮处理，不再重复生成或发送',
+                'text_chars': len(str(text or '')),
+            },
+            'error': '',
+        }
     status = getStatus()
     OlivaAIAgent.conf.traceLog(
         ctx.get('Proc'),
@@ -347,4 +389,5 @@ def sendVoice(ctx, text, instructions=''):
             'error': '' if active else '平台返回发送失败',
         }
     except Exception as e:
+        _releaseVoiceText(ctx, text_key)
         return {'error': '语音生成或发送失败: %s: %s' % (type(e).__name__, e)}

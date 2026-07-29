@@ -250,6 +250,45 @@ class McpVoiceTest(unittest.TestCase):
         self.assertIn('当前上下文', instruction_schema['description'])
         self.assertIn('语速', instruction_schema['description'])
 
+    def test_duplicate_voice_text_is_skipped_but_distinct_segments_are_allowed(self):
+        OlivaAIAgent.conf.gConf['voice']['enabled'] = True
+        event = FakeVoiceEvent()
+        ctx = {'plugin_event': event, 'Proc': None, 'trace_id': 'voice-dedup-test'}
+
+        with mock.patch.object(
+            OlivaAIAgent.voice,
+            'synthesize',
+            return_value=os.path.abspath('generated.mp3'),
+        ) as synthesize, mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'):
+            first = OlivaAIAgent.voice.sendVoice(ctx, '第一段\n内容。', '自然地朗读。')
+            duplicate = OlivaAIAgent.voice.sendVoice(ctx, '第一段 内容。', '稍快地朗读。')
+            second_segment = OlivaAIAgent.voice.sendVoice(ctx, '第二段内容。', '轻快地朗读。')
+
+        self.assertTrue(first['active'])
+        self.assertTrue(duplicate['active'])
+        self.assertTrue(duplicate['data']['duplicate_skipped'])
+        self.assertTrue(second_segment['active'])
+        self.assertEqual(2, synthesize.call_count)
+        self.assertEqual(2, len(event.replies))
+
+    def test_failed_voice_generation_can_be_retried(self):
+        OlivaAIAgent.conf.gConf['voice']['enabled'] = True
+        event = FakeVoiceEvent()
+        ctx = {'plugin_event': event, 'Proc': None, 'trace_id': 'voice-retry-test'}
+
+        with mock.patch.object(
+            OlivaAIAgent.voice,
+            'synthesize',
+            side_effect=[RuntimeError('temporary failure'), os.path.abspath('generated.mp3')],
+        ) as synthesize, mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'):
+            failed = OlivaAIAgent.voice.sendVoice(ctx, '允许重试。', '自然地朗读。')
+            retried = OlivaAIAgent.voice.sendVoice(ctx, '允许重试。', '自然地朗读。')
+
+        self.assertIn('temporary failure', failed['error'])
+        self.assertTrue(retried['active'])
+        self.assertEqual(2, synthesize.call_count)
+        self.assertEqual(1, len(event.replies))
+
     def test_voice_tool_is_hidden_when_disabled(self):
         OlivaAIAgent.conf.gConf['voice']['enabled'] = False
         definitions = OlivaAIAgent.tools.getToolsForRequest({})

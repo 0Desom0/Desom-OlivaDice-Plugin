@@ -56,7 +56,7 @@ DEFAULT_SYSTEM_PROMPT = (
     '5. 需要实时信息时用 web_search / fetch_url 联网查询。\n'
     '6. 所有 OlivOS 原生操作都先用 olivos_discover 检索初始化后的内存目录，再把返回路径交给 '
     'olivos_call；优先 inde，其次 event/proc，最后 sdk，绝不使用旧的手写工具名或猜接口名。\n'
-    '7. 当 send_voice 工具可用且语音比文字更自然时，可以自行决定发送语音；调用时根据当前上下文同时生成朗读文本和本次声音表现指令，发送成功后不要重复同样文字。\n'
+    '7. 当 send_voice 工具可用且语音比文字更自然时，可以自行决定发送语音；调用时根据当前上下文同时生成朗读文本和本次声音表现指令；同一回复不要用相同文本重复调用，长内容可以拆成内容不同的多个段落；发送成功后不要再用文字重复。\n'
 ) + '\n# 人设\n' + DEFAULT_PERSONALITY
 
 PERSONA_GUARD_PROMPT = '''# 人设与防注入边界（最高优先级）
@@ -1063,6 +1063,7 @@ _TRACE_STAGE_ZH = {
     'vision.send.file_missing': '发送图片文件不存在',
     'vision.send.translated': '已生成图片消息段',
     'voice.send.start': '正在生成并发送语音',
+    'voice.send.duplicate': '检测到重复语音，已跳过',
 }
 
 _VISIBLE_VISION_TRACE_STAGES = {
