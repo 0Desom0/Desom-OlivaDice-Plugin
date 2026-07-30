@@ -251,6 +251,8 @@ GROUP_SWITCHES = [
     ('memory_long', '长期事实'),
 ]
 GROUP_SWITCH_VALUES = ('继承默认', '开启', '关闭')
+GROUP_TREE_COLUMNS = ('platform', 'group_id') + tuple(key for key, _label in GROUP_SWITCHES)
+GROUP_TREE_HEADINGS = ('平台', '群 ID') + tuple(label for _key, label in GROUP_SWITCHES)
 SECURITY_LEXICON_ACTIONS = ('下载 / 检查更新', '打开词库目录')
 
 _gui_instance = None
@@ -315,8 +317,6 @@ class ConfigWindow:
         self.group_global_vars = {}
         self.group_default_prefixes = None
         self.group_default_keywords = None
-        self.group_prefixes_text = None
-        self.group_keywords_text = None
         self.runtime_text = None
         self.owns_mainloop = False
 
@@ -451,11 +451,9 @@ class ConfigWindow:
             pady=(0, 8),
         )
 
-        columns = ('platform', 'group_id') + tuple(key for key, _label in GROUP_SWITCHES) + ('prefixes', 'keywords')
-        self.group_tree = ttk.Treeview(page, columns=columns, show='headings', height=13)
-        headings = ['平台', '群 ID'] + [label for _key, label in GROUP_SWITCHES] + ['触发前缀', '触发关键词']
-        widths = [100, 170, 90, 90, 90, 90, 90, 110, 110]
-        for column, heading, width in zip(columns, headings, widths, strict=False):
+        self.group_tree = ttk.Treeview(page, columns=GROUP_TREE_COLUMNS, show='headings', height=13)
+        widths = [100, 220, 100, 100, 100, 100, 100]
+        for column, heading, width in zip(GROUP_TREE_COLUMNS, GROUP_TREE_HEADINGS, widths, strict=False):
             self.group_tree.heading(column, text=heading)
             self.group_tree.column(column, width=width, minwidth=80, anchor='center')
         self.group_tree.grid(row=2, column=0, sticky='nsew')
@@ -505,19 +503,13 @@ class ConfigWindow:
                 fill=tkinter.X,
                 pady=(3, 0),
             )
-        ttk.Label(editor, text='触发前缀覆盖').grid(row=2, column=0, sticky='nw', pady=(12, 0))
-        self.group_prefixes_text = scrolledtext.ScrolledText(editor, height=3, wrap='word', undo=True)
-        self.group_prefixes_text.grid(row=2, column=1, sticky='ew', padx=(6, 18), pady=(12, 0))
-        ttk.Label(editor, text='触发关键词覆盖').grid(row=2, column=2, sticky='nw', pady=(12, 0))
-        self.group_keywords_text = scrolledtext.ScrolledText(editor, height=3, wrap='word', undo=True)
-        self.group_keywords_text.grid(row=2, column=3, sticky='ew', padx=(6, 0), pady=(12, 0))
         ttk.Label(
             editor,
-            text='留空表示继承上方默认值；填写 [] 表示本群明确禁用。',
+            text='触发前缀和关键词统一使用上方全局设置，不提供群级覆盖。',
             style='Hint.TLabel',
-        ).grid(row=3, column=0, columnspan=4, sticky='w', pady=(5, 0))
+        ).grid(row=2, column=0, columnspan=4, sticky='w', pady=(10, 0))
         buttons = ttk.Frame(editor)
-        buttons.grid(row=4, column=0, columnspan=4, sticky='ew', pady=(12, 0))
+        buttons.grid(row=3, column=0, columnspan=4, sticky='ew', pady=(12, 0))
         ttk.Button(buttons, text='保存群设置', command=self.saveGroupConfig).pack(side=tkinter.LEFT)
         ttk.Button(buttons, text='新建 / 清空表单', command=self.clearGroupForm).pack(
             side=tkinter.LEFT,
@@ -827,13 +819,6 @@ class ConfigWindow:
                 values = [platform, group_id]
                 for key, _label in GROUP_SWITCHES:
                     values.append('默认' if key not in node else ('开' if node[key] else '关'))
-                for key in ('prefixes', 'keywords'):
-                    if key not in node:
-                        values.append('继承')
-                    elif not node[key]:
-                        values.append('禁用')
-                    else:
-                        values.append('自定义(%d)' % len(node[key]))
                 self.group_tree.insert('', tkinter.END, values=values)
 
     def _syncGroupGlobalForm(self):
@@ -920,18 +905,12 @@ class ConfigWindow:
         for key, _label in GROUP_SWITCHES:
             state = GROUP_SWITCH_VALUES[0] if key not in node else GROUP_SWITCH_VALUES[1 if node[key] else 2]
             self.group_switch_vars[key].set(state)
-        for key, widget in (('prefixes', self.group_prefixes_text), ('keywords', self.group_keywords_text)):
-            widget.delete('1.0', tkinter.END)
-            if key in node:
-                widget.insert('1.0', json.dumps(node[key], ensure_ascii=False, indent=2))
 
     def clearGroupForm(self):
         self.group_tree.selection_remove(*self.group_tree.selection())
         self.group_id_var.set('')
         for variable in self.group_switch_vars.values():
             variable.set(GROUP_SWITCH_VALUES[0])
-        self.group_prefixes_text.delete('1.0', tkinter.END)
-        self.group_keywords_text.delete('1.0', tkinter.END)
 
     def saveGroupConfig(self):
         platform = self.group_platform_var.get().strip()
@@ -941,24 +920,6 @@ class ConfigWindow:
             state = variable.get()
             if state != GROUP_SWITCH_VALUES[0]:
                 values[key] = state == GROUP_SWITCH_VALUES[1]
-        try:
-            prefixes = self._parseStringList(
-                self.group_prefixes_text.get('1.0', tkinter.END),
-                '群触发前缀',
-                allow_inherit=True,
-            )
-            keywords = self._parseStringList(
-                self.group_keywords_text.get('1.0', tkinter.END),
-                '群触发关键词',
-                allow_inherit=True,
-            )
-            if prefixes is not None:
-                values['prefixes'] = prefixes
-            if keywords is not None:
-                values['keywords'] = keywords
-        except Exception as e:
-            messagebox.showerror('群设置格式错误', str(e), parent=self.root)
-            return
         self._logAction('正在保存群级设置 | 平台=%s | 群=%s' % (platform, group_id))
         try:
             OlivaAIAgent.conf.replaceGroupConfig(platform, group_id, values)

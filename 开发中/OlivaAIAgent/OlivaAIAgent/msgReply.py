@@ -409,9 +409,8 @@ def _matchPrefix(text, platform=None, group_id=None):
 
 
 def _matchRecoveryPrefix(text, platform, group_id):
-    '''群不可用时仍识别群级和全局默认前缀，供骰主恢复配置。'''
+    '''群不可用时仍识别全局默认前缀，供骰主恢复配置。'''
     prefixes = OlivaAIAgent.conf.getGroupPrefixes(platform, group_id)
-    prefixes += list(OlivaAIAgent.conf.get('trigger', 'prefix', default=['.ai']) or [])
     seen = set()
     for prefix in prefixes:
         key = str(prefix).lower()
@@ -433,7 +432,7 @@ def _keywordHit(text, keywords):
 
 
 def _unionKeywords(platform=None, group_id=None):
-    '''群聊优先使用群级关键词，字段缺失时继承全局默认。'''
+    '''返回所有群共用的全局关键词。'''
     if group_id is not None:
         return OlivaAIAgent.conf.getGroupKeywords(platform, group_id)
     return list(OlivaAIAgent.conf.get('trigger', 'keywords', default=[]) or [])

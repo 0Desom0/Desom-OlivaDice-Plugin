@@ -148,7 +148,7 @@ DEFAULT_CONF = {
         'prefix': ['.ai', '。ai', '/ai'],
         'at_trigger': True,
         'keywords': [],
-        '_keywords说明': '群默认触发关键词，可在群级设置覆盖；潜行开/关都生效，命中即强制回复。',
+        '_keywords说明': '所有群共用的触发关键词；潜行开/关都生效，命中即强制回复。',
         'private_chat': True,
         '_private_chat说明': '私聊/单聊总开关：false=私聊完全不可用；true=私聊可用(默认仅骰主，见 private_master_only)',
         'private_master_only': True,
@@ -544,6 +544,62 @@ def _migrateWhitelistGroups(group_ids):
     return changed
 
 
+def _normalizeGroups():
+    '''清理停用字段，并按群 ID 合并重复记录；具体平台优先于通配平台。'''
+    global gGroups
+    changed = False
+    if not isinstance(gGroups, dict):
+        gGroups = {}
+        return True
+
+    for platform in list(gGroups):
+        platform_node = gGroups.get(platform)
+        if not isinstance(platform_node, dict):
+            gGroups.pop(platform, None)
+            changed = True
+            continue
+        for group_id in list(platform_node):
+            node = platform_node.get(group_id)
+            if not isinstance(node, dict):
+                node = {}
+                platform_node[group_id] = node
+                changed = True
+            for obsolete_key in ('prefixes', 'keywords'):
+                if obsolete_key in node:
+                    node.pop(obsolete_key, None)
+                    changed = True
+        if not platform_node:
+            gGroups.pop(platform, None)
+            changed = True
+
+    group_ids = []
+    for platform_node in gGroups.values():
+        for group_id in platform_node:
+            if group_id not in group_ids:
+                group_ids.append(group_id)
+    for group_id in group_ids:
+        platforms = [platform for platform, node in gGroups.items() if group_id in node]
+        if len(platforms) <= 1:
+            continue
+        specific_platforms = [platform for platform in platforms if platform != '*']
+        target_platform = specific_platforms[0] if specific_platforms else platforms[0]
+        merge_order = ['*'] if '*' in platforms else []
+        merge_order.extend(platform for platform in platforms if platform not in {'*', target_platform})
+        merge_order.append(target_platform)
+        merged = {}
+        for platform in merge_order:
+            merged.update(gGroups[platform].get(group_id, {}))
+        for platform in platforms:
+            gGroups[platform].pop(group_id, None)
+        gGroups.setdefault(target_platform, {})[group_id] = merged
+        changed = True
+    for platform in list(gGroups):
+        if not gGroups[platform]:
+            gGroups.pop(platform, None)
+            changed = True
+    return changed
+
+
 def _persistableConfig(value):
     '''移除仅供默认配置和 GUI 使用的说明键，保持磁盘配置精简。'''
     if isinstance(value, dict):
@@ -602,6 +658,7 @@ def load():
             gGroups = {}
         groups_changed = _migrateAmbientGroups(legacy_ambient_groups)
         groups_changed = _migrateWhitelistGroups(legacy_whitelist_groups) or groups_changed
+        groups_changed = _normalizeGroups() or groups_changed
         if groups_changed:
             try:
                 atomicDump(gGroups, GROUPS_PATH)
@@ -670,13 +727,18 @@ def hotReload():
             with _lock:
                 gGroups = data if isinstance(data, dict) else {}
                 _groups_mtime = m
+                groups_changed = _normalizeGroups()
             changed.append('groups')
+            if groups_changed:
+                saveGroups()
+                changed.append('groups_normalized')
     except Exception:
         pass
     if legacy_ambient_groups or legacy_whitelist_groups:
         with _lock:
             groups_changed = _migrateAmbientGroups(legacy_ambient_groups)
             groups_changed = _migrateWhitelistGroups(legacy_whitelist_groups) or groups_changed
+            groups_changed = _normalizeGroups() or groups_changed
             if groups_changed:
                 saveGroups()
                 changed.append('legacy_groups_migrated')
@@ -731,6 +793,7 @@ def replace(new_conf, save_now=True):
         _migrate(merged)
         gConf = merged
         _migrateWhitelistGroups(legacy_whitelist_groups)
+        _normalizeGroups()
         if save_now:
             save()
         return copy.deepcopy(gConf)
@@ -743,13 +806,52 @@ def groupsSnapshot():
 
 
 def deleteGroupConfig(platform, group_id):
-    '''删除某个平台和群的全部覆盖项。'''
+    '''按群 ID 删除记录，连同历史遗留的其他平台重复项一起清除。'''
+    group_key = str(group_id)
     with _lock:
-        platform_node = gGroups.get(str(platform), {})
-        platform_node.pop(str(group_id), None)
-        if not platform_node:
-            gGroups.pop(str(platform), None)
+        for platform_key in list(gGroups):
+            platform_node = gGroups.get(platform_key, {})
+            if isinstance(platform_node, dict):
+                platform_node.pop(group_key, None)
+            if not platform_node:
+                gGroups.pop(platform_key, None)
         saveGroups()
+
+
+def _groupWritePlatform(platform, group_id):
+    '''写入通配平台时优先复用现有具体平台记录，避免同群出现两行。'''
+    platform_key = str(platform).strip() or '*'
+    group_key = str(group_id).strip()
+    if platform_key != '*':
+        return platform_key
+    specific_platforms = [
+        key
+        for key, node in gGroups.items()
+        if key != '*' and isinstance(node, dict) and group_key in node
+    ]
+    return specific_platforms[0] if len(specific_platforms) == 1 else platform_key
+
+
+def _coalesceGroupForWrite(platform, group_id):
+    '''把同群的所有旧记录并入目标平台并返回节点；目标平台原值优先。'''
+    platforms = [
+        key for key, node in gGroups.items()
+        if isinstance(node, dict) and group_id in node
+    ]
+    merge_order = ['*'] if '*' in platforms and platform != '*' else []
+    merge_order.extend(key for key in platforms if key not in {'*', platform})
+    if platform in platforms:
+        merge_order.append(platform)
+    merged = {}
+    for key in merge_order:
+        node = gGroups[key].get(group_id, {})
+        if isinstance(node, dict):
+            merged.update(node)
+    for key in platforms:
+        gGroups[key].pop(group_id, None)
+        if not gGroups[key]:
+            gGroups.pop(key, None)
+    return gGroups.setdefault(platform, {}).setdefault(group_id, merged)
 
 
 def replaceGroupConfig(platform, group_id, values):
@@ -761,15 +863,20 @@ def replaceGroupConfig(platform, group_id, values):
     if not isinstance(values, dict):
         raise ValueError('群配置必须是对象')
     with _lock:
+        platform_key = _groupWritePlatform(platform_key, group_key)
         clean = {}
         switch_keys = {'enabled', 'ambient', 'admin_tools', 'memory_history', 'memory_long'}
         for key, value in values.items():
             if key in switch_keys:
                 clean[str(key)] = bool(value)
-            elif key in {'prefixes', 'keywords'}:
-                if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-                    raise ValueError('%s 必须是字符串 JSON 数组' % key)
-                clean[str(key)] = list(value)
+        delete_platforms = [
+            key for key, node in gGroups.items()
+            if isinstance(node, dict) and group_key in node
+        ]
+        for key in delete_platforms:
+            gGroups[key].pop(group_key, None)
+            if not gGroups[key]:
+                gGroups.pop(key, None)
         gGroups.setdefault(platform_key, {})[group_key] = clean
         saveGroups()
 
@@ -806,8 +913,11 @@ def getGroupSwitch(platform, group_id, key, default=None):
 
 
 def setGroupSwitch(platform, group_id, key, value):
+    platform_key = str(platform).strip() or '*'
+    group_key = str(group_id).strip()
     with _lock:
-        node = _groupNode(platform, group_id, create=True)
+        platform_key = _groupWritePlatform(platform_key, group_key)
+        node = _coalesceGroupForWrite(platform_key, group_key)
         node[key] = value
         saveGroups()
 
@@ -835,39 +945,21 @@ def addConfiguredGroup(platform, group_id, enabled=None):
     if not group_key:
         raise ValueError('群 ID 不能为空')
     with _lock:
-        node = gGroups.setdefault(platform_key, {}).setdefault(group_key, {})
+        platform_key = _groupWritePlatform(platform_key, group_key)
+        node = _coalesceGroupForWrite(platform_key, group_key)
         if enabled is not None:
             node['enabled'] = bool(enabled)
         saveGroups()
 
 
-def _getGroupStringList(platform, group_id, key, default):
-    value = getGroupSwitch(platform, group_id, key, None)
-    if value is None:
-        value = default
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
-
-
 def getGroupPrefixes(platform, group_id):
-    '''本群触发前缀；字段缺失继承全局，空数组明确禁用。'''
-    return _getGroupStringList(
-        platform,
-        group_id,
-        'prefixes',
-        get('trigger', 'prefix', default=['.ai']) or [],
-    )
+    '''所有群共用全局触发前缀；保留参数用于兼容现有调用。'''
+    return [str(item) for item in (get('trigger', 'prefix', default=['.ai']) or [])]
 
 
 def getGroupKeywords(platform, group_id):
-    '''本群触发关键词；字段缺失继承全局，空数组明确禁用。'''
-    return _getGroupStringList(
-        platform,
-        group_id,
-        'keywords',
-        get('trigger', 'keywords', default=[]) or [],
-    )
+    '''所有群共用全局触发关键词；保留参数用于兼容现有调用。'''
+    return [str(item) for item in (get('trigger', 'keywords', default=[]) or [])]
 
 
 def isGroupEnabled(platform, group_id):

@@ -171,6 +171,12 @@ class ConfigGuiSchemaTest(unittest.TestCase):
         self.assertEqual('OlivaDice 团日志', OlivaAIAgent.gui.SECTION_LABELS['olivadice_logger'])
         self.assertTrue(OlivaAIAgent.conf.DEFAULT_CONF['olivadice_logger']['enabled'])
 
+    def test_group_table_has_no_per_group_trigger_override_columns(self):
+        self.assertNotIn('prefixes', OlivaAIAgent.gui.GROUP_TREE_COLUMNS)
+        self.assertNotIn('keywords', OlivaAIAgent.gui.GROUP_TREE_COLUMNS)
+        self.assertNotIn('触发前缀', OlivaAIAgent.gui.GROUP_TREE_HEADINGS)
+        self.assertNotIn('触发关键词', OlivaAIAgent.gui.GROUP_TREE_HEADINGS)
+
     def test_gui_action_has_one_clear_log(self):
         proc = FakeProc()
         window = OlivaAIAgent.gui.ConfigWindow(Proc=proc)
@@ -275,26 +281,68 @@ class UnifiedGroupConfigTest(unittest.TestCase):
         OlivaAIAgent.conf.gConf['enable']['group_default'] = True
         self.assertTrue(OlivaAIAgent.conf.isGroupEnabled('qq', 'unlisted'))
 
-    def test_group_prefixes_and_keywords_support_inherit_override_and_empty_disable(self):
+    def test_group_prefixes_and_keywords_always_use_global_values(self):
         OlivaAIAgent.conf.gConf['trigger']['prefix'] = ['.ai']
         OlivaAIAgent.conf.gConf['trigger']['keywords'] = ['小芙']
         OlivaAIAgent.conf.gGroups = {
             'qq': {
-                'inherit': {},
                 'custom': {'prefixes': ['.bot'], 'keywords': ['助手']},
-                'disabled': {'prefixes': [], 'keywords': []},
             },
         }
 
-        self.assertEqual(['.ai'], OlivaAIAgent.conf.getGroupPrefixes('qq', 'inherit'))
-        self.assertEqual(['小芙'], OlivaAIAgent.conf.getGroupKeywords('qq', 'inherit'))
-        self.assertEqual(['.bot'], OlivaAIAgent.conf.getGroupPrefixes('qq', 'custom'))
-        self.assertEqual(['助手'], OlivaAIAgent.conf.getGroupKeywords('qq', 'custom'))
-        self.assertEqual([], OlivaAIAgent.conf.getGroupPrefixes('qq', 'disabled'))
-        self.assertEqual([], OlivaAIAgent.conf.getGroupKeywords('qq', 'disabled'))
-        self.assertEqual('你好', OlivaAIAgent.msgReply._matchPrefix('.bot 你好', 'qq', 'custom'))
-        self.assertIsNone(OlivaAIAgent.msgReply._matchPrefix('.ai 你好', 'qq', 'custom'))
-        self.assertIsNone(OlivaAIAgent.msgReply._matchPrefix('.ai 你好', 'qq', 'disabled'))
+        self.assertEqual(['.ai'], OlivaAIAgent.conf.getGroupPrefixes('qq', 'custom'))
+        self.assertEqual(['小芙'], OlivaAIAgent.conf.getGroupKeywords('qq', 'custom'))
+        self.assertEqual('你好', OlivaAIAgent.msgReply._matchPrefix('.ai 你好', 'qq', 'custom'))
+        self.assertIsNone(OlivaAIAgent.msgReply._matchPrefix('.bot 你好', 'qq', 'custom'))
+
+    def test_normalize_groups_removes_trigger_overrides_and_merges_duplicate_group_ids(self):
+        OlivaAIAgent.conf.gGroups = {
+            '*': {
+                'same': {'ambient': True, 'prefixes': ['.bot']},
+                'wildcard_only': {'enabled': True},
+            },
+            'qq': {
+                'same': {'enabled': False, 'keywords': ['助手']},
+            },
+        }
+
+        changed = OlivaAIAgent.conf._normalizeGroups()
+
+        self.assertTrue(changed)
+        self.assertNotIn('same', OlivaAIAgent.conf.gGroups.get('*', {}))
+        self.assertEqual(
+            {'ambient': True, 'enabled': False},
+            OlivaAIAgent.conf.gGroups['qq']['same'],
+        )
+        self.assertEqual({'enabled': True}, OlivaAIAgent.conf.gGroups['*']['wildcard_only'])
+
+    def test_saving_same_group_overwrites_old_platform_record(self):
+        OlivaAIAgent.conf.gGroups = {
+            '*': {'same': {'ambient': True}},
+            'qq': {'same': {'enabled': True}},
+        }
+
+        with mock.patch.object(OlivaAIAgent.conf, 'saveGroups'):
+            OlivaAIAgent.conf.replaceGroupConfig('*', 'same', {'enabled': False})
+
+        records = [
+            (platform, node['same'])
+            for platform, node in OlivaAIAgent.conf.gGroups.items()
+            if 'same' in node
+        ]
+        self.assertEqual([('qq', {'enabled': False})], records)
+
+    def test_runtime_switch_update_promotes_wildcard_record_without_duplicate(self):
+        OlivaAIAgent.conf.gGroups = {'*': {'same': {'enabled': True}}}
+
+        with mock.patch.object(OlivaAIAgent.conf, 'saveGroups'):
+            OlivaAIAgent.conf.setGroupSwitch('qq', 'same', 'ambient', False)
+
+        self.assertNotIn('*', OlivaAIAgent.conf.gGroups)
+        self.assertEqual(
+            {'enabled': True, 'ambient': False},
+            OlivaAIAgent.conf.gGroups['qq']['same'],
+        )
 
 if __name__ == '__main__':
     unittest.main()
