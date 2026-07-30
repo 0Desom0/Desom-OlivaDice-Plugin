@@ -311,14 +311,15 @@ def _isReplyToCurrentBot(plugin_event, reference_message_id, quote):
 
 
 def parseMessage(plugin_event):
-    '''解析 old_string(CQ) 消息 → 纯文本 / at列表 / 图片URL列表 / 是否at了机器人'''
+    '''解析 OP/CQ 消息 → 纯文本 / at列表 / 图片URL列表 / 是否at了机器人。'''
     raw = str(plugin_event.data.message)
     at_list = []
     images = []
     reply_id = None
     text_parts = []
     try:
-        msg_obj = OlivOS.messageAPI.Message_templet('old_string', raw)
+        mode = 'olivos_string' if '[OP:' in raw else 'old_string'
+        msg_obj = OlivOS.messageAPI.Message_templet(mode, raw)
         for para in msg_obj.data:
             if isinstance(para, OlivOS.messageAPI.PARA.at):
                 at_list.append(str(para.data.get('id', '')))
@@ -335,11 +336,11 @@ def parseMessage(plugin_event):
                 text_parts.append(str(para.data.get('text', '')))
             else:
                 try:
-                    text_parts.append(para.CQ())
+                    text_parts.append(para.OP() if mode == 'olivos_string' else para.CQ())
                 except Exception:
                     pass
     except Exception:
-        text_parts = [re.sub(r'\[CQ:[^\]]*\]', ' ', raw)]
+        text_parts = [re.sub(r'\[(?:CQ|OP):[^\]]*\]', ' ', raw, flags=re.I)]
     if reply_id in [None, '', '-1', -1]:
         match = re.search(r'\[(?:CQ|OP):reply,[^\]]*\bid=([^,\]]+)', raw, re.I)
         if match:
@@ -1245,6 +1246,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
     sem = _getSem()
     sem.acquire()
     conf.traceLog(Proc, 'agent.started', trace_id, trigger=trigger)
+    ctx = {}
     try:
         is_master = conf.isMaster(plugin_event)
         ctx = {
@@ -1329,6 +1331,9 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
             )
             if not result['ok']:
                 conf.traceLog(Proc, 'agent.round.failed', trace_id, error=result.get('error', ''), round=round_i + 1)
+                if OlivaAIAgent.voice.hasSentVoice(ctx):
+                    conf.traceLog(Proc, 'voice.reply.text_suppressed', trace_id, messages=0)
+                    return
                 err_tpl = str(conf.get('agent', 'error_reply', default='AI出错: {err}'))
                 _safeReply(plugin_event, err_tpl.replace('{err}', result.get('error', '未知错误')[:200]), parsed)
                 return
@@ -1368,7 +1373,9 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 messages.append(tool_msg)
                 new_msgs.append(tool_msg)
         sent_ids = []
-        if final_text.strip() != '':
+        if final_text.strip() != '' and OlivaAIAgent.voice.hasSentVoice(ctx):
+            conf.traceLog(Proc, 'voice.reply.text_suppressed', trace_id, messages=1)
+        elif final_text.strip() != '':
             conf.traceLog(
                 Proc,
                 'agent.reply.send',
@@ -1395,7 +1402,8 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
     except Exception:
         OlivaAIAgent.conf.log(Proc, 3, 'agent 异常:\n' + traceback.format_exc())
         try:
-            _safeReply(plugin_event, 'AI 处理异常，请查看日志', parsed)
+            if not OlivaAIAgent.voice.hasSentVoice(ctx):
+                _safeReply(plugin_event, 'AI 处理异常，请查看日志', parsed)
         except Exception:
             pass
     finally:
@@ -1427,7 +1435,7 @@ def _safeReply(plugin_event, text, parsed=None):
             if msg_id in [None, '', '-1', -1]:
                 msg_id = plugin_event.data.message_id
             if msg_id not in [None, '', '-1', -1]:
-                prefix = '[CQ:reply,id=%s]' % str(msg_id)
+                prefix = '[OP:reply,id=%s]' % str(msg_id)
                 outgoing_reference_id = str(msg_id)
     except Exception:
         prefix = ''

@@ -203,7 +203,7 @@ FIELD_LABELS = {
     'response_format': '兼容接口音频格式',
     'speed': '兼容接口语速',
     'max_bytes': '音频大小上限（字节）',
-    'max_files': '本地语音缓存数',
+    'max_files': '本地语音缓存数（最多10）',
 }
 
 PATH_LABELS = {

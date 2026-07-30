@@ -158,6 +158,7 @@ class McpVoiceTest(unittest.TestCase):
             'response_format': 'mp3',
         })
         event = FakeVoiceEvent()
+        ctx = {'plugin_event': event, 'Proc': None, 'trace_id': 'voice-test'}
         response = FakeHttpResponse(content=b'ID3FAKEAUDIO', content_type='audio/mpeg')
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(OlivaAIAgent.voice, 'outputDir', return_value=directory), \
@@ -165,12 +166,13 @@ class McpVoiceTest(unittest.TestCase):
                 mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing') as record_outgoing:
             definitions = OlivaAIAgent.tools.getToolsForRequest({})
             result = OlivaAIAgent.voice.sendVoice(
-                {'plugin_event': event, 'Proc': None, 'trace_id': 'voice-test'},
+                ctx,
                 '今晚八点开团。',
             )
 
         self.assertIn('send_voice', [item['name'] for item in definitions])
         self.assertTrue(result['active'])
+        self.assertTrue(OlivaAIAgent.voice.hasSentVoice(ctx))
         self.assertEqual(1, len(event.replies))
         message = event.replies[0]
         self.assertIsInstance(message, OlivOS.messageAPI.Message_templet)
@@ -180,6 +182,40 @@ class McpVoiceTest(unittest.TestCase):
         self.assertEqual('Bearer secret-key', request['headers']['Authorization'])
         self.assertEqual('今晚八点开团。', request['json']['input'])
         record_outgoing.assert_called_once()
+
+    def test_voice_cache_has_hard_limit_of_ten_files(self):
+        OlivaAIAgent.conf.gConf['voice']['max_files'] = 100
+        with tempfile.TemporaryDirectory() as directory:
+            for index in range(12):
+                path = os.path.join(directory, 'voice_%02d.mp3' % index)
+                with open(path, 'wb') as audio_file:
+                    audio_file.write(b'ID3')
+                os.utime(path, (index + 1, index + 1))
+            with mock.patch.object(OlivaAIAgent.voice, 'outputDir', return_value=directory):
+                removed = OlivaAIAgent.voice._cleanOldFiles()
+            remaining = sorted(os.listdir(directory))
+
+        self.assertEqual(2, removed)
+        self.assertEqual(10, len(remaining))
+        self.assertNotIn('voice_00.mp3', remaining)
+        self.assertNotIn('voice_01.mp3', remaining)
+
+    def test_ambient_final_text_is_suppressed_after_voice_send(self):
+        ctx = {'_oliva_ai_voice_sent': True}
+        response = {'ok': True, 'text': '{"r":["这句话已经用语音发送"]}', 'tool_calls': []}
+        with mock.patch.object(OlivaAIAgent.tools, 'getToolsForRequest', return_value=[]), \
+                mock.patch.object(OlivaAIAgent.aiClient, 'chat', return_value=response):
+            reply = OlivaAIAgent.ambient._callReplyWithTools(
+                None,
+                None,
+                'bot-hash',
+                'group-1',
+                [],
+                [],
+                tool_ctx=ctx,
+            )
+
+        self.assertEqual([], reply)
 
     def test_dashscope_non_streaming_tts_uses_official_payload_and_audio_url(self):
         OlivaAIAgent.conf.gConf['voice'].update({

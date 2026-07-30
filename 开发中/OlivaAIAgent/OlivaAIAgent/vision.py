@@ -17,6 +17,7 @@ import threading
 import time
 from collections import deque
 from difflib import SequenceMatcher
+from pathlib import Path
 
 import requests
 
@@ -975,7 +976,7 @@ def _normalizeImageLookupText(data):
 
 
 def translateOutgoing(msg_list, bot_hash, trace_id=None):
-    '''把回复里的 [发图片:xxx] 转成真实 CQ:image 标签，无法解析则删掉。'''
+    '''把回复里的 [发图片:xxx] 转成真实 OP:image 标签，无法解析则删掉。'''
     res = []
     cache_map = imageCacheMap(bot_hash)
     directory = os.path.abspath(imgDir())
@@ -999,14 +1000,13 @@ def translateOutgoing(msg_list, bot_hash, trace_id=None):
                     file=_safeImageName(fn),
                 )
                 return ''
-            # 与 app.json message_mode=old_string 对齐，用 CQ 码，OlivOS 才会解析成真实图片
             OlivaAIAgent.conf.traceLog(
                 OlivaAIAgent.conf.gProc,
                 'vision.send.translated',
                 trace_id,
                 file=_safeImageName(fn),
             )
-            return '[CQ:image,file=file:///%s]' % path
+            return '[OP:image,file=%s]' % Path(path).resolve().as_uri()
 
         s = re.sub(r'\[发图片[:：](.+?)\]', repl, s)
         res.append(s)

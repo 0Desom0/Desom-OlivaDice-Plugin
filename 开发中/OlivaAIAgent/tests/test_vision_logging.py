@@ -233,7 +233,7 @@ class VisionLoggingTest(unittest.TestCase):
         cache = {'reaction.gif': {'content': '无奈', 'intent': '吐槽', 'type': '表情包'}}
         self.assertEqual('reaction.gif', OlivaAIAgent.vision.resolveImageRef('reaction.gif.gif', cache))
 
-    def test_translate_outgoing_creates_real_cq_image_segment(self):
+    def test_translate_outgoing_creates_real_op_image_segment(self):
         cache = {'fox.gif': {'content': '狐狸捂脸', 'intent': '无奈', 'type': '表情包'}}
         with tempfile.TemporaryDirectory() as directory:
             image_path = os.path.join(directory, 'fox.gif')
@@ -247,7 +247,8 @@ class VisionLoggingTest(unittest.TestCase):
                     trace_id='trace-send-image',
                 )
         self.assertEqual(1, len(result))
-        self.assertTrue(result[0].startswith('[CQ:image,file=file:///'))
+        self.assertTrue(result[0].startswith('[OP:image,file=file:///'))
+        self.assertNotIn('\\', result[0])
         self.assertTrue(result[0].endswith('fox.gif]'))
         logs = '\n'.join(record[1] for record in self.proc.records)
         self.assertIn('已生成图片消息段', logs)

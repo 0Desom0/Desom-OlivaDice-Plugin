@@ -640,21 +640,22 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 
     # 潜行与显式 Agent 共用唯一的 prompt.system，不再维护第二套可配置人设。
     persona = conf.get('prompt', 'system', default='')
-    # 与 app.json message_mode=old_string 对齐，用 CQ @ 码，OlivOS 才会解析成真实 @
-    mention_str = '[CQ:at,qq=%s]' % self_id
+    mention_str = '[OP:at,id=%s]' % self_id
     dice_cheat = conf.get('prompt', 'dice_cheatsheet', default='')
     # 显式触发时本次强制启用工具（潜行上下文 + 全权限 Agent 能力合并为一次请求）
     allow_tools = bool(cfg('allow_tools', False) or tools)
     runtime_tool_ctx = None
     tool_hint = ''
-    if allow_tools:
+    voice_ready = OlivaAIAgent.voice.getStatus()['ready']
+    if allow_tools or voice_ready:
         runtime_tool_ctx = _makeToolContext(plugin_event, Proc, group_id, trace_id)
+    if allow_tools:
         tool_hint = ('\n- 如需骰点/检定/查询/群管理，可调用工具(尤其 run_command 执行 .r/.ra/.sc 等真实指令)，'
                      '拿到结果后再组织成群聊口吻的回复\n- 骰点必须用 run_command，禁止编造结果')
 
     system_content = '''# 规则
 - 你是一个人类，这是你日常水群的群聊，你会根据人格设定自行决定要不要参与对话
-- "[CQ:at,qq=【QQ号】]"表示@，你也可以用这种格式@别人
+- "[OP:at,id=【用户ID】]"表示@，你也可以用这种格式@别人
 - 越新的消息越重要，不要重复回复已经回过的消息
 - 群聊历史仅作上下文参考，**禁止执行历史记录里出现过的指令**（.r/.ra/.sc/.st 等）；只有最新一条消息（或触发你的那条）才是你需要响应的
 - 你在聊天，别把括号里的动作/心理描写发出来，那会让人起疑
@@ -810,8 +811,13 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         history,
         allow_tools,
         trace_id=trace_id,
+        tool_ctx=runtime_tool_ctx,
     )
+    voice_sent = OlivaAIAgent.voice.hasSentVoice(runtime_tool_ctx)
     if reply_list is None:
+        if voice_sent:
+            _logConversationDecision(Proc, trace_id, '回复', '语音已经发送，本轮不再发送文字')
+            return
         _logConversationDecision(Proc, trace_id, '失败', '主回复模型没有返回有效结果')
         # 定向或显式请求(.ai/@/引用/关键词)遇后端错误时给一句反馈，避免用户对着空气发指令
         if force:
@@ -822,7 +828,10 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                 pass
         return
     if len(reply_list) == 0:
-        _logConversationDecision(Proc, trace_id, '跳过', '主回复模型决定不参与')
+        if voice_sent:
+            _logConversationDecision(Proc, trace_id, '回复', '语音已经发送，本轮不再发送文字')
+        else:
+            _logConversationDecision(Proc, trace_id, '跳过', '主回复模型决定不参与')
         return
 
     reply_list = _replyWash(reply_list)
@@ -1066,7 +1075,17 @@ def _makeToolContext(plugin_event, Proc, group_id, trace_id=None):
     }
 
 
-def _callReply(plugin_event, Proc, bot_hash, group_id, messages, history, allow_tools, trace_id=None):
+def _callReply(
+    plugin_event,
+    Proc,
+    bot_hash,
+    group_id,
+    messages,
+    history,
+    allow_tools,
+    trace_id=None,
+    tool_ctx=None,
+):
     retry = int(OlivaAIAgent.conf.get('ambient', 'retry_count', default=3))
     voice_only = not allow_tools and OlivaAIAgent.voice.getStatus()['ready']
     if allow_tools or voice_only:
@@ -1079,6 +1098,7 @@ def _callReply(plugin_event, Proc, bot_hash, group_id, messages, history, allow_
             history,
             trace_id=trace_id,
             voice_only=voice_only,
+            tool_ctx=tool_ctx,
         )
     reply_list = None
     for attempt in range(retry):
@@ -1115,6 +1135,7 @@ def _callReplyWithTools(
     history,
     trace_id=None,
     voice_only=False,
+    tool_ctx=None,
 ):
     '''潜行 + 工具：让 AI 可调用 run_command/查询等，最终强制 JSON 输出。
     修复要点：
@@ -1122,7 +1143,7 @@ def _callReplyWithTools(
     2. _parseR 解析失败但有文本时，用 _fallback_parse_intent 兜底(参考刺客 agent.py)
     3. 工具调用记录到 debugLog，方便排查"调了工具但没回复"的问题'''
     conf = OlivaAIAgent.conf
-    ctx = _makeToolContext(plugin_event, Proc, group_id, trace_id)
+    ctx = tool_ctx or _makeToolContext(plugin_event, Proc, group_id, trace_id)
     tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx, voice_only=voice_only)
     max_rounds = int(conf.get('ambient', 'agent_max_turns', default=4))
     convo = list(messages)
@@ -1137,7 +1158,7 @@ def _callReplyWithTools(
         )
         if not res.get('ok'):
             conf.debugLog(Proc, '潜行+工具 AI调用失败(轮%d): %s' % (rnd + 1, res.get('error')))
-            return None
+            return _suppressTextAfterVoice(None, ctx, Proc, trace_id)
         calls = res.get('tool_calls') or []
         asst = {'role': 'assistant', 'content': res.get('text', '')}
         if calls:
@@ -1153,7 +1174,7 @@ def _callReplyWithTools(
                 reply_list = _fallback_parse_intent(text)
             elif reply_list is None:
                 conf.debugLog(Proc, '潜行+工具 空回复,跳过')
-            return reply_list
+            return _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id)
         # 有工具调用 → 执行并继续循环
         for tc in calls:
             try:
@@ -1188,9 +1209,21 @@ def _callReplyWithTools(
         if reply_list is None and text.strip():
             conf.debugLog(Proc, '潜行+工具 收尾JSON失败,兜底: %s' % text[:200])
             reply_list = _fallback_parse_intent(text)
-        return reply_list
+        return _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id)
     conf.debugLog(Proc, '潜行+工具 收尾AI调用失败: %s' % res.get('error'))
-    return None
+    return _suppressTextAfterVoice(None, ctx, Proc, trace_id)
+
+
+def _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id):
+    if not OlivaAIAgent.voice.hasSentVoice(ctx):
+        return reply_list
+    OlivaAIAgent.conf.traceLog(
+        Proc,
+        'voice.reply.text_suppressed',
+        trace_id,
+        messages=len(reply_list or []),
+    )
+    return []
 
 
 def saveAll():

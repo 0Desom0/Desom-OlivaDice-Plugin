@@ -79,7 +79,7 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - **OlivaDice 官方指令**（经 `run_command`）：由**骰系自己**判权——`run_command` 把发起人身份（user_id / platform / `sender.role`）原样重注入，OlivaDice 重新计算 `flag_is_from_master`（masterList）和 `flag_is_from_group_admin`（owner/admin/sub_admin）。所以需要骰主权限的只有骰主能用，需要群管/群主的只有群管/群主/骰主能用，普通人无法通过 AI 越权，也无法伪造身份。
 - **OlivOS 原生接口调用**：唯一入口 `olivos_call` 始终走三级角色门槛 `.ai admin role everyone/group_admin/master`，并叠加全局开关和每群开关；`olivos_discover` 只读目录，不受此限。`run_command` 仍由骰系自己判权。（旧配置 `master_only:true` 会自动迁移。）
 
-**平台/SDK 感知**：AI 的系统提示里会注入当前 `平台 / SDK / 模型` 和平台特性说明。OlivOS 会按事件平台**自动把发送路由到对应适配器**（AI 不用关心底层 SDK），但 AI 被告知了自己在哪个平台，从而不会在不支持的平台用其专属格式（比如别在 Telegram 用 QQ 的 CQ 码）。
+**平台/SDK 感知**：AI 的系统提示里会注入当前 `平台 / SDK / 模型` 和平台特性说明。OlivOS 会按事件平台**自动把发送路由到对应适配器**（AI 不用关心底层 SDK），但 AI 被告知了自己在哪个平台，从而不会在不支持的平台使用 QQ 专属消息段。插件对外发送统一使用 OP 码。
 
 **潜行 vs AI 模式：整合而非二选一**（v2.3）。群关键词始终可触发整合请求并直接跳过小模型；只有本群潜行开启后，@机器人和引用机器人回复才会跳过概率、进入前置小模型，`NEXT` 后再调用主模型。普通闲聊也只有潜行开启后才会进入概率门。整合请求同时带上人设、群上下文、知识、技能、视觉和 Agent 工具；开关为 `ambient.integrate_hard_trigger`（默认开）。
 
@@ -115,10 +115,10 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 ### MCP 工具与语音回复（v2.20）
 
 - GUI 新增“MCP 服务”分类，支持 Streamable HTTP 和 stdio；连接后远端工具以 `mcp_<服务>_<工具>` 动态加入 Agent，服务可单独设置 `danger` 并复用现有三级权限管控。运行维护页可手动刷新工具目录。
-- GUI 的“语音模型”默认直连阿里云百炼 `MultiModalConversation` 原生 HTTP 接口，使用 `qwen3-tts-instruct-flash`、`Cherry` 和非流式输出；同时保留 OpenAI `/audio/speech` 兼容模式。启用后模型会看到 `send_voice` 工具，可根据语境自行决定发送语音；单次回复内相同文本只会合成并发送一次，内容不同的分段仍可分别发送。
+- GUI 的“语音模型”默认直连阿里云百炼 `MultiModalConversation` 原生 HTTP 接口，使用 `qwen3-tts-instruct-flash`、`Cherry` 和非流式输出；同时保留 OpenAI `/audio/speech` 兼容模式。启用后模型会看到 `send_voice` 工具，可根据语境自行决定发送语音；单次回复内相同文本只会合成并发送一次，内容不同的分段仍可分别发送。只要本轮已有语音成功发送，就不会再补发模型最终文字。
 - 阿里云模式支持 `language_type`、`instructions` 与 `optimize_instructions`。每次 `instructions` 都由主模型在调用 `send_voice` 时根据当前上下文动态生成，只描述本次语速、情绪、音量、停顿和语调，不写入配置或记忆，也不是第二套人格提示词；接口返回的临时音频 URL 会立即下载，并按 URL、Content-Type 或音频头识别真实格式。
 - 原生请求体与官方 `dashscope.MultiModalConversation.call(..., stream=False)` 等价，但继续使用插件已有的 `requests` 直连，无需额外安装 `dashscope` SDK。
-- 语音与潜行不维护第二套提示词，全部继续使用唯一的 `prompt.system`。本地语音缓存位于 `voice/`，按 `max_files` 自动淘汰。
+- 语音与潜行不维护第二套提示词，全部继续使用唯一的 `prompt.system`。本地语音缓存位于 `voice/`，最多保留 10 个文件；配置为更小值时按较小值淘汰，旧配置中的更大数值会自动迁移为 10。
 - `qqGuildv2` 被 @ 判定兼容 `GROUP_AT_MESSAGE_CREATE`、`sub_self_id` 和群机器人 `sub_self_open_id`，与 MessageRecall 的官机处理方式一致。
 
 ## 定时提醒 / 定时主动消息（v2.7）
@@ -159,7 +159,7 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 
 - 群聊在 `vision.sync_ocr:false` 时，会把整条图片消息交给独立后台线程：先下载、识图并生成事实摘要，再继续本轮 AI 回复。这样不阻塞 OlivOS 消息总线，同时不会再让本轮回复只拿到“未识别成功”的占位；`true` 才会直接在消息总线线程识图。
 - 私聊与 `.ai` 附图也走同一视觉子系统。主后端是纯文本模型时，图片会先由独立视觉模型原位转成 `[图片:识图结果]`，然后把摘要而不是原始图片 URL 交给主模型；已写盘的旧格式仍兼容。
-- 开启 `ambient.first_thinking` 后，前置模型可从表情缓存选择图片意图；插件使用与群聊刺客一致的字段权重和模糊评分解析真实文件名，再交由主回复模型决定本轮是否发送。最终的 `[发图片:...]` 会转换成与 `old_string` 模式一致的真实 `[CQ:image,...]` 图片消息段。
+- 开启 `ambient.first_thinking` 后，前置模型可从表情缓存选择图片意图；插件使用与群聊刺客一致的字段权重和模糊评分解析真实文件名，再交由主回复模型决定本轮是否发送。最终的 `[发图片:...]` 会转换成与 `olivos_string` 模式一致的真实 `[OP:image,...]` 图片消息段。
 - `debug_log:true` 时，OlivOS Logger 会输出带同一“编号”的中文关键流程日志：前置判断、模型及 token 用量、命中的技能/知识资料、工具调用、本轮回复或跳过决定均可串联查看；普通群消息接收及“未开启潜行”不再逐条刷屏。API Key、token、Authorization、Base64/data URL 会自动遮蔽，长字段会截断。
 - 图片识别日志精简为“图片下载”“图片识别请求”“图片识别结果”三类；缓存查询、路由选择、后台转交、摘要转换和缓存落盘不再逐步刷屏。失败结果仍保留状态码和简短错误。
 

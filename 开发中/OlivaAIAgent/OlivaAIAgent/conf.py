@@ -310,7 +310,7 @@ DEFAULT_CONF = {
         'timeout_sec': 120,
         'max_chars': 500,
         'max_bytes': 15728640,
-        'max_files': 100,
+        'max_files': 10,
         'extra_headers': {},
         'extra_body': {},
     },
@@ -448,14 +448,17 @@ def _migrateVoiceProvider(cfg):
             return
         # 语音表现改由每次 send_voice 工具调用动态生成，不再保留静态配置。
         voice.pop('instructions', None)
-        if 'provider' in voice:
-            return
-        old_voice_url = str(voice.get('api_url', '')).lower()
-        if 'multimodal-generation/generation' in old_voice_url:
-            voice['provider'] = 'dashscope_multimodal'
-        else:
-            # v2.19 及更早版本只有 OpenAI-compatible 报文，已有配置必须保留旧语义。
-            voice['provider'] = 'openai_compatible'
+        if 'provider' not in voice:
+            old_voice_url = str(voice.get('api_url', '')).lower()
+            if 'multimodal-generation/generation' in old_voice_url:
+                voice['provider'] = 'dashscope_multimodal'
+            else:
+                # v2.19 及更早版本只有 OpenAI-compatible 报文，已有配置必须保留旧语义。
+                voice['provider'] = 'openai_compatible'
+        try:
+            voice['max_files'] = max(1, min(10, int(voice.get('max_files', 10))))
+        except Exception:
+            voice['max_files'] = 10
     except Exception:
         pass
 
@@ -881,15 +884,15 @@ def isWhitelisted(platform, group_id):
 
 
 _PLATFORM_NOTES = {
-    'qq': 'QQ平台(OneBot类)。支持@[CQ:at,qq=号]、图片[CQ:image]、回复[CQ:reply,id=]、表情回应、群管理、群文件、戳一戳等。',
-    'telegram': 'Telegram。无QQ式群管理/精华/戳一戳；@用用户名；发送以文本/图片为主，勿用CQ码专属特性。',
-    'discord': 'Discord。用频道概念，无QQ群管理接口；勿用CQ码。',
+    'qq': 'QQ平台。发送消息段只用OP码：@[OP:at,id=号]、图片[OP:image,file=资源]、回复[OP:reply,id=消息ID]。',
+    'telegram': 'Telegram。无QQ式群管理/精华/戳一戳；@用用户名；勿输出QQ专属消息段。',
+    'discord': 'Discord。用频道概念，无QQ群管理接口；勿输出QQ专属消息段。',
     'kaiheila': 'KOOK(开黑啦)。有频道(host)层级，部分接口用 host_id；勿套用QQ专属能力。',
     'kook': 'KOOK(开黑啦)。有频道(host)层级，部分接口用 host_id；勿套用QQ专属能力。',
-    'qqguild': 'QQ频道。子频道结构，@与消息格式与QQ群略有差异，部分群管理接口不可用。',
+    'qqguild': 'QQ频道。子频道结构；发送消息段只用OP码，部分QQ群管理接口不可用。',
     'dodo': 'DoDo。频道结构，勿套用QQ群专属接口。',
     'fanbook': 'Fanbook。勿套用QQ群专属接口。',
-    'onebot': 'OneBot协议(通常为QQ)。CQ/OP码可用。',
+    'onebot': 'OneBot协议(通常为QQ)。本插件发送消息段统一使用OP码。',
 }
 
 
@@ -1163,6 +1166,8 @@ _TRACE_STAGE_ZH = {
     'vision.send.translated': '已生成图片消息段',
     'voice.send.start': '正在生成并发送语音',
     'voice.send.duplicate': '检测到重复语音，已跳过',
+    'voice.reply.text_suppressed': '语音已发送，跳过本轮文字',
+    'voice.cache.cleaned': '语音缓存已清理',
 }
 
 _VISIBLE_VISION_TRACE_STAGES = {
@@ -1230,9 +1235,11 @@ _TRACE_FIELD_ZH = {
     'result': '结果',
     'response': '响应',
     'response_json': 'JSON响应',
+    'removed': '已删除',
     'reference': '图片引用',
     'round': '轮次',
     'route': '路由',
+    'retained': '保留文件数',
     'saved': '已保存',
     'scene': '场景',
     'source': '来源',

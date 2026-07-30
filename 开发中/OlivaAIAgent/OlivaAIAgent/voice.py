@@ -43,6 +43,8 @@ _PROVIDER_ALIASES = {
     _OPENAI_PROVIDER: _OPENAI_PROVIDER,
 }
 _VOICE_DEDUPE_CTX_KEY = '_oliva_ai_voice_texts'
+_VOICE_SENT_CTX_KEY = '_oliva_ai_voice_sent'
+_VOICE_CACHE_HARD_LIMIT = 10
 _voiceDedupeLock = threading.Lock()
 
 
@@ -66,6 +68,15 @@ def _releaseVoiceText(ctx, key):
         sent_keys = ctx.get(_VOICE_DEDUPE_CTX_KEY)
         if isinstance(sent_keys, set):
             sent_keys.discard(key)
+
+
+def hasSentVoice(ctx):
+    return isinstance(ctx, dict) and bool(ctx.get(_VOICE_SENT_CTX_KEY))
+
+
+def _markVoiceSent(ctx):
+    if isinstance(ctx, dict):
+        ctx[_VOICE_SENT_CTX_KEY] = True
 
 
 def outputDir():
@@ -98,21 +109,33 @@ def getStatus():
 
 
 def _cleanOldFiles():
-    max_files = max(1, int(OlivaAIAgent.conf.get('voice', 'max_files', default=100)))
+    configured = int(OlivaAIAgent.conf.get('voice', 'max_files', default=_VOICE_CACHE_HARD_LIMIT))
+    max_files = max(1, min(_VOICE_CACHE_HARD_LIMIT, configured))
+    removed = 0
     try:
+        directory = outputDir()
         entries = [
-            os.path.join(outputDir(), name)
-            for name in os.listdir(outputDir())
-            if os.path.isfile(os.path.join(outputDir(), name))
+            os.path.join(directory, name)
+            for name in os.listdir(directory)
+            if os.path.isfile(os.path.join(directory, name))
         ]
         entries.sort(key=lambda path: os.path.getmtime(path), reverse=True)
         for path in entries[max_files:]:
             try:
                 os.remove(path)
+                removed += 1
             except Exception:
                 pass
     except Exception:
-        pass
+        return removed
+    if removed:
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'voice.cache.cleaned',
+            removed=removed,
+            retained=max_files,
+        )
+    return removed
 
 
 def _normalizeFormat(value):
@@ -372,11 +395,22 @@ def sendVoice(ctx, text, instructions=''):
         active = not isinstance(result, dict) or bool(result.get('active'))
         message_ids = _messageIds(result)
         if active:
+            _markVoiceSent(ctx)
             OlivaAIAgent.identifiers.recordOutgoing(
                 plugin_event,
                 '[语音消息:%s]' % str(text)[:200],
                 message_ids,
             )
+            try:
+                if ctx.get('func_type') == 'group_message' and ctx.get('group_id') not in [None, '']:
+                    OlivaAIAgent.ambient.addSelfReply(
+                        ctx.get('platform', ''),
+                        ctx['group_id'],
+                        '[语音消息] %s' % str(text).strip(),
+                        message_ids=message_ids,
+                    )
+            except Exception:
+                pass
         actual_format = os.path.splitext(path)[1].lstrip('.').lower()
         return {
             'active': active,
@@ -385,6 +419,7 @@ def sendVoice(ctx, text, instructions=''):
                 'instruction_chars': len(str(instructions or '')),
                 'text_chars': len(str(text)),
                 'format': actual_format,
+                'message': '语音已发送，本轮不再发送文字回复',
             },
             'error': '' if active else '平台返回发送失败',
         }

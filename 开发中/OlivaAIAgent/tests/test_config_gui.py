@@ -32,6 +32,7 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual('qwen3-tts-instruct-flash', default_conf['voice']['model'])
         self.assertEqual('Chinese', default_conf['voice']['language_type'])
         self.assertTrue(default_conf['voice']['optimize_instructions'])
+        self.assertEqual(10, default_conf['voice']['max_files'])
         self.assertNotIn('instructions', default_conf['voice'])
         self.assertNotIn('groups', default_conf['whitelist'])
 
@@ -70,11 +71,13 @@ class ConfigMigrationTest(unittest.TestCase):
             'voice': {
                 'api_url': 'https://example.invalid/v1/audio/speech',
                 'instructions': '旧的固定表现指令',
+                'max_files': 100,
             },
         }
         OlivaAIAgent.conf._migrate(config)
         self.assertEqual('openai_compatible', config['voice']['provider'])
         self.assertNotIn('instructions', config['voice'])
+        self.assertEqual(10, config['voice']['max_files'])
 
     def test_persisted_config_omits_description_metadata(self):
         clean = OlivaAIAgent.conf._persistableConfig({

@@ -41,6 +41,7 @@ class Event(object):
         except Exception as e:
             OlivaAIAgent.conf.log(Proc, 3, '视觉配置检查失败: %s' % e)
         try:
+            OlivaAIAgent.voice._cleanOldFiles()
             voice_status = OlivaAIAgent.voice.getStatus()
             OlivaAIAgent.conf.log(
                 Proc,

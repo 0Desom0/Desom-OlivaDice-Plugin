@@ -252,7 +252,7 @@ def _activeSend(job, text):
     msg = str(text)
     # 群里 @ 一下提醒对象，确保被看到
     if job.get('send_type') == 'group' and job.get('requester_id'):
-        msg = '[CQ:at,qq=%s] %s' % (job['requester_id'], msg)
+        msg = '[OP:at,id=%s] %s' % (job['requester_id'], msg)
     try:
         ev = _cloneActive(pe, job['send_type'], job['target_id'], job.get('host_id'))
         ev.send(job['send_type'], job['target_id'], msg, host_id=job.get('host_id'))

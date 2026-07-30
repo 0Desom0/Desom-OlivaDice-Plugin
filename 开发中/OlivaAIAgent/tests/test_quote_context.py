@@ -155,6 +155,32 @@ class QuoteContextTest(unittest.TestCase):
         self.assertTrue(parsed['at_me'])
         self.assertIn('bot-member-openid', parsed['at_list'])
 
+    def test_op_segments_are_parsed_for_mention_reply_and_image(self):
+        event = FakeEvent(
+            '[OP:at,id=bot-member-openid][OP:reply,id=quoted-op]'
+            '[OP:image,file=https://example.com/op.png]看这张图',
+            {
+                'active': True,
+                'data': {
+                    'message': '被引用的消息',
+                    'sender': {'id': 'user-2', 'name': '测试用户'},
+                },
+            },
+        )
+        event.data.extend['sub_self_open_id'] = 'bot-member-openid'
+        with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+
+        self.assertTrue(parsed['at_me'])
+        self.assertEqual('quoted-op', parsed['reference_message_id'])
+        self.assertEqual(['https://example.com/op.png'], parsed['images'])
+        self.assertIn('看这张图', parsed['text'])
+
+    def test_safe_reply_uses_op_reply_segment(self):
+        event = FakeEvent('测试消息')
+        OlivaAIAgent.msgReply._safeReply(event, '回复内容', {'message_id': 'current-1'})
+        self.assertEqual('[OP:reply,id=current-1]回复内容', event.replies[0])
+
     def test_qqguildv2_at_event_is_silent_when_ambient_is_disabled(self):
         event = FakeEvent('机器人在吗')
         event.data.extend['qq_event_type'] = 'GROUP_AT_MESSAGE_CREATE'
