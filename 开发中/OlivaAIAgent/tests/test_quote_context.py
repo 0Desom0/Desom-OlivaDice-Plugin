@@ -98,6 +98,36 @@ class QuoteContextTest(unittest.TestCase):
             parsed = OlivaAIAgent.msgReply.parseMessage(event)
         self.assertTrue(parsed['at_me'])
 
+    def test_group_quote_log_only_runs_when_group_is_usable(self):
+        for group_usable in [False, True]:
+            with self.subTest(group_usable=group_usable):
+                event = FakeEvent(
+                    '[CQ:reply,id=quoted-log]继续说说',
+                    {
+                        'active': True,
+                        'data': {
+                            'message': '引用正文',
+                            'sender': {'user_id': 'user-2', 'nickname': '青桔'},
+                        },
+                    },
+                )
+                with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                        mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage') as quote_log, \
+                        mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+                        mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+                        mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
+                        mock.patch.object(
+                            OlivaAIAgent.msgReply,
+                            '_checkGroupUsable',
+                            return_value=group_usable,
+                        ), \
+                        mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=False), \
+                        mock.patch.object(OlivaAIAgent.conf, 'isGroupHistoryMemory', return_value=False), \
+                        mock.patch.object(OlivaAIAgent.conf, 'isGroupLongMemory', return_value=False):
+                    OlivaAIAgent.msgReply._onGroupMessage(event, None)
+
+                self.assertEqual(group_usable, quote_log.called)
+
     def test_qqguildv2_sub_self_open_id_is_treated_as_bot_mention(self):
         event = FakeEvent('[CQ:at,qq=bot-member-openid] 机器人在吗')
         event.data.extend['sub_self_open_id'] = 'bot-member-openid'

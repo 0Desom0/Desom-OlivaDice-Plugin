@@ -413,7 +413,10 @@ def _onGroupMessage(plugin_event, Proc):
     parsed = parseMessage(plugin_event)
     trace_id = parsed['trace_id']
     OlivaAIAgent.identifiers.recordIncoming(plugin_event, parsed)
-    _logQuotedMessage(Proc, parsed)
+    is_master = OlivaAIAgent.conf.isMaster(plugin_event)
+    group_usable = _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=False)
+    if group_usable:
+        _logQuotedMessage(Proc, parsed)
     # 去重：同一条消息若被重复投递(或未来路径重叠)，只处理一次
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     OlivaAIAgent.reminder.registerSender(plugin_event)   # 刷新该bot的主动发送器(供定时提醒推送)
@@ -423,7 +426,6 @@ def _onGroupMessage(plugin_event, Proc):
     text = parsed['text']
 
     rest = _matchPrefix(text)
-    is_master = OlivaAIAgent.conf.isMaster(plugin_event)
 
     # .ai 控制指令(骰主控制类即使全局关闭也响应)
     if rest is not None:
@@ -432,7 +434,8 @@ def _onGroupMessage(plugin_event, Proc):
             OlivaAIAgent.conf.traceLog(Proc, 'route.group.control_command', trace_id)
             plugin_event.set_block()
             return
-        if not _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=True):
+        if not group_usable:
+            _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=True)
             plugin_event.set_block()
             return
         if rest == '':
@@ -446,7 +449,7 @@ def _onGroupMessage(plugin_event, Proc):
         return
 
     # 非前缀路径：明确 @ / 关键词始终触发；潜行只控制概率插话和群聊融入。
-    if not _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=False):
+    if not group_usable:
         return
     hard = bool(
         parsed.get('at_me')
