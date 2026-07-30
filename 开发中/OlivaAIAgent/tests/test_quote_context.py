@@ -28,6 +28,7 @@ class FakeEvent:
         self.result = result
         self.get_msg_calls = []
         self.blocked = False
+        self.replies = []
 
     def get_msg(self, message_id):
         self.get_msg_calls.append(str(message_id))
@@ -36,19 +37,25 @@ class FakeEvent:
     def set_block(self):
         self.blocked = True
 
+    def reply(self, message):
+        self.replies.append(message)
+
 
 class QuoteContextTest(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.old_data_path = OlivaAIAgent.conf.dataPath
         self.old_conf = OlivaAIAgent.conf.gConf
+        self.old_groups = OlivaAIAgent.conf.gGroups
         OlivaAIAgent.conf.dataPath = self.temp_dir.name
         OlivaAIAgent.conf.gConf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+        OlivaAIAgent.conf.gGroups = {}
         OlivaAIAgent.identifiers._initialized_path = None
 
     def tearDown(self):
         OlivaAIAgent.conf.dataPath = self.old_data_path
         OlivaAIAgent.conf.gConf = self.old_conf
+        OlivaAIAgent.conf.gGroups = self.old_groups
         OlivaAIAgent.identifiers._initialized_path = None
         self.temp_dir.cleanup()
 
@@ -75,6 +82,18 @@ class QuoteContextTest(unittest.TestCase):
         self.assertIn('【所引用的消息', context)
         self.assertIn('原消息的完整正文', context)
         self.assertIn('【当前消息】\n这个结论是什么意思？', context)
+        self.assertFalse(parsed['reply_to_me'])
+
+    def test_reply_to_bot_is_detected_from_outgoing_registry(self):
+        source_event = FakeEvent('机器人上一条回复')
+        OlivaAIAgent.identifiers.recordOutgoing(source_event, '机器人上一条回复', ['bot-message-1'])
+        event = FakeEvent('[CQ:reply,id=bot-message-1]继续说说')
+        with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+
+        self.assertTrue(parsed['reply_to_me'])
+        self.assertTrue(parsed['quote']['from_self'])
+        self.assertEqual('机器人上一条回复', parsed['quote']['text'])
 
     def test_prefers_persisted_ambient_history(self):
         event = FakeEvent('[CQ:reply,id=quoted-2]继续说说', None)
@@ -136,7 +155,7 @@ class QuoteContextTest(unittest.TestCase):
         self.assertTrue(parsed['at_me'])
         self.assertIn('bot-member-openid', parsed['at_list'])
 
-    def test_qqguildv2_at_event_routes_to_agent_when_ambient_is_disabled(self):
+    def test_qqguildv2_at_event_is_silent_when_ambient_is_disabled(self):
         event = FakeEvent('机器人在吗')
         event.data.extend['qq_event_type'] = 'GROUP_AT_MESSAGE_CREATE'
         with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
@@ -149,12 +168,129 @@ class QuoteContextTest(unittest.TestCase):
                 mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
             OlivaAIAgent.msgReply._onGroupMessage(event, None)
 
+        process.assert_not_called()
+        self.assertFalse(event.blocked)
+
+    def test_reply_to_bot_routes_through_first_thinking_without_probability(self):
+        event = FakeEvent('[CQ:reply,id=bot-message-2]你刚才是什么意思？')
+        parsed = {
+            'trace_id': 'trace-reply',
+            'text': '你刚才是什么意思？',
+            'at_me': False,
+            'reply_to_me': True,
+            'quote': {'message_id': 'bot-message-2', 'text': '上一条回复', 'from_self': True},
+            'message_id': 'current-1',
+            'images': [],
+        }
+        with mock.patch.object(OlivaAIAgent.msgReply, 'parseMessage', return_value=parsed), \
+                mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
+                mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+                mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
+                mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=True), \
+                mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
+            OlivaAIAgent.msgReply._onGroupMessage(event, None)
+
         process.assert_called_once()
         self.assertTrue(process.call_args.kwargs['force'])
-        self.assertTrue(process.call_args.kwargs['tools'])
-        self.assertTrue(process.call_args.kwargs['attempt'])
-        self.assertTrue(process.call_args.args[2]['at_me'])
+        self.assertFalse(process.call_args.kwargs['skip_first_thinking'])
         self.assertTrue(event.blocked)
+
+    def test_reply_to_bot_is_silent_when_ambient_is_disabled(self):
+        event = FakeEvent('[CQ:reply,id=bot-message-3]继续')
+        parsed = {
+            'trace_id': 'trace-reply-disabled',
+            'text': '继续',
+            'at_me': False,
+            'reply_to_me': True,
+            'quote': {'message_id': 'bot-message-3', 'text': '上一条回复', 'from_self': True},
+            'message_id': 'current-1',
+            'images': [],
+        }
+        with mock.patch.object(OlivaAIAgent.msgReply, 'parseMessage', return_value=parsed), \
+                mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
+                mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+                mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
+                mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=False), \
+                mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
+            OlivaAIAgent.msgReply._onGroupMessage(event, None)
+
+        process.assert_not_called()
+        self.assertFalse(event.blocked)
+
+    def test_keyword_skips_first_thinking(self):
+        event = FakeEvent('小芙在吗')
+        with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
+                mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+                mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_unionKeywords', return_value=['小芙']), \
+                mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
+            OlivaAIAgent.msgReply._onGroupMessage(event, None)
+
+        process.assert_called_once()
+        self.assertTrue(process.call_args.kwargs['force'])
+        self.assertTrue(process.call_args.kwargs['skip_first_thinking'])
+
+    def test_group_prefix_still_routes_when_ambient_is_disabled(self):
+        event = FakeEvent('.ai 你好')
+        with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
+                mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+                mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
+                mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=False), \
+                mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
+            OlivaAIAgent.msgReply._onGroupMessage(event, None)
+
+        process.assert_called_once()
+        self.assertTrue(process.call_args.kwargs['force'])
+        self.assertEqual('你好', process.call_args.kwargs['text_override'])
+        self.assertTrue(event.blocked)
+
+    def test_ambient_probability_does_not_recheck_at_or_global_keywords(self):
+        OlivaAIAgent.conf.gConf['trigger']['keywords'] = ['小芙']
+        parsed = {'text': '小芙在吗', 'at_me': True}
+        with mock.patch.object(OlivaAIAgent.ambient.random, 'random', return_value=0.9):
+            self.assertFalse(
+                OlivaAIAgent.ambient.shouldReply(
+                    parsed,
+                    lambda key, default=None: 0.3 if key == 'reply_probability' else default,
+                )
+            )
+
+    def test_group_disabled_blocks_keyword_but_master_can_recover_with_prefix(self):
+        keyword_event = FakeEvent('小芙在吗')
+        with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+                mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=False), \
+                mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
+            OlivaAIAgent.msgReply._onGroupMessage(keyword_event, None)
+        process.assert_not_called()
+
+        recovery_event = FakeEvent('.ai on')
+        with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+                mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=True), \
+                mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=False), \
+                mock.patch.object(OlivaAIAgent.conf, 'setGroupSwitch') as set_switch, \
+                mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
+            OlivaAIAgent.msgReply._onGroupMessage(recovery_event, None)
+
+        set_switch.assert_called_once_with('qqGuild', 'group-1', 'enabled', True)
+        process.assert_not_called()
+        self.assertTrue(recovery_event.blocked)
 
     def test_quoted_image_uses_existing_vision_pipeline(self):
         event = FakeEvent(

@@ -121,6 +121,17 @@ class PersonaSecurityTest(unittest.TestCase):
         self.assertIn('必须回应', forced_task)
         self.assertIn('r 不得为空列表', forced_task)
 
+    def test_only_explicit_skip_flag_bypasses_enabled_first_thinking(self):
+        self.assertTrue(OlivaAIAgent.ambient._shouldFirstThink(
+            enabled=True, skip_first_thinking=False,
+        ))
+        self.assertFalse(OlivaAIAgent.ambient._shouldFirstThink(
+            enabled=True, skip_first_thinking=True,
+        ))
+        self.assertFalse(OlivaAIAgent.ambient._shouldFirstThink(
+            enabled=False, skip_first_thinking=False,
+        ))
+
 
 if __name__ == '__main__':
     unittest.main()

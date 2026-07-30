@@ -21,7 +21,6 @@ _history = {}          # "platform|group_id" -> DynamicQueue
 _history_lock = threading.RLock()
 _group_locks = {}      # "platform|group_id" -> SlackableFairLock
 _glock_lock = threading.Lock()
-_think_ts = {}         # "bot|group" -> perf_counter (last reply time, for first_thinking cooldown)
 _memory_state = {}
 _memory_state_loaded = False
 _memory_jobs = set()
@@ -362,13 +361,7 @@ def _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=None):
 # ---------------- 触发判定 ----------------
 
 def shouldReply(parsed, config_get):
-    '''@/统一关键词(trigger.keywords)/随机概率 触发。'''
-    text = parsed['text']
-    if parsed.get('at_me') and config_get('mention_reply', True):
-        return True
-    for kw in OlivaAIAgent.conf.get('trigger', 'keywords', default=[]) or []:
-        if kw and str(kw) in text:
-            return True
+    '''普通潜行消息只做随机概率判定；@、引用和群关键词由 msgReply 统一路由。'''
     prob = config_get('reply_probability', 1.0)
     try:
         if random.random() < float(prob):
@@ -378,14 +371,8 @@ def shouldReply(parsed, config_get):
     return False
 
 
-def _setThink(bot_hash, group_id):
-    _think_ts[_hkey(bot_hash, group_id)] = time.perf_counter()
-
-
-def _thinkCooldownPassed(bot_hash, group_id):
-    cd = float(OlivaAIAgent.conf.get('ambient', 'first_thinking_cooldown', default=60))
-    last = _think_ts.get(_hkey(bot_hash, group_id), 0.0)
-    return (time.perf_counter() - last) > cd
+def _shouldFirstThink(enabled, skip_first_thinking):
+    return bool(enabled and not skip_first_thinking)
 
 
 def _mainDecisionTask(force=False):
@@ -413,11 +400,13 @@ def _logConversationDecision(Proc, trace_id, decision, reason, result=None, mess
 
 
 def process(plugin_event, Proc, parsed, self_id,
-            force=False, tools=False, attempt=True, text_override=None, _vision_worker=False):
+            force=False, tools=False, attempt=True, text_override=None,
+            skip_first_thinking=None, _vision_worker=False):
     '''统一群聊管线入口：记录历史 → 后台线程做节律+判定+回复。
     这一条管线同时具备潜行的群上下文/人设/知识/技能/视觉 与 全权限 Agent 的全部工具与骰点，
     无论怎么触发都是同一条请求。
-    - force=True：显式触发(.ai/@/关键词)，强制回复并跳过概率/前置判定
+    - force=True：定向或显式触发，跳过概率/历史量/让位并要求主模型回复
+    - skip_first_thinking：默认跟随 force；@/引用传 False，关键词/.ai 保持 True
     - tools=True：本次启用全部工具(整合两边能力)
     - attempt=False：只记录历史作上下文，不尝试回复
     - text_override：.ai 前缀后的正文，用作本条历史与关注焦点'''
@@ -425,6 +414,8 @@ def process(plugin_event, Proc, parsed, self_id,
     group_id = str(plugin_event.data.group_id)
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     trace_id = parsed.get('trace_id')
+    if skip_first_thinking is None:
+        skip_first_thinking = bool(force)
 
     # sync_ocr=false 时把整条图片处理移到后台线程，但仍等待 OCR 完成后才生成本轮回复。
     # 这样不会阻塞 OlivOS 消息总线，也不会让当前回复只看到“未识别”占位。
@@ -447,6 +438,7 @@ def process(plugin_event, Proc, parsed, self_id,
                     tools=tools,
                     attempt=attempt,
                     text_override=text_override,
+                    skip_first_thinking=skip_first_thinking,
                     _vision_worker=True,
                 )
             except Exception as e:
@@ -549,7 +541,7 @@ def process(plugin_event, Proc, parsed, self_id,
         with lock:
             try:
                 _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
-                       force=force, tools=tools)
+                       force=force, tools=tools, skip_first_thinking=skip_first_thinking)
             except Exception:
                 import traceback
                 OlivaAIAgent.conf.log(Proc, 3, '统一管线异常:\n' + traceback.format_exc())
@@ -557,7 +549,7 @@ def process(plugin_event, Proc, parsed, self_id,
 
 
 def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
-           force=False, tools=False):
+           force=False, tools=False, skip_first_thinking=False):
     conf = OlivaAIAgent.conf
     trace_id = parsed.get('trace_id')
 
@@ -565,17 +557,17 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         return conf.get('ambient', k, default=d)
 
     history = getHistory(platform, group_id)
-    # 被动自行插话需要足够历史；显式触发(@/关键词/.ai)不受此限
+    # 被动自行插话需要足够历史；定向或显式触发(@/引用/关键词/.ai)不受此限
     if not force and len(history) <= int(cfg('history_size_min', 4)):
         _logConversationDecision(Proc, trace_id, '跳过', '群聊历史不足')
         return
-    # 触发判定：显式触发(force)时强制回复，跳过概率/前置判定
+    # force 只负责绕过概率等前置门槛；是否调用小模型由 skip_first_thinking 单独决定。
     if not force and not shouldReply(parsed, cfg):
         _logConversationDecision(Proc, trace_id, '跳过', '未满足触发概率或条件')
         return
 
     # 节律：等一会，若期间来了更新的消息则让位。
-    # 显式触发(.ai/@/关键词, force)承诺"强制回复"，不参与让位，否则忙群里会被静默丢弃。
+    # 定向或显式触发(.ai/@/引用/关键词)不参与让位，否则忙群里会被静默丢弃。
     total_start = time.perf_counter()
     if not force and not lock.slack():
         _logConversationDecision(Proc, trace_id, '跳过', '等待期间出现更新消息')
@@ -780,10 +772,12 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     messages.append({'role': 'user',
                      'content': '根据最新群消息决定是否回复，只输出 {"r":["回复"]} 或 {"r":[]}，不要解释。'})
 
-    # first_thinking 前置判定（便宜模型 NEXT/SKIP + 表情意图）；显式触发/被@时直接放行
+    # @/引用机器人绕过概率和冷却后进入小模型；关键词/.ai 跳过小模型。
     image_ref = ''
-    if (cfg('first_thinking', False) and _thinkCooldownPassed(bot_hash, group_id)
-            and not parsed.get('at_me') and not force):
+    if _shouldFirstThink(
+        cfg('first_thinking', False),
+        skip_first_thinking,
+    ):
         decision, image_ref = _firstThink(
             Proc,
             bot_hash,
@@ -819,7 +813,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     )
     if reply_list is None:
         _logConversationDecision(Proc, trace_id, '失败', '主回复模型没有返回有效结果')
-        # 显式请求(.ai/@/关键词)遇后端错误时给一句反馈，避免用户对着空气发指令
+        # 定向或显式请求(.ai/@/引用/关键词)遇后端错误时给一句反馈，避免用户对着空气发指令
         if force:
             tpl = str(conf.get('agent', 'error_reply', default='AI出错: {err}'))
             try:
@@ -831,7 +825,6 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         _logConversationDecision(Proc, trace_id, '跳过', '主回复模型决定不参与')
         return
 
-    _setThink(bot_hash, group_id)
     reply_list = _replyWash(reply_list)
     reply_list = OlivaAIAgent.vision.repairVisionDenial(reply_list, history)
     if not reply_list:

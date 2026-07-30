@@ -23,6 +23,8 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertNotIn('append', default_conf['prompt'])
         self.assertNotIn('personality', default_conf['ambient'])
         self.assertNotIn('enabled_groups', default_conf['ambient'])
+        self.assertNotIn('first_thinking_cooldown', default_conf['ambient'])
+        self.assertNotIn('mention_reply', default_conf['ambient'])
         self.assertTrue(default_conf['memory']['long_term_default'])
         self.assertIn('mcp', default_conf)
         self.assertIn('voice', default_conf)
@@ -31,6 +33,7 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual('Chinese', default_conf['voice']['language_type'])
         self.assertTrue(default_conf['voice']['optimize_instructions'])
         self.assertNotIn('instructions', default_conf['voice'])
+        self.assertNotIn('groups', default_conf['whitelist'])
 
     def test_legacy_prompts_and_permissions_are_migrated_once(self):
         config = {
@@ -121,6 +124,7 @@ class ConfigMigrationTest(unittest.TestCase):
                             '_说明': '旧说明',
                             'prompt': {'system': '旧系统', 'append': '旧附加'},
                             'ambient': {'personality': '旧人设', 'enabled_groups': ['20002']},
+                            'whitelist': {'enabled': True, 'groups': ['30003']},
                             'voice': {'api_url': 'https://example.invalid/v1/audio/speech'},
                         },
                         config_file,
@@ -138,8 +142,10 @@ class ConfigMigrationTest(unittest.TestCase):
                 self.assertNotIn('personality', persisted['ambient'])
                 self.assertNotIn('enabled_groups', persisted['ambient'])
                 self.assertNotIn('_说明', persisted)
+                self.assertNotIn('groups', persisted['whitelist'])
                 self.assertEqual('openai_compatible', persisted['voice']['provider'])
                 self.assertTrue(conf.gGroups['*']['20002']['ambient'])
+                self.assertTrue(conf.gGroups['*']['30003']['enabled'])
         finally:
             for name, value in old_state.items():
                 setattr(conf, name, value)
@@ -161,7 +167,18 @@ class ConfigGuiSchemaTest(unittest.TestCase):
         }
         actual = set(OlivaAIAgent.gui.SECTION_ORDER)
         actual.discard('general')
+        expected -= {'enable', 'whitelist'}
         self.assertEqual(expected, actual)
+        self.assertNotIn('enable', OlivaAIAgent.gui.SECTION_ORDER)
+        self.assertNotIn('whitelist', OlivaAIAgent.gui.SECTION_ORDER)
+
+    def test_group_trigger_override_parser_supports_inherit_and_disable(self):
+        parser = OlivaAIAgent.gui.ConfigWindow._parseStringList
+        self.assertIsNone(parser('', '群触发前缀', allow_inherit=True))
+        self.assertEqual([], parser('[]', '群触发前缀', allow_inherit=True))
+        self.assertEqual(['.bot'], parser('[".bot"]', '群触发前缀', allow_inherit=True))
+        with self.assertRaises(ValueError):
+            parser('[1]', '群触发前缀', allow_inherit=True)
 
     def test_typed_editor_values(self):
         self.assertEqual(12, OlivaAIAgent.gui._parseValue('12', 1, ('agent', 'max_tool_rounds')))
@@ -191,6 +208,56 @@ class ConfigGuiSchemaTest(unittest.TestCase):
             window.refreshMcp()
         self.assertEqual('MCP 工具刷新', runner.call_args.args[0])
 
+
+class UnifiedGroupConfigTest(unittest.TestCase):
+    def setUp(self):
+        self.old_conf = OlivaAIAgent.conf.gConf
+        self.old_groups = OlivaAIAgent.conf.gGroups
+        OlivaAIAgent.conf.gConf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+        OlivaAIAgent.conf.gGroups = {}
+
+    def tearDown(self):
+        OlivaAIAgent.conf.gConf = self.old_conf
+        OlivaAIAgent.conf.gGroups = self.old_groups
+
+    def test_whitelist_uses_group_table_membership_including_empty_nodes(self):
+        OlivaAIAgent.conf.gConf['whitelist']['enabled'] = True
+        OlivaAIAgent.conf.gGroups = {'qq': {'10001': {}}, '*': {'20002': {'enabled': False}}}
+
+        self.assertTrue(OlivaAIAgent.conf.isWhitelisted('qq', '10001'))
+        self.assertTrue(OlivaAIAgent.conf.isWhitelisted('qqGuild', '20002'))
+        self.assertFalse(OlivaAIAgent.conf.isWhitelisted('qq', '30003'))
+
+    def test_whitelist_off_allows_unlisted_group_then_uses_group_default(self):
+        OlivaAIAgent.conf.gConf['whitelist']['enabled'] = False
+        OlivaAIAgent.conf.gConf['enable']['group_default'] = False
+
+        self.assertTrue(OlivaAIAgent.conf.isWhitelisted('qq', 'unlisted'))
+        self.assertFalse(OlivaAIAgent.conf.isGroupEnabled('qq', 'unlisted'))
+
+        OlivaAIAgent.conf.gConf['enable']['group_default'] = True
+        self.assertTrue(OlivaAIAgent.conf.isGroupEnabled('qq', 'unlisted'))
+
+    def test_group_prefixes_and_keywords_support_inherit_override_and_empty_disable(self):
+        OlivaAIAgent.conf.gConf['trigger']['prefix'] = ['.ai']
+        OlivaAIAgent.conf.gConf['trigger']['keywords'] = ['小芙']
+        OlivaAIAgent.conf.gGroups = {
+            'qq': {
+                'inherit': {},
+                'custom': {'prefixes': ['.bot'], 'keywords': ['助手']},
+                'disabled': {'prefixes': [], 'keywords': []},
+            },
+        }
+
+        self.assertEqual(['.ai'], OlivaAIAgent.conf.getGroupPrefixes('qq', 'inherit'))
+        self.assertEqual(['小芙'], OlivaAIAgent.conf.getGroupKeywords('qq', 'inherit'))
+        self.assertEqual(['.bot'], OlivaAIAgent.conf.getGroupPrefixes('qq', 'custom'))
+        self.assertEqual(['助手'], OlivaAIAgent.conf.getGroupKeywords('qq', 'custom'))
+        self.assertEqual([], OlivaAIAgent.conf.getGroupPrefixes('qq', 'disabled'))
+        self.assertEqual([], OlivaAIAgent.conf.getGroupKeywords('qq', 'disabled'))
+        self.assertEqual('你好', OlivaAIAgent.msgReply._matchPrefix('.bot 你好', 'qq', 'custom'))
+        self.assertIsNone(OlivaAIAgent.msgReply._matchPrefix('.ai 你好', 'qq', 'custom'))
+        self.assertIsNone(OlivaAIAgent.msgReply._matchPrefix('.ai 你好', 'qq', 'disabled'))
 
 if __name__ == '__main__':
     unittest.main()

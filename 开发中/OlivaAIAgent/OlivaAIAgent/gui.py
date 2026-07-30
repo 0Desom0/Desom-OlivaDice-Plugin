@@ -21,7 +21,6 @@ SECTION_ORDER = [
     'custom',
     'prompt',
     'trigger',
-    'enable',
     'ambient',
     'memory',
     'semantic_memory',
@@ -32,7 +31,6 @@ SECTION_ORDER = [
     'permissions',
     'security',
     'masters',
-    'whitelist',
     'groupchain',
     'reminder',
     'knowledge',
@@ -49,7 +47,6 @@ SECTION_LABELS = {
     'custom': '自定义网关',
     'prompt': '统一提示词',
     'trigger': '触发与私聊',
-    'enable': '全局启用',
     'ambient': '潜行群友',
     'memory': '上下文与群记忆',
     'semantic_memory': '长期事实与向量',
@@ -60,7 +57,6 @@ SECTION_LABELS = {
     'permissions': '工具权限',
     'security': '人设安全',
     'masters': '骰主来源',
-    'whitelist': '群白名单',
     'groupchain': '群链共享',
     'reminder': '定时提醒',
     'knowledge': '知识库',
@@ -100,10 +96,9 @@ FIELD_LABELS = {
     'global': '插件全局启用',
     'group_default': '新群默认启用',
     'enable_default': '新群潜行默认启用',
-    'mention_reply': '潜行被 @ 必回',
     'reply_probability': '主动插话概率',
     'ignore_prefixes': '潜行忽略前缀',
-    'integrate_hard_trigger': '明确触发整合全部能力',
+    'integrate_hard_trigger': '定向触发整合全部能力',
     'history_size': '携带群历史条数',
     'history_size_min': '最少群历史条数',
     'history_dynamic': '动态历史窗口',
@@ -115,7 +110,6 @@ FIELD_LABELS = {
     'max_message_length': '单条消息长度上限',
     'retry_count': '生成重试次数',
     'first_thinking': '启用前置参与判定',
-    'first_thinking_cooldown': '前置判定冷却（秒）',
     'intent_api': '前置判定模型',
     'timeout': '超时（秒）',
     'intent_image_cache_size': '判定图片缓存数',
@@ -304,6 +298,11 @@ class ConfigWindow:
         self.group_platform_var = None
         self.group_id_var = None
         self.group_switch_vars = {}
+        self.group_global_vars = {}
+        self.group_default_prefixes = None
+        self.group_default_keywords = None
+        self.group_prefixes_text = None
+        self.group_keywords_text = None
         self.runtime_text = None
         self.owns_mainloop = False
 
@@ -398,25 +397,63 @@ class ConfigWindow:
 
     def _buildGroupTab(self):
         page = ttk.Frame(self.notebook, padding=12)
-        page.rowconfigure(1, weight=1)
+        page.rowconfigure(2, weight=1)
         page.columnconfigure(0, weight=1)
-        ttk.Label(page, text='群级覆盖', style='Section.TLabel').grid(row=0, column=0, sticky='w', pady=(0, 8))
 
-        columns = ('platform', 'group_id') + tuple(key for key, _label in GROUP_SWITCHES)
+        global_frame = ttk.LabelFrame(page, text='全局群设置', padding=10)
+        global_frame.grid(row=0, column=0, columnspan=2, sticky='ew', pady=(0, 10))
+        global_frame.columnconfigure(4, weight=1)
+        global_switches = (
+            ('global', '插件全局启用'),
+            ('whitelist', '白名单模式'),
+            ('group_default', '新群默认启用'),
+            ('ambient_default', '新群潜行默认启用'),
+        )
+        for index, (key, label) in enumerate(global_switches):
+            variable = tkinter.BooleanVar(value=False)
+            self.group_global_vars[key] = variable
+            ttk.Checkbutton(global_frame, text=label, variable=variable).grid(
+                row=0,
+                column=index,
+                sticky='w',
+                padx=(0, 18),
+            )
+        ttk.Button(global_frame, text='保存全局群设置', command=self.saveGroupGlobals).grid(
+            row=0,
+            column=4,
+            sticky='e',
+        )
+        ttk.Label(global_frame, text='默认触发前缀（JSON 数组）').grid(row=1, column=0, sticky='nw', pady=(10, 0))
+        self.group_default_prefixes = scrolledtext.ScrolledText(global_frame, height=3, wrap='word', undo=True)
+        self.group_default_prefixes.grid(row=1, column=1, columnspan=4, sticky='ew', pady=(10, 0))
+        ttk.Label(global_frame, text='默认触发关键词（JSON 数组）').grid(row=2, column=0, sticky='nw', pady=(8, 0))
+        self.group_default_keywords = scrolledtext.ScrolledText(global_frame, height=3, wrap='word', undo=True)
+        self.group_default_keywords.grid(row=2, column=1, columnspan=4, sticky='ew', pady=(8, 0))
+
+        ttk.Label(page, text='群列表与群级覆盖', style='Section.TLabel').grid(
+            row=1,
+            column=0,
+            sticky='w',
+            pady=(0, 8),
+        )
+
+        columns = ('platform', 'group_id') + tuple(key for key, _label in GROUP_SWITCHES) + ('prefixes', 'keywords')
         self.group_tree = ttk.Treeview(page, columns=columns, show='headings', height=13)
-        headings = ['平台', '群 ID'] + [label for _key, label in GROUP_SWITCHES]
-        widths = [110, 180, 100, 100, 100, 100, 100]
+        headings = ['平台', '群 ID'] + [label for _key, label in GROUP_SWITCHES] + ['触发前缀', '触发关键词']
+        widths = [100, 170, 90, 90, 90, 90, 90, 110, 110]
         for column, heading, width in zip(columns, headings, widths, strict=False):
             self.group_tree.heading(column, text=heading)
             self.group_tree.column(column, width=width, minwidth=80, anchor='center')
-        self.group_tree.grid(row=1, column=0, sticky='nsew')
+        self.group_tree.grid(row=2, column=0, sticky='nsew')
         tree_scroll = ttk.Scrollbar(page, orient='vertical', command=self.group_tree.yview)
-        self.group_tree.configure(yscrollcommand=tree_scroll.set)
-        tree_scroll.grid(row=1, column=1, sticky='ns')
+        tree_xscroll = ttk.Scrollbar(page, orient='horizontal', command=self.group_tree.xview)
+        self.group_tree.configure(yscrollcommand=tree_scroll.set, xscrollcommand=tree_xscroll.set)
+        tree_scroll.grid(row=2, column=1, sticky='ns')
+        tree_xscroll.grid(row=3, column=0, sticky='ew')
         self.group_tree.bind('<<TreeviewSelect>>', self._onGroupSelected)
 
         editor = ttk.LabelFrame(page, text='编辑群覆盖', padding=12)
-        editor.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(12, 0))
+        editor.grid(row=4, column=0, columnspan=2, sticky='ew', pady=(12, 0))
         editor.columnconfigure(1, weight=1)
         editor.columnconfigure(3, weight=1)
         self.group_platform_var = tkinter.StringVar(value='qq')
@@ -425,7 +462,7 @@ class ConfigWindow:
         ttk.Combobox(
             editor,
             textvariable=self.group_platform_var,
-            values=('qq', 'discord'),
+            values=('*', 'qq', 'qqGuild', 'telegram', 'discord', 'kaiheila', 'kook', 'dodo', 'fanbook'),
             width=18,
         ).grid(
             row=0,
@@ -454,14 +491,25 @@ class ConfigWindow:
                 fill=tkinter.X,
                 pady=(3, 0),
             )
+        ttk.Label(editor, text='触发前缀覆盖').grid(row=2, column=0, sticky='nw', pady=(12, 0))
+        self.group_prefixes_text = scrolledtext.ScrolledText(editor, height=3, wrap='word', undo=True)
+        self.group_prefixes_text.grid(row=2, column=1, sticky='ew', padx=(6, 18), pady=(12, 0))
+        ttk.Label(editor, text='触发关键词覆盖').grid(row=2, column=2, sticky='nw', pady=(12, 0))
+        self.group_keywords_text = scrolledtext.ScrolledText(editor, height=3, wrap='word', undo=True)
+        self.group_keywords_text.grid(row=2, column=3, sticky='ew', padx=(6, 0), pady=(12, 0))
+        ttk.Label(
+            editor,
+            text='留空表示继承上方默认值；填写 [] 表示本群明确禁用。',
+            style='Hint.TLabel',
+        ).grid(row=3, column=0, columnspan=4, sticky='w', pady=(5, 0))
         buttons = ttk.Frame(editor)
-        buttons.grid(row=2, column=0, columnspan=4, sticky='ew', pady=(12, 0))
-        ttk.Button(buttons, text='保存群覆盖', command=self.saveGroupConfig).pack(side=tkinter.LEFT)
+        buttons.grid(row=4, column=0, columnspan=4, sticky='ew', pady=(12, 0))
+        ttk.Button(buttons, text='保存群设置', command=self.saveGroupConfig).pack(side=tkinter.LEFT)
         ttk.Button(buttons, text='新建 / 清空表单', command=self.clearGroupForm).pack(
             side=tkinter.LEFT,
             padx=(6, 0),
         )
-        ttk.Button(buttons, text='删除选中覆盖', command=self.deleteSelectedGroup).pack(side=tkinter.RIGHT)
+        ttk.Button(buttons, text='移除选中群', command=self.deleteSelectedGroup).pack(side=tkinter.RIGHT)
 
         self.notebook.add(page, text='群级设置')
 
@@ -499,7 +547,16 @@ class ConfigWindow:
                 'backend': self.working_conf.get('backend', 'openai'),
                 'debug_log': self.working_conf.get('debug_log', False),
             }, ()
-        return self.working_conf.get(section, {}), (section,)
+        section_data = self.working_conf.get(section, {})
+        if section == 'trigger' and isinstance(section_data, dict):
+            section_data = {
+                key: value
+                for key, value in section_data.items()
+                if key not in {'prefix', 'keywords', '_keywords说明'}
+            }
+        if section == 'ambient' and isinstance(section_data, dict):
+            section_data = {key: value for key, value in section_data.items() if key != 'enable_default'}
+        return section_data, (section,)
 
     def _onSectionSelected(self, _event=None):
         selection = self.category_list.curselection()
@@ -635,6 +692,8 @@ class ConfigWindow:
     def saveConfig(self):
         if not self._commitCurrent(show_error=True):
             return
+        if not self._commitGroupGlobal(show_error=True):
+            return
         self._logAction('正在保存并应用配置')
         try:
             self.working_conf = OlivaAIAgent.conf.replace(self.working_conf, save_now=True)
@@ -653,6 +712,7 @@ class ConfigWindow:
             OlivaAIAgent.mcp.invalidate()
             self.working_conf = OlivaAIAgent.conf.snapshot()
             self._renderCurrentSection()
+            self._syncGroupGlobalForm()
             self.refreshGroupTree()
             self.refreshRuntimeStatus()
             self.status_var.set('已从磁盘重新载入')
@@ -672,6 +732,16 @@ class ConfigWindow:
         if self.current_section == 'general':
             self.working_conf['backend'] = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF['backend'])
             self.working_conf['debug_log'] = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF['debug_log'])
+        elif self.current_section == 'trigger':
+            prefixes = copy.deepcopy(self.working_conf.get('trigger', {}).get('prefix', []))
+            keywords = copy.deepcopy(self.working_conf.get('trigger', {}).get('keywords', []))
+            self.working_conf['trigger'] = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF['trigger'])
+            self.working_conf['trigger']['prefix'] = prefixes
+            self.working_conf['trigger']['keywords'] = keywords
+        elif self.current_section == 'ambient':
+            enable_default = bool(self.working_conf.get('ambient', {}).get('enable_default', False))
+            self.working_conf['ambient'] = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF['ambient'])
+            self.working_conf['ambient']['enable_default'] = enable_default
         else:
             self.working_conf[self.current_section] = copy.deepcopy(
                 OlivaAIAgent.conf.DEFAULT_CONF[self.current_section]
@@ -688,10 +758,90 @@ class ConfigWindow:
                 continue
             for group_id in sorted(platform_groups):
                 node = platform_groups.get(group_id, {})
+                if not isinstance(node, dict):
+                    node = {}
                 values = [platform, group_id]
                 for key, _label in GROUP_SWITCHES:
                     values.append('默认' if key not in node else ('开' if node[key] else '关'))
+                for key in ('prefixes', 'keywords'):
+                    if key not in node:
+                        values.append('继承')
+                    elif not node[key]:
+                        values.append('禁用')
+                    else:
+                        values.append('自定义(%d)' % len(node[key]))
                 self.group_tree.insert('', tkinter.END, values=values)
+
+    def _syncGroupGlobalForm(self):
+        if not self.group_global_vars:
+            return
+        self.group_global_vars['global'].set(bool(self.working_conf.get('enable', {}).get('global', True)))
+        self.group_global_vars['whitelist'].set(
+            bool(self.working_conf.get('whitelist', {}).get('enabled', False))
+        )
+        self.group_global_vars['group_default'].set(
+            bool(self.working_conf.get('enable', {}).get('group_default', True))
+        )
+        self.group_global_vars['ambient_default'].set(
+            bool(self.working_conf.get('ambient', {}).get('enable_default', False))
+        )
+        fields = (
+            (self.group_default_prefixes, self.working_conf.get('trigger', {}).get('prefix', [])),
+            (self.group_default_keywords, self.working_conf.get('trigger', {}).get('keywords', [])),
+        )
+        for widget, value in fields:
+            widget.delete('1.0', tkinter.END)
+            widget.insert('1.0', json.dumps(value, ensure_ascii=False, indent=2))
+
+    @staticmethod
+    def _parseStringList(raw, label, allow_inherit=False):
+        text = str(raw).strip()
+        if allow_inherit and not text:
+            return None
+        value = json.loads(text or '[]')
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError('%s 必须是字符串 JSON 数组' % label)
+        return value
+
+    def _commitGroupGlobal(self, show_error=False, target=None):
+        try:
+            prefixes = self._parseStringList(
+                self.group_default_prefixes.get('1.0', tkinter.END),
+                '默认触发前缀',
+            )
+            keywords = self._parseStringList(
+                self.group_default_keywords.get('1.0', tkinter.END),
+                '默认触发关键词',
+            )
+            config = self.working_conf if target is None else target
+            config.setdefault('enable', {})['global'] = self.group_global_vars['global'].get()
+            config.setdefault('enable', {})['group_default'] = self.group_global_vars['group_default'].get()
+            config.setdefault('whitelist', {})['enabled'] = self.group_global_vars['whitelist'].get()
+            config.setdefault('ambient', {})['enable_default'] = self.group_global_vars[
+                'ambient_default'
+            ].get()
+            config.setdefault('trigger', {})['prefix'] = prefixes
+            config.setdefault('trigger', {})['keywords'] = keywords
+            return True
+        except Exception as e:
+            if show_error:
+                messagebox.showerror('群设置格式错误', str(e), parent=self.root)
+            return False
+
+    def saveGroupGlobals(self):
+        live_conf = OlivaAIAgent.conf.snapshot()
+        if not self._commitGroupGlobal(show_error=True, target=live_conf):
+            return
+        self._logAction('正在保存全局群设置')
+        try:
+            OlivaAIAgent.conf.replace(live_conf, save_now=True)
+            self._commitGroupGlobal(target=self.working_conf)
+            self._syncGroupGlobalForm()
+            self.refreshGroupTree()
+            self.refreshRuntimeStatus()
+            self.status_var.set('全局群设置已保存并立即应用')
+        except Exception as e:
+            messagebox.showerror('保存失败', f'{type(e).__name__}: {e}', parent=self.root)
 
     def _onGroupSelected(self, _event=None):
         selection = self.group_tree.selection()
@@ -706,12 +856,18 @@ class ConfigWindow:
         for key, _label in GROUP_SWITCHES:
             state = GROUP_SWITCH_VALUES[0] if key not in node else GROUP_SWITCH_VALUES[1 if node[key] else 2]
             self.group_switch_vars[key].set(state)
+        for key, widget in (('prefixes', self.group_prefixes_text), ('keywords', self.group_keywords_text)):
+            widget.delete('1.0', tkinter.END)
+            if key in node:
+                widget.insert('1.0', json.dumps(node[key], ensure_ascii=False, indent=2))
 
     def clearGroupForm(self):
         self.group_tree.selection_remove(*self.group_tree.selection())
         self.group_id_var.set('')
         for variable in self.group_switch_vars.values():
             variable.set(GROUP_SWITCH_VALUES[0])
+        self.group_prefixes_text.delete('1.0', tkinter.END)
+        self.group_keywords_text.delete('1.0', tkinter.END)
 
     def saveGroupConfig(self):
         platform = self.group_platform_var.get().strip()
@@ -721,6 +877,24 @@ class ConfigWindow:
             state = variable.get()
             if state != GROUP_SWITCH_VALUES[0]:
                 values[key] = state == GROUP_SWITCH_VALUES[1]
+        try:
+            prefixes = self._parseStringList(
+                self.group_prefixes_text.get('1.0', tkinter.END),
+                '群触发前缀',
+                allow_inherit=True,
+            )
+            keywords = self._parseStringList(
+                self.group_keywords_text.get('1.0', tkinter.END),
+                '群触发关键词',
+                allow_inherit=True,
+            )
+            if prefixes is not None:
+                values['prefixes'] = prefixes
+            if keywords is not None:
+                values['keywords'] = keywords
+        except Exception as e:
+            messagebox.showerror('群设置格式错误', str(e), parent=self.root)
+            return
         self._logAction('正在保存群级设置 | 平台=%s | 群=%s' % (platform, group_id))
         try:
             OlivaAIAgent.conf.replaceGroupConfig(platform, group_id, values)
@@ -736,8 +910,8 @@ class ConfigWindow:
             return
         values = self.group_tree.item(selection[0], 'values')
         if not messagebox.askyesno(
-            '删除群覆盖',
-            f'删除 {values[0]} / {values[1]} 的全部覆盖设置？',
+            '移除群设置',
+            f'从群列表移除 {values[0]} / {values[1]}？白名单模式开启时，该群将不再可用。',
             parent=self.root,
         ):
             return
@@ -871,6 +1045,7 @@ class ConfigWindow:
         self.working_conf = OlivaAIAgent.conf.snapshot()
         if not self.working_conf:
             self.working_conf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+        self._syncGroupGlobalForm()
         self.category_list.selection_set(0)
         self._onSectionSelected()
         self.refreshGroupTree()

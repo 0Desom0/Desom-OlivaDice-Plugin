@@ -148,7 +148,7 @@ DEFAULT_CONF = {
         'prefix': ['.ai', '。ai', '/ai'],
         'at_trigger': True,
         'keywords': [],
-        '_keywords说明': '统一触发关键词：填这一处即可，潜行开/关都用它触发，命中就强制回复。如 ["骰娘","先攻"]',
+        '_keywords说明': '群默认触发关键词，可在群级设置覆盖；潜行开/关都生效，命中即强制回复。',
         'private_chat': True,
         '_private_chat说明': '私聊/单聊总开关：false=私聊完全不可用；true=私聊可用(默认仅骰主，见 private_master_only)',
         'private_master_only': True,
@@ -162,7 +162,6 @@ DEFAULT_CONF = {
     },
     'whitelist': {
         'enabled': False,
-        'groups': [],
     },
     'permissions': {
         '_说明': '高危接口管控：全局开关 / 群开关(groups.json) / 角色门槛。均可由骰主用 .ai admin 指令调整。'
@@ -241,12 +240,11 @@ DEFAULT_CONF = {
     'ambient': {
         '_说明': '潜行模式：伪装群友、读全部群消息、择机自行插话（默认关闭，用 .ai stealth on 按群开启）',
         'enable_default': False,
-        'mention_reply': True,
         'reply_probability': 1.0,
         'ignore_prefixes': ['.', '。', '/', '!', '！'],
         'integrate_hard_trigger': True,
-        '_integrate说明': '被@或命中关键词时，把潜行与全权限Agent整合成同一次请求：'
-                       '既有潜行的人设/群上下文/知识，又能调用全部接口和骰点，出一条回复(不再二选一)',
+        '_integrate说明': '被@、引用机器人或命中关键词时，把潜行与全权限Agent整合成同一次请求：'
+                       '既有潜行的人设/群上下文/知识，又能调用全部接口和骰点；@和引用先由小模型判断',
         'history_size': 8,
         'history_size_min': 4,
         'history_dynamic': False,
@@ -258,7 +256,6 @@ DEFAULT_CONF = {
         'max_message_length': 2048,
         'retry_count': 3,
         'first_thinking': False,
-        'first_thinking_cooldown': 60,
         'intent_api': {
             '_说明': '前置二分类判定用的便宜模型；enable=false 时复用主后端',
             'enable': False,
@@ -476,6 +473,8 @@ def _migrate(cfg):
     try:
         prompt = cfg.setdefault('prompt', {})
         ambient = cfg.setdefault('ambient', {})
+        ambient.pop('first_thinking_cooldown', None)
+        ambient.pop('mention_reply', None)
         legacy_value = ambient.pop('enabled_groups', []) or []
         legacy_ambient_groups = [legacy_value] if isinstance(legacy_value, str) else list(legacy_value)
         if any(str(group_id).strip().lower() == 'all' for group_id in legacy_ambient_groups):
@@ -500,6 +499,31 @@ def _migrateAmbientGroups(group_ids):
         node = gGroups.setdefault('*', {}).setdefault(str(group_id), {})
         if 'ambient' not in node:
             node['ambient'] = True
+            changed = True
+    return changed
+
+
+def _takeLegacyWhitelistGroups(cfg):
+    '''取出旧 config.json 中的白名单群号；群资格现统一保存在 groups.json。'''
+    try:
+        whitelist = cfg.get('whitelist', {})
+        if not isinstance(whitelist, dict):
+            return []
+        values = whitelist.pop('groups', []) or []
+        if isinstance(values, str):
+            values = [values]
+        return [str(group_id).strip() for group_id in values if str(group_id).strip()]
+    except Exception:
+        return []
+
+
+def _migrateWhitelistGroups(group_ids):
+    '''旧白名单没有平台信息，迁入通配平台并显式启用，保持升级前的可用性。'''
+    changed = False
+    for group_id in group_ids or []:
+        node = gGroups.setdefault('*', {}).setdefault(str(group_id), {})
+        if 'enabled' not in node:
+            node['enabled'] = True
             changed = True
     return changed
 
@@ -541,6 +565,7 @@ def load():
                 except Exception:
                     pass
         _migrateVoiceProvider(conf_data)
+        legacy_whitelist_groups = _takeLegacyWhitelistGroups(conf_data)
         merged = _deep_merge(DEFAULT_CONF, conf_data)
         legacy_ambient_groups = _migrate(merged)
         gConf = merged
@@ -559,7 +584,9 @@ def load():
                 gGroups = {}
         except Exception:
             gGroups = {}
-        if _migrateAmbientGroups(legacy_ambient_groups):
+        groups_changed = _migrateAmbientGroups(legacy_ambient_groups)
+        groups_changed = _migrateWhitelistGroups(legacy_whitelist_groups) or groups_changed
+        if groups_changed:
             try:
                 atomicDump(gGroups, GROUPS_PATH)
             except Exception:
@@ -600,6 +627,7 @@ def hotReload():
         _last_hotcheck = now
     changed = []
     legacy_ambient_groups = []
+    legacy_whitelist_groups = []
     # config.json —— 只读合并，不回写，避免与用户编辑相互冲刷
     try:
         m = _mtime(CONFIG_PATH)
@@ -608,6 +636,7 @@ def hotReload():
                 data = json.load(f)
             if isinstance(data, dict):
                 _migrateVoiceProvider(data)
+                legacy_whitelist_groups = _takeLegacyWhitelistGroups(data)
                 merged = _deep_merge(DEFAULT_CONF, data)
                 legacy_ambient_groups = _migrate(merged)
                 with _lock:
@@ -628,11 +657,13 @@ def hotReload():
             changed.append('groups')
     except Exception:
         pass
-    if legacy_ambient_groups:
+    if legacy_ambient_groups or legacy_whitelist_groups:
         with _lock:
-            if _migrateAmbientGroups(legacy_ambient_groups):
+            groups_changed = _migrateAmbientGroups(legacy_ambient_groups)
+            groups_changed = _migrateWhitelistGroups(legacy_whitelist_groups) or groups_changed
+            if groups_changed:
                 saveGroups()
-                changed.append('ambient_groups_migrated')
+                changed.append('legacy_groups_migrated')
     # 知识库 / 记忆（潜行群记忆、侧写、知识）— 委托各模块自检
     try:
         import OlivaAIAgent
@@ -679,9 +710,11 @@ def replace(new_conf, save_now=True):
         raise ValueError('配置根节点必须是对象')
     with _lock:
         _migrateVoiceProvider(new_conf)
+        legacy_whitelist_groups = _takeLegacyWhitelistGroups(new_conf)
         merged = _deep_merge(DEFAULT_CONF, new_conf)
         _migrate(merged)
         gConf = merged
+        _migrateWhitelistGroups(legacy_whitelist_groups)
         if save_now:
             save()
         return copy.deepcopy(gConf)
@@ -704,7 +737,7 @@ def deleteGroupConfig(platform, group_id):
 
 
 def replaceGroupConfig(platform, group_id, values):
-    '''整体保存一个群的覆盖项；空对象等同于删除覆盖。'''
+    '''整体保存一个群的覆盖项；空对象仍作为白名单成员保留。'''
     platform_key = str(platform).strip()
     group_key = str(group_id).strip()
     if not platform_key or not group_key:
@@ -712,18 +745,16 @@ def replaceGroupConfig(platform, group_id, values):
     if not isinstance(values, dict):
         raise ValueError('群配置必须是对象')
     with _lock:
-        clean = {
-            str(key): bool(value)
-            for key, value in values.items()
-            if key in {'enabled', 'ambient', 'admin_tools', 'memory_history', 'memory_long'}
-        }
-        if clean:
-            gGroups.setdefault(platform_key, {})[group_key] = clean
-        else:
-            platform_node = gGroups.get(platform_key, {})
-            platform_node.pop(group_key, None)
-            if not platform_node:
-                gGroups.pop(platform_key, None)
+        clean = {}
+        switch_keys = {'enabled', 'ambient', 'admin_tools', 'memory_history', 'memory_long'}
+        for key, value in values.items():
+            if key in switch_keys:
+                clean[str(key)] = bool(value)
+            elif key in {'prefixes', 'keywords'}:
+                if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                    raise ValueError('%s 必须是字符串 JSON 数组' % key)
+                clean[str(key)] = list(value)
+        gGroups.setdefault(platform_key, {})[group_key] = clean
         saveGroups()
 
 
@@ -731,8 +762,20 @@ def _groupNode(platform, group_id, create=False):
     p = str(platform)
     g = str(group_id)
     if create:
-        return gGroups.setdefault(p, {}).setdefault(g, {})
-    return gGroups.get(p, {}).get(g, {})
+        platform_node = gGroups.get(p)
+        if not isinstance(platform_node, dict):
+            platform_node = {}
+            gGroups[p] = platform_node
+        node = platform_node.get(g)
+        if not isinstance(node, dict):
+            node = {}
+            platform_node[g] = node
+        return node
+    platform_node = gGroups.get(p, {})
+    if not isinstance(platform_node, dict):
+        return {}
+    node = platform_node.get(g, {})
+    return node if isinstance(node, dict) else {}
 
 
 def getGroupSwitch(platform, group_id, key, default=None):
@@ -751,6 +794,64 @@ def setGroupSwitch(platform, group_id, key, value):
         node = _groupNode(platform, group_id, create=True)
         node[key] = value
         saveGroups()
+
+
+def isConfiguredGroup(platform, group_id):
+    '''群级表存在精确平台或通配平台记录时即视为已登记，包括空对象记录。'''
+    platform_key = str(platform)
+    group_key = str(group_id)
+    with _lock:
+        platform_node = gGroups.get(platform_key, {})
+        wildcard_node = gGroups.get('*', {})
+        return (
+            isinstance(platform_node, dict)
+            and group_key in platform_node
+        ) or (
+            isinstance(wildcard_node, dict)
+            and group_key in wildcard_node
+        )
+
+
+def addConfiguredGroup(platform, group_id, enabled=None):
+    '''把群加入统一群级表；可选写入显式群开关。'''
+    platform_key = str(platform).strip() or '*'
+    group_key = str(group_id).strip()
+    if not group_key:
+        raise ValueError('群 ID 不能为空')
+    with _lock:
+        node = gGroups.setdefault(platform_key, {}).setdefault(group_key, {})
+        if enabled is not None:
+            node['enabled'] = bool(enabled)
+        saveGroups()
+
+
+def _getGroupStringList(platform, group_id, key, default):
+    value = getGroupSwitch(platform, group_id, key, None)
+    if value is None:
+        value = default
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def getGroupPrefixes(platform, group_id):
+    '''本群触发前缀；字段缺失继承全局，空数组明确禁用。'''
+    return _getGroupStringList(
+        platform,
+        group_id,
+        'prefixes',
+        get('trigger', 'prefix', default=['.ai']) or [],
+    )
+
+
+def getGroupKeywords(platform, group_id):
+    '''本群触发关键词；字段缺失继承全局，空数组明确禁用。'''
+    return _getGroupStringList(
+        platform,
+        group_id,
+        'keywords',
+        get('trigger', 'keywords', default=[]) or [],
+    )
 
 
 def isGroupEnabled(platform, group_id):
@@ -776,8 +877,7 @@ def isGroupLongMemory(platform, group_id):
 def isWhitelisted(platform, group_id):
     if not get('whitelist', 'enabled', default=False):
         return True
-    groups = get('whitelist', 'groups', default=[]) or []
-    return str(group_id) in [str(x) for x in groups]
+    return isConfiguredGroup(platform, group_id)
 
 
 _PLATFORM_NOTES = {

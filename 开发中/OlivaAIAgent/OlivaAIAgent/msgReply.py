@@ -135,6 +135,7 @@ def _resolveQuotedMessage(plugin_event, reply_id):
                     'text': str(entry.get('message', ''))[:4000],
                     'images': [],
                     'image_count': 0,
+                    'from_self': entry.get('user_id') is None and entry.get('nickname') is None,
                     'source': '潜行历史',
                 }
     except Exception:
@@ -150,6 +151,7 @@ def _resolveQuotedMessage(plugin_event, reply_id):
                 'text': str(registered.get('content') or '')[:4000],
                 'images': [],
                 'image_count': 0,
+                'from_self': registered.get('direction') == 'outgoing',
                 'source': '插件消息注册表',
             }
     except Exception:
@@ -165,10 +167,12 @@ def _resolveQuotedMessage(plugin_event, reply_id):
             payload = data.get('raw_message')
         parsed = _parseQuotedPayload(payload)
         sender = data.get('sender') if isinstance(data.get('sender'), dict) else {}
+        sender_id = sender.get('user_id') or sender.get('id')
         parsed.update({
             'message_id': reply_id,
-            'sender_id': sender.get('user_id') or sender.get('id'),
+            'sender_id': sender_id,
             'sender_name': sender.get('nickname') or sender.get('name'),
+            'from_self': str(sender_id) in _currentBotIds(plugin_event),
             'source': 'OlivOS消息接口',
         })
         if parsed['text'] or parsed['image_count'] > 0:
@@ -256,8 +260,8 @@ def _logQuotedMessage(Proc, parsed):
     )
 
 
-def _isAtCurrentBot(plugin_event, at_list, extend):
-    '''兼容 qqGuildv2 的应用 ID、子账号 ID 与群机器人 member_openid。'''
+def _currentBotIds(plugin_event, extend=None):
+    '''汇总当前机器人在适配器事件中可能使用的身份 ID。'''
     self_ids = set()
     try:
         self_id = plugin_event.base_info.get('self_id')
@@ -265,10 +269,21 @@ def _isAtCurrentBot(plugin_event, at_list, extend):
             self_ids.add(str(self_id))
     except Exception:
         pass
+    if not isinstance(extend, dict):
+        try:
+            extend = plugin_event.data.extend if isinstance(plugin_event.data.extend, dict) else {}
+        except Exception:
+            extend = {}
     for key in ('sub_self_id', 'sub_self_open_id'):
         value = extend.get(key) if isinstance(extend, dict) else None
         if value not in [None, '']:
             self_ids.add(str(value))
+    return self_ids
+
+
+def _isAtCurrentBot(plugin_event, at_list, extend):
+    '''兼容 qqGuildv2 的应用 ID、子账号 ID 与群机器人 member_openid。'''
+    self_ids = _currentBotIds(plugin_event, extend)
     try:
         is_qqguild_v2 = plugin_event.platform.get('sdk') == 'qqGuildv2_link'
     except Exception:
@@ -276,6 +291,23 @@ def _isAtCurrentBot(plugin_event, at_list, extend):
     if is_qqguild_v2 and extend.get('qq_event_type') == 'GROUP_AT_MESSAGE_CREATE':
         return True
     return any(str(item) in self_ids for item in at_list)
+
+
+def _isReplyToCurrentBot(plugin_event, reference_message_id, quote):
+    '''只把引用机器人自身消息视为定向触发，群友互相引用仍按普通消息处理。'''
+    if reference_message_id in [None, '', '-1', -1]:
+        return False
+    if isinstance(quote, dict):
+        if quote.get('from_self'):
+            return True
+        sender_id = quote.get('sender_id')
+        if sender_id not in [None, '', '-1', -1] and str(sender_id) in _currentBotIds(plugin_event):
+            return True
+    try:
+        registered = OlivaAIAgent.identifiers.getByMessageId(plugin_event, reference_message_id)
+        return isinstance(registered, dict) and registered.get('direction') == 'outgoing'
+    except Exception:
+        return False
 
 
 def parseMessage(plugin_event):
@@ -349,6 +381,7 @@ def parseMessage(plugin_event):
         'images': images,
         'reply_id': reference_message_id,
         'reference_message_id': reference_message_id,
+        'reply_to_me': _isReplyToCurrentBot(plugin_event, reference_message_id, quote),
         'quote': quote,
         'raw': raw,
         'message_id': message_id,
@@ -358,11 +391,31 @@ def parseMessage(plugin_event):
     }
 
 
-def _matchPrefix(text):
+def _matchPrefix(text, platform=None, group_id=None):
     '''命中触发前缀则返回剩余文本，否则 None'''
-    for prefix in OlivaAIAgent.conf.get('trigger', 'prefix', default=['.ai']) or []:
+    prefixes = (
+        OlivaAIAgent.conf.getGroupPrefixes(platform, group_id)
+        if group_id is not None
+        else OlivaAIAgent.conf.get('trigger', 'prefix', default=['.ai']) or []
+    )
+    for prefix in prefixes:
         if text.lower().startswith(str(prefix).lower()):
             return text[len(prefix):].strip()
+    return None
+
+
+def _matchRecoveryPrefix(text, platform, group_id):
+    '''群不可用时仍识别群级和全局默认前缀，供骰主恢复配置。'''
+    prefixes = OlivaAIAgent.conf.getGroupPrefixes(platform, group_id)
+    prefixes += list(OlivaAIAgent.conf.get('trigger', 'prefix', default=['.ai']) or [])
+    seen = set()
+    for prefix in prefixes:
+        key = str(prefix).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if text.lower().startswith(key):
+            return text[len(str(prefix)):].strip()
     return None
 
 
@@ -375,9 +428,22 @@ def _keywordHit(text, keywords):
     return False
 
 
-def _unionKeywords():
-    '''统一触发关键词：只用 trigger.keywords（潜行开/关都用它触发，命中即强制回复）。'''
+def _unionKeywords(platform=None, group_id=None):
+    '''群聊优先使用群级关键词，字段缺失时继承全局默认。'''
+    if group_id is not None:
+        return OlivaAIAgent.conf.getGroupKeywords(platform, group_id)
     return list(OlivaAIAgent.conf.get('trigger', 'keywords', default=[]) or [])
+
+
+def _isRecoveryCommand(rest):
+    '''群不可用时只允许骰主执行不会调用模型的恢复命令。'''
+    parts = str(rest or '').split()
+    if not parts:
+        return False
+    cmd = parts[0].lower()
+    if cmd == 'on' or cmd == 'wl':
+        return True
+    return cmd == 'global' and len(parts) > 1 and _onoff(parts[1].lower()) is True
 
 
 def _isIgnorableCommand(text):
@@ -401,9 +467,10 @@ def onGroupMessage(plugin_event, Proc):
 
 def _onGroupMessage(plugin_event, Proc):
     # 路由是单一决策，每条消息只产出一条回复，且都走同一条"统一管线"(潜行上下文 + 全权限工具)：
-    #   1) .ai 前缀 → 始终触发（显式命令/对话），强制回复 + 全部工具
-    #   2) @ / 关键词 → 潜行开关不影响明确触发，强制回复
-    #   3) 潜行开启 → 额外支持概率被动插话；关闭后普通消息仅按需记录记忆
+    #   1) 群不可用 → 全部静默，仅骰主恢复配置指令例外
+    #   2) 群前缀 / 群关键词 → 潜行开关关闭时仍可触发
+    #   3) 潜行开启后，@ / 引用机器人跳过概率但仍由前置小模型判断
+    #   4) 潜行开启后，普通消息才支持概率被动插话
     platform = plugin_event.platform['platform']
     group_id = plugin_event.data.group_id
     user_id = plugin_event.data.user_id
@@ -425,17 +492,21 @@ def _onGroupMessage(plugin_event, Proc):
         return
     text = parsed['text']
 
-    rest = _matchPrefix(text)
+    rest = _matchPrefix(text, platform, group_id)
 
-    # .ai 控制指令(骰主控制类即使全局关闭也响应)
+    if not group_usable:
+        recovery_rest = rest if rest is not None else _matchRecoveryPrefix(text, platform, group_id)
+        if is_master and recovery_rest is not None and _isRecoveryCommand(recovery_rest):
+            OlivaAIAgent.conf.traceLog(Proc, 'route.group.recovery_command', trace_id)
+            if handleCommand(plugin_event, Proc, recovery_rest, is_master, in_group=True):
+                plugin_event.set_block()
+        return
+
+    # 群级前缀：显式命令或 AI 对话。
     if rest is not None:
         OlivaAIAgent.conf.traceLog(Proc, 'route.group.prefix', trace_id, command_chars=len(rest))
         if handleCommand(plugin_event, Proc, rest, is_master, in_group=True):
             OlivaAIAgent.conf.traceLog(Proc, 'route.group.control_command', trace_id)
-            plugin_event.set_block()
-            return
-        if not group_usable:
-            _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=True)
             plugin_event.set_block()
             return
         if rest == '':
@@ -448,14 +519,9 @@ def _onGroupMessage(plugin_event, Proc):
         plugin_event.set_block()
         return
 
-    # 非前缀路径：明确 @ / 关键词始终触发；潜行只控制概率插话和群聊融入。
-    if not group_usable:
-        return
-    hard = bool(
-        parsed.get('at_me')
-        and OlivaAIAgent.conf.get('trigger', 'at_trigger', default=True)
-    ) or _keywordHit(text, _unionKeywords())
-    if hard:
+    # 关键词不受潜行开关影响，命中后跳过概率与前置小模型。
+    keyword_hit = _keywordHit(text, _unionKeywords(platform, group_id))
+    if keyword_hit:
         hard_tools = (
             OlivaAIAgent.conf.get('ambient', 'integrate_hard_trigger', default=True)
             or OlivaAIAgent.conf.get('ambient', 'allow_tools', default=False)
@@ -468,24 +534,36 @@ def _onGroupMessage(plugin_event, Proc):
             force=True,
             tools=hard_tools,
             attempt=True,
+            skip_first_thinking=True,
         )
         plugin_event.set_block()
         return
+
+    # 潜行关闭后，除本群前缀和关键词外的消息全部静默。
     if not OlivaAIAgent.conf.isAmbientEnabled(platform, group_id):
-        # 记忆与潜行独立：潜行关闭时普通消息仍可进入摘要/事实管线，但绝不触发回复。
-        if (
-            OlivaAIAgent.conf.isGroupHistoryMemory(platform, group_id)
-            or OlivaAIAgent.conf.isGroupLongMemory(platform, group_id)
-        ):
-            OlivaAIAgent.ambient.process(
-                plugin_event,
-                Proc,
-                parsed,
-                self_id,
-                force=False,
-                tools=False,
-                attempt=False,
-            )
+        return
+
+    # 潜行开启：@ / 引用机器人跳过概率，但仍进入前置小模型判断。
+    directed = bool(
+        parsed.get('at_me')
+        and OlivaAIAgent.conf.get('trigger', 'at_trigger', default=True)
+    ) or bool(parsed.get('reply_to_me'))
+    if directed:
+        hard_tools = (
+            OlivaAIAgent.conf.get('ambient', 'integrate_hard_trigger', default=True)
+            or OlivaAIAgent.conf.get('ambient', 'allow_tools', default=False)
+        )
+        OlivaAIAgent.ambient.process(
+            plugin_event,
+            Proc,
+            parsed,
+            self_id,
+            force=True,
+            tools=hard_tools,
+            attempt=True,
+            skip_first_thinking=False,
+        )
+        plugin_event.set_block()
         return
 
     # 潜行开启：记录群滚动上下文缓冲(供自由唤醒/上下文注入)，再做触发判定
@@ -602,7 +680,7 @@ def _helpText(is_master):
             '.ai admin on/off  本群高危接口开关',
             '.ai admin global on/off  高危接口全局开关',
             '.ai admin role everyone/group_admin/master  高危接口角色门槛',
-            '.ai wl on/off | .ai wl add/del <群号> | .ai wl list  白名单管理',
+            '.ai wl on/off | .ai wl add/del <群号> | .ai wl list  群名单/白名单模式',
             '.ai clear group  清空本群所有人对话',
             '.ai mem clear group  清空本群群记忆',
             '.ai skills reload  重建技能索引 | .ai kb reload  重载知识库',
@@ -881,26 +959,34 @@ def handleCommand(plugin_event, Proc, rest, is_master, in_group):
             OlivaAIAgent.conf.save()
             plugin_event.reply('白名单模式已%s' % ('开启' if val else '关闭'))
             return True
-        groups = [str(x) for x in (OlivaAIAgent.conf.get('whitelist', 'groups', default=[]) or [])]
         if sub == 'add':
             gid = args[1] if len(args) > 1 else (str(group_id) if in_group else '')
-            if gid and gid not in groups:
-                groups.append(gid)
-            OlivaAIAgent.conf.setConf(groups, 'whitelist', 'groups')
-            OlivaAIAgent.conf.save()
-            plugin_event.reply('已添加白名单: %s' % gid)
+            if not gid:
+                plugin_event.reply('用法: .ai wl add <群号>')
+                return True
+            target_platform = platform if in_group else '*'
+            OlivaAIAgent.conf.addConfiguredGroup(target_platform, gid, enabled=True)
+            plugin_event.reply('已加入群列表并启用: %s / %s' % (target_platform, gid))
             return True
         if sub == 'del':
             gid = args[1] if len(args) > 1 else (str(group_id) if in_group else '')
-            if gid in groups:
-                groups.remove(gid)
-            OlivaAIAgent.conf.setConf(groups, 'whitelist', 'groups')
-            OlivaAIAgent.conf.save()
-            plugin_event.reply('已移除白名单: %s' % gid)
+            if not gid:
+                plugin_event.reply('用法: .ai wl del <群号>')
+                return True
+            snapshots = OlivaAIAgent.conf.groupsSnapshot()
+            target_platforms = [platform, '*'] if in_group else list(snapshots)
+            for target_platform in dict.fromkeys(target_platforms):
+                if gid in snapshots.get(target_platform, {}):
+                    OlivaAIAgent.conf.deleteGroupConfig(target_platform, gid)
+            plugin_event.reply('已从群列表移除: %s' % gid)
             return True
-        plugin_event.reply('白名单(%s): %s' % (
+        entries = []
+        for target_platform, platform_groups in OlivaAIAgent.conf.groupsSnapshot().items():
+            if isinstance(platform_groups, dict):
+                entries.extend('%s/%s' % (target_platform, gid) for gid in platform_groups)
+        plugin_event.reply('群列表（白名单模式%s）: %s' % (
             '开' if OlivaAIAgent.conf.get('whitelist', 'enabled', default=False) else '关',
-            ', '.join(groups) if groups else '空'))
+            ', '.join(sorted(entries)) if entries else '空'))
         return True
 
     if cmd == 'reload':
