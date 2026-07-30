@@ -27,6 +27,8 @@ class SignalLoggingTest(unittest.TestCase):
     def tearDown(self):
         OlivaAIAgent.conf.gConf = self.old_conf
         OlivaAIAgent.conf.gProc = self.old_proc
+        OlivaAIAgent.aiClient._cache_stats.clear()
+        OlivaAIAgent.aiClient._cache_prefix_counts.clear()
 
     def test_normalizes_token_usage_from_supported_api_shapes(self):
         cases = [
@@ -87,6 +89,56 @@ class SignalLoggingTest(unittest.TestCase):
         self.assertIn('输入Token=100', logs)
         self.assertIn('输出Token=8', logs)
         self.assertIn('总Token=108', logs)
+        self.assertIn('首条系统提示字符数=0', logs)
+        self.assertIn('本进程同前缀请求次数=1', logs)
+
+    def test_cache_usage_reports_per_request_and_aggregate_rates(self):
+        first = OlivaAIAgent.aiClient._recordCacheUsage(
+            {'_name': 'openai', 'wire': 'openai', 'model': 'model'},
+            {'input_tokens': 100, 'cached_tokens': 25},
+            cache_key='prefix-one',
+        )
+        second = OlivaAIAgent.aiClient._recordCacheUsage(
+            {'_name': 'openai', 'wire': 'openai', 'model': 'model'},
+            {'input_tokens': 100, 'cached_tokens': 75},
+            cache_key='prefix-one',
+        )
+        other = OlivaAIAgent.aiClient._recordCacheUsage(
+            {'_name': 'openai', 'wire': 'openai', 'model': 'model'},
+            {'input_tokens': 80, 'cached_tokens': 0},
+            cache_key='prefix-two',
+        )
+        self.assertEqual('25.0%', first['cache_rate'])
+        self.assertEqual('50.0%', second['cache_rate_total'])
+        self.assertEqual(2, second['cache_requests'])
+        self.assertEqual(1, other['cache_requests'])
+
+    def test_cache_prefix_log_distinguishes_first_and_repeat_requests(self):
+        backend = {'_name': 'openai', 'wire': 'openai', 'model': 'model'}
+        first = OlivaAIAgent.aiClient._observeCachePrefix(backend, 'same-prefix')
+        second = OlivaAIAgent.aiClient._observeCachePrefix(backend, 'same-prefix')
+
+        self.assertFalse(first['cache_prefix_seen'])
+        self.assertEqual(1, first['cache_prefix_requests'])
+        self.assertTrue(second['cache_prefix_seen'])
+        self.assertEqual(2, second['cache_prefix_requests'])
+
+    def test_cache_key_tracks_stable_system_and_tools_not_group_history(self):
+        backend = {'_name': 'openai', 'wire': 'openai', 'model': 'model'}
+        tools = [{'name': 'roll', 'desc': 'roll', 'params': {}}]
+        first = [
+            {'role': 'system', 'content': 'stable'},
+            {'role': 'user', 'content': 'group one history'},
+        ]
+        second = [
+            {'role': 'system', 'content': 'stable'},
+            {'role': 'user', 'content': 'group two history'},
+        ]
+
+        self.assertEqual(
+            OlivaAIAgent.aiClient._requestCacheKey(backend, first, tools),
+            OlivaAIAgent.aiClient._requestCacheKey(backend, second, tools),
+        )
 
     def test_skill_log_names_selected_materials_on_cache_hits(self):
         context = (

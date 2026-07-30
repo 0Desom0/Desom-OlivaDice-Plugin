@@ -214,6 +214,7 @@ def record(
 def recordIncoming(plugin_event, parsed):
     sender = getattr(getattr(plugin_event, 'data', None), 'sender', {})
     sender = sender if isinstance(sender, dict) else {}
+    bot_hash = eventContext(plugin_event)['bot_hash']
     record(
         plugin_event,
         'incoming',
@@ -224,7 +225,7 @@ def recordIncoming(plugin_event, parsed):
         event_id=parsed.get('event_id'),
         sender_id=getattr(getattr(plugin_event, 'data', None), 'user_id', None),
         sender_name=sender.get('nickname') or sender.get('name'),
-        content=parsed.get('text'),
+        content=OlivaAIAgent.contentSafety.hiddenForMemory(parsed.get('text'), bot_hash=bot_hash),
     )
 
 
@@ -296,7 +297,7 @@ def normalizeReferenceId(plugin_event, reference_id, current_message_id=None, re
     return None
 
 
-def recent(plugin_event, limit=12):
+def recent(plugin_event, limit=12, include_content=True):
     context = eventContext(plugin_event)
     try:
         conn = _connect()
@@ -328,7 +329,8 @@ def recent(plugin_event, limit=12):
             '引用消息ID': row['reference_message_id'],
             '引用索引': row['reference_index'],
             '事件ID': row['event_id'],
-            '内容摘要': str(row['content'] or '')[:160],
         }
+        if include_content:
+            item['内容摘要'] = str(row['content'] or '')[:160]
         result.append({key: value for key, value in item.items() if value not in [None, '']})
     return result

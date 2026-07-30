@@ -211,7 +211,13 @@ def upsertFacts(bot_hash, platform, group_id, facts, source=None):
             continue
         subject = str(fact.get('subject') or fact.get('s') or '').strip()[:128]
         content = str(fact.get('content') or fact.get('fact') or fact.get('c') or '').strip()[:2000]
-        if not content or OlivaAIAgent.conf.isPersonaMutationText('%s %s' % (subject, content)):
+        if (
+            not content
+            or OlivaAIAgent.conf.isPersonaMutationText('%s %s' % (subject, content))
+            or OlivaAIAgent.contentSafety.blocked(
+                '%s %s' % (subject, content), bot_hash=bot_hash,
+            )
+        ):
             continue
         if not subject:
             subject = content[:32]
@@ -350,6 +356,12 @@ def searchFacts(bot_hash, platform, group_id, query, top_k=None):
             'source_event_id': row['source_event_id'],
             'source_time': row['source_time'],
         })
+    found = [
+        item for item in found
+        if not OlivaAIAgent.contentSafety.blocked(
+            '%s %s' % (item['subject'], item['content']), bot_hash=bot_hash,
+        )
+    ]
     found.sort(key=lambda item: item['score'], reverse=True)
     return found[:limit]
 

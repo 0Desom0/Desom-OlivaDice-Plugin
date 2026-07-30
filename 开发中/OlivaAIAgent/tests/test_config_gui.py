@@ -35,6 +35,11 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual(10, default_conf['voice']['max_files'])
         self.assertNotIn('instructions', default_conf['voice'])
         self.assertNotIn('groups', default_conf['whitelist'])
+        self.assertEqual(8, default_conf['memory']['max_rounds'])
+        self.assertEqual(16, default_conf['memory']['prompt_cache_max_rounds'])
+        self.assertEqual(8, default_conf['ambient']['history_size'])
+        self.assertEqual(16, default_conf['ambient']['prompt_cache_history_size'])
+        self.assertTrue(default_conf['security']['use_olivadice_censor'])
 
     def test_legacy_prompts_and_permissions_are_migrated_once(self):
         config = {
@@ -155,6 +160,17 @@ class ConfigMigrationTest(unittest.TestCase):
 
 
 class ConfigGuiSchemaTest(unittest.TestCase):
+    def test_cache_and_core_censor_fields_have_clear_gui_labels(self):
+        labels = OlivaAIAgent.gui.FIELD_LABELS
+        self.assertEqual('会话历史轮数', labels['max_rounds'])
+        self.assertEqual('会话缓存上限轮数', labels['prompt_cache_max_rounds'])
+        self.assertEqual('潜行历史条数', labels['history_size'])
+        self.assertEqual('潜行缓存上限条数', labels['prompt_cache_history_size'])
+        self.assertEqual('跟随 OlivaDiceCore 敏感词', labels['use_olivadice_censor'])
+        self.assertIn('olivadice_logger', OlivaAIAgent.gui.SECTION_ORDER)
+        self.assertEqual('OlivaDice 团日志', OlivaAIAgent.gui.SECTION_LABELS['olivadice_logger'])
+        self.assertTrue(OlivaAIAgent.conf.DEFAULT_CONF['olivadice_logger']['enabled'])
+
     def test_gui_action_has_one_clear_log(self):
         proc = FakeProc()
         window = OlivaAIAgent.gui.ConfigWindow(Proc=proc)
@@ -210,6 +226,24 @@ class ConfigGuiSchemaTest(unittest.TestCase):
         with mock.patch.object(window, '_runMaintenance') as runner:
             window.refreshMcp()
         self.assertEqual('MCP 工具刷新', runner.call_args.args[0])
+
+    def test_sensitive_lexicon_action_uses_maintenance_runner(self):
+        window = OlivaAIAgent.gui.ConfigWindow()
+        window.working_conf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+        with mock.patch.object(window, '_commitCurrent', return_value=True), \
+                mock.patch.object(window, '_commitGroupGlobal', return_value=True), \
+                mock.patch.object(window, '_runMaintenance') as runner:
+            window.updateSensitiveLexicon()
+        self.assertEqual('敏感词库更新', runner.call_args.args[0])
+        self.assertIn('on_success', runner.call_args.kwargs)
+
+    def test_security_section_exposes_synced_lexicon_actions(self):
+        self.assertEqual(
+            ('下载 / 检查更新', '打开词库目录'),
+            OlivaAIAgent.gui.SECURITY_LEXICON_ACTIONS,
+        )
+        self.assertTrue(OlivaAIAgent.gui._sectionHasLexiconActions('security'))
+        self.assertFalse(OlivaAIAgent.gui._sectionHasLexiconActions('maintenance'))
 
 
 class UnifiedGroupConfigTest(unittest.TestCase):

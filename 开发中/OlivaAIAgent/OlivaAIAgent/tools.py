@@ -135,6 +135,15 @@ def execTool(name, args, ctx):
     if item is None:
         OlivaAIAgent.conf.traceLog(ctx.get('Proc'), 'tool.unknown', trace_id, name=name)
         return _trunc({'error': '未知工具: %s' % name})
+    argument_text = json.dumps(args or {}, ensure_ascii=False, default=str)
+    bot_hash = _bot_hash(ctx)
+    matched = OlivaAIAgent.contentSafety.match(argument_text, bot_hash=bot_hash)
+    if matched is not None:
+        OlivaAIAgent.conf.traceLog(
+            ctx.get('Proc'), 'security.content.blocked', trace_id,
+            direction='tool', scene=name, source=matched,
+        )
+        return _trunc({'error': '该工具参数不在可处理的话题范围内'})
     allowed, why = isToolAllowed(item, ctx)
     if not allowed:
         OlivaAIAgent.conf.traceLog(ctx.get('Proc'), 'tool.denied', trace_id, name=name, reason=why)
@@ -144,6 +153,16 @@ def execTool(name, args, ctx):
             result = OlivaAIAgent.mcp.execute(name, args or {}, ctx)
         else:
             result = item['exec'](ctx, args or {})
+        result_text = json.dumps(result, ensure_ascii=False, default=str)
+        result_match = OlivaAIAgent.contentSafety.match(
+            result_text, outgoing=True, bot_hash=bot_hash,
+        )
+        if result_match is not None:
+            OlivaAIAgent.conf.traceLog(
+                ctx.get('Proc'), 'security.content.blocked', trace_id,
+                direction='tool_result', scene=name, source=result_match,
+            )
+            result = {'active': False, 'data': {'error': '工具结果涉及不参与的话题，内容已隐藏'}}
         normalized_context = None
         if isinstance(result, dict):
             normalized_context = result.get('data', {}).get('normalized_context')
@@ -398,12 +417,20 @@ def _t_olivos_discover(ctx, args):
     danger=True,
 )
 def _t_olivos_call(ctx, args):
-    return OlivaAIAgent.introspection.invoke(
+    result = OlivaAIAgent.introspection.invoke(
         ctx,
         path=str(args.get('path', '')),
         args=args.get('args'),
         kwargs=args.get('kwargs'),
     )
+    OlivaAIAgent.coreLogger.recordToolCall(
+        ctx,
+        str(args.get('path', '')),
+        args.get('args'),
+        args.get('kwargs'),
+        result,
+    )
+    return result
 
 
 # =========================================================
@@ -435,6 +462,26 @@ def _blockPersonaMemory(ctx, source, *values):
     return True
 
 
+def _blockSensitiveContent(ctx, source, *values):
+    matched = None
+    bot_hash = _bot_hash(ctx)
+    for value in values:
+        matched = OlivaAIAgent.contentSafety.match(value, bot_hash=bot_hash)
+        if matched is not None:
+            break
+    if matched is None:
+        return False
+    OlivaAIAgent.conf.traceLog(
+        ctx.get('Proc'),
+        'security.content.blocked',
+        ctx.get('trace_id'),
+        direction='storage',
+        scene=source,
+        source=matched,
+    )
+    return True
+
+
 @_reg(
     'memory_save',
     '保存事实型长期记忆。scope=user 为当前用户的跨群事实，scope=group 为本群剧情进度/团务约定。'
@@ -447,6 +494,8 @@ def _blockPersonaMemory(ctx, source, *values):
 )
 def _t_mem_save(ctx, args):
     content = str(args.get('content', '')).strip()
+    if _blockSensitiveContent(ctx, '长期记忆', content):
+        return {'active': False, 'data': {'error': '该内容不在可保存的话题范围内'}}
     if _blockPersonaMemory(ctx, '长期记忆', content):
         return {'active': False, 'data': {'error': '人设、语气、称呼和回复规则由插件配置决定，不能写入用户长期记忆'}}
     key = _mem_key(ctx, args.get('scope', 'user'))
@@ -460,7 +509,7 @@ def _t_mem_save(ctx, args):
 
 @_reg(
     'schedule_reminder',
-    '设定一个定时提醒/定时消息：到点后你会【主动】给用户发一条消息（官机也可用，走主动推送，不受被动回复5分钟超时限制）。'
+    '设定一个定时提醒/定时消息：到点后你会【主动】给用户发一条消息。'
     '相对时间用 delay_seconds（“3小时后”=10800，“半小时后”=1800）；绝对时间点用 at_time（"12:52"、"09:00:00"、"2026-07-27 09:00"、"07-27 09:00"）。'
     'delay_seconds 与 at_time 二选一。content 写用户让你到时提醒/传达的事。触发时会把 content 交给你生成自然的提醒话术再发出。',
     params={
@@ -476,6 +525,8 @@ def _t_schedule_reminder(ctx, args):
     content = str(args.get('content', '')).strip()
     if content == '':
         return {'error': 'content 不能为空'}
+    if _blockSensitiveContent(ctx, '定时提醒', content):
+        return {'active': False, 'data': {'error': '该内容不在可设定提醒的话题范围内'}}
     fire_ts = OlivaAIAgent.reminder.parseFireTs(
         delay_seconds=args.get('delay_seconds'), at_time=args.get('at_time'))
     if fire_ts is None:

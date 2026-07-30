@@ -359,6 +359,19 @@ def sendVoice(ctx, text, instructions=''):
     plugin_event = ctx.get('plugin_event')
     if plugin_event is None:
         return {'error': '当前上下文没有可用的消息事件，无法发送语音'}
+    bot_info = getattr(plugin_event, 'bot_info', None)
+    bot_hash = bot_info.hash if bot_info is not None else 'unity'
+    source = OlivaAIAgent.contentSafety.match(text, outgoing=True, bot_hash=bot_hash)
+    if source is not None:
+        OlivaAIAgent.conf.traceLog(
+            ctx.get('Proc'),
+            'security.content.blocked',
+            ctx.get('trace_id'),
+            direction='output',
+            scene='voice',
+            source=source,
+        )
+        return {'active': False, 'data': {'error': '该内容不在可发送的话题范围内'}}
     claimed, text_key = _claimVoiceText(ctx, text)
     if not claimed:
         OlivaAIAgent.conf.traceLog(
@@ -391,7 +404,8 @@ def sendVoice(ctx, text, instructions=''):
             'olivos_para',
             [OlivOS.messageAPI.PARA.record(file=os.path.abspath(path))],
         )
-        result = plugin_event.reply(message)
+        with OlivaAIAgent.coreLogger.messageHint('[语音:%s]' % str(text).strip()):
+            result = plugin_event.reply(message)
         active = not isinstance(result, dict) or bool(result.get('active'))
         message_ids = _messageIds(result)
         if active:

@@ -72,23 +72,52 @@ def _save_json(path, data):
 
 # ---------------- 会话 ----------------
 
-def getSession(key):
+def getSession(key, bot_hash=None):
     with _lock:
         if key not in _sessions:
-            _sessions[key] = _load_json(_session_path(key), [])
-        return list(_sessions[key])
+            data = _load_json(_session_path(key), [])
+            if not isinstance(data, list):
+                data = []
+            _sessions[key] = data
+        result = []
+        for message in _sessions[key]:
+            item = dict(message)
+            if OlivaAIAgent.contentSafety.blocked(item.get('content', ''), bot_hash=bot_hash):
+                item['content'] = OlivaAIAgent.contentSafety.HIDDEN_TEXT
+            result.append(item)
+        return result
 
 
-def appendSession(key, msgs):
-    max_rounds = OlivaAIAgent.conf.get('memory', 'max_rounds', default=16)
-    keep = max(2, int(max_rounds)) * 2
+def appendSession(key, msgs, bot_hash=None):
+    try:
+        max_rounds = max(2, int(OlivaAIAgent.conf.get('memory', 'max_rounds', default=8)))
+    except (TypeError, ValueError):
+        max_rounds = 8
+    keep = max_rounds * 2
+    cache_optimized = bool(OlivaAIAgent.conf.get('memory', 'prompt_cache_optimized', default=True))
+    if cache_optimized:
+        try:
+            cache_rounds = int(OlivaAIAgent.conf.get('memory', 'prompt_cache_max_rounds', default=16))
+        except (TypeError, ValueError):
+            cache_rounds = 16
+        grow_to = max(max_rounds, cache_rounds) * 2
+    else:
+        grow_to = keep
     with _lock:
         if key not in _sessions:
-            _sessions[key] = _load_json(_session_path(key), [])
-        _sessions[key].extend(msgs)
-        # 裁剪时保证不以 tool 消息开头（避免孤儿 tool 结果）
-        data = _sessions[key][-keep:]
-        while len(data) > 0 and data[0].get('role') in ['tool']:
+            getSession(key, bot_hash=bot_hash)
+        safe_msgs = []
+        for message in msgs:
+            item = dict(message)
+            if OlivaAIAgent.contentSafety.blocked(item.get('content', ''), bot_hash=bot_hash):
+                item['content'] = OlivaAIAgent.contentSafety.HIDDEN_TEXT
+            safe_msgs.append(item)
+        _sessions[key].extend(safe_msgs)
+        # 到增长上限才批量换代，避免满额后每轮滑窗都使整段历史前缀失效。
+        data = _sessions[key]
+        if len(data) > grow_to:
+            data = data[-keep:]
+        while data and data[0].get('role') != 'user':
             data = data[1:]
         _sessions[key] = data
         _dirty_sessions.add(key)
@@ -150,6 +179,7 @@ def memAdd(key, content, limit):
     except Exception:
         limit = 40
     limit = max(1, limit)   # 防御非法上限：<=0 会把刚写入的记忆连同旧记忆全部弹空
+    content = OlivaAIAgent.contentSafety.hiddenForMemory(content)
     with _lock:
         mem = _getMem(key)
         mem.append({'time': time.strftime('%Y-%m-%d %H:%M'), 'content': str(content)[:500]})
@@ -202,11 +232,12 @@ def hotReload():
     return changed
 
 
-def memFormat(key, title):
+def memFormat(key, title, bot_hash=None):
     mem = [
         item
         for item in memList(key)
         if not OlivaAIAgent.conf.isPersonaMutationText(item.get('content', ''))
+        and not OlivaAIAgent.contentSafety.blocked(item.get('content', ''), bot_hash=bot_hash)
     ]
     if len(mem) == 0:
         return ''
@@ -222,6 +253,7 @@ def bufferAppend(platform, group_id, user_id, name, text):
     except Exception:
         cap = 20
     cap = max(1, cap)   # 防御非法值：<=0 会在空列表上继续 pop 抛 IndexError，中断整条消息处理
+    text = OlivaAIAgent.contentSafety.hiddenForMemory(text)
     k = (str(platform), str(group_id))
     with _lock:
         buf = _group_buffer.setdefault(k, [])

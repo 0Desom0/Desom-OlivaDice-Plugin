@@ -1,4 +1,4 @@
-# OlivaAIAgent v2.20.4 — AI 全能群聊插件（OlivOS / 青果）
+# OlivaAIAgent v2.20.12 — AI 全能群聊插件（OlivOS / 青果）
 
 一个插件，两种形态，且都比市面同类更强：
 
@@ -37,7 +37,7 @@
 - 潜行**关闭**的群只响应本群前缀和关键词；明确 @、引用机器人与普通消息均不触发，也不会为普通消息调用记忆模型。
 - 私聊同样合一：套用同一人设 + 全部工具。
 
-**固定内容前置，缓存命中更高。** 提示词按"稳定→易变"排布：人设、规则、平台说明、已加载插件、骰系速查、固定记忆等**稳定内容放在最前面作为前缀**；时间、检索到的知识/侧写/前情提要、图片缓存、当前消息等**易变内容放到历史之后的尾部**。配合前缀缓存历史队列（DynamicQueue，增长到上限再批量换代），连续请求的公共前缀最大化，DeepSeek/OpenAI 前缀缓存命中率显著提升、省 token。（开启 `debug_log` 后，模型响应日志会显示输入、输出、总 token 及缓存命中 token。）
+**固定内容前置，缓存命中更高。** 提示词按"稳定→易变"排布：人设、规则、平台说明、已加载插件、骰系速查、固定记忆等放在最前面；时间、摘要/记忆、检索结果、消息 ID、图片缓存和当前消息都放到历史之后，避免任一动态字段变化时冲掉已有历史缓存。群历史与普通 Agent 会话都采用“增长到上限再批量换代”，避免满额后每轮滑窗冲掉整段前缀。（开启 `debug_log` 后，模型响应日志会显示输入、输出、总 token 及缓存命中 token。）
 
 ## OlivOS 接口 / SDK 全自动内省（v2.11）
 
@@ -72,6 +72,12 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - **AI 知道有哪些插件**：系统提示里注入当前已加载插件清单；需要主动查询时，通过 `proc.get_plugin_list` 获取。不确定指令语法时，用 `run_command` 执行 `.help` 或 `.help 指令名`。
 
 一句话：**能自由读取并调用 OlivOS 里装载的所有插件功能**——骰系全家桶、第三方规则插件、以及 QQ 侧的撤回/禁言/公告/文件等原生能力，都在射程内。高危动作仍受三级角色门槛与骰系自身权限双重约束。
+
+### OlivaDiceLogger 出站记录兼容（v2.20.12）
+
+检测到 `OlivaDiceCore` 时，插件会把自己成功发出的内容送入 Core 与 `replyMsg` 相同的 `crossHook.msgHook`，由 `OlivaDiceLogger` 按当前开团状态写入团日志；不会再次调用 `replyMsg`，所以不会重复发送。普通文本和 Markdown 原样记录，主动图片记录为 `[图片：内容]`（优先使用视觉缓存说明，不写本地路径），语音记录为 `[语音:内容]`（使用合成时已有的文本，不做语音转写）。定时提醒及通过 `olivos_call` 发出的 Markdown 也会记录。
+
+GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `true`；没有 Core 时自动不工作，关闭开关后也只停止补记，不影响消息发送。运行维护页会显示 Core/Logger 检测状态。实际是否落盘仍由 OlivaDiceLogger 的 `.log` 开团状态决定。
 
 ## 权限、平台、去重、热重载（v2.2）
 
@@ -170,6 +176,15 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - `memory_save`、`kb_save` 会拒绝人格控制内容；后台知识/侧写/群总结提炼在提示阶段与落盘阶段各过滤一次。升级前已经写入的数据也会在注入模型前过滤，不必立即手工删除。
 - `ambient.first_thinking` 处理普通潜行消息及定向触发：普通消息先通过 `reply_probability` 概率门，命中后调用前置模型；被 @ 或引用机器人消息会跳过概率，直接交给前置模型判断。前置模型返回 `SKIP` 时不进入主模型，返回 `NEXT` 时主模型必须回应。只有关键词和 `.ai` 跳过前置判断并直接要求主模型回应。
 
+## 现实政治话题保护（v2.20.11）
+
+- `security.politics_guard` 默认开启：现实政治、政治事件、政治人物及国内领导人相关内容不会交给模型讨论；“中国”“我国”“国内”等普通地域表达不会单独触发。`.ai`、关键词、@、引用和私聊会回复配置的简短婉拒语，普通潜行消息保持静默。
+- `security.use_olivadice_censor` 默认开启：OlivaDiceCore 可用且当前 bot 的 `censorMode` 开启时，直接复用 Core 已合并的全局/当前 bot DFA 词表；Core 不存在时自动降级，不增加硬依赖。
+- 命中消息只以“内容已隐藏”占位进入群历史，且不会写入会话、长期记忆、知识、侧写、群摘要、向量事实或提醒。模型文字、语音、工具和定时主动消息发送前仍会二次检查。
+- 可选本地词表：打开 `security.external_sensitive_words`，再在 `sensitive_word_files` 填 `.txt`/`.json` 文件，或在 `sensitive_word_dirs` 填目录。文本格式一行一词，JSON 支持字符串数组或以词为键的对象；自动热加载，不需要额外 Python 依赖，也不会自动联网下载。
+- GUI“内容与人设安全”和“运行维护”都提供词库下载/更新按钮，并显示同一份安装状态；从固定 HTTPS 地址安装 [konsheng/Sensitive-lexicon](https://github.com/konsheng/Sensitive-lexicon) 的 `Vocabulary/政治类型.txt`（MIT），以后点击会通过 ETag/Last-Modified 自动检测更新。下载内容通过大小、UTF-8 和最小词数校验后才原子替换，失败时保留旧文件。
+- 大型全量词库误伤更多，不建议无选择地全部启用。`ToolGood.Words`（Apache-2.0）性能很好但主要面向 .NET，不作为本插件依赖。
+
 ## 支持 OpenAI Responses API（v2.7.1）
 
 除 `chat/completions`（openai wire）与 `messages`（anthropic wire）外，新增 **`responses` wire**，对接 OpenAI 的 `/v1/responses` 接口（GPT-5 / o 系列等新模型偏好的统一接口）。
@@ -192,7 +207,7 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 - **会话不中毒**：私聊会话不再持久化图片 CDN URL（过期后逐轮重放会让整会话每次 400）。
 - **其它**：`.ai clear group` 一并清群统一管线上下文；非法 `context_buffer`/记忆上限做夹取防御（不再 `IndexError` 或清空）；技能检索缓存加上限（防长跑内存泄漏）；`extra_dirs` 误配字符串不再按字符展开建垃圾目录；移除失联的"自由唤醒"死代码（其职能已并入潜行统一管线）。
 
-插件自带回归测试当前共 **101 项**，覆盖配置迁移、群路由、消息引用、语音、MCP、视觉和记忆等关键路径。
+插件自带回归测试当前共 **137 项**，覆盖配置迁移、群路由、Core/Logger 出站桥接、内容安全、词库更新、伪 JSON 解包、消息引用、语音、MCP、视觉和记忆等关键路径。
 
 ## 统一设置面板（v2.18）
 
@@ -259,7 +274,18 @@ OlivOS 托盘菜单选择“打开设置面板”，即可在一个窗口完成�
 
   "trigger": { "keywords": ["骰娘"] },   // ← 群默认关键词，可在群级设置覆盖
 
+  "security": {
+    "politics_guard": true,
+    "politics_reply": "这个话题小芙不聊哦，换一个吧~",
+    "use_olivadice_censor": true,      // 跟随当前 bot 的 OlivaDiceCore 敏感词
+    "external_sensitive_words": false,
+    "sensitive_word_files": [],          // 可选本地 txt/json 词表
+    "sensitive_word_dirs": []            // 可选本地词表目录
+  },
+
   "memory": {
+    "max_rounds": 8,                  // Agent 常态历史 8 轮
+    "prompt_cache_max_rounds": 16,    // 缓存增长到 16 轮后回落
     "history_summary_default": true,   // 新群默认开启滚动摘要
     "long_term_default": true,         // 新群默认开启长期事实
     "extraction_batch_size": 8         // 累积多少条新记录后提炼
@@ -289,7 +315,7 @@ OlivOS 托盘菜单选择“打开设置面板”，即可在一个窗口完成�
     "reply_probability": 1.0,        // 随机插话概率(建议连同 first_thinking 一起调)
     "history_size": 8,
     "prompt_cache_optimized": true,  // DeepSeek 前缀缓存优化
-    "prompt_cache_history_size": 32,
+    "prompt_cache_history_size": 16,
     "slack_time": 5, "slack_cooldown_time": 30,   // 节律：连发只回最后一条
     "first_thinking": false,         // 便宜模型前置判定 NEXT/SKIP
     "intent_api": { "enable": false, "api_url": "...", "api_key": "", "model": "Qwen/Qwen2.5-7B-Instruct" },

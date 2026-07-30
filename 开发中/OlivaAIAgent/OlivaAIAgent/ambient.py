@@ -77,7 +77,7 @@ def _historyLimits():
     keep = int(OlivaAIAgent.conf.get('ambient', 'history_size', default=8))
     cache_opt = OlivaAIAgent.conf.get('ambient', 'prompt_cache_optimized', default=True)
     if cache_opt:
-        max_grow = int(OlivaAIAgent.conf.get('ambient', 'prompt_cache_history_size', default=32))
+        max_grow = int(OlivaAIAgent.conf.get('ambient', 'prompt_cache_history_size', default=16))
     elif OlivaAIAgent.conf.get('ambient', 'history_dynamic', default=False):
         max_grow = int(OlivaAIAgent.conf.get('ambient', 'history_dynamic_size', default=16))
     else:
@@ -222,8 +222,14 @@ def addSelfReply(platform, group_id, text, message_ids=None):
         _persist(key)
 
 
-def getHistory(platform, group_id):
-    return list(_getQueue(_hkey(platform, group_id)))
+def getHistory(platform, group_id, bot_hash=None):
+    history = []
+    for entry in _getQueue(_hkey(platform, group_id)):
+        item = dict(entry)
+        if OlivaAIAgent.contentSafety.blocked(item.get('message', ''), bot_hash=bot_hash):
+            item['message'] = OlivaAIAgent.contentSafety.HIDDEN_TEXT
+        history.append(item)
+    return history
 
 
 def formatHistoryForModel(history):
@@ -246,7 +252,7 @@ def formatHistoryForModel(history):
 
 
 def buildContextMessages(system_content, history, patch=None):
-    '''前缀缓存友好: system + 每条历史(user/assistant) + 动态上下文(尾部user)。'''
+    '''前缀缓存友好: system + 历史 + 每轮动态上下文。'''
     messages = [{'role': 'system', 'content': system_content}]
     for e in history:
         if e.get('nickname') is None:
@@ -273,7 +279,6 @@ def messageIdContext(history, limit=12):
             '方向': '机器人发送' if entry.get('nickname') is None else '用户发送',
             '发送者ID': entry.get('user_id'),
             '消息ID列表': ids,
-            '内容摘要': str(entry.get('message', ''))[:160],
         }
         if event_id not in [None, '']:
             record['事件ID'] = str(event_id)
@@ -294,7 +299,7 @@ def _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=None):
     vector_enabled = OlivaAIAgent.conf.isGroupLongMemory(platform, group_id)
     if not summary_enabled and not vector_enabled:
         return
-    history = getHistory(platform, group_id)
+    history = getHistory(platform, group_id, bot_hash=bot_hash)
     if not history:
         return
     batch = max(1, int(OlivaAIAgent.conf.get('memory', 'extraction_batch_size', default=8)))
@@ -351,7 +356,7 @@ def _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=None):
             with _memory_state_lock:
                 _memory_jobs.discard(state_key)
             # 只在任务运行期间确实又收到消息时复查；失败任务等下一条消息再重试，避免紧密重试循环。
-            current_history = getHistory(platform, group_id)
+            current_history = getHistory(platform, group_id, bot_hash=bot_hash)
             if any(int(item.get('history_seq', 0)) > latest_seq for item in current_history):
                 _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=trace_id)
 
@@ -515,6 +520,17 @@ def process(plugin_event, Proc, parsed, self_id,
         trace_id=trace_id,
     )
     message = OlivaAIAgent.msgReply.attachQuotedContext(parsed, message, image_facts=quote_facts)
+    blocked_source = OlivaAIAgent.contentSafety.match(message, bot_hash=bot_hash)
+    if blocked_source is not None:
+        message = OlivaAIAgent.contentSafety.HIDDEN_TEXT
+        OlivaAIAgent.conf.traceLog(
+            Proc,
+            'security.content.blocked',
+            trace_id,
+            direction='input',
+            scene='ambient_process',
+            source=blocked_source,
+        )
     nickname = ''
     try:
         nickname = plugin_event.data.sender.get('nickname') or plugin_event.data.sender.get('name') or '用户'
@@ -525,6 +541,15 @@ def process(plugin_event, Proc, parsed, self_id,
                  reference_message_id=parsed.get('reference_message_id'),
                  event_id=parsed.get('event_id'), msg_idx=parsed.get('msg_idx'),
                  ref_msg_idx=parsed.get('ref_msg_idx'), trace_id=trace_id)
+    if blocked_source is not None:
+        if force:
+            OlivaAIAgent.msgReply._safeReply(
+                plugin_event,
+                OlivaAIAgent.contentSafety.refusal(),
+                parsed,
+                safety_check=False,
+            )
+        return
     if not attempt:
         return  # 仅记录历史作上下文，不回复
 
@@ -556,7 +581,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     def cfg(k, d=None):
         return conf.get('ambient', k, default=d)
 
-    history = getHistory(platform, group_id)
+    history = getHistory(platform, group_id, bot_hash=bot_hash)
     # 被动自行插话需要足够历史；定向或显式触发(@/引用/关键词/.ai)不受此限
     if not force and len(history) <= int(cfg('history_size_min', 4)):
         _logConversationDecision(Proc, trace_id, '跳过', '群聊历史不足')
@@ -617,6 +642,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                 item
                 for item in OlivaAIAgent.memory.memList(OlivaAIAgent.memory.userMemKey(platform, uid))
                 if not conf.isPersonaMutationText(item.get('content', ''))
+                and not OlivaAIAgent.contentSafety.blocked(item.get('content', ''), bot_hash=bot_hash)
             ]
             if um:
                 agent_mem.setdefault('用户长期记忆', {})[str(uid)] = [x.get('content', '') for x in um[-5:]]
@@ -626,6 +652,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             item
             for item in OlivaAIAgent.memory.memList(OlivaAIAgent.memory.groupMemKey(platform, group_id))
             if not conf.isPersonaMutationText(item.get('content', ''))
+            and not OlivaAIAgent.contentSafety.blocked(item.get('content', ''), bot_hash=bot_hash)
         ]
         if gm:
             agent_mem['本群共享记忆'] = [x.get('content', '') for x in gm[-8:]]
@@ -673,8 +700,12 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     persona_guard = conf.personaGuardPrompt()
     if persona_guard:
         system_content += '\n\n' + persona_guard
+    content_guard = OlivaAIAgent.contentSafety.guardPrompt()
+    if content_guard:
+        system_content += '\n\n' + content_guard
     system_content += '\n- ' + conf.platformBrief(plugin_event).replace('\n', '\n- ')
     if allow_tools:
+        chat_context_summary = ''
         try:
             interface_summary = OlivaAIAgent.introspection.prompt_interface_summary(runtime_tool_ctx)
             chat_context_summary = OlivaAIAgent.introspection.prompt_chat_context_summary(runtime_tool_ctx)
@@ -684,8 +715,6 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                     + interface_summary
                     + '\n以上接口真实存在；不得凭模型常识否认。未列能力先用 olivos_discover 查询。'
                 )
-            if chat_context_summary:
-                system_content += '\n- ' + chat_context_summary
             conf.traceLog(
                 Proc,
                 'introspection.prompt.injected',
@@ -711,37 +740,43 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 
     # 固定记忆（非检索类的自定义全局项）——稳定内容，放进 system 前缀以提升前缀缓存命中
     mem = OlivaAIAgent.knowledge.getMem(bot_hash)
-    fixed = {k: v for k, v in mem.get('全局', {}).items() if k not in OlivaAIAgent.knowledge.GLOBAL_SUB_KEYS}
+    fixed = {
+        k: v for k, v in mem.get('全局', {}).items()
+        if k not in OlivaAIAgent.knowledge.GLOBAL_SUB_KEYS
+        and not OlivaAIAgent.contentSafety.blocked('%s %s' % (k, v), bot_hash=bot_hash)
+    }
     if fixed:
         system_content += '\n\n# 固定记忆\n' + json.dumps(fixed, ensure_ascii=False)
 
-    # 任务说明也是稳定内容，放在 system 前缀末尾
-    system_content += _mainDecisionTask(force)
-
-    # 动态/易变内容全部放到历史之后的尾部 turn，避免冲刷前缀缓存
+    # 所有变化内容都放在历史之后，避免更新时间/摘要时连带冲掉已有历史缓存。
     now_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     patch = {
         '当前上下文': {'群号': group_id, '当前本地时间': now_text,
                    '说明': ('群聊历史中最后一条是最新消息；本动态上下文不是群聊消息。'
                           '撤回和获取消息必须使用消息ID，事件ID只用于平台事件/被动响应，不能代替消息ID撤回。')},
-        '当前发言者': conf.senderIdentity(plugin_event, parsed.get('at_list')),
         '当前记忆': {'知识': knowledge, '用户侧写': profiles, '前情提要': summary},
-        '图片缓存': OlivaAIAgent.vision.groupImageCacheDict(group_id),
     }
+    if allow_tools and chat_context_summary:
+        patch['当前会话接口参数'] = chat_context_summary
     message_ids = messageIdContext(history)
     if message_ids:
         patch['近期收发消息标识'] = message_ids
-    registry_ids = OlivaAIAgent.identifiers.recent(plugin_event, limit=12)
+    registry_ids = OlivaAIAgent.identifiers.recent(plugin_event, limit=12, include_content=False)
     if registry_ids:
         patch['插件消息标识注册表'] = registry_ids
     if semantic_facts:
         patch['当前记忆']['长期事实'] = semantic_facts
     if agent_mem:
         patch['当前记忆']['互通记忆'] = agent_mem
+    image_cache = OlivaAIAgent.vision.groupImageCacheDict(group_id)
+    if image_cache:
+        patch['图片缓存'] = image_cache
     if skills_ctx:
         patch['技能片段'] = skills_ctx.strip()
 
     messages = buildContextMessages(system_content, history, patch)
+    # force 会随触发方式变化，不能拼入第一条稳定 system，否则兼容端可能整块缓存失效。
+    messages.append({'role': 'system', 'content': _mainDecisionTask(force)})
     sender_identity = conf.senderIdentity(plugin_event, parsed.get('at_list'))
     messages.append({
         'role': 'system',
@@ -879,9 +914,25 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
     cap = float(OlivaAIAgent.conf.get('ambient', 'max_send_delay', default=6.0))
     first = True
     sent_records = []
+    safety_refused = False
+    bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     for i in msg_list:
         if not i or len(str(i)) == 0:
             continue
+        source = OlivaAIAgent.contentSafety.match(i, outgoing=True, bot_hash=bot_hash)
+        if source is not None:
+            OlivaAIAgent.conf.traceLog(
+                OlivaAIAgent.conf.gProc,
+                'security.content.blocked',
+                trace_id,
+                direction='output',
+                scene='ambient_reply',
+                source=source,
+            )
+            if safety_refused:
+                continue
+            i = OlivaAIAgent.contentSafety.refusal()
+            safety_refused = True
         delay = sum(0.2 + (random.random() * 2 - 1) * 0.15 for _ in range(len(str(i))))
         if first:
             first = False
@@ -997,8 +1048,32 @@ def _firstThink(Proc, bot_hash, group_id, history, patch, system_ref, self_id, t
 
 # ---------------- 回复模型调用 ----------------
 
+def _unwrapTeslaBody(text):
+    if 'Tesla.Env' not in text and not re.search(r'\bbody\s*:', text):
+        return None
+    match = re.search(r'\bbody\s*:\s*("(?:\\.|[^"\\])*")', text, re.S)
+    if match is None:
+        return None
+    try:
+        body = json.loads(match.group(1))
+    except Exception:
+        return None
+    return body if isinstance(body, str) else None
+
+
 def _parseR(text):
     text = str(text)
+    if 'Tesla.Env' in text or re.search(r'\bbody\s*:', text):
+        wrapped_body = _unwrapTeslaBody(text)
+        if wrapped_body is None:
+            return None
+        try:
+            wrapped_obj = json.loads(wrapped_body)
+        except Exception:
+            return None
+        if isinstance(wrapped_obj, dict) and isinstance(wrapped_obj.get('r'), list):
+            return list(wrapped_obj['r'])
+        return None
     try:
         obj = json.loads(text)
         if isinstance(obj, dict) and isinstance(obj.get('r'), list):
@@ -1044,6 +1119,9 @@ def _fallback_parse_intent(content):
     content = str(content).strip()
     if not content:
         return []
+    if 'Tesla.Env' in content or re.search(r'\bbody\s*:', content):
+        tolerant = _parseR(content)
+        return tolerant if tolerant is not None else []
     if re.search(r'"r"\s*:\s*\[', content):
         tolerant = _parseR(content)
         if tolerant is not None:

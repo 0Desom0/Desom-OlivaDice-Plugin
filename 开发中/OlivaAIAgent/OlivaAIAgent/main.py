@@ -136,9 +136,11 @@ class Event(object):
         OlivaAIAgent.conf.traceLog(Proc, 'plugin.init_after.done')
 
     def private_message(plugin_event, Proc):
+        OlivaAIAgent.coreLogger.install(plugin_event)
         OlivaAIAgent.msgReply.onPrivateMessage(plugin_event, Proc)
 
     def group_message(plugin_event, Proc):
+        OlivaAIAgent.coreLogger.install(plugin_event)
         OlivaAIAgent.msgReply.onGroupMessage(plugin_event, Proc)
 
     def save(plugin_event, Proc):

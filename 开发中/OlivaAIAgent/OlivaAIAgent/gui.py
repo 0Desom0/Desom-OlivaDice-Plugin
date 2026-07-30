@@ -30,6 +30,7 @@ SECTION_ORDER = [
     'mcp',
     'permissions',
     'security',
+    'olivadice_logger',
     'masters',
     'groupchain',
     'reminder',
@@ -55,7 +56,8 @@ SECTION_LABELS = {
     'search': '联网搜索',
     'mcp': 'MCP 服务',
     'permissions': '工具权限',
-    'security': '人设安全',
+    'security': '内容与人设安全',
+    'olivadice_logger': 'OlivaDice 团日志',
     'masters': '骰主来源',
     'groupchain': '群链共享',
     'reminder': '定时提醒',
@@ -99,12 +101,12 @@ FIELD_LABELS = {
     'reply_probability': '主动插话概率',
     'ignore_prefixes': '潜行忽略前缀',
     'integrate_hard_trigger': '定向触发整合全部能力',
-    'history_size': '携带群历史条数',
+    'history_size': '潜行历史条数',
     'history_size_min': '最少群历史条数',
     'history_dynamic': '动态历史窗口',
     'history_dynamic_size': '动态窗口上限',
     'prompt_cache_optimized': '提示词缓存优化',
-    'prompt_cache_history_size': '缓存历史上限',
+    'prompt_cache_history_size': '潜行缓存上限条数',
     'slack_time': '等候连续消息（秒）',
     'slack_cooldown_time': '潜行冷却（秒）',
     'max_message_length': '单条消息长度上限',
@@ -120,7 +122,8 @@ FIELD_LABELS = {
     'allow_tools': '潜行允许工具调用',
     'agent_max_turns': '潜行工具最大轮数',
     'max_send_delay': '拟人发送延迟上限（秒）',
-    'max_rounds': '会话保留轮数',
+    'max_rounds': '会话历史轮数',
+    'prompt_cache_max_rounds': '会话缓存上限轮数',
     'user_memory_limit': '用户记忆上限',
     'group_memory_limit': '群记忆上限',
     'context_buffer': '上下文缓冲条数',
@@ -155,6 +158,12 @@ FIELD_LABELS = {
     'admin_tools_min_role': '高危工具最低角色',
     'persona_lock': '锁定机器人固定人设',
     'block_persona_memory': '阻止人设注入长期数据',
+    'politics_guard': '拒绝现实政治话题',
+    'politics_reply': '话题拦截回复',
+    'use_olivadice_censor': '跟随 OlivaDiceCore 敏感词',
+    'external_sensitive_words': '启用本地选装词库',
+    'sensitive_word_files': '本地词库文件（JSON）',
+    'sensitive_word_dirs': '本地词库目录（JSON）',
     'from_olivadice': '读取 OlivaDiceCore 骰主',
     'extra': '额外骰主 ID',
     'groups': '群 ID 列表',
@@ -242,12 +251,17 @@ GROUP_SWITCHES = [
     ('memory_long', '长期事实'),
 ]
 GROUP_SWITCH_VALUES = ('继承默认', '开启', '关闭')
+SECURITY_LEXICON_ACTIONS = ('下载 / 检查更新', '打开词库目录')
 
 _gui_instance = None
 
 
 def _fieldLabel(path):
     return PATH_LABELS.get(tuple(path), FIELD_LABELS.get(path[-1], path[-1]))
+
+
+def _sectionHasLexiconActions(section):
+    return section == 'security'
 
 
 def _setNested(root, path, value):
@@ -515,7 +529,7 @@ class ConfigWindow:
 
     def _buildMaintenanceTab(self):
         page = ttk.Frame(self.notebook, padding=14)
-        page.rowconfigure(1, weight=1)
+        page.rowconfigure(2, weight=1)
         page.columnconfigure(0, weight=1)
         toolbar = ttk.Frame(page)
         toolbar.grid(row=0, column=0, sticky='ew', pady=(0, 10))
@@ -533,8 +547,26 @@ class ConfigWindow:
             text='打开知识目录',
             command=lambda: self.openPath(os.path.join(OlivaAIAgent.conf.dataPath, 'Knowledge'), '知识目录'),
         ).pack(side=tkinter.RIGHT, padx=(0, 6))
+        lexicon_frame = ttk.LabelFrame(page, text='选装敏感词库', padding=10)
+        lexicon_frame.grid(row=1, column=0, sticky='ew', pady=(0, 10))
+        lexicon_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            lexicon_frame,
+            text='在线安装 konsheng/Sensitive-lexicon 政治分类；再次点击会自动检测并仅下载更新。',
+            style='Hint.TLabel',
+        ).grid(row=0, column=0, sticky='w')
+        ttk.Button(
+            lexicon_frame,
+            text='在线安装 / 检查更新',
+            command=self.updateSensitiveLexicon,
+        ).grid(row=0, column=1, padx=(12, 0))
+        ttk.Button(
+            lexicon_frame,
+            text='打开词库目录',
+            command=lambda: self.openPath(OlivaAIAgent.lexiconUpdater.lexiconDir(), '敏感词库目录'),
+        ).grid(row=0, column=2, padx=(6, 0))
         self.runtime_text = scrolledtext.ScrolledText(page, wrap='word', state='disabled', font=('Consolas', 10))
-        self.runtime_text.grid(row=1, column=0, sticky='nsew')
+        self.runtime_text.grid(row=2, column=0, sticky='nsew')
         self.notebook.add(page, text='运行维护')
 
     def _onMouseWheel(self, event):
@@ -595,8 +627,40 @@ class ConfigWindow:
                 justify='left',
             ).grid(row=row, column=0, columnspan=2, sticky='ew', pady=(0, 12))
             row += 1
-        self._addFields(section_data, base_path, row, depth=0)
+        row = self._addFields(section_data, base_path, row, depth=0)
+        if _sectionHasLexiconActions(self.current_section):
+            self._addSecurityLexiconActions(row)
         self.form_canvas.yview_moveto(0)
+
+    def _addSecurityLexiconActions(self, row):
+        status = OlivaAIAgent.lexiconUpdater.getStatus()
+        frame = ttk.LabelFrame(self.form_frame, text='选装敏感词库在线维护', padding=12)
+        frame.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(16, 4))
+        frame.columnconfigure(0, weight=1)
+        if status['installed']:
+            status_text = '已安装：%d 词；上次检查：%s' % (
+                status['words'], status['checked_at'] or '未知',
+            )
+        else:
+            status_text = '尚未安装在线政治分类词库'
+        ttk.Label(
+            frame,
+            text='%s\n来源：%s（%s）；本地匹配，不会把词表发送给模型。' % (
+                status_text, status['source'], status['license'],
+            ),
+            style='Hint.TLabel',
+            justify='left',
+        ).grid(row=0, column=0, sticky='w')
+        ttk.Button(
+            frame,
+            text=SECURITY_LEXICON_ACTIONS[0],
+            command=self.updateSensitiveLexicon,
+        ).grid(row=0, column=1, padx=(12, 0))
+        ttk.Button(
+            frame,
+            text=SECURITY_LEXICON_ACTIONS[1],
+            command=lambda: self.openPath(OlivaAIAgent.lexiconUpdater.lexiconDir(), '敏感词库目录'),
+        ).grid(row=0, column=2, padx=(6, 0))
 
     def _addFields(self, data, base_path, row, depth):
         if not isinstance(data, dict):
@@ -927,6 +991,8 @@ class ConfigWindow:
         vision = OlivaAIAgent.vision.getVisionStatus()
         voice = OlivaAIAgent.voice.getStatus()
         mcp = OlivaAIAgent.mcp.getStatus()
+        lexicon = OlivaAIAgent.lexiconUpdater.getStatus()
+        core_logger = OlivaAIAgent.coreLogger.getStatus(self.Proc)
         group_override_count = sum(
             len(groups) for groups in OlivaAIAgent.conf.groupsSnapshot().values() if isinstance(groups, dict)
         )
@@ -953,7 +1019,19 @@ class ConfigWindow:
                 mcp.get('tools', 0),
             ),
             f'待触发提醒: {OlivaAIAgent.reminder.total()} 个',
+            'OlivaDice 团日志桥接: {}'.format(
+                '已启用，等待 Logger 开团即可记录'
+                if core_logger['active'] and core_logger['logger_loaded']
+                else ('Core 已就绪，Logger 未加载' if core_logger['active'] else (
+                    '已关闭' if not core_logger['enabled'] else '未检测到 Core'
+                ))
+            ),
             f'群级覆盖: {group_override_count} 个',
+            '选装政治词库: {}'.format(
+                '{} 词 / 上次检查 {}'.format(
+                    lexicon['words'], lexicon['checked_at'] or '未知',
+                ) if lexicon['installed'] else '未安装'
+            ),
         ]
 
     def refreshRuntimeStatus(self):
@@ -966,18 +1044,28 @@ class ConfigWindow:
         self.runtime_text.insert('1.0', content)
         self.runtime_text.configure(state='disabled')
 
-    def _runMaintenance(self, name, action, success_text):
+    def _runMaintenance(self, name, action, success_text, on_success=None):
         self.status_var.set(f'{name}进行中…')
         self._logAction('正在执行%s' % name)
 
         def worker():
+            result = None
+            succeeded = False
             try:
                 result = action()
                 message = success_text(result)
+                succeeded = True
             except Exception as e:
                 message = f'{name}失败：{type(e).__name__}: {e}'
 
             def done():
+                if on_success is not None and succeeded:
+                    try:
+                        on_success(result)
+                    except Exception as e:
+                        self.status_var.set(f'{name}已完成，但界面刷新失败：{type(e).__name__}: {e}')
+                        self.refreshRuntimeStatus()
+                        return
                 self.status_var.set(message)
                 self.refreshRuntimeStatus()
 
@@ -1011,6 +1099,35 @@ class ConfigWindow:
                 result.get('servers', 0),
                 result.get('tools', 0),
             ),
+        )
+
+    def updateSensitiveLexicon(self):
+        if not self._commitCurrent(show_error=True):
+            return
+        pending_config = copy.deepcopy(self.working_conf)
+        if not self._commitGroupGlobal(show_error=True, target=pending_config):
+            return
+
+        def action():
+            result = OlivaAIAgent.lexiconUpdater.checkAndUpdate()
+            OlivaAIAgent.lexiconUpdater.activateConfig(pending_config, result['path'])
+            OlivaAIAgent.conf.replace(pending_config, save_now=True)
+            return result
+
+        def on_success(_result):
+            self.working_conf = OlivaAIAgent.conf.snapshot()
+            self._renderCurrentSection()
+            self._syncGroupGlobalForm()
+
+        self._runMaintenance(
+            '敏感词库更新',
+            action,
+            lambda result: (
+                '敏感词库已更新并启用：%d 词' % result['words']
+                if result['updated']
+                else '敏感词库已是最新版并保持启用：%d 词' % result['words']
+            ),
+            on_success=on_success,
         )
 
     def openPath(self, path, name='数据目录'):

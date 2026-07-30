@@ -13,12 +13,76 @@ OlivaAIAgent AI 后端客户端
     {'ok':bool, 'text':str, 'tool_calls':[{'id','name','arguments'}], 'error':str, 'usage':dict}
 '''
 
+import hashlib
 import json
+import threading
 import time
 
 import requests
 
 import OlivaAIAgent
+
+
+_cache_stats_lock = threading.Lock()
+_cache_stats = {}
+_cache_prefix_counts = {}
+
+
+def _requestCacheKey(bc, messages, tools):
+    '''生成不含正文/密钥的请求前缀观测键，便于按模型定位缓存效果。'''
+    try:
+        stable = {
+            'wire': bc.get('wire', ''),
+            'model': bc.get('model', ''),
+            'system': [m.get('content', '') for m in messages if m.get('role') == 'system'][:1],
+            'tools': tools or [],
+        }
+        raw = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:12]
+    except Exception:
+        return ''
+
+
+def _observeCachePrefix(bc, cache_key):
+    '''记录当前进程是否发过同一 system/tool 前缀，仅用于解释上游缓存日志。'''
+    if not cache_key:
+        return {}
+    scope = '%s|%s|%s|%s' % (
+        bc.get('_name', 'override'),
+        bc.get('wire', ''),
+        bc.get('model', ''),
+        cache_key,
+    )
+    with _cache_stats_lock:
+        previous = _cache_prefix_counts.get(scope, 0)
+        _cache_prefix_counts[scope] = previous + 1
+    return {
+        'cache_prefix_seen': previous > 0,
+        'cache_prefix_requests': previous + 1,
+    }
+
+
+def _recordCacheUsage(bc, usage, cache_key=''):
+    cached = usage.get('cached_tokens')
+    input_tokens = usage.get('input_tokens')
+    if not isinstance(cached, int) or not isinstance(input_tokens, int) or input_tokens <= 0:
+        return {}
+    key = '%s|%s|%s|%s' % (
+        bc.get('_name', 'override'),
+        bc.get('wire', ''),
+        bc.get('model', ''),
+        cache_key or '*',
+    )
+    with _cache_stats_lock:
+        stats = _cache_stats.setdefault(key, {'requests': 0, 'cached_tokens': 0, 'input_tokens': 0})
+        stats['requests'] += 1
+        stats['cached_tokens'] += cached
+        stats['input_tokens'] += input_tokens
+        return {
+            'cache_rate': '%.1f%%' % (cached * 100.0 / input_tokens),
+            'cache_rate_total': '%.1f%%' % (stats['cached_tokens'] * 100.0 / stats['input_tokens']),
+            'cache_requests': stats['requests'],
+        }
 
 
 def _detectWire(bc):
@@ -71,6 +135,20 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
         'vision': bool(bc.get('vision', False)),
         'wire': bc.get('wire', ''),
     }
+    first_system = next(
+        (message.get('content', '') for message in messages if message.get('role') == 'system'),
+        '',
+    )
+    cache_details = {
+        'cache_system_chars': len(str(first_system)),
+        'cache_tools': len(tools or []),
+    }
+    cache_key = _requestCacheKey(bc, messages, tools)
+    cache_observation = _observeCachePrefix(bc, cache_key)
+    if cache_key:
+        request_fields['cache_key'] = cache_key
+    request_fields.update(cache_details)
+    request_fields.update(cache_observation)
     if purpose:
         request_fields['purpose'] = purpose
     OlivaAIAgent.conf.traceLog(
@@ -105,6 +183,11 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
         'tool_calls': len(result.get('tool_calls') or []),
     }
     response_fields.update(usage)
+    response_fields.update(_recordCacheUsage(bc, usage, cache_key=cache_key))
+    if cache_key:
+        response_fields['cache_key'] = cache_key
+    response_fields.update(cache_details)
+    response_fields.update(cache_observation)
     if purpose:
         response_fields['purpose'] = purpose
     OlivaAIAgent.conf.traceLog(
