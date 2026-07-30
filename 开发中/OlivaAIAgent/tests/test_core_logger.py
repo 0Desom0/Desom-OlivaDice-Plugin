@@ -121,6 +121,36 @@ class CoreLoggerTest(unittest.TestCase):
         self.assertEqual('send_group', self.calls[0][1])
         self.assertEqual('# 标题\n正文', self.calls[0][4])
 
+    def test_positional_markdown_tool_call_does_not_log_chat_type_as_content(self):
+        event = FakeEvent()
+        ctx = {'plugin_event': event, 'func_type': 'group_message', 'group_id': '20000'}
+        recorded = OlivaAIAgent.coreLogger.recordToolCall(
+            ctx,
+            'inde.create_markdown_message',
+            ['qq_group', '20000', {'content': '# 位置参数标题\n正文'}],
+            {},
+            {'active': True, 'data': {}},
+        )
+
+        self.assertTrue(recorded)
+        self.assertEqual('# 位置参数标题\n正文', self.calls[0][4])
+        self.assertNotEqual('qq_group', self.calls[0][4])
+
+    def test_named_group_send_uses_explicit_target(self):
+        event = FakeEvent()
+        ctx = {'plugin_event': event, 'func_type': 'group_message', 'group_id': '20000'}
+        recorded = OlivaAIAgent.coreLogger.recordToolCall(
+            ctx,
+            'sdk.demo.send_group_msg',
+            [],
+            {'group_id': '28888', 'message': '发往另一个群'},
+            {'active': True, 'data': {}},
+        )
+
+        self.assertTrue(recorded)
+        self.assertEqual([None, '28888', None], self.calls[0][3])
+        self.assertEqual('发往另一个群', self.calls[0][4])
+
     def test_cloned_reminder_event_rebinds_wrappers_to_clone(self):
         source = FakeEvent()
         OlivaAIAgent.coreLogger.install(source)

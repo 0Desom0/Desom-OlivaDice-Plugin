@@ -2,6 +2,7 @@
 '''把本插件的出站消息补入 OlivaDiceCore msgHook，供 OlivaDiceLogger 记录。'''
 
 import contextlib
+import inspect
 import os
 import re
 import sys
@@ -233,42 +234,85 @@ def prepareClone(plugin_event):
     return install(plugin_event)
 
 
+def _toolCallValues(ctx, path, args, kwargs):
+    '''按真实接口签名还原参数名，兼容模型使用位置参数调用发送接口。'''
+    values = dict(kwargs) if isinstance(kwargs, dict) else {}
+    try:
+        target = OlivaAIAgent.introspection._resolve(ctx, path)
+        call_args, call_kwargs, error, _normalized = OlivaAIAgent.introspection._prepare_call(
+            ctx,
+            target,
+            args if isinstance(args, list) else [],
+            values,
+        )
+        if error is None:
+            bound = inspect.signature(target).bind(*call_args, **call_kwargs)
+            values = dict(bound.arguments)
+    except Exception:
+        pass
+    return values
+
+
+def _toolCallMessage(values, args):
+    markdown = values.get('markdown')
+    if isinstance(markdown, dict) and markdown.get('content') not in [None, '']:
+        return markdown.get('content')
+    for key in ('message', 'content', 'text', 'msg'):
+        if values.get(key) not in [None, '']:
+            return values.get(key)
+
+    positional = args if isinstance(args, list) else []
+    for value in reversed(positional):
+        if isinstance(value, dict):
+            for key in ('content', 'message', 'text', 'msg'):
+                if value.get(key) not in [None, '']:
+                    return value.get(key)
+    chat_types = {'group', 'private', 'qq_group', 'qq_private', 'guild_channel', 'guild_private'}
+    for value in reversed(positional):
+        if isinstance(value, str) and value.strip() and value.strip().lower() not in chat_types:
+            return value
+    return None
+
+
+def _toolCallTargets(ctx, plugin_event, values):
+    chat_type = str(
+        values.get('chat_type') or values.get('send_type') or values.get('target_type') or '',
+    ).lower()
+    chat_id = values.get('chat_id') or values.get('target_id')
+    if values.get('group_id') not in [None, '']:
+        chat_type = 'group'
+        chat_id = values.get('group_id')
+    elif values.get('user_id') not in [None, '']:
+        chat_type = 'private'
+        chat_id = values.get('user_id')
+    elif values.get('channel_id') not in [None, '']:
+        chat_type = 'group'
+        chat_id = values.get('channel_id')
+    if chat_id in [None, '', 'current', 'CURRENT_CHANNEL']:
+        current = OlivaAIAgent.introspection.current_chat_context(ctx)
+        chat_type = str(current.get('chat_type', chat_type)).lower()
+        chat_id = current.get('chat_id')
+    host_id = values.get('host_id')
+    if host_id in [None, '']:
+        host_id = getattr(getattr(plugin_event, 'data', None), 'host_id', None)
+    if 'private' in chat_type:
+        return 'send_private', [host_id, None, chat_id]
+    return 'send_group', [host_id, chat_id, None]
+
+
 def recordToolCall(ctx, path, args, kwargs, result):
     '''记录绕过 Event.send/reply 的运行时消息接口，主要覆盖 Markdown。'''
     if not isinstance(result, dict) or not result.get('active'):
         return False
     path_low = str(path).lower()
-    if path_low.startswith(('event.reply', 'event.send')):
+    if path_low in ('event.reply', 'event.send'):
         return False
-    values = kwargs if isinstance(kwargs, dict) else {}
-    markdown = values.get('markdown')
-    if isinstance(markdown, dict):
-        message = markdown.get('content')
-    else:
-        message = values.get('message') or values.get('content') or values.get('text')
-    if message in [None, '']:
-        for value in args if isinstance(args, list) else []:
-            if isinstance(value, dict):
-                message = value.get('content') or value.get('message') or value.get('text')
-            elif isinstance(value, str) and value.strip():
-                message = value
-            if message not in [None, '']:
-                break
+    values = _toolCallValues(ctx, path, args, kwargs)
+    message = _toolCallMessage(values, args)
     if message in [None, ''] or not any(word in path_low for word in ('message', 'markdown', 'send')):
         return False
     plugin_event = ctx.get('plugin_event') if isinstance(ctx, dict) else None
     if plugin_event is None:
         return False
-    chat_type = str(values.get('chat_type', '')).lower()
-    chat_id = values.get('chat_id')
-    if chat_id in [None, '', 'current', 'CURRENT_CHANNEL']:
-        current = OlivaAIAgent.introspection.current_chat_context(ctx)
-        chat_type = str(current.get('chat_type', chat_type)).lower()
-        chat_id = current.get('chat_id')
-    if 'private' in chat_type:
-        targets = [None, None, chat_id]
-        func_type = 'send_private'
-    else:
-        targets = [getattr(getattr(plugin_event, 'data', None), 'host_id', None), chat_id, None]
-        func_type = 'send_group'
+    func_type, targets = _toolCallTargets(ctx, plugin_event, values)
     return record(plugin_event, message, func_type=func_type, targets=targets)
