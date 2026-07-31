@@ -681,9 +681,26 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     voice_ready = OlivaAIAgent.voice.getStatus()['ready']
     if allow_tools or voice_ready:
         runtime_tool_ctx = _makeToolContext(plugin_event, Proc, group_id, trace_id)
+    selected_tool_names = []
     if allow_tools:
-        tool_hint = ('\n- 如需骰点/检定/查询/群管理，可调用工具(尤其 run_command 执行 .r/.ra/.sc 等真实指令)，'
-                     '拿到结果后再组织成群聊口吻的回复\n- 骰点必须用 run_command，禁止编造结果')
+        selected_tool_names = OlivaAIAgent.tools.selectToolNames(
+            runtime_tool_ctx,
+            message,
+            history=history,
+            trace_id=trace_id,
+        )
+    elif voice_ready:
+        selected_tool_names = ['send_voice']
+    tool_defs = OlivaAIAgent.tools.getToolsForRequest(
+        runtime_tool_ctx,
+        names=selected_tool_names,
+    ) if runtime_tool_ctx is not None else []
+    selected_tool_names = [item.get('name') for item in tool_defs]
+    selected_tool_set = set(selected_tool_names)
+    if tool_defs:
+        tool_hint = ('\n- 如需外部操作或查询，可调用当前列出的工具，拿到结果后再组织成群聊口吻的回复')
+        if 'run_command' in selected_tool_set:
+            tool_hint += '\n- 骰点/检定必须用 run_command 执行真实指令，禁止编造结果'
 
     system_content = '''# 规则
 - 你是一个人类，这是你日常水群的群聊，你会根据人格设定自行决定要不要参与对话
@@ -709,23 +726,19 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     content_guard = OlivaAIAgent.contentSafety.guardPrompt()
     if content_guard:
         system_content += '\n\n' + content_guard
-    system_content += '\n- ' + conf.platformBrief(plugin_event).replace('\n', '\n- ')
-    if allow_tools:
-        chat_context_summary = ''
+    system_content += '\n- ' + conf.platformBrief(
+        plugin_event,
+        include_interfaces=bool({'olivos_discover', 'olivos_call'} & selected_tool_set),
+    ).replace('\n', '\n- ')
+    chat_context_summary = ''
+    if {'olivos_discover', 'olivos_call'} & selected_tool_set:
         try:
-            interface_summary = OlivaAIAgent.introspection.prompt_interface_summary(runtime_tool_ctx)
             chat_context_summary = OlivaAIAgent.introspection.prompt_chat_context_summary(runtime_tool_ctx)
-            if interface_summary:
-                system_content += (
-                    '\n\n# 当前协议已验证接口（当前 plugin_event.indeAPI 运行时内省）\n'
-                    + interface_summary
-                    + '\n以上接口真实存在；不得凭模型常识否认。未列能力先用 olivos_discover 查询。'
-                )
             conf.traceLog(
                 Proc,
                 'introspection.prompt.injected',
                 trace_id,
-                interfaces=len(interface_summary.splitlines()) if interface_summary else 0,
+                interfaces=0,
             )
         except Exception as e:
             conf.traceLog(
@@ -734,6 +747,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                 trace_id,
                 error='%s: %s' % (type(e).__name__, e),
             )
+    if 'run_command' in selected_tool_set:
         try:
             plugins = conf.loadedPlugins(Proc)
             if plugins:
@@ -741,7 +755,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                                    + '、'.join(plugins))
         except Exception:
             pass
-    if dice_cheat:
+    if dice_cheat and 'run_command' in selected_tool_set:
         system_content += '\n\n# 骰系官方指令速查（run_command 执行；也能调用上面其他插件的指令）\n' + dice_cheat
 
     # 固定记忆（非检索类的自定义全局项）——稳定内容，放进 system 前缀以提升前缀缓存命中
@@ -762,14 +776,15 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                           '撤回和获取消息必须使用消息ID，事件ID只用于平台事件/被动响应，不能代替消息ID撤回。')},
         '当前记忆': {'知识': knowledge, '用户侧写': profiles, '前情提要': summary},
     }
-    if allow_tools and chat_context_summary:
+    if chat_context_summary:
         patch['当前会话接口参数'] = chat_context_summary
-    message_ids = messageIdContext(history)
-    if message_ids:
-        patch['近期收发消息标识'] = message_ids
-    registry_ids = OlivaAIAgent.identifiers.recent(plugin_event, limit=12, include_content=False)
-    if registry_ids:
-        patch['插件消息标识注册表'] = registry_ids
+    if {'olivos_discover', 'olivos_call'} & selected_tool_set:
+        message_ids = messageIdContext(history)
+        if message_ids:
+            patch['近期收发消息标识'] = message_ids
+        registry_ids = OlivaAIAgent.identifiers.recent(plugin_event, limit=12, include_content=False)
+        if registry_ids:
+            patch['插件消息标识注册表'] = registry_ids
     if semantic_facts:
         patch['当前记忆']['长期事实'] = semantic_facts
     if agent_mem:
@@ -784,7 +799,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     if skills_ctx:
         patch['技能片段'] = skills_ctx.strip()
 
-    messages = buildContextMessages(system_content, history, patch)
+    main_history_size = max(1, int(cfg('history_size', 8)))
+    messages = buildContextMessages(system_content, history[-main_history_size:], patch)
     # force 会随触发方式变化，不能拼入第一条稳定 system，否则兼容端可能整块缓存失效。
     messages.append({'role': 'system', 'content': _mainDecisionTask(force)})
     sender_identity = conf.senderIdentity(plugin_event, parsed.get('at_list'))
@@ -863,6 +879,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         allow_tools,
         trace_id=trace_id,
         tool_ctx=runtime_tool_ctx,
+        tool_defs=tool_defs,
     )
     voice_sent = OlivaAIAgent.voice.hasSentVoice(runtime_tool_ctx)
     if reply_list is None:
@@ -992,16 +1009,7 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
 # ---------------- first_thinking ----------------
 
 def _intentBackend():
-    ic = OlivaAIAgent.conf.get('ambient', 'intent_api', default={}) or {}
-    if ic.get('enable') and ic.get('api_url') and ic.get('api_key'):
-        return {'wire': 'openai', 'api_url': ic['api_url'], 'api_key': ic['api_key'],
-                'model': ic.get('model', ''), 'max_tokens': ic.get('max_tokens', 32),
-                'temperature': ic.get('temperature', 0.0), 'timeout_sec': ic.get('timeout', 45),
-                'stream': False, 'vision': False, '_name': 'intent'}
-    bc = dict(OlivaAIAgent.aiClient.getBackendConf())
-    bc['stream'] = False
-    bc['max_tokens'] = 32
-    return bc
+    return OlivaAIAgent.aiClient.getAuxiliaryBackendConf(max_tokens=64, temperature=0.0)
 
 
 def _firstThink(
@@ -1198,10 +1206,10 @@ def _callReply(
     allow_tools,
     trace_id=None,
     tool_ctx=None,
+    tool_defs=None,
 ):
     retry = int(OlivaAIAgent.conf.get('ambient', 'retry_count', default=3))
-    voice_only = not allow_tools and OlivaAIAgent.voice.getStatus()['ready']
-    if allow_tools or voice_only:
+    if tool_defs:
         return _callReplyWithTools(
             plugin_event,
             Proc,
@@ -1210,10 +1218,11 @@ def _callReply(
             messages,
             history,
             trace_id=trace_id,
-            voice_only=voice_only,
             tool_ctx=tool_ctx,
+            tool_defs=tool_defs,
         )
     reply_list = None
+    res = None
     for attempt in range(retry):
         res = OlivaAIAgent.aiClient.chat(
             messages,
@@ -1230,7 +1239,11 @@ def _callReply(
         reply_list = _parseR(text)
         if reply_list is not None:
             break
-    # 重试完毕仍解析失败，但有文本 → 兜底解析(避免 AI 输出非标准 JSON 时直接丢弃)
+        if text.strip():
+            # 模型已成功生成内容时直接本地兜底，避免为格式问题重复整轮主模型请求。
+            OlivaAIAgent.conf.debugLog(Proc, '潜行 JSON解析失败,立即兜底: %s' % text[:200])
+            return _fallback_parse_intent(text)
+    # 接口失败或空响应重试完毕后，若仍有文本则做最后兜底。
     if reply_list is None:
         last_text = res.get('text', '') if res else ''
         if last_text.strip():
@@ -1249,6 +1262,7 @@ def _callReplyWithTools(
     trace_id=None,
     voice_only=False,
     tool_ctx=None,
+    tool_defs=None,
 ):
     '''潜行 + 工具：让 AI 可调用 run_command/查询等，最终强制 JSON 输出。
     修复要点：
@@ -1257,7 +1271,8 @@ def _callReplyWithTools(
     3. 工具调用记录到 debugLog，方便排查"调了工具但没回复"的问题'''
     conf = OlivaAIAgent.conf
     ctx = tool_ctx or _makeToolContext(plugin_event, Proc, group_id, trace_id)
-    tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx, voice_only=voice_only)
+    if tool_defs is None:
+        tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx, voice_only=voice_only)
     max_rounds = int(conf.get('ambient', 'agent_max_turns', default=4))
     convo = list(messages)
     for rnd in range(max_rounds):

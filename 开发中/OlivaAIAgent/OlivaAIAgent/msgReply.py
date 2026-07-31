@@ -1116,6 +1116,13 @@ def _startAgent(plugin_event, Proc, user_text, parsed, trigger):
 def _buildSystemPrompt(plugin_event, ctx, is_master):
     '''只放稳定内容作为公共前缀；群号、会话参数和记忆统一放到历史之后。'''
     conf = OlivaAIAgent.conf
+    selected_tool_names = ctx.get('selected_tool_names')
+    tool_routed = isinstance(selected_tool_names, list)
+    selected_tool_set = set(selected_tool_names or [])
+
+    def has_tool(name):
+        return not tool_routed or name in selected_tool_set
+
     parts = [str(conf.get('prompt', 'system', default=''))]
     persona_guard = conf.personaGuardPrompt()
     if persona_guard:
@@ -1127,7 +1134,7 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
     if ctx['func_type'] == 'group_message' and str(ctx['group_id']) in persona_map:
         parts.append('【本群人设】\n%s' % persona_map[str(ctx['group_id'])])
     cheat = str(conf.get('prompt', 'dice_cheatsheet', default=''))
-    if cheat:
+    if cheat and has_tool('run_command'):
         parts.append('【官方指令速查(用 run_command 执行；也能调用其他已加载插件指令)】\n%s' % cheat)
     parts.append(
         '【主动发图】若动态上下文提供“可发送图片缓存”，你可以自行决定是否发图并选择其中的图片。'
@@ -1142,36 +1149,45 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
     masters = conf.getMasters(plugin_event)
     if masters:
         env_lines.append('骰主列表: %s' % ', '.join(masters[:10]))
-    env_lines.append(conf.platformBrief(plugin_event))
+    env_lines.append(conf.platformBrief(
+        plugin_event,
+        include_interfaces=has_tool('olivos_discover') or has_tool('olivos_call'),
+    ))
     parts.append('\n'.join(env_lines))
-    try:
-        interface_summary = OlivaAIAgent.introspection.prompt_interface_summary(ctx)
-        if interface_summary:
-            parts.append(
-                '【当前协议已验证接口（由当前 plugin_event.indeAPI 运行时内省生成）】\n'
-                + interface_summary
-                + '\n以上接口在当前协议对象上真实存在，可直接把精确路径交给 olivos_call。'
-                '不得与模型训练知识冲突时擅自否认；其他能力先用 olivos_discover 查询。'
-            )
+    if not tool_routed:
+        # 保留旧调用者的完整协议摘要；正式请求会先经过工具路由并走更短的上下文。
+        try:
+            interface_summary = OlivaAIAgent.introspection.prompt_interface_summary(ctx)
+            if interface_summary:
+                parts.append(
+                    '【当前协议已验证接口（由当前 plugin_event.indeAPI 运行时内省生成）】\n'
+                    + interface_summary
+                    + '\n以上接口在当前协议对象上真实存在，可直接把精确路径交给 olivos_call。'
+                    '不得与模型训练知识冲突时擅自否认；其他能力先用 olivos_discover 查询。'
+                )
             conf.traceLog(
                 ctx.get('Proc'),
                 'introspection.prompt.injected',
                 ctx.get('trace_id'),
-                interfaces=len(interface_summary.splitlines()),
+                interfaces=len(interface_summary.splitlines()) if interface_summary else 0,
             )
-    except Exception as e:
-        conf.traceLog(
-            ctx.get('Proc'),
-            'introspection.prompt.failed',
-            ctx.get('trace_id'),
-            error='%s: %s' % (type(e).__name__, e),
-        )
-    try:
-        plugins = conf.loadedPlugins(ctx.get('Proc'))
-        if plugins:
-            parts.append('【已加载插件(run_command 可调用其任意指令；不确定语法先执行 .help)】\n' + '、'.join(plugins))
-    except Exception:
-        pass
+        except Exception as e:
+            conf.traceLog(
+                ctx.get('Proc'),
+                'introspection.prompt.failed',
+                ctx.get('trace_id'),
+                error='%s: %s' % (type(e).__name__, e),
+            )
+    if has_tool('run_command'):
+        try:
+            plugins = conf.loadedPlugins(ctx.get('Proc'))
+            if plugins:
+                parts.append(
+                    '【已加载插件(run_command 可调用其任意指令；不确定语法先执行 .help)】\n'
+                    + '、'.join(plugins)
+                )
+        except Exception:
+            pass
     return '\n\n'.join([p for p in parts if p])
 
 
@@ -1179,29 +1195,36 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
     '''每轮或随检索变化的上下文，放到历史之后、当前用户消息之前。'''
     conf = OlivaAIAgent.conf
     platform = ctx['platform']
+    selected_tool_names = ctx.get('selected_tool_names')
+    tool_routed = isinstance(selected_tool_names, list)
+    selected_tool_set = set(selected_tool_names or [])
+    need_message_ids = not tool_routed or bool({'olivos_discover', 'olivos_call'} & selected_tool_set)
     blocks = []
     w = int(time.strftime('%w'))
     now = time.strftime('%Y-%m-%d %H:%M:%S') + ' 周' + ('日' if w == 0 else '一二三四五六'[w - 1])
     blocks.append('当前时间: %s | 当前用户id: %s%s' % (now, ctx.get('user_id'), ' (骰主)' if is_master else ''))
-    try:
-        chat_context_summary = OlivaAIAgent.introspection.prompt_chat_context_summary(ctx)
-    except Exception:
-        chat_context_summary = ''
+    chat_context_summary = ''
+    if need_message_ids:
+        try:
+            chat_context_summary = OlivaAIAgent.introspection.prompt_chat_context_summary(ctx)
+        except Exception:
+            chat_context_summary = ''
     if chat_context_summary:
         blocks.append('【当前会话接口参数】\n' + chat_context_summary)
-    identifiers = {
-        '当前消息ID': ctx.get('message_id'),
-        '引用消息ID': ctx.get('reference_message_id'),
-        '事件ID': ctx.get('event_id'),
-        '平台消息索引': ctx.get('msg_idx'),
-        '平台引用索引': ctx.get('ref_msg_idx'),
-    }
-    identifiers = {key: value for key, value in identifiers.items() if value not in [None, '']}
-    if identifiers:
-        blocks.append(
-            '【当前消息标识】\n%s\n消息ID用于获取/撤回消息；引用消息ID指向被引用消息；事件ID不能代替消息ID。'
-            % json.dumps(identifiers, ensure_ascii=False)
-        )
+    if need_message_ids:
+        identifiers = {
+            '当前消息ID': ctx.get('message_id'),
+            '引用消息ID': ctx.get('reference_message_id'),
+            '事件ID': ctx.get('event_id'),
+            '平台消息索引': ctx.get('msg_idx'),
+            '平台引用索引': ctx.get('ref_msg_idx'),
+        }
+        identifiers = {key: value for key, value in identifiers.items() if value not in [None, '']}
+        if identifiers:
+            blocks.append(
+                '【当前消息标识】\n%s\n消息ID用于获取/撤回消息；引用消息ID指向被引用消息；事件ID不能代替消息ID。'
+                % json.dumps(identifiers, ensure_ascii=False)
+            )
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     try:
         image_candidates = OlivaAIAgent.vision.emojiIntentCache(
@@ -1269,9 +1292,10 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
                 blocks.append('【该用户侧写(潜行积累)】\n%s: %s' % (ctx['user_id'], note))
         except Exception:
             pass
-        recent_ids = OlivaAIAgent.identifiers.recent(plugin_event, limit=12, include_content=False)
-        if recent_ids:
-            blocks.append('【近期私聊收发消息标识】\n' + json.dumps(recent_ids, ensure_ascii=False))
+        if need_message_ids:
+            recent_ids = OlivaAIAgent.identifiers.recent(plugin_event, limit=12, include_content=False)
+            if recent_ids:
+                blocks.append('【近期私聊收发消息标识】\n' + json.dumps(recent_ids, ensure_ascii=False))
     return '\n\n'.join([b for b in blocks if b])
 
 
@@ -1408,6 +1432,18 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
         ctx['query_text'] = user_text
         session_key = OlivaAIAgent.memory.sessionKey(platform, group_id, user_id)
         history = OlivaAIAgent.memory.getSession(session_key, bot_hash=bot_hash)
+        selected_tool_names = OlivaAIAgent.tools.selectToolNames(
+            ctx,
+            user_text,
+            history=history,
+            trace_id=trace_id,
+        )
+        ctx['selected_tool_names'] = selected_tool_names
+        try:
+            main_rounds = max(2, int(conf.get('memory', 'max_rounds', default=8)))
+        except (TypeError, ValueError):
+            main_rounds = 8
+        main_history = history[-main_rounds * 2:]
         # 缓存友好排序：稳定 system → 会话历史 → 所有变化上下文 → 本轮消息。
         sys_prompt = _buildSystemPrompt(plugin_event, ctx, is_master)
         volatile = _buildVolatileContext(plugin_event, ctx, is_master)
@@ -1417,7 +1453,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 user_msg[field] = parsed[field]
         if agent_images:
             user_msg['images'] = agent_images
-        messages = [{'role': 'system', 'content': sys_prompt}] + history
+        messages = [{'role': 'system', 'content': sys_prompt}] + main_history
         if volatile:
             messages.append({'role': 'user', 'content': '【动态上下文】\n' + volatile})
         sender_identity = conf.senderIdentity(plugin_event, parsed.get('at_list'))
@@ -1449,7 +1485,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 scene='agent',
             )
         messages.append(user_msg)
-        tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx)
+        tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx, names=selected_tool_names)
         new_msgs = [user_msg]
         final_text = ''
         max_rounds = int(conf.get('agent', 'max_tool_rounds', default=8))

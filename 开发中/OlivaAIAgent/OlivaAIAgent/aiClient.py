@@ -17,6 +17,7 @@ import hashlib
 import json
 import threading
 import time
+import urllib.parse
 
 import requests
 
@@ -109,6 +110,28 @@ def getBackendConf():
         # openai / custom：尊重显式 wire，否则按 api_url 自动识别(支持 /responses)
         bc['wire'] = _detectWire(bc)
     bc['_name'] = backend
+    return bc
+
+
+def getAuxiliaryBackendConf(max_tokens=512, temperature=0.0):
+    '''优先复用前置便宜模型处理路由、提炼和翻译；未配置时才回退主后端。'''
+    ic = OlivaAIAgent.conf.get('ambient', 'intent_api', default={}) or {}
+    if ic.get('enable') and ic.get('api_url') and ic.get('api_key'):
+        bc = {
+            'wire': _detectWire(ic),
+            'api_url': ic.get('api_url', ''),
+            'api_key': ic.get('api_key', ''),
+            'model': ic.get('model', ''),
+            'timeout_sec': ic.get('timeout', 45),
+            'vision': False,
+            '_name': 'intent',
+        }
+    else:
+        bc = getBackendConf()
+    bc = dict(bc)
+    bc['stream'] = False
+    bc['max_tokens'] = max(32, int(max_tokens))
+    bc['temperature'] = float(temperature)
     return bc
 
 
@@ -278,13 +301,20 @@ def _to_openai_messages(messages, vision):
 
 def _apply_thinking(payload, bc, opts):
     '''应用 DeepSeek/兼容端的 thinking + reasoning_effort。
-    仅在明确 enabled 时注入 thinking/reasoning_effort；关闭时不发送任何相关键，
-    否则严格的官方 OpenAI 端会因未知参数 thinking 返回 400（且用户无法从配置里删掉它）。'''
-    if opts.get('thinking_off'):
-        return
-    thinking = bc.get('thinking')
-    if isinstance(thinking, dict) and thinking.get('type') == 'enabled':
-        payload['thinking'] = thinking
+    官方 DeepSeek V4 默认开启思考，必须显式发送 disabled 才能避免隐藏推理 Token；
+    其他严格 OpenAI 端仍只在明确 enabled 时发送扩展参数。'''
+    configured = bc.get('thinking')
+    thinking_type = 'disabled' if opts.get('thinking_off') else (
+        configured.get('type') if isinstance(configured, dict) else None
+    )
+    try:
+        host = urllib.parse.urlsplit(str(bc.get('api_url', ''))).hostname or ''
+    except Exception:
+        host = ''
+    official_deepseek = host.lower() == 'api.deepseek.com'
+    if thinking_type == 'enabled' or (thinking_type == 'disabled' and official_deepseek):
+        payload['thinking'] = {'type': thinking_type}
+    if thinking_type == 'enabled':
         payload['reasoning_effort'] = bc.get('reasoning_effort', 'high')
 
 

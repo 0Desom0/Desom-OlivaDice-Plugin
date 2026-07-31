@@ -234,8 +234,15 @@ def _translateSkillMeta(name, description, metaterms, headings):
                   'content': '你是翻译器。把用户给出的技能库元数据逐行翻译成简体中文，'
                              '严格保持"序号|译文"格式且行数与输入一致，不要输出任何解释。'},
                   {'role': 'user', 'content': numbered}],
-                force_no_stream=True, thinking_off=True, timeout_override=timeout,
-                purpose='技能元数据翻译')
+                backend_conf=OlivaAIAgent.aiClient.getAuxiliaryBackendConf(
+                    max_tokens=max(256, len(src_lines) * 64),
+                    temperature=0.0,
+                ),
+                force_no_stream=True,
+                thinking_off=True,
+                timeout_override=timeout,
+                purpose='技能元数据翻译',
+            )
             text = str(resp.get('text', '')) if (resp and resp.get('ok')) else ''
             mapping = {}
             for m in re.finditer(r'^\s*(\d+)\s*\|\s*(.*?)\s*$', text, re.M):

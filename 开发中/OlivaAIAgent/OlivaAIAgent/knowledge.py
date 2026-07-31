@@ -384,10 +384,7 @@ def runMemoryExtraction(
             {'role': 'system', 'content': sys_prompt},
             {'role': 'user', 'content': '前情提要：%s\n\n聊天记录：\n%s\n\n现在提炼，只输出 JSON。' % (summary, chat)},
         ]
-        bc = OlivaAIAgent.aiClient.getBackendConf()
-        bc = dict(bc)
-        bc['stream'] = False
-        bc['temperature'] = 0.7
+        bc = OlivaAIAgent.aiClient.getAuxiliaryBackendConf(max_tokens=1200, temperature=0.2)
         res = OlivaAIAgent.aiClient.chat(messages, tools=None, backend_conf=bc,
                                          force_no_stream=True, response_json=True, thinking_off=True,
                                          trace_id=trace_id, purpose='后台记忆提炼')

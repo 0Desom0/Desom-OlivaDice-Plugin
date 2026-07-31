@@ -270,7 +270,8 @@ DEFAULT_CONF = {
         'retry_count': 3,
         'first_thinking': False,
         'intent_api': {
-            '_说明': '前置二分类判定用的便宜模型；enable=false 时复用主后端',
+            '_说明': '辅助便宜模型，用于前置判定、工具路由、记忆提炼、提醒措辞和技能元数据翻译；'
+                       'enable=false 时这些任务复用主后端',
             'enable': False,
             'api_url': 'https://api.siliconflow.cn/v1/chat/completions',
             'api_key': '',
@@ -1019,7 +1020,7 @@ def loadedPlugins(Proc, limit=50):
     return out
 
 
-def platformBrief(plugin_event):
+def platformBrief(plugin_event, include_interfaces=True):
     '''返回给 AI 的 platform/sdk 说明；OlivOS 会按事件平台自动路由到对应适配器，AI 只需产出该平台合适的内容。'''
     try:
         pf = plugin_event.platform.get('platform', '')
@@ -1036,14 +1037,15 @@ def platformBrief(plugin_event):
     lines = ['平台: %s | SDK: %s%s' % (pf or '未知', sdk or '未知', (' | 模型: %s' % model) if model else '')]
     lines.append('说明: 你运行在上述平台。发送接口由框架按平台自动路由(你无需关心底层SDK)，'
                  '但要产出该平台合适的内容——不要在不支持的平台使用其专属格式或接口。')
-    lines.append('接口调用: 所有 OlivOS 原生操作都先用 olivos_discover 查内存中的 Event/Proc/indeAPI/SDK 真实签名，'
-                 '再用 olivos_call 调用；不存在 send_msg 等手写原生工具，不得猜测路径。')
-    lines.append('能力判定: 不得凭模型常识猜测当前平台不支持某项能力。优先查看提示词中由运行时内省生成的'
-                 '“当前协议已验证接口”；未列出时必须先调用 olivos_discover，只有目录确实没有或真实调用返回'
-                 '不支持后，才能向用户声称不可用。')
-    lines.append('发送选择: 普通聊天直接使用最终回复；用户明确需要 Markdown、键盘、主动发送等协议能力时，'
-                 '可发现并调用对应接口。create/send 类接口调用成功即已直接发送，不要再用普通回复重复同一内容；'
-                 '如有必要只做简短确认。')
+    if include_interfaces:
+        lines.append('接口调用: 所有 OlivOS 原生操作都先用 olivos_discover 查内存中的 Event/Proc/indeAPI/SDK 真实签名，'
+                     '再用 olivos_call 调用；不存在 send_msg 等手写原生工具，不得猜测路径。')
+        lines.append('能力判定: 不得凭模型常识猜测当前平台不支持某项能力。优先查看提示词中由运行时内省生成的'
+                     '“当前协议已验证接口”；未列出时必须先调用 olivos_discover，只有目录确实没有或真实调用返回'
+                     '不支持后，才能向用户声称不可用。')
+        lines.append('发送选择: 普通聊天直接使用最终回复；用户明确需要 Markdown、键盘、主动发送等协议能力时，'
+                     '可发现并调用对应接口。create/send 类接口调用成功即已直接发送，不要再用普通回复重复同一内容；'
+                     '如有必要只做简短确认。')
     if 'qqguildv2' in str(sdk).lower():
         lines.append(
             '【QQ Guild v2 发送格式】回复中需要@用户时，请使用Markdown格式发送；'
@@ -1166,20 +1168,16 @@ def senderIdentityPrompt(plugin_event, at_list=None):
     mentions = identity['mentioned_user_ids']
     mention_text = '、'.join(mentions) if mentions else '无'
     master_text = '是' if identity['is_master'] else '否'
-    owner_rule = (
-        '- 骰主身份只表示操作权限，不等于“主人”身份。仅当当前发送者ID与人格配置中的主人ID明确匹配时，'
-        '才可称当前发送者为“主人”；未匹配或不确定时禁止这样称呼。'
-    )
     return (
         '# 当前发言者身份绑定（最高优先级）\n'
         '- 当前消息唯一发送者ID：%s\n'
         '- 当前消息发送者昵称：%s\n'
         '- 当前发送者是否为骰主：%s\n'
         '- 当前消息提及的用户ID：%s\n'
-        '- 发送者身份只能取自当前事件的 user_id。被 @ 者、引用消息作者、昵称、群聊历史和回复对象都不是发送者。\n'
-        '- 判断人格中的“主人”时，只能拿当前发送者ID与人格配置的主人ID比较；绝不能把被 @ 者的主人身份套给发送者。\n'
-        '%s'
-    ) % (identity['user_id'], identity['nickname'], master_text, mention_text, owner_rule)
+        '- 发送者只取当前事件的 user_id；被 @ 者、引用消息作者、昵称、群聊历史和回复对象都不是发送者。\n'
+        '- 骰主身份只表示操作权限，不等于“主人”身份。仅当当前发送者ID与人格配置中的主人ID明确匹配时才可称为主人；'
+        '未匹配或不确定时禁止这样称呼。'
+    ) % (identity['user_id'], identity['nickname'], master_text, mention_text)
 
 
 def log(Proc, level, msg):
@@ -1246,6 +1244,8 @@ _TRACE_STAGE_ZH = {
     'tool.unknown': '未知工具',
     'tool.denied': '工具调用被拒绝',
     'tool.exception': '工具调用异常',
+    'tool.route': '本轮工具路由完成',
+    'tool.route.failed': '本轮工具路由失败',
     'vision.defer_to_worker': '图片消息转入后台识别',
     'vision.worker.exception': '图片识别线程异常',
     'vision.translate.start': '图片摘要转换开始',
