@@ -407,6 +407,8 @@ def _t_olivos_discover(ctx, args):
     '复杂上下文可写 {"$ctx":"bot_info|sdk_event|data|group_id|user_id|host_id|self_id|control_queue|chat_type|chat_id"}；'
     '当前会话的 chat_type/chat_id 应优先用 $ctx 注入，禁止编造 CURRENT_CHANNEL 等占位符。'
     '消息对象可写 {"$olivos_message":{"mode":"olivos_string","data":"..."}}。'
+    '在 qqGuildv2 中需要@用户时优先使用 inde.create_markdown_message 发送Markdown；'
+    'OlivOS消息中的at段会由SDK转换为当前会话对应格式。'
     '所有 OlivOS 原生调用统一按高危工具权限控制；平台不支持时应如实返回错误。',
     params={
         'path': _p('string', 'olivos_discover 返回的 interfaces[].path'),

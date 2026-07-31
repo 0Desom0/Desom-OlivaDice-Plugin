@@ -458,11 +458,13 @@ def _isIgnorableCommand(text):
         return text.startswith(('.', '。', '/'))
 
 
-def _safetyInputText(parsed, text=None):
+def _safetyInputText(parsed, text=None, quote_image_facts=None):
+    '''只拼接用户可见内容，避免随机消息 ID 误撞短敏感词。'''
     values = [parsed.get('text', '') if text is None else text]
     quote = parsed.get('quote') if isinstance(parsed, dict) else None
     if isinstance(quote, dict):
         values.append(quote.get('text', ''))
+    values.extend(str(item) for item in (quote_image_facts or []) if str(item).strip())
     return '\n'.join(str(value or '') for value in values)
 
 
@@ -1536,6 +1538,116 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
             _inflight.discard(flight_key)
 
 
+_QQBOT_AT_TAG_PATTERN = re.compile(
+    r'<qqbot-at-(?:user\s+id=(["\'])[^"\']+\1|everyone\s*)\s*/>',
+    re.I,
+)
+
+
+def _qqGuildMarkdownMentionContent(text):
+    '''把纯文本/at/reply 消息转成 Markdown；其他消息段交回原发送链路。'''
+    raw = str(text or '')
+    has_at = _QQBOT_AT_TAG_PATTERN.search(raw) is not None
+    if not has_at and re.search(r'\[(?:OP:at\b|CQ:at\b)', raw, flags=re.I) is None:
+        return None
+    mode = 'olivos_string' if re.search(r'\[OP:', raw, flags=re.I) else 'old_string'
+    try:
+        message = OlivOS.messageAPI.Message_templet(mode, raw)
+        if not message.active:
+            return None
+    except Exception:
+        return None
+    content = []
+    for item in message.data:
+        if isinstance(item, OlivOS.messageAPI.PARA.text):
+            content.append(str(item.data.get('text', '')))
+            continue
+        if isinstance(item, OlivOS.messageAPI.PARA.reply):
+            continue
+        if not isinstance(item, OlivOS.messageAPI.PARA.at):
+            return None
+        has_at = True
+        user_id = str(item.data.get('id', ''))
+        try:
+            converted = OlivOS.qqGuildv2SDK.markdown_tag.at_para(item, flag_qq=True)
+        except Exception:
+            if user_id == 'all':
+                converted = '<qqbot-at-everyone />'
+            elif user_id:
+                converted = '<qqbot-at-user id="%s" />' % user_id
+            else:
+                converted = ''
+        content.append(str(converted or ''))
+    result = ''.join(content).strip()
+    return result if has_at and result else None
+
+
+def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=None):
+    '''qqGuildv2 普通回复含 at 时自动改走 Markdown；失败返回 None 以便原链路兜底。'''
+    try:
+        sdk = str(plugin_event.platform.get('sdk', '')).lower()
+    except Exception:
+        return None
+    if 'qqguildv2' not in sdk:
+        return None
+    markdown_content = _qqGuildMarkdownMentionContent(text)
+    if markdown_content is None:
+        return None
+    data = getattr(plugin_event, 'data', None)
+    ctx = {
+        'plugin_event': plugin_event,
+        'func_type': getattr(plugin_event, 'plugin_info', {}).get('func_type'),
+        'group_id': getattr(data, 'group_id', None),
+        'user_id': getattr(data, 'user_id', None),
+        'self_id': getattr(plugin_event, 'base_info', {}).get('self_id'),
+    }
+    chat_context = OlivaAIAgent.introspection.current_chat_context(ctx)
+    chat_type = chat_context.get('chat_type')
+    chat_id = chat_context.get('chat_id')
+    sender = getattr(getattr(plugin_event, 'indeAPI', None), 'create_markdown_message', None)
+    if not callable(sender) or not chat_type or chat_id in [None, '']:
+        return None
+    kwargs = {
+        'chat_type': chat_type,
+        'chat_id': chat_id,
+        'markdown': {'content': markdown_content},
+    }
+    if quote_msg_id not in [None, '', '-1', -1]:
+        kwargs['quote_msg_id'] = str(quote_msg_id)
+    try:
+        result = sender(**kwargs)
+    except Exception as e:
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'message.markdown_mention.fallback_failed',
+            trace_id,
+            error='%s: %s' % (type(e).__name__, e),
+        )
+        return None
+    if isinstance(result, dict) and not result.get('active'):
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'message.markdown_mention.fallback_failed',
+            trace_id,
+            error=result.get('data', {}).get('error', 'inactive'),
+        )
+        return None
+    OlivaAIAgent.coreLogger.recordToolCall(
+        ctx,
+        'inde.create_markdown_message',
+        [],
+        kwargs,
+        result,
+    )
+    OlivaAIAgent.conf.traceLog(
+        OlivaAIAgent.conf.gProc,
+        'message.markdown_mention.fallback',
+        trace_id,
+        chat_type=chat_type,
+    )
+    return result
+
+
 def _safeReply(plugin_event, text, parsed=None, safety_check=True):
     conf = OlivaAIAgent.conf
     text = str(text)
@@ -1574,7 +1686,15 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
     message_ids = []
     sent = True
     for i, chunk in enumerate(chunks):
-        result = plugin_event.reply((prefix if i == 0 else '') + chunk)
+        payload = (prefix if i == 0 else '') + chunk
+        result = _sendQqGuildMarkdownMention(
+            plugin_event,
+            payload,
+            quote_msg_id=outgoing_reference_id if i == 0 else None,
+            trace_id=parsed.get('trace_id') if isinstance(parsed, dict) else None,
+        )
+        if result is None:
+            result = plugin_event.reply(payload)
         if isinstance(result, dict) and not result.get('active'):
             sent = False
         message_ids.extend(OlivaAIAgent.ambient._sendResultMessageIds(result))

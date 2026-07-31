@@ -61,6 +61,8 @@ inde.create_markdown_message(chat_type, chat_id, markdown, ...)
 sdk.qqGuildv2SDK.event_action.create_markdown_message(target_event, chat_type, chat_id, markdown, ...)
 ```
 
+qqGuildv2 中包含 `@` 用户的回复应使用 Markdown 格式发送。模型会优先选择 `inde.create_markdown_message`；如果普通最终回复仍带有 OP/CQ at 段或 `<qqbot-at-user>` 标签，插件会复用 SDK 的 at 转换并自动改走 Markdown，专用接口失败时才退回原普通发送链路。
+
 因此以后 OlivOS 新增公开 SDK 方法，插件重载后就能直接发现，不需要再修改 `tools.py`。`olivos_call` 是唯一的 OlivOS 原生调用入口，**所有调用**统一受 `.ai admin` 三级高危权限控制；目录查询本身不执行操作。
 
 ## 能调用整个插件生态（不止骰核，v2.4）

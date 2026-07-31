@@ -1,6 +1,7 @@
 # -*- encoding: utf-8 -*-
 
 import copy
+import os
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -51,12 +52,14 @@ class QuoteContextTest(unittest.TestCase):
         OlivaAIAgent.conf.gConf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
         OlivaAIAgent.conf.gGroups = {}
         OlivaAIAgent.identifiers._initialized_path = None
+        OlivaAIAgent.contentSafety._external_signature = None
 
     def tearDown(self):
         OlivaAIAgent.conf.dataPath = self.old_data_path
         OlivaAIAgent.conf.gConf = self.old_conf
         OlivaAIAgent.conf.gGroups = self.old_groups
         OlivaAIAgent.identifiers._initialized_path = None
+        OlivaAIAgent.contentSafety._external_signature = None
         self.temp_dir.cleanup()
 
     def test_resolves_quote_through_olivos_get_msg(self):
@@ -94,6 +97,38 @@ class QuoteContextTest(unittest.TestCase):
         self.assertTrue(parsed['reply_to_me'])
         self.assertTrue(parsed['quote']['from_self'])
         self.assertEqual('机器人上一条回复', parsed['quote']['text'])
+
+    def test_quote_identifiers_are_excluded_from_sensitive_word_scan(self):
+        word_path = os.path.join(self.temp_dir.name, 'words.txt')
+        with open(word_path, 'w', encoding='utf-8') as handle:
+            handle.write('jzm\n')
+        OlivaAIAgent.conf.gConf['security'].update({
+            'politics_guard': False,
+            'use_olivadice_censor': False,
+            'external_sensitive_words': True,
+            'sensitive_word_files': [word_path],
+            'sensitive_word_dirs': [],
+        })
+        OlivaAIAgent.contentSafety._external_signature = None
+        parsed = {
+            'text': '搜一下xterfusion',
+            'reference_message_id': 'prefix-jzm-suffix',
+            'quote': {
+                'message_id': 'prefix-jzm-suffix',
+                'sender_id': 'sender-jzm-id',
+                'sender_name': '小芙',
+                'text': '这是什么新咒语吗',
+            },
+        }
+
+        full_context = OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text'])
+        safety_text = OlivaAIAgent.msgReply._safetyInputText(parsed)
+
+        self.assertEqual('external_lexicon', OlivaAIAgent.contentSafety.match(full_context))
+        self.assertIsNone(OlivaAIAgent.contentSafety.match(safety_text))
+        self.assertNotIn('prefix-jzm-suffix', safety_text)
+        self.assertIn('搜一下xterfusion', safety_text)
+        self.assertIn('这是什么新咒语吗', safety_text)
 
     def test_prefers_persisted_ambient_history(self):
         event = FakeEvent('[CQ:reply,id=quoted-2]继续说说', None)

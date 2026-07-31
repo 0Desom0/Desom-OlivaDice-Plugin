@@ -994,7 +994,7 @@ _PLATFORM_NOTES = {
     'discord': 'Discord。用频道概念，无QQ群管理接口；勿输出QQ专属消息段。',
     'kaiheila': 'KOOK(开黑啦)。有频道(host)层级，部分接口用 host_id；勿套用QQ专属能力。',
     'kook': 'KOOK(开黑啦)。有频道(host)层级，部分接口用 host_id；勿套用QQ专属能力。',
-    'qqguild': 'QQ频道。子频道结构；发送消息段只用OP码，部分QQ群管理接口不可用。',
+    'qqguild': 'QQ频道/QQ机器人官机。使用子频道或群会话结构，部分QQ群管理接口不可用。',
     'dodo': 'DoDo。频道结构，勿套用QQ群专属接口。',
     'fanbook': 'Fanbook。勿套用QQ群专属接口。',
     'onebot': 'OneBot协议(通常为QQ)。本插件发送消息段统一使用OP码。',
@@ -1044,6 +1044,11 @@ def platformBrief(plugin_event):
     lines.append('发送选择: 普通聊天直接使用最终回复；用户明确需要 Markdown、键盘、主动发送等协议能力时，'
                  '可发现并调用对应接口。create/send 类接口调用成功即已直接发送，不要再用普通回复重复同一内容；'
                  '如有必要只做简短确认。')
+    if 'qqguildv2' in str(sdk).lower():
+        lines.append(
+            '【QQ Guild v2 发送格式】回复中需要@用户时，请使用Markdown格式发送；'
+            '普通消息照常使用最终回复。'
+        )
     if note:
         lines.append('平台特性: ' + note)
     return '\n'.join(lines)
@@ -1209,6 +1214,8 @@ _TRACE_STAGE_ZH = {
     'security.persona_injection.detected': '检测到试图改写人设的消息',
     'security.memory.blocked': '已阻止人设指令写入长期数据',
     'security.content.blocked': '已拦截不参与的话题',
+    'message.markdown_mention.fallback': '已将含@回复改用Markdown发送',
+    'message.markdown_mention.fallback_failed': '含@回复的Markdown兜底失败，退回普通发送',
     'logger.bridge.failed': 'OlivaDice团日志桥接失败',
     'message.group.duplicate': '忽略重复群消息',
     'message.private.received': '收到私聊消息',
