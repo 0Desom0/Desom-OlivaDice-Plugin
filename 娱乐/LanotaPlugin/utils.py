@@ -677,10 +677,33 @@ def reply_message(plugin_event, message_text: str) -> Any:
         return None
 
 
-def reply_image(plugin_event, image_path: str, fallback_text: str) -> Any:
+def send_private_message(plugin_event, user_id: Any, message_text: str) -> bool:
+    """使用当前事件对应的 Bot 主动发送私聊消息。"""
+    target_id = safe_str(user_id).strip()
+    if not target_id:
+        return False
+    try:
+        plugin_event.send('private', target_id, safe_str(message_text))
+        return True
+    except Exception as exception_object:
+        error_log(None, f'主动私聊发送失败：{type(exception_object).__name__}: {exception_object}')
+        return False
+
+
+def build_image_message(image_path: str) -> str:
     try:
         file_uri = Path(image_path).resolve().as_uri()
-        return plugin_event.reply(f'[OP:image,file={op_escape(file_uri)}]')
+        return f'[OP:image,file={op_escape(file_uri)}]'
+    except Exception:
+        return ''
+
+
+def reply_image(plugin_event, image_path: str, fallback_text: str) -> Any:
+    try:
+        image_message = build_image_message(image_path)
+        if not image_message:
+            raise ValueError('图片路径无效。')
+        return plugin_event.reply(image_message)
     except Exception:
         return reply_message(plugin_event, fallback_text)
 

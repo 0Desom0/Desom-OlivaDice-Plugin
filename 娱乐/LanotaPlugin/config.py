@@ -22,6 +22,23 @@ excel_table_folder_name = 'excel_table'
 excel_table_extension_list = ['.xlsx', '.xlsm']
 font_file_name = 'fonts.ttf'
 
+# Firebase Web API Key 来自 Portal 前端公开配置，不是登录时实时生成的秘密；站点迁移项目时可在运行配置覆盖。
+lanota_portal_api_base_url = 'https://noxygames.com/lanota/portal/api'
+lanota_portal_firebase_api_key = 'AIzaSyCIxTfcSRdfzdkCuUe8f0HeJrS8LHUp0Ng'
+lanota_portal_asset_base_url = 'https://noxygames.com/lanota/portal'
+lanota_portal_china_api_base_url = 'https://lanota.gmzon.com/portal/api'
+lanota_portal_china_asset_base_url = 'https://lanota.gmzon.com/portal'
+lanota_portal_china_app_scheme = 'lanotagames-cn'
+lanota_portal_china_login_timeout_seconds = 120
+lanota_portal_china_poll_interval_seconds = 2
+lanota_portal_browser_path = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+lanota_portal_connect_timeout_seconds = 10
+lanota_portal_timeout_seconds = 25
+lanota_portal_template_file_name = 'lanota_portal_user.html'
+lanota_portal_screenshot_width = 1200
+lanota_portal_screenshot_height = 1360
+lanota_portal_device_scale_factor = 2
+
 allowed_prefix_list = ['.', '。', '/', '／']
 image_cache_limit = 40
 image_max_chars = 100
@@ -51,6 +68,12 @@ default_global_config = {
     'wiki_sync_edit_summary': 'Sync song list from individual song pages via MediaWiki API',
     'send_cover_art': True,
     'download_cover_on_demand': True,
+    # Portal 登录账号；不把真实凭据写入插件源码。
+    'lanota_portal_email': '',
+    'lanota_portal_password': '',
+    'lanota_portal_firebase_api_key': lanota_portal_firebase_api_key,
+    'lanota_portal_browser_path': lanota_portal_browser_path,
+    'lanota_portal_device_scale_factor': lanota_portal_device_scale_factor,
 }
 
 default_bot_config = {

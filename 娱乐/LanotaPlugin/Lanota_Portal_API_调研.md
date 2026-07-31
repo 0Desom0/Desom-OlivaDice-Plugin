@@ -502,18 +502,79 @@ print(player['player']['username'], player['player']['rating'])
 4. 限制好友码格式和长度，并始终进行 URL 编码。
 5. 为网络请求设置连接/读取超时，并处理站点改版、字段缺失和非 JSON 响应。
 
-## 9. 其他已发现的认证接口
+## 9. 国服 Portal 认证与接口
 
-前端还包含 Lanota App/二维码登录流程，未用于本次邮箱登录：
+国服入口和 API 根地址：
 
 ```text
-POST /lanota/portal/api/auth/init-app-login
-GET  /lanota/portal/api/auth/poll?session_id={session_id}
-POST /lanota/portal/api/auth/exchange
+Portal: https://lanota.gmzon.com/portal
+API:    https://lanota.gmzon.com/portal/api
+```
+
+国服不使用 Firebase 邮箱密码，而是使用 Lanota App/二维码授权：
+
+```text
+POST /portal/api/auth/init-app-login
+GET  /portal/api/auth/poll?session_id={session_id}
+POST /portal/api/auth/exchange
      JSON: { code, session_id }
 ```
 
-`exchange` 在非中国区返回 Firebase `customToken`，中国区分支返回 `chinaToken`。该流程涉及游戏客户端回调与短期会话，不适合替代机器人端的邮箱登录，除非后续专门实现交互式绑定。
+实际前端生成的二维码内容如下：
+
+```text
+lanotagames-cn://portal-auth
+  ?session_id={URL 编码后的 session_id}
+  &callback={URL 编码后的 https://lanota.gmzon.com/portal/auth/callback?...}
+```
+
+授权流程：
+
+1. `init-app-login` 返回短期 `session_id`。
+2. 使用上述深链生成二维码，由国服 Lanota App 扫描。
+3. 每 2 秒请求一次 `poll`；未授权时返回 `{"status":"pending"}`。
+4. 授权后 `poll` 返回 `{"status":"ready","code":"..."}`。
+5. 把一次性 `code` 和 `session_id` 提交给 `exchange`。
+6. 国服响应 `{"chinaToken":"...","uid":"..."}`。
+
+`chinaToken` 是带 `exp` 的 JWT，通过下列请求头访问国服 `/me`、`/player/{好友码}` 等接口：
+
+```http
+Authorization: Bearer <chinaToken>
+Accept: application/json
+```
+
+前端将它保存到 `localStorage['lanota.portal.chinaToken']`。目前没有发现国服 Token 刷新接口；过期后必须重新扫码授权。插件对应命令为：
+
+```text
+.la china login
+.la china status
+.la bind cn <好友码>
+.la user
+```
+
+插件把国服 Token 单独保存在运行期 `plugin/data/LanotaPlugin/portal_auth_china.json`，不会与国际服 Firebase Token 混用，也不会写入源码仓库。
+
+### 9.1 国服接口实测结果（2026-07-31）
+
+以下请求均使用有效 `chinaToken`，只记录状态码和结构，不记录 Token、好友码或个人数值：
+
+| 接口 | 状态 | 实测结果 |
+| --- | ---: | --- |
+| `GET /api/me` | `200` | 返回 `avatarId/nanoId/notalium/rating/username` |
+| `GET /api/player/{nanoId}` | `200` | 返回 `player/stats/recentPlays/locked`；排行榜中的非好友也可查询 |
+| `GET /api/compare?friendNanoId={nanoId}` | `200` | 非好友目标也可对比，返回 `me/friend/summary/songs` |
+| `GET /api/rating` | `200` | 当前账号返回 `locked.best30/recent`，没有 `best30/recent` 明细，属于权限锁定 |
+| `GET /api/scores` | `200` | 返回 `songs`，本次共 2920 条谱面成绩 |
+| `GET /api/score/song?...` | `200` | 返回 `song/scores/focusScore` |
+| `GET /api/friends` | `200` | 返回 `friends/subscription`，本次好友列表为空 |
+| `GET /api/subscription/status` | `200` | 返回 `isSubscribed/tier/expireAt` |
+| `GET /api/leaderboard` | `200` | 返回 `entries/hasMore`，本次 100 条 |
+| `GET /api/songs` | `200` | 返回 `songs`，本次 730 首 |
+| `GET /api/leaderboard/song?...` | `200` | 返回 `song/entries`，本次 8 条 |
+| `GET /api/courses` | `404` | 国服当前没有这个接口，不能作为可用功能 |
+
+因此国服和国际服的公开玩家、对比、曲库、排行榜接口基本兼容；Rating B30/R15 和全谱面成绩仍受账号订阅权限控制，不能把 `200 + locked` 当成接口错误。
 
 ## 10. 安全与使用边界
 

@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lanota Player Card</title>
+  <style>
+    @font-face {
+      font-family: Kawoszeh;
+      src: url('https://noxygames.com/lanota/portal/assets/kawoszeh.otf') format('opentype');
+    }
+    * { box-sizing: border-box; }
+    :root {
+      --bg: #170707;
+      --panel: rgba(41, 21, 20, .86);
+      --panel-soft: rgba(255, 255, 255, .035);
+      --line: rgba(201, 166, 107, .22);
+      --gold: #c9a66b;
+      --gold-light: #ecd3a1;
+      --text: #edeadd;
+      --muted: #aaa29c;
+      --whisper: #5ec4d4;
+      --acoustic: #6bc66e;
+      --ultra: #e05555;
+      --master: #b06ccf;
+    }
+    html, body { margin: 0; width: 1200px; min-height: 100%; }
+    body {
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 12% 8%, rgba(176, 108, 207, .17), transparent 30%),
+        radial-gradient(circle at 90% 15%, rgba(201, 166, 107, .13), transparent 27%),
+        radial-gradient(circle at 50% 100%, rgba(94, 196, 212, .08), transparent 38%),
+        linear-gradient(145deg, #150605, #200d0c 54%, #100504);
+      padding: 54px;
+    }
+    .page { width: 1092px; margin: 0 auto; }
+    .eyebrow {
+      color: var(--gold); font-size: 13px; font-weight: 700; letter-spacing: .24em;
+      text-transform: uppercase; margin-bottom: 15px;
+    }
+    .hero {
+      position: relative; overflow: hidden; display: grid;
+      grid-template-columns: 168px minmax(0, 1fr) 190px; align-items: center; gap: 32px;
+      padding: 38px 42px; border: 1px solid rgba(201, 166, 107, .30); border-radius: 26px;
+      background: linear-gradient(135deg, rgba(176,108,207,.07), rgba(201,166,107,.07) 55%, rgba(94,196,212,.025));
+      box-shadow: 0 32px 90px rgba(0, 0, 0, .40), inset 0 1px rgba(255,255,255,.035);
+    }
+    .hero::before {
+      content: "PLAYER"; position: absolute; right: 25px; top: -42px;
+      font-family: Georgia, serif; font-size: 150px; color: rgba(255,255,255,.018); letter-spacing: .08em;
+    }
+    .avatar { width: 156px; height: 156px; position: relative; display: grid; place-items: center; }
+    .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    .avatar .avatar-outline { transform: scale(1.06); pointer-events: none; }
+    .identity { min-width: 0; }
+    .username {
+      margin: 0 0 9px; font-family: Georgia, "Microsoft YaHei", serif; font-size: 45px;
+      line-height: 1.05; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .quick { display: flex; flex-wrap: wrap; gap: 14px 25px; margin-top: 25px; }
+    .quick-item .label, .section-label {
+      display: block; color: #827b76; font-size: 11px; font-weight: 700; letter-spacing: .17em;
+      text-transform: uppercase; margin-bottom: 5px;
+    }
+    .quick-item .value { font-family: Consolas, monospace; font-size: 17px; }
+    .rating-wrap { display: flex; justify-content: center; align-items: center; min-height: 170px; }
+    .rating-badge { position: relative; width: 164px; height: 164px; display: grid; place-items: center; }
+    .rating-badge img, .rating-value { position: absolute; }
+    .rating-bg { width: 142px; height: 142px; border-radius: 50%; }
+    .rating-frame { transform-origin: center; }
+    .rating-star { width: 10px; height: 10px; }
+    .rating-value {
+      font-family: Kawoszeh, Georgia, serif; font-size: 45px; font-style: italic; font-weight: 800;
+      color: #f7e5a1; text-shadow: 0 2px 2px #4b2200, 0 0 13px rgba(255,219,107,.8);
+      transform: translate(-2px, -4px) scale(1.05); z-index: 5;
+    }
+    .section { margin-top: 25px; }
+    .section-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0 2px 13px; }
+    .section-title { margin: 0; font-family: Georgia, "Microsoft YaHei", serif; font-size: 25px; font-weight: 600; }
+    .section-sub { color: var(--muted); font-size: 12px; letter-spacing: .06em; }
+    .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .stat-card, .rank-card, .diff-card {
+      border: 1px solid rgba(255,255,255,.075); border-radius: 17px;
+      background: var(--panel-soft); box-shadow: inset 0 1px rgba(255,255,255,.025);
+    }
+    .stat-card { min-height: 110px; display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 14px; padding: 18px; }
+    .stat-card img { width: 48px; height: 48px; object-fit: contain; }
+    .stat-name { color: var(--muted); font-size: 12px; margin-bottom: 7px; white-space: nowrap; }
+    .stat-value { font-family: Consolas, monospace; font-size: 27px; font-weight: 700; }
+    .rank-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+    .rank-card { min-height: 112px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 13px; }
+    .rank-card img { width: 46px; height: 46px; object-fit: contain; }
+    .rank-card .stat-value { font-size: 22px; }
+    .difficulty-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .diff-card { padding: 20px; position: relative; overflow: hidden; }
+    .diff-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--diff-color); }
+    .diff-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 15px; }
+    .diff-name { color: var(--diff-color); font-family: Georgia, serif; font-size: 20px; font-weight: 700; }
+    .diff-progress { color: var(--muted); font-family: Consolas, monospace; font-size: 13px; }
+    .mini-label { color: #766f6b; font-size: 9px; font-weight: 800; letter-spacing: .18em; margin: 13px 0 7px; }
+    .mini-grid { display: grid; gap: 6px; }
+    .mini-grid.clear { grid-template-columns: repeat(4, 1fr); }
+    .mini-grid.rank { grid-template-columns: repeat(6, 1fr); }
+    .mini {
+      padding: 7px 4px; border-radius: 8px; text-align: center; background: rgba(255,255,255,.035);
+      border: 1px solid rgba(255,255,255,.045);
+    }
+    .mini b { display: block; color: #d9d4c9; font-size: 10px; margin-bottom: 3px; }
+    .mini span { font-family: Consolas, monospace; font-size: 13px; }
+    .footer { margin-top: 22px; display: flex; justify-content: space-between; color: #716966; font-size: 10px; letter-spacing: .12em; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="eyebrow">Lanota Portal · Player Profile</div>
+    <section class="hero">
+      <div class="avatar">
+        <img id="avatar-image" alt="">
+        <img id="avatar-outline" class="avatar-outline" alt="">
+      </div>
+      <div class="identity">
+        <h1 class="username" id="username"></h1>
+        <div class="quick">
+          <div class="quick-item"><span class="label">Total Score</span><span class="value" id="total-score"></span></div>
+          <div class="quick-item"><span class="label">Notalium</span><span class="value" id="notalium"></span></div>
+          <div class="quick-item"><span class="label">Played Charts</span><span class="value" id="played"></span></div>
+          <div class="quick-item"><span class="label">All Charts</span><span class="value" id="total-charts"></span></div>
+        </div>
+      </div>
+      <div class="rating-wrap"><div class="rating-badge" id="rating-badge"></div></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2 class="section-title">通关类型分布</h2><span class="section-sub">CLEAR TYPE DISTRIBUTION</span></div>
+      <div class="stats-grid" id="clear-grid"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2 class="section-title">Rank 分布</h2><span class="section-sub">RANK DISTRIBUTION</span></div>
+      <div class="rank-grid" id="rank-grid"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2 class="section-title">各难度完整分布</h2><span class="section-sub">ALL FILTERS EXPANDED</span></div>
+      <div class="difficulty-grid" id="difficulty-grid"></div>
+    </section>
+
+    <footer class="footer"><span id="portal-source"></span><span id="generated-at"></span></footer>
+  </main>
+
+  <script>/*__LANOTA_DATA__*/</script>
+  <script>
+    (() => {
+      const data = window.__LANOTA_DATA__ || {};
+      const player = data.player || {};
+      const stats = data.stats || {};
+      const asset = data.portalAssetBaseUrl || 'https://noxygames.com/lanota/portal';
+      const num = value => Number(value || 0).toLocaleString('en-US');
+      const text = (id, value) => { document.getElementById(id).textContent = value; };
+
+      text('username', player.username || 'Unknown Player');
+      text('total-score', num(player.totalScore));
+      text('notalium', num(player.notalium));
+      text('played', num(stats.totalSongsPlayed));
+      text('total-charts', num(stats.totalCharts));
+      text('portal-source', `DATA: ${data.portalSourceLabel || 'NOXYGAMES LANOTA PORTAL'}`);
+      text('generated-at', new Date().toLocaleString('zh-CN', {hour12: false}));
+      document.getElementById('avatar-image').src = `${asset}/avatars/${player.avatarId || 'av_default'}.webp`;
+      document.getElementById('avatar-outline').src = `${asset}/avatars/outline-default.webp`;
+
+      const tiers = [
+        [0,'brown','wood',0],[1,'brown','wood',1],[2,'brown','bronze',2],[3,'brown','bronze',3],
+        [4,'blue','wood',0],[5,'blue','wood',1],[6,'blue','bronze',2],[7,'blue','bronze',3],
+        [8,'green','wood',0],[9,'green','wood',1],[10,'green','bronze',2],[10.5,'green','bronze',3],
+        [11,'red','bronze',0],[11.5,'red','bronze',1],[12,'red','silver',2],[12.5,'red','silver',3],
+        [13,'purple','bronze',0],[13.5,'purple','bronze',1],[14,'purple','silver',2],[14.5,'purple','silver',3],
+        [15,'purple-plus','gold',1],[15.25,'purple-plus','gold',2],[15.5,'purple-plus','gold',3],
+        [15.75,'purple-plus','gold',4],[16,'purple-plus','gold',5],[16.5,'nightsky','gold',5],[17,'rainbow','gold',5]
+      ];
+      const rating = Number(player.rating || 0);
+      let tier = tiers[0];
+      tiers.forEach(item => { if (item[0] <= rating) tier = item; });
+      const [min, bg, frame, stars] = tier;
+      const frameSize = {wood:[138,45,56],bronze:[146,77,37],silver:[149,61,47],gold:[167,97,38]}[frame];
+      const badge = document.getElementById('rating-badge');
+      badge.innerHTML = `<img class="rating-bg" src="${asset}/assets/rating/rating-bg-${bg}.webp">` +
+        `<img class="rating-frame" src="${asset}/assets/rating/rating-frame-${frame}.webp" style="width:${frameSize[0]}px;height:${frameSize[1]}px;transform:translateY(${frameSize[2]}px)">` +
+        `<span class="rating-value">${rating.toFixed(2)}</span>`;
+      const starPos = [[0,-46],[-18,-42],[18,-42],[-33,-33],[33,-33]];
+      const starSets = {1:[0],2:[1,2],3:[0,1,2],4:[1,2,3,4],5:[0,1,2,3,4]};
+      (starSets[stars] || []).forEach(index => {
+        const img = document.createElement('img');
+        img.className = 'rating-star';
+        img.src = `${asset}/assets/rating/rating-star.webp`;
+        img.style.transform = `translate(${starPos[index][0]}px,${starPos[index][1]}px)`;
+        badge.appendChild(img);
+      });
+
+      const clearMeta = [
+        ['2','Tuned','tuned'],['3','Purified','purified'],['4','All Combo','all-combo'],['5','Perfect Purified','perfect-purified']
+      ];
+      document.getElementById('clear-grid').innerHTML = clearMeta.map(([key, name, icon]) =>
+        `<div class="stat-card"><img src="${asset}/assets/clear-types/${icon}.webp"><div><div class="stat-name">${name}</div><div class="stat-value">${num((stats.clearCounts || {})[key])}</div></div></div>`
+      ).join('');
+
+      const ranks = ['L','S','A','B','C','D'];
+      document.getElementById('rank-grid').innerHTML = ranks.map(rank =>
+        `<div class="rank-card"><img src="${asset}/assets/ranks/rank-${rank.toLowerCase()}.webp"><div class="stat-value">${num((stats.rankCounts || {})[rank])}</div></div>`
+      ).join('');
+
+      const diffMeta = [
+        [0,'Whisper','#5ec4d4'],[1,'Acoustic','#6bc66e'],[2,'Ultra','#e05555'],[3,'Master','#b06ccf']
+      ];
+      const breakdown = new Map((stats.difficultyBreakdown || []).map(item => [Number(item.difficulty), item]));
+      document.getElementById('difficulty-grid').innerHTML = diffMeta.map(([diff, name, color]) => {
+        const row = breakdown.get(diff) || {};
+        const clear = (stats.clearByDiff || {})[String(diff)] || {};
+        const rank = (stats.rankByDiff || {})[String(diff)] || {};
+        return `<article class="diff-card" style="--diff-color:${color}">
+          <div class="diff-head"><div class="diff-name">${name}</div><div class="diff-progress">${num(row.count)} / ${num(row.total)}</div></div>
+          <div class="mini-label">CLEAR TYPES</div>
+          <div class="mini-grid clear">${clearMeta.map(([key, label]) => `<div class="mini"><b>${label === 'Perfect Purified' ? 'PP' : label === 'All Combo' ? 'AC' : label}</b><span>${num(clear[key])}</span></div>`).join('')}</div>
+          <div class="mini-label">RANKS</div>
+          <div class="mini-grid rank">${ranks.map(key => `<div class="mini"><b>${key}</b><span>${num(rank[key])}</span></div>`).join('')}</div>
+        </article>`;
+      }).join('');
+    })();
+  </script>
+</body>
+</html>

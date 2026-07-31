@@ -5,18 +5,22 @@ import datetime
 import math
 import random
 import re
+import threading
 import time
 from typing import Any
 
 from . import config
 from . import crawler
 from . import function
+from . import portal
 from . import utils
 
 # 全局搜索结果会话管理（用于分页和序号选择）
 search_session_dict = {}
 
-management_command_name_set = {'laglobal', 'labot', 'lagroup', 'sync', 'cover'}
+management_command_name_set = {'laglobal', 'labot', 'lagroup', 'sync', 'cover', 'china'}
+china_login_lock = threading.RLock()
+china_login_in_progress: set[str] = set()
 
 command_configs = [
     ('today', '今日曲'),
@@ -34,6 +38,9 @@ command_configs = [
     ('cal', '计算'),
     ('notes', '物量'),
     ('rating', 'rating'),
+    ('bind', '绑定'),
+    ('user', '用户'),
+    ('china', '国服'),
     ('category', 'cate'),
     ('table', '定数表'),
     ('ritmo', '里莫'),
@@ -76,6 +83,14 @@ subcommand_alias_dict = {
     'notes': 'notes',
     '物量': 'notes',
     'rating': 'rating',
+    'bind': 'bind',
+    '绑定': 'bind',
+    'user': 'user',
+    '用户': 'user',
+    '玩家': 'user',
+    'china': 'china',
+    'cn': 'china',
+    '国服': 'china',
     'category': 'category',
     'cate': 'category',
     '分类': 'category',
@@ -1014,6 +1029,135 @@ def handle_rating(plugin_event) -> None:
     reply_large_text(plugin_event, '\n'.join(lines))
 
 
+def handle_bind(plugin_event, argument: str) -> None:
+    bind_parts = argument.strip().split()
+    region = 'global'
+    if bind_parts and bind_parts[0].casefold() in [
+        'global',
+        'international',
+        'intl',
+        '国际服',
+        'cn',
+        'china',
+        '中国',
+        '中国服',
+        '国服',
+    ]:
+        region = portal.normalize_region(bind_parts.pop(0))
+    nano_id = ''.join(bind_parts).strip()
+    if not nano_id:
+        utils.reply_message(plugin_event, '用法：.la bind <好友码> 或 .la bind cn <国服好友码>')
+        return
+    utils.reply_message(plugin_event, f'正在验证 Lanota {portal.region_display_name(region)}好友码，请稍候...')
+    try:
+        success, message_text = portal.bind_nano_id(plugin_event, nano_id, region=region)
+        utils.reply_message(plugin_event, message_text if success else f'绑定失败：{message_text}')
+    except Exception as exception_object:
+        utils.error_log(None, f'Lanota 好友码绑定失败：{type(exception_object).__name__}: {exception_object}')
+        utils.reply_message(plugin_event, f'绑定失败：{portal.format_error(exception_object)}')
+
+
+def handle_user(plugin_event, argument: str) -> None:
+    user_argument = argument.strip().lower()
+    if user_argument in ['friend', '好友码']:
+        nano_id = portal.get_bound_nano_id(plugin_event)
+        region_name = portal.region_display_name(portal.get_bound_region(plugin_event))
+        message_text = f'你绑定的 Lanota {region_name}好友码：{nano_id}' if nano_id else '尚未绑定 Lanota 好友码。'
+        if not utils.get_group_id_from_event(plugin_event):
+            utils.reply_message(plugin_event, message_text)
+            return
+        user_id = utils.get_sender_id_from_event(plugin_event)
+        if utils.send_private_message(plugin_event, user_id, message_text):
+            utils.reply_message(plugin_event, '绑定的 Lanota 好友码已通过私聊发送。')
+            return
+        utils.reply_message(plugin_event, '私聊发送失败，请私聊 Bot 使用 .la user friend 查询。')
+        return
+    if user_argument:
+        reply_text(plugin_event, '用法：.la user 或 .la user friend')
+        return
+    try:
+        player_data, _nano_id = portal.get_user_data(plugin_event)
+        image_path = portal.render_player_card(player_data)
+        fallback_text = portal.build_fallback_text(player_data)
+        if image_path:
+            utils.reply_image(plugin_event, image_path, fallback_text)
+            return
+        reply_text(plugin_event, f'{fallback_text}\n\nHTML 截图失败。\n{portal.render_status_text()}')
+    except Exception as exception_object:
+        reply_text(plugin_event, f'查询失败：{portal.format_error(exception_object)}')
+
+
+def _china_login_worker(plugin_event, user_id: str, login_key: str, session_id: str) -> None:
+    try:
+        portal.poll_china_login(session_id)
+        result_text = '国服 Lanota Portal 授权成功，现已可以使用 .la bind cn <好友码>。'
+    except Exception as exception_object:
+        result_text = f'国服 Lanota Portal 授权失败：{portal.format_error(exception_object)}'
+        utils.error_log(None, f'国服 Portal 授权失败：{type(exception_object).__name__}: {exception_object}')
+    finally:
+        with china_login_lock:
+            china_login_in_progress.discard(login_key)
+    if not utils.send_private_message(plugin_event, user_id, result_text):
+        utils.error_log(None, '国服 Portal 授权结果私聊发送失败。')
+
+
+def handle_china(plugin_event, argument: str) -> None:
+    if not utils.sender_has_master_permission(plugin_event):
+        reply_text(plugin_event, '该命令仅限骰主或本插件管理员使用。')
+        return
+    action = argument.strip().casefold()
+    if action in ['', 'status', '状态']:
+        reply_text(plugin_event, f'{portal.china_auth_status_text()}\n登录命令：.la china login')
+        return
+    if action not in ['login', '登录', '登陆']:
+        reply_text(plugin_event, '用法：.la china status 或 .la china login')
+        return
+
+    user_id = utils.get_sender_id_from_event(plugin_event)
+    bot_hash = utils.get_bot_hash_from_event(plugin_event)
+    login_key = f'{bot_hash}|{user_id}'
+    with china_login_lock:
+        if china_login_in_progress:
+            reply_text(plugin_event, '已有国服 Portal 授权正在进行，请等待其完成或超时后重试。')
+            return
+        china_login_in_progress.add(login_key)
+
+    try:
+        login_session = portal.create_china_login_session()
+        qr_path = portal.render_china_login_qr(login_session['deep_link'])
+        timeout_seconds = config.lanota_portal_china_login_timeout_seconds
+        instruction_text = (
+            f'请在 {timeout_seconds} 秒内使用国服 Lanota App 扫描二维码完成 Portal 授权。\n'
+            '若无法扫码，也可以在已安装游戏的手机中打开下方链接：\n'
+            f'{login_session["deep_link"]}'
+        )
+
+        if utils.get_group_id_from_event(plugin_event):
+            sent = utils.send_private_message(plugin_event, user_id, instruction_text)
+            if qr_path:
+                image_message = utils.build_image_message(qr_path)
+                sent = bool(image_message) and utils.send_private_message(plugin_event, user_id, image_message) and sent
+            if not sent:
+                raise RuntimeError('私聊发送授权信息失败，请私聊 Bot 使用 .la china login。')
+            reply_text(plugin_event, '国服 Portal 授权二维码已通过私聊发送。')
+        else:
+            utils.reply_message(plugin_event, instruction_text)
+            if qr_path:
+                utils.reply_image(plugin_event, qr_path, '国服 Portal 授权二维码生成失败。')
+
+        worker = threading.Thread(
+            target=_china_login_worker,
+            args=(plugin_event, user_id, login_key, login_session['session_id']),
+            name='LanotaPluginChinaLogin',
+            daemon=True,
+        )
+        worker.start()
+    except Exception as exception_object:
+        with china_login_lock:
+            china_login_in_progress.discard(login_key)
+        reply_text(plugin_event, f'国服 Portal 登录初始化失败：{portal.format_error(exception_object)}')
+
+
 def handle_category(plugin_event, argument: str) -> None:
     parts = argument.lower().split()
     if not parts:
@@ -1266,6 +1410,12 @@ help_categories = {
             '/la all - 显示曲库统计信息',
             '/la notes - 物量最多的前50个谱面',
             '/la rating - 显示当前的Max Rating，并且给出可能的B30和R5',
+            '/la bind <好友码> - 绑定自己的 Lanota 好友码',
+            '/la bind cn <好友码> - 绑定自己的国服 Lanota 好友码',
+            '/la user - 查询绑定玩家的 Portal 状态卡片',
+            '/la user friend - 私聊查询当前绑定的好友码',
+            '/la china status - 查看国服 Portal 登录状态（骰主/插件管理员）',
+            '/la china login - 私聊扫码登录国服 Portal（骰主/插件管理员）',
             '/la ritmo - 显示里莫绝赞昏睡时间',
         ],
         'examples': [
@@ -1273,6 +1423,12 @@ help_categories = {
             '/la all',
             '/la notes',
             '/la rating',
+            '/la bind <好友码>',
+            '/la bind cn <好友码>',
+            '/la user',
+            '/la user friend',
+            '/la china status',
+            '/la china login',
             '/la ritmo',
         ],
     },
@@ -1500,6 +1656,9 @@ command_handler_dict = {
     'cal': handle_cal,
     'notes': lambda event, arg: handle_notes(event),
     'rating': lambda event, arg: handle_rating(event),
+    'bind': handle_bind,
+    'user': handle_user,
+    'china': handle_china,
     'category': handle_category,
     'table': handle_table,
     'ritmo': lambda event, arg: handle_ritmo(event),
