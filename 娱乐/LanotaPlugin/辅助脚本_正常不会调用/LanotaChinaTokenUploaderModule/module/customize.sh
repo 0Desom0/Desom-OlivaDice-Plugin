@@ -39,4 +39,4 @@ if [ -f "$MODPATH/app/LanotaControl.apk" ]; then
 fi
 
 ui_print "- ABI: $ABI"
-ui_print "- Open Lanota Control, then press Scan and Upload"
+ui_print "- Root capture starts automatically; control app is optional"

@@ -413,20 +413,76 @@ def get_me(region: str = 'global') -> dict[str, Any]:
     return api_get('me', region=region)
 
 
-def get_bound_nano_id(plugin_event) -> str:
+def _user_data_and_info(plugin_event) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
     bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
-    user_id = utils.get_sender_id_from_event(plugin_event)
+    user_id = str(utils.get_sender_id_from_event(plugin_event) or '').strip()
     user_data = function.load_user_data(bot_hash)
-    user_info = user_data.get(str(user_id), {})
-    return str(user_info.get('lanota_nano_id', '') or '').strip()
+    user_info = user_data.setdefault(user_id, {})
+    return bot_hash, user_id, user_info, user_data
+
+
+def _normalize_binds(user_info: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    binds = user_info.get('lanota_binds', {})
+    if not isinstance(binds, dict):
+        binds = {}
+    legacy_id = str(user_info.get('lanota_nano_id', '') or '').strip()
+    legacy_region = normalize_region(user_info.get('lanota_region', 'global'))
+    if legacy_id:
+        legacy_entry = binds.setdefault(legacy_region, {})
+        legacy_entry.setdefault('nano_id', legacy_id)
+        legacy_entry.setdefault('username', user_info.get('lanota_username', ''))
+    return binds
+
+
+def get_bound_nano_id(plugin_event, region: str | None = None) -> str:
+    _bot_hash, _user_id, user_info, _user_data = _user_data_and_info(plugin_event)
+    binds = _normalize_binds(user_info)
+    if region is not None:
+        normalized_region = normalize_region(region)
+        entry = binds.get(normalized_region, {})
+        return str(entry.get('nano_id', '') or '').strip()
+    for preferred_region in ('global', 'china'):
+        entry = binds.get(preferred_region, {})
+        nano_id = str(entry.get('nano_id', '') or '').strip()
+        if nano_id:
+            return nano_id
+    return ''
 
 
 def get_bound_region(plugin_event) -> str:
-    bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
-    user_id = utils.get_sender_id_from_event(plugin_event)
-    user_data = function.load_user_data(bot_hash)
-    user_info = user_data.get(str(user_id), {})
-    return normalize_region(user_info.get('lanota_region', 'global'))
+    if get_bound_nano_id(plugin_event, 'global'):
+        return 'global'
+    if get_bound_nano_id(plugin_event, 'china'):
+        return 'china'
+    return ''
+
+
+def _save_user_cache(plugin_event, region: str, nano_id: str, data: dict[str, Any]) -> None:
+    bot_hash, user_id, user_info, user_data = _user_data_and_info(plugin_event)
+    cache = user_info.get('lanota_cache', {})
+    if not isinstance(cache, dict):
+        cache = {}
+    cache[region] = {
+        'nano_id': nano_id,
+        'data': data,
+        'saved_at': int(time.time()),
+    }
+    user_info['lanota_cache'] = cache
+    if not function.save_user_data(user_data, bot_hash):
+        utils.debug_log(None, '玩家资料缓存保存失败，请检查插件数据目录权限。')
+
+
+def _load_user_cache(plugin_event, region: str, nano_id: str) -> dict[str, Any] | None:
+    _bot_hash, _user_id, user_info, _user_data = _user_data_and_info(plugin_event)
+    cache = user_info.get('lanota_cache', {})
+    if not isinstance(cache, dict):
+        return None
+    entry = cache.get(region, {})
+    if not isinstance(entry, dict):
+        return None
+    if str(entry.get('nano_id', '') or '').strip() != nano_id or not entry.get('data'):
+        return None
+    return entry
 
 
 def bind_nano_id(plugin_event, nano_id: str, region: str = 'global') -> tuple[bool, str]:
@@ -437,16 +493,24 @@ def bind_nano_id(plugin_event, nano_id: str, region: str = 'global') -> tuple[bo
         player = data.get('player', {})
         if not isinstance(player, dict) or not player.get('nanoId'):
             raise RuntimeError('Portal 返回的玩家资料不完整。')
-        bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
-        user_id = utils.get_sender_id_from_event(plugin_event)
+        bot_hash, user_id, user_info, user_data = _user_data_and_info(plugin_event)
         if not user_id:
             raise RuntimeError('无法取得当前消息发送者 ID。')
-        user_data = function.load_user_data(bot_hash)
-        user_info = user_data.setdefault(str(user_id), {})
+        binds = _normalize_binds(user_info)
+        binds[normalized_region] = {
+            'nano_id': clean_id,
+            'username': player.get('username', ''),
+            'updated_at': int(time.time()),
+        }
+        user_info['lanota_binds'] = binds
         user_info['lanota_nano_id'] = clean_id
         user_info['lanota_region'] = normalized_region
         user_info['lanota_username'] = player.get('username', '')
         user_info['lanota_bind_updated_at'] = int(time.time())
+        cache = user_info.get('lanota_cache', {})
+        if isinstance(cache, dict):
+            cache.pop(normalized_region, None)
+            user_info['lanota_cache'] = cache
         if not function.save_user_data(user_data, bot_hash):
             raise OSError('好友码验证成功，但保存绑定失败，请检查插件数据目录权限。')
     except Exception as exception_object:
@@ -455,11 +519,64 @@ def bind_nano_id(plugin_event, nano_id: str, region: str = 'global') -> tuple[bo
     return True, f'绑定成功：{username}（{region_display_name(normalized_region)}）'
 
 
-def get_user_data(plugin_event) -> tuple[dict[str, Any], str]:
-    nano_id = get_bound_nano_id(plugin_event)
+def unbind_nano_id(plugin_event, region: str = 'global') -> tuple[bool, str]:
+    normalized_region = normalize_region(region)
+    bot_hash, user_id, user_info, user_data = _user_data_and_info(plugin_event)
+    binds = _normalize_binds(user_info)
+    if not str(binds.get(normalized_region, {}).get('nano_id', '') or '').strip():
+        return False, f'尚未绑定 {region_display_name(normalized_region)}好友码。'
+    binds.pop(normalized_region, None)
+    user_info['lanota_binds'] = binds
+    cache = user_info.get('lanota_cache', {})
+    if isinstance(cache, dict):
+        cache.pop(normalized_region, None)
+        user_info['lanota_cache'] = cache
+    remaining = [(region_name, entry) for region_name, entry in binds.items() if isinstance(entry, dict)]
+    if remaining:
+        fallback_region, fallback_entry = remaining[0]
+        user_info['lanota_nano_id'] = fallback_entry.get('nano_id', '')
+        user_info['lanota_region'] = fallback_region
+        user_info['lanota_username'] = fallback_entry.get('username', '')
+    else:
+        user_info.pop('lanota_nano_id', None)
+        user_info.pop('lanota_region', None)
+        user_info.pop('lanota_username', None)
+        user_info.pop('lanota_bind_updated_at', None)
+    if not function.save_user_data(user_data, bot_hash):
+        return False, '解除绑定失败，请检查插件数据目录权限。'
+    return True, f'已解除 {region_display_name(normalized_region)}好友码绑定。'
+
+
+def get_user_data(plugin_event, region: str | None = None) -> tuple[dict[str, Any], str]:
+    selected_region = normalize_region(region) if region else get_bound_region(plugin_event)
+    if not selected_region:
+        raise RuntimeError('尚未绑定 Lanota 好友码，请先使用 .la bind <好友码>。')
+    nano_id = get_bound_nano_id(plugin_event, selected_region)
     if not nano_id:
         raise RuntimeError('尚未绑定 Lanota 好友码，请先使用 .la bind <好友码>。')
-    return get_player(nano_id, region=get_bound_region(plugin_event)), nano_id
+    return get_player(nano_id, region=selected_region), nano_id
+
+
+def get_user_data_cached(
+    plugin_event,
+    region: str | None = None,
+) -> tuple[dict[str, Any], str, Exception | None]:
+    """网络优先获取玩家资料，失败时回退到该区最后一次成功缓存。"""
+    selected_region = normalize_region(region) if region else get_bound_region(plugin_event)
+    if not selected_region:
+        raise RuntimeError('尚未绑定 Lanota 好友码，请先使用 .la bind <好友码>。')
+    nano_id = get_bound_nano_id(plugin_event, selected_region)
+    if not nano_id:
+        raise RuntimeError('尚未绑定 Lanota 好友码，请先使用 .la bind <好友码>。')
+    try:
+        data = get_player(nano_id, region=selected_region)
+        _save_user_cache(plugin_event, selected_region, nano_id, data)
+        return data, nano_id, None
+    except Exception as exception_object:
+        cache = _load_user_cache(plugin_event, selected_region, nano_id)
+        if cache:
+            return cache['data'], nano_id, exception_object
+        raise
 
 
 def _escape_json(data: Any) -> str:
@@ -640,7 +757,8 @@ def _device_scale_factor() -> float:
         )
     except (TypeError, ValueError):
         scale_factor = float(config.lanota_portal_device_scale_factor)
-    return max(1.0, min(3.0, scale_factor))
+    # 低于 2 时文字和素材会被 Chromium 以 1x 光栅化，国服卡片会明显发糊。
+    return max(2.0, min(3.0, scale_factor))
 
 
 def _template_html(data: dict[str, Any]) -> str:

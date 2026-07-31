@@ -4,25 +4,33 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,15 +43,30 @@ import (
 )
 
 const (
-	userAgent        = "LanotaChinaTokenUploader/1.2"
+	userAgent        = "LanotaChinaTokenUploader/1.4.1"
 	chinaPackageName = "com.gmzon.taptap.lanota"
 	androidUserRoot  = "/data/user"
 	portalHost       = "lanota.gmzon.com"
 	tokenStorageKey  = "lanota.portal.chinaToken"
 	userStorageKey   = "lanota.portal.chinaUser"
+	chinaAPIBase     = "https://lanota.gmzon.com/portal/api"
+	chinaAssetBase   = "https://lanota.gmzon.com/portal"
+	chinaAppScheme   = "lanotagames-cn"
 	defaultWatchTime = 10 * time.Minute
 	devToolsPollTime = 250 * time.Millisecond
 	devToolsEvalTime = 500 * time.Millisecond
+
+	adbCNXN          uint32 = 0x4e584e43
+	adbAUTH          uint32 = 0x48545541
+	adbOPEN          uint32 = 0x4e45504f
+	adbOKAY          uint32 = 0x59414b4f
+	adbCLSE          uint32 = 0x45534c43
+	adbWRTE          uint32 = 0x45545257
+	adbVersion       uint32 = 0x01000001
+	adbMaxPayload           = 4096
+	adbAuthToken     uint32 = 1
+	adbAuthSignature uint32 = 2
+	adbAuthPublicKey uint32 = 3
 )
 
 var storagePackageNames = []string{
@@ -121,6 +144,9 @@ type daemon struct {
 	storageFiles       []string
 	lastStorageRefresh time.Time
 	cleanupRemote      bool
+	autoMode           bool
+	adb                *adbBridge
+	reportedConnected  bool
 }
 
 type devToolsTarget struct {
@@ -152,6 +178,31 @@ type webSocketConnection struct {
 	lastEvaluate time.Time
 	writeMu      sync.Mutex
 	nextID       int64
+}
+
+type adbBridge struct {
+	address    string
+	privateKey *rsa.PrivateKey
+	publicKey  string
+}
+
+type adbMessage struct {
+	Command    uint32
+	Arg0       uint32
+	Arg1       uint32
+	DataLength uint32
+	DataCheck  uint32
+	Magic      uint32
+}
+
+type adbServiceConn struct {
+	conn         net.Conn
+	localID      uint32
+	remoteID     uint32
+	readMu       sync.Mutex
+	writeMu      sync.Mutex
+	buffer       bytes.Buffer
+	remoteClosed bool
 }
 
 func main() {
@@ -190,6 +241,7 @@ func main() {
 	if *command != "daemon" {
 		switch *command {
 		case "scan":
+			d.prepareADBBridge()
 			if *scanFile != "" {
 				err = d.scanAndStage(ctx, *scanFile)
 			} else {
@@ -198,12 +250,30 @@ func main() {
 			if err != nil {
 				fatalf("scan failed: %v", err)
 			}
+		case "auto":
+			d.prepareADBBridge()
+			d.autoMode = true
+			err = d.autoCaptureAndUpload(ctx)
+			if err != nil {
+				fatalf("capture failed: %v", err)
+			}
+		case "authorize":
+			err = d.authorizeAndUpload(ctx)
+			if err != nil {
+				printResult(map[string]any{
+					"ok": false, "pending": d.state.PendingToken != "", "message": "授权失败：" + err.Error(),
+				})
+				return
+			}
 		case "upload":
 			if err = d.uploadPending(ctx); err != nil {
-				fatalf("upload failed: %v", err)
+				printResult(map[string]any{
+					"ok": false, "uploaded": false, "message": "上传失败：" + err.Error(),
+				})
+				return
 			}
 		case "status":
-			printStatus(d.state)
+			printStatusWithMessage(d.state, "状态已读取")
 		case "clear":
 			d.state.PendingToken = ""
 			d.state.PendingSubject = ""
@@ -212,7 +282,7 @@ func main() {
 			if err = writeState(cfg.StateFile, d.state); err != nil {
 				fatalf("clear failed: %v", err)
 			}
-			printStatus(d.state)
+			printStatusWithMessage(d.state, "已清除待上传")
 		default:
 			fatalf("unknown command: %s", *command)
 		}
@@ -220,6 +290,7 @@ func main() {
 	}
 
 	logf("daemon started; scan interval=%s", cfg.ScanInterval)
+	d.prepareADBBridge()
 
 	if *once {
 		found, runErr := d.runOnce(ctx, *scanFile, *dryRun)
@@ -364,7 +435,7 @@ func (d *daemon) runOnce(ctx context.Context, scanFile string, dryRun bool) (boo
 	files := []string{scanFile}
 	if scanFile == "" {
 		if d.lastStorageRefresh.IsZero() || now.Sub(d.lastStorageRefresh) >= time.Minute {
-			d.storageFiles = discoverPackageStorageFiles(androidUserRoot, chinaPackageName)
+			d.storageFiles = discoverStorageFilesWithFallback(androidUserRoot, []string{chinaPackageName})
 			d.lastStorageRefresh = now
 		}
 		files = d.storageFiles
@@ -438,7 +509,7 @@ func (d *daemon) scanAndStage(ctx context.Context, scanFile string) error {
 	now := time.Now()
 	files := []string{scanFile}
 	if scanFile == "" {
-		files = discoverPackageStorageFiles(androidUserRoot, chinaPackageName)
+		files = discoverStorageFilesWithFallback(androidUserRoot, []string{chinaPackageName})
 	}
 	candidates, err := scanCandidateFiles(d.config, files)
 	if err != nil {
@@ -467,10 +538,12 @@ func (d *daemon) watchAndStage(parent context.Context) error {
 	started := time.Now()
 	d.state.LastScanAt = started.Unix()
 	_ = writeState(d.config.StateFile, d.state)
-	printResult(map[string]any{
-		"ok": true, "watching": true, "timeout_seconds": int64(d.config.WatchTimeout / time.Second),
-		"message": "持续监听已开始；现在从国服 Lanota 打开 Portal",
-	})
+	if !d.autoMode {
+		printResult(map[string]any{
+			"ok": true, "watching": true, "timeout_seconds": int64(d.config.WatchTimeout / time.Second),
+			"message": "已启动捕获，正在等待浏览器调试通道",
+		})
+	}
 
 	connections := make(map[string]*webSocketConnection)
 	defer func() {
@@ -484,11 +557,13 @@ func (d *daemon) watchAndStage(parent context.Context) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
-				printResult(map[string]any{
-					"ok": false, "found": false, "pending": d.state.PendingToken != "",
-					"message": "持续监听超时，请重新点击开始扫描",
-				})
-				return errors.New("持续监听超时")
+				if !d.autoMode {
+					printResult(map[string]any{
+						"ok": false, "found": false, "pending": d.state.PendingToken != "",
+						"message": "未捕获到 Token，扫描已结束",
+					})
+				}
+				return ctx.Err()
 			}
 			return err
 		}
@@ -496,7 +571,7 @@ func (d *daemon) watchAndStage(parent context.Context) error {
 		now := time.Now()
 		if lastSocketRefresh.IsZero() || now.Sub(lastSocketRefresh) >= devToolsPollTime {
 			for _, socketName := range discoverDevToolsSockets() {
-				targets, listErr := listDevToolsTargets(ctx, socketName)
+				targets, listErr := d.listDevToolsTargets(ctx, socketName)
 				if listErr != nil {
 					continue
 				}
@@ -513,13 +588,16 @@ func (d *daemon) watchAndStage(parent context.Context) error {
 						}
 						continue
 					}
-					connection, connectErr := connectDevToolsTarget(ctx, socketName, target)
+					connection, connectErr := d.connectDevToolsTarget(ctx, socketName, target)
 					if connectErr == nil {
 						connections[key] = connection
-						printResult(map[string]any{
-							"ok": true, "watching": true, "source": socketName,
-							"message": "已连接浏览器调试通道，正在捕获 Portal 请求",
-						})
+						if !d.reportedConnected {
+							d.reportedConnected = true
+							printResult(map[string]any{
+								"ok": true, "watching": true, "source": socketName,
+								"message": "已连接浏览器调试通道，正在捕获",
+							})
+						}
 					}
 				}
 			}
@@ -537,14 +615,21 @@ func (d *daemon) watchAndStage(parent context.Context) error {
 				continue
 			}
 			if item != nil {
+				if d.autoMode && d.alreadyUploaded(*item) {
+					continue
+				}
 				return d.stageCandidate(ctx, *item)
 			}
 		}
 
 		if lastFileScan.IsZero() || now.Sub(lastFileScan) >= time.Second {
-			files := discoverStorageFiles(androidUserRoot, storagePackageNames)
+			files := discoverStorageFilesWithFallback(androidUserRoot, storagePackageNames)
 			items, scanErr := scanCandidateFiles(d.config, files)
 			if scanErr == nil && len(items) > 0 {
+				if d.autoMode && d.alreadyUploaded(items[0]) {
+					lastFileScan = now
+					continue
+				}
 				return d.stageCandidate(ctx, items[0])
 			}
 			lastFileScan = now
@@ -555,6 +640,10 @@ func (d *daemon) watchAndStage(parent context.Context) error {
 }
 
 func (d *daemon) stageCandidate(ctx context.Context, selected candidate) error {
+	printResult(map[string]any{
+		"ok": true, "captured": true, "verifying": true,
+		"message": "已捕获成功，正在验证",
+	})
 	if err := verifyPortalToken(ctx, d.config, selected.Token); err != nil {
 		return err
 	}
@@ -570,9 +659,348 @@ func (d *daemon) stageCandidate(ctx context.Context, selected candidate) error {
 	printResult(map[string]any{
 		"ok": true, "found": true, "subject": selected.Payload.Subject,
 		"expires_at": selected.Payload.ExpiresAt, "source": selected.Source,
-		"message": "已捕获并验证，可点击上传",
+		"message": "验证通过，已捕获并验证",
 	})
 	return nil
+}
+
+func (d *daemon) alreadyUploaded(item candidate) bool {
+	if d.state.UploadedTokenSHA256 == "" || d.state.LastSuccessAt == 0 {
+		return false
+	}
+	if d.state.UploadedTokenSHA256 != tokenSHA256(item.Token) {
+		return false
+	}
+	return time.Since(time.Unix(d.state.LastSuccessAt, 0)) < d.config.ReconcileInterval
+}
+
+func (d *daemon) autoCaptureAndUpload(parent context.Context) error {
+	logf("module capture started")
+	for {
+		if parent.Err() != nil {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(parent, d.config.WatchTimeout)
+		err := d.watchAndStage(ctx)
+		cancel()
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			logf("capture cycle error: %v", err)
+		}
+		if d.state.PendingToken != "" {
+			now := time.Now()
+			if d.nextAttempt.IsZero() || !now.Before(d.nextAttempt) {
+				if uploadErr := d.uploadPending(context.Background()); uploadErr != nil {
+					d.scheduleRetry(now)
+					logf("上传失败：%v", uploadErr)
+				} else {
+					d.retryDelay = d.config.RetryMin
+					d.nextAttempt = time.Time{}
+				}
+			}
+		}
+		select {
+		case <-parent.Done():
+			return nil
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (d *daemon) prepareADBBridge() {
+	if d.adb != nil || runtime.GOOS != "linux" {
+		return
+	}
+	bridge, err := newADBBridge(filepath.Join(d.config.ConfigDirectory, "state"))
+	if err == nil {
+		d.adb = bridge
+	}
+}
+
+func (d *daemon) authorizeAndUpload(ctx context.Context) error {
+	session, err := createChinaLoginSession(ctx, d.config)
+	if err != nil {
+		return err
+	}
+	initialState := readState(d.config.StateFile)
+	printResult(map[string]any{
+		"ok": true, "authorizing": true, "message": "已唤醒 Lanota，请在手机上确认授权",
+	})
+	if err = launchDeepLink(ctx, session["deep_link"]); err != nil {
+		return err
+	}
+	startedAt := time.Now().Unix()
+	deadline := time.Now().Add(120 * time.Second)
+	reportedCaptured := false
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		latest := readState(d.config.StateFile)
+		if latest.LastSuccessAt > startedAt &&
+			latest.UploadedTokenSHA256 != "" &&
+			latest.UploadedTokenSHA256 != initialState.UploadedTokenSHA256 {
+			printResult(map[string]any{
+				"ok": true, "uploaded": true, "message": "已捕获并验证，上传成功",
+			})
+			return nil
+		}
+		if !reportedCaptured && latest.PendingToken != "" && latest.PendingToken != initialState.PendingToken {
+			printResult(map[string]any{
+				"ok": true, "captured": true, "verifying": true, "message": "已捕获成功，正在验证",
+			})
+			reportedCaptured = true
+		}
+		ready, tokenData, pollErr := pollOnceChinaLogin(ctx, d.config, session["session_id"])
+		if pollErr != nil {
+			return pollErr
+		}
+		if ready {
+			token := tokenData["china_token"]
+			if err = verifyPortalToken(ctx, d.config, token); err != nil {
+				return err
+			}
+			payload, valid := parseChinaJWT(token, time.Now().Unix())
+			if !valid {
+				return errors.New("授权返回的 Token 无法解析")
+			}
+			item := candidate{
+				Token:   token,
+				Payload: payload,
+				Source:  "Lanota App 一键授权",
+			}
+			if err = d.stageCandidate(ctx, item); err != nil {
+				return err
+			}
+			return d.uploadPending(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return errors.New("国服 Portal 授权超时，请在 Lanota 中确认授权")
+}
+
+func createChinaLoginSession(ctx context.Context, cfg config) (map[string]string, error) {
+	raw, err := portalAPIRequest(ctx, http.MethodPost, chinaAPIBase+"/auth/init-app-login", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var data map[string]any
+	if json.Unmarshal(raw, &data) != nil || data == nil {
+		return nil, errors.New("国服 Portal 登录会话响应无效")
+	}
+	sessionID := strings.TrimSpace(fmt.Sprint(data["session_id"]))
+	if sessionID == "" {
+		return nil, errors.New("国服 Portal 没有返回登录会话 ID")
+	}
+	callbackQuery := url.Values{"session_id": {sessionID}, "flow": {"qr"}}.Encode()
+	callbackURL := chinaAssetBase + "/auth/callback?" + callbackQuery
+	deepLinkQuery := url.Values{"session_id": {sessionID}, "callback": {callbackURL}}.Encode()
+	return map[string]string{
+		"session_id":   sessionID,
+		"callback_url": callbackURL,
+		"deep_link":    chinaAppScheme + "://portal-auth?" + deepLinkQuery,
+	}, nil
+}
+
+func launchDeepLink(ctx context.Context, deepLink string) error {
+	command := exec.CommandContext(
+		ctx,
+		"am",
+		"start",
+		"-a",
+		"android.intent.action.VIEW",
+		"-d",
+		deepLink,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("唤醒 Lanota 失败：%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func pollOnceChinaLogin(ctx context.Context, cfg config, sessionID string) (bool, map[string]string, error) {
+	pollURL := chinaAPIBase + "/auth/poll?" + url.Values{"session_id": {sessionID}}.Encode()
+	raw, err := portalAPIRequest(ctx, http.MethodGet, pollURL, nil, nil)
+	if err != nil {
+		return false, nil, err
+	}
+	var data map[string]any
+	if json.Unmarshal(raw, &data) != nil || data == nil {
+		return false, nil, errors.New("国服 Portal 轮询响应无效")
+	}
+	status := strings.ToLower(strings.TrimSpace(fmt.Sprint(data["status"])))
+	code := strings.TrimSpace(fmt.Sprint(data["code"]))
+	if status == "ready" && code != "" {
+		tokenData, exchangeErr := exchangeChinaLogin(ctx, cfg, sessionID, code)
+		return true, tokenData, exchangeErr
+	}
+	switch status {
+	case "expired", "cancelled", "canceled", "failed", "error":
+		return false, nil, fmt.Errorf("国服 Portal 授权未完成：%s", status)
+	}
+	return false, nil, nil
+}
+
+func exchangeChinaLogin(ctx context.Context, cfg config, sessionID string, code string) (map[string]string, error) {
+	body, _ := json.Marshal(map[string]string{"code": code, "session_id": sessionID})
+	raw, err := portalAPIRequest(
+		ctx,
+		http.MethodPost,
+		chinaAPIBase+"/auth/exchange",
+		body,
+		map[string]string{"Content-Type": "application/json"},
+	)
+	if err != nil {
+		return nil, err
+	}
+	var data map[string]any
+	if json.Unmarshal(raw, &data) != nil || data == nil {
+		return nil, errors.New("国服 Portal 授权交换响应无效")
+	}
+	token := strings.TrimSpace(fmt.Sprint(data["chinaToken"]))
+	if token == "" {
+		return nil, errors.New("国服 Portal 授权响应中没有 chinaToken")
+	}
+	return map[string]string{
+		"china_token": token,
+		"uid":         strings.TrimSpace(fmt.Sprint(data["uid"])),
+	}, nil
+}
+
+func portalAPIRequest(
+	ctx context.Context,
+	method string,
+	requestURL string,
+	body []byte,
+	headers map[string]string,
+) ([]byte, error) {
+	raw, err := portalAPIRequestHTTP(ctx, method, requestURL, body, headers)
+	if err == nil {
+		return raw, nil
+	}
+	return portalAPIRequestCurl(ctx, method, requestURL, body, headers)
+}
+
+func portalAPIRequestHTTP(
+	ctx context.Context,
+	method string,
+	requestURL string,
+	body []byte,
+	headers map[string]string,
+) ([]byte, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, method, requestURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Portal API HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	return responseBody, nil
+}
+
+func portalAPIRequestCurl(
+	ctx context.Context,
+	method string,
+	requestURL string,
+	body []byte,
+	headers map[string]string,
+) ([]byte, error) {
+	curlPath, err := exec.LookPath("curl")
+	if err != nil {
+		return nil, err
+	}
+	configFile, err := os.CreateTemp("", "lanota-api-*.conf")
+	if err != nil {
+		return nil, err
+	}
+	configName := configFile.Name()
+	defer os.Remove(configName)
+	outputFile, err := os.CreateTemp("", "lanota-api-out-*")
+	if err != nil {
+		configFile.Close()
+		return nil, err
+	}
+	outputName := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputName)
+
+	_, _ = fmt.Fprintf(configFile, "url = %q\n", requestURL)
+	if method != http.MethodGet {
+		_, _ = fmt.Fprintf(configFile, "request = %q\n", method)
+	}
+	_, _ = fmt.Fprintf(configFile, "header = %q\n", "Accept: application/json")
+	for key, value := range headers {
+		_, _ = fmt.Fprintf(configFile, "header = %q\n", key+": "+value)
+	}
+	_, _ = fmt.Fprintf(configFile, "output = %q\n", outputName)
+	_, _ = fmt.Fprintf(configFile, "write-out = %q\n", "%{http_code}")
+	var bodyName string
+	if len(body) > 0 {
+		bodyFile, fileErr := os.CreateTemp("", "lanota-api-body-*")
+		if fileErr != nil {
+			configFile.Close()
+			return nil, fileErr
+		}
+		bodyName = bodyFile.Name()
+		if _, writeErr := bodyFile.Write(body); writeErr != nil {
+			bodyFile.Close()
+			os.Remove(bodyName)
+			configFile.Close()
+			return nil, writeErr
+		}
+		_ = bodyFile.Close()
+		defer os.Remove(bodyName)
+		_, _ = fmt.Fprintf(configFile, "data = %q\n", "@"+bodyName)
+	}
+	if err = configFile.Close(); err != nil {
+		return nil, err
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	command := exec.CommandContext(reqCtx, curlPath, "-4", "-sS", "-m", "25", "-K", configName)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	runErr := command.Run()
+	statusText := strings.TrimSpace(stdout.String())
+	statusCode, parseErr := strconv.Atoi(statusText)
+	if parseErr != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = statusText
+		}
+		if runErr != nil {
+			return nil, fmt.Errorf("curl API failed: %w: %s", runErr, message)
+		}
+		return nil, fmt.Errorf("curl API returned invalid status: %s", statusText)
+	}
+	responseBody, readErr := os.ReadFile(outputName)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("Portal API HTTP %d: %s", statusCode, strings.TrimSpace(string(responseBody)))
+	}
+	return responseBody, nil
 }
 
 func discoverDevToolsSockets() []string {
@@ -581,6 +1009,19 @@ func discoverDevToolsSockets() []string {
 	if err == nil {
 		for _, socketName := range parseDevToolsSockets(string(raw)) {
 			result[socketName] = struct{}{}
+		}
+	}
+	if len(result) <= 1 {
+		for _, commandLine := range []string{
+			"su -c cat /proc/net/unix",
+			"cat /proc/net/unix",
+		} {
+			output, shellErr := runShellCommand(commandLine)
+			if shellErr == nil {
+				for _, socketName := range parseDevToolsSockets(output) {
+					result[socketName] = struct{}{}
+				}
+			}
 		}
 	}
 	sockets := make([]string, 0, len(result))
@@ -607,9 +1048,9 @@ func parseDevToolsSockets(raw string) []string {
 	return result
 }
 
-func listDevToolsTargets(ctx context.Context, socketName string) ([]devToolsTarget, error) {
+func (d *daemon) listDevToolsTargets(ctx context.Context, socketName string) ([]devToolsTarget, error) {
 	for _, endpoint := range []string{"/json/list", "/json"} {
-		raw, err := devToolsHTTPRequest(ctx, socketName, endpoint)
+		raw, err := d.devToolsHTTPRequest(ctx, socketName, endpoint)
 		if err != nil {
 			continue
 		}
@@ -621,8 +1062,8 @@ func listDevToolsTargets(ctx context.Context, socketName string) ([]devToolsTarg
 	return nil, errors.New("DevTools target list unavailable")
 }
 
-func devToolsHTTPRequest(ctx context.Context, socketName string, endpoint string) ([]byte, error) {
-	connection, err := dialAbstractSocket(ctx, socketName)
+func (d *daemon) devToolsHTTPRequest(ctx context.Context, socketName string, endpoint string) ([]byte, error) {
+	connection, err := d.dialDevToolsSocket(ctx, socketName)
 	if err != nil {
 		return nil, err
 	}
@@ -647,6 +1088,19 @@ func devToolsHTTPRequest(ctx context.Context, socketName string, endpoint string
 	return io.ReadAll(io.LimitReader(response.Body, 2*1024*1024))
 }
 
+func (d *daemon) dialDevToolsSocket(ctx context.Context, socketName string) (net.Conn, error) {
+	connection, err := dialAbstractSocket(ctx, socketName)
+	if err == nil {
+		return connection, nil
+	}
+	if d.adb != nil {
+		if adbConnection, adbErr := d.adb.Open(ctx, "localabstract:"+socketName); adbErr == nil {
+			return adbConnection, nil
+		}
+	}
+	return nil, err
+}
+
 func dialAbstractSocket(ctx context.Context, socketName string) (net.Conn, error) {
 	name := strings.TrimPrefix(strings.TrimSpace(socketName), "@")
 	if name == "" {
@@ -663,12 +1117,12 @@ func isInspectableTarget(target devToolsTarget) bool {
 	return true
 }
 
-func connectDevToolsTarget(ctx context.Context, socketName string, target devToolsTarget) (*webSocketConnection, error) {
+func (d *daemon) connectDevToolsTarget(ctx context.Context, socketName string, target devToolsTarget) (*webSocketConnection, error) {
 	parsed, err := url.Parse(target.WebSocketDebuggerURL)
 	if err != nil || parsed.Path == "" {
 		return nil, errors.New("invalid DevTools WebSocket URL")
 	}
-	connection, err := dialAbstractSocket(ctx, socketName)
+	connection, err := d.dialDevToolsSocket(ctx, socketName)
 	if err != nil {
 		return nil, err
 	}
@@ -917,6 +1371,9 @@ func (d *daemon) uploadPending(ctx context.Context) error {
 	if err := verifyPortalToken(ctx, d.config, d.state.PendingToken); err != nil {
 		return err
 	}
+	printResult(map[string]any{
+		"ok": true, "uploading": true, "message": "验证通过，正在上传",
+	})
 	item := candidate{Token: d.state.PendingToken, Payload: jwtPayload{
 		Issuer: "lanota-portal", Subject: d.state.PendingSubject, ExpiresAt: d.state.PendingExpiresAt,
 	}, Source: d.state.PendingSource}
@@ -936,11 +1393,15 @@ func (d *daemon) uploadPending(ctx context.Context) error {
 }
 
 func printStatus(state daemonState) {
+	printStatusWithMessage(state, "")
+}
+
+func printStatusWithMessage(state daemonState, message string) {
 	printResult(map[string]any{
 		"ok": true, "pending": state.PendingToken != "", "subject": state.PendingSubject,
 		"expires_at": state.PendingExpiresAt, "source": state.PendingSource,
 		"uploaded_expires_at": state.UploadedExpiresAt, "last_success_at": state.LastSuccessAt,
-		"last_error": state.LastError,
+		"last_error": state.LastError, "message": message,
 	})
 }
 
@@ -953,6 +1414,39 @@ func printResult(result map[string]any) {
 
 func discoverPackageStorageFiles(userRoot string, packageName string) []string {
 	return discoverStorageFiles(userRoot, []string{packageName})
+}
+
+func discoverStorageFilesWithFallback(userRoot string, packageNames []string) []string {
+	files := discoverStorageFiles(userRoot, packageNames)
+	if len(files) > 0 {
+		return files
+	}
+	return discoverStorageFilesViaShell(userRoot, packageNames)
+}
+
+func discoverStorageFilesViaShell(userRoot string, packageNames []string) []string {
+	packageRoots := make([]string, 0, len(packageNames))
+	for _, packageName := range packageNames {
+		packageRoots = append(packageRoots, filepath.Join(userRoot, "*", packageName))
+	}
+	command := "find " + strings.Join(packageRoots, " ") + " -type f 2>/dev/null"
+	output, err := runShellCommand("su -c " + command)
+	if err != nil {
+		return nil
+	}
+	files := make([]string, 0)
+	for _, rawPath := range strings.Split(output, "\n") {
+		fileName := strings.TrimSpace(rawPath)
+		normalized := strings.ToLower(filepath.ToSlash(fileName))
+		if fileName == "" {
+			continue
+		}
+		if strings.Contains(normalized, "/local storage/leveldb/") ||
+			strings.Contains(normalized, "/localstorage/") {
+			files = append(files, fileName)
+		}
+	}
+	return files
 }
 
 func discoverStorageFiles(userRoot string, packageNames []string) []string {
@@ -998,10 +1492,10 @@ func scanCandidateFiles(cfg config, files []string) ([]candidate, error) {
 	now := time.Now().Unix()
 	for _, fileName := range files {
 		info, err := os.Stat(fileName)
-		if err != nil || info.Size() <= 0 || info.Size() > cfg.MaxFileBytes {
+		if err == nil && (info.Size() <= 0 || info.Size() > cfg.MaxFileBytes) {
 			continue
 		}
-		raw, err := os.ReadFile(fileName)
+		raw, err := readFileWithRootFallback(fileName, cfg.MaxFileBytes)
 		if err != nil {
 			continue
 		}
@@ -1028,6 +1522,33 @@ func scanCandidateFiles(cfg config, files []string) ([]candidate, error) {
 		return result[i].Payload.IssuedAt > result[j].Payload.IssuedAt
 	})
 	return result, nil
+}
+
+func readFileWithRootFallback(fileName string, maxBytes int64) ([]byte, error) {
+	raw, err := os.ReadFile(fileName)
+	if err == nil {
+		return raw, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	quoted := "'" + strings.ReplaceAll(fileName, "'", "'\\''") + "'"
+	command := exec.CommandContext(ctx, "su", "-c", "cat "+quoted)
+	output, commandErr := command.Output()
+	if commandErr != nil {
+		return nil, commandErr
+	}
+	if int64(len(output)) > maxBytes {
+		output = output[:maxBytes]
+	}
+	return output, nil
+}
+
+func runShellCommand(commandLine string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "sh", "-c", commandLine)
+	output, err := command.CombinedOutput()
+	return string(output), err
 }
 
 type portalRejectedError struct {
@@ -1066,6 +1587,29 @@ func decodeJWTPart(value string, target any) error {
 }
 
 func verifyPortalToken(parent context.Context, cfg config, token string) error {
+	err := verifyPortalTokenHTTP(parent, cfg, token)
+	if err == nil {
+		return nil
+	}
+	if curlErr := verifyPortalTokenCurl(parent, cfg, token); curlErr == nil {
+		return nil
+	} else if isPortalRejectedError(curlErr) {
+		return curlErr
+	}
+	if resolvedErr := verifyPortalTokenResolved(parent, cfg, token); resolvedErr == nil {
+		return nil
+	} else if isPortalRejectedError(resolvedErr) {
+		return resolvedErr
+	}
+	return err
+}
+
+func isPortalRejectedError(err error) bool {
+	var rejected portalRejectedError
+	return errors.As(err, &rejected)
+}
+
+func verifyPortalTokenHTTP(parent context.Context, cfg config, token string) error {
 	ctx, cancel := context.WithTimeout(parent, cfg.ConnectTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.PortalMeURL, nil)
@@ -1089,6 +1633,116 @@ func verifyPortalToken(parent context.Context, cfg config, token string) error {
 		return errors.New("Portal /api/me returned invalid JSON")
 	}
 	return nil
+}
+
+func verifyPortalTokenCurl(parent context.Context, cfg config, token string) error {
+	curlPath, err := exec.LookPath("curl")
+	if err != nil {
+		return err
+	}
+	configFile, err := os.CreateTemp("", "lanota-curl-*.conf")
+	if err != nil {
+		return err
+	}
+	configName := configFile.Name()
+	defer os.Remove(configName)
+	_, _ = fmt.Fprintf(configFile, "url = %q\n", cfg.PortalMeURL)
+	_, _ = fmt.Fprintf(configFile, "header = %q\n", "Authorization: Bearer "+token)
+	_, _ = fmt.Fprintf(configFile, "header = %q\n", "Accept: application/json")
+	_, _ = fmt.Fprintf(configFile, "header = %q\n", "User-Agent: "+userAgent)
+	_, _ = fmt.Fprintf(configFile, "output = %q\n", "/dev/null")
+	_, _ = fmt.Fprintf(configFile, "write-out = %q\n", "%{http_code}")
+	if err = configFile.Close(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(parent, cfg.ConnectTimeout)
+	defer cancel()
+	command := exec.CommandContext(
+		ctx,
+		curlPath,
+		"-4",
+		"-sS",
+		"-m",
+		strconv.Itoa(int(cfg.ConnectTimeout/time.Second)),
+		"-K",
+		configName,
+	)
+	output, commandErr := command.CombinedOutput()
+	if commandErr != nil {
+		return fmt.Errorf("curl verification failed: %w: %s", commandErr, strings.TrimSpace(string(output)))
+	}
+	statusText := strings.TrimSpace(string(output))
+	statusCode, parseErr := strconv.Atoi(statusText)
+	if parseErr != nil {
+		return fmt.Errorf("curl returned invalid status: %s", statusText)
+	}
+	if statusCode != http.StatusOK {
+		return portalRejectedError{StatusCode: statusCode}
+	}
+	return nil
+}
+
+func verifyPortalTokenResolved(parent context.Context, cfg config, token string) error {
+	parsed, err := url.Parse(cfg.PortalMeURL)
+	if err != nil || parsed.Hostname() == "" {
+		return errors.New("invalid portal URL")
+	}
+	host := parsed.Hostname()
+	ipAddress, err := resolveHostViaPing(host)
+	if err != nil {
+		return err
+	}
+	port := parsed.Port()
+	if port == "" {
+		port = "443"
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network string, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: cfg.ConnectTimeout}).DialContext(ctx, network, net.JoinHostPort(ipAddress, port))
+		},
+		TLSClientConfig:   &tls.Config{ServerName: host},
+		ForceAttemptHTTP2: false,
+	}
+	ctx, cancel := context.WithTimeout(parent, cfg.ConnectTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.PortalMeURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+	client := &http.Client{Transport: transport, Timeout: cfg.ConnectTimeout}
+	response, requestErr := client.Do(req)
+	if requestErr != nil {
+		return fmt.Errorf("resolved Portal verification request failed: %w", requestErr)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return portalRejectedError{StatusCode: response.StatusCode}
+	}
+	var data map[string]any
+	if decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1024*1024)).Decode(&data); decodeErr != nil || data == nil {
+		return errors.New("Portal /api/me returned invalid JSON")
+	}
+	return nil
+}
+
+func resolveHostViaPing(host string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "2", host)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("ping resolution failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	ipPattern := regexp.MustCompile(`\(([0-9.]+)\)`)
+	matches := ipPattern.FindSubmatch(output)
+	if len(matches) < 2 {
+		return "", errors.New("could not parse ping address")
+	}
+	return string(matches[1]), nil
 }
 
 func uploadToken(cfg config, item candidate, cleanupRemote bool) (bool, error) {
@@ -1143,9 +1797,10 @@ func connectSFTP(cfg config) (*ssh.Client, *sftp.Client, error) {
 	deadline := time.Now().Add(cfg.ConnectTimeout)
 	_ = connection.SetDeadline(deadline)
 	sshConfig := &ssh.ClientConfig{
-		User:    cfg.ServerUser,
-		Auth:    []ssh.AuthMethod{ssh.Password(cfg.ServerPassword)},
-		Timeout: cfg.ConnectTimeout,
+		User:              cfg.ServerUser,
+		Auth:              []ssh.AuthMethod{ssh.Password(cfg.ServerPassword)},
+		Timeout:           cfg.ConnectTimeout,
+		HostKeyAlgorithms: []string{"ssh-ed25519"},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
 			actual := ssh.FingerprintSHA256(key)
 			if actual != cfg.ServerHostKeySHA256 {
@@ -1287,6 +1942,344 @@ func (d *daemon) scheduleRetry(now time.Time) {
 	if d.retryDelay > d.config.RetryMax {
 		d.retryDelay = d.config.RetryMax
 	}
+}
+
+func newADBBridge(stateDirectory string) (*adbBridge, error) {
+	if runtime.GOOS != "linux" {
+		return nil, errors.New("ADB bridge is only available on Android")
+	}
+	if err := os.MkdirAll(stateDirectory, 0700); err != nil {
+		return nil, err
+	}
+	privateKey, publicKey, err := loadOrCreateADBKey(stateDirectory)
+	if err != nil {
+		return nil, err
+	}
+	installADBKey(publicKey)
+	if err = ensureADBTCP(); err != nil {
+		return nil, err
+	}
+	bridge := &adbBridge{
+		address:    "127.0.0.1:5555",
+		privateKey: privateKey,
+		publicKey:  publicKey,
+	}
+	probe, probeErr := bridge.Open(context.Background(), "shell:echo ok")
+	if probeErr != nil {
+		return nil, probeErr
+	}
+	_ = probe.Close()
+	return bridge, nil
+}
+
+func loadOrCreateADBKey(stateDirectory string) (*rsa.PrivateKey, string, error) {
+	keyPath := filepath.Join(stateDirectory, "adb_key.pem")
+	if raw, err := os.ReadFile(keyPath); err == nil {
+		if block, _ := pem.Decode(raw); block != nil {
+			if privateKey, parseErr := x509.ParsePKCS1PrivateKey(block.Bytes); parseErr == nil {
+				publicKey, keyErr := androidPublicKeyString(privateKey)
+				if keyErr == nil {
+					return privateKey, publicKey, nil
+				}
+			}
+		}
+	}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, "", err
+	}
+	raw := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	})
+	if err = os.WriteFile(keyPath, raw, 0600); err != nil {
+		return nil, "", err
+	}
+	publicKey, err := androidPublicKeyString(privateKey)
+	if err != nil {
+		return nil, "", err
+	}
+	return privateKey, publicKey, nil
+}
+
+func androidPublicKeyString(privateKey *rsa.PrivateKey) (string, error) {
+	encoded, err := encodeAndroidPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(encoded), nil
+}
+
+func encodeAndroidPublicKey(key *rsa.PublicKey) ([]byte, error) {
+	if key.N.BitLen() != 2048 {
+		return nil, errors.New("ADB RSA key must be 2048 bits")
+	}
+	const (
+		modulusSizeWords = 64
+		modulusBytes     = 256
+	)
+	r32 := new(big.Int).Lsh(big.NewInt(1), 32)
+	n0 := new(big.Int).Mod(key.N, r32)
+	n0inv := new(big.Int).ModInverse(n0, r32)
+	if n0inv == nil {
+		return nil, errors.New("cannot compute ADB key n0inv")
+	}
+	n0inv.Sub(r32, n0inv)
+	n0inv.Mod(n0inv, r32)
+
+	rr := new(big.Int).Lsh(big.NewInt(1), 4096)
+	rr.Mod(rr, key.N)
+
+	buffer := new(bytes.Buffer)
+	_ = binary.Write(buffer, binary.LittleEndian, uint32(modulusSizeWords))
+	_ = binary.Write(buffer, binary.LittleEndian, uint32(n0inv.Uint64()))
+	buffer.Write(littleEndianPadded(key.N, modulusBytes))
+	buffer.Write(littleEndianPadded(rr, modulusBytes))
+	_ = binary.Write(buffer, binary.LittleEndian, uint32(key.E))
+	if buffer.Len() != 3*4+2*modulusBytes {
+		return nil, errors.New("ADB public key encoding failed")
+	}
+	return buffer.Bytes(), nil
+}
+
+func littleEndianPadded(value *big.Int, size int) []byte {
+	raw := value.Bytes()
+	if len(raw) > size {
+		raw = raw[len(raw)-size:]
+	}
+	output := make([]byte, size)
+	for index, item := range raw {
+		output[len(raw)-1-index] = item
+	}
+	return output
+}
+
+func installADBKey(publicKey string) {
+	for _, keyPath := range []string{
+		"/data/misc/adb/adb_keys",
+		"/data/adb/adb_keys",
+	} {
+		_ = os.MkdirAll(filepath.Dir(keyPath), 0755)
+		existing, _ := os.ReadFile(keyPath)
+		if bytes.Contains(existing, []byte(publicKey)) {
+			continue
+		}
+		line := publicKey + " lanota-token-module\n"
+		if writeErr := os.WriteFile(keyPath, append(existing, []byte(line)...), 0640); writeErr != nil {
+			_, _ = runShellCommand("echo '" + line + "' >> " + keyPath)
+		}
+		_, _ = runShellCommand("chown system:shell " + keyPath)
+		_, _ = runShellCommand("chmod 0640 " + keyPath)
+	}
+}
+
+func ensureADBTCP() error {
+	if connection, err := net.DialTimeout("tcp", "127.0.0.1:5555", time.Second); err == nil {
+		_ = connection.Close()
+		return nil
+	}
+	_, _ = runShellCommand("settings put global adb_enabled 1")
+	_, _ = runShellCommand("setprop service.adb.tcp.port 5555")
+	_, _ = runShellCommand("setprop ctl.restart adbd")
+	_, _ = runShellCommand("stop adbd; start adbd")
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if connection, err := net.DialTimeout("tcp", "127.0.0.1:5555", time.Second); err == nil {
+			_ = connection.Close()
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return errors.New("adbd TCP port is not available")
+}
+
+func (bridge *adbBridge) Open(ctx context.Context, service string) (net.Conn, error) {
+	connection, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", bridge.address)
+	if err != nil {
+		return nil, err
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = connection.Close()
+		}
+	}()
+	if err = adbAuthenticate(connection, bridge.privateKey, bridge.publicKey); err != nil {
+		return nil, err
+	}
+	localID := uint32(1)
+	if err = writeADBPacket(connection, adbOPEN, localID, 0, []byte(service)); err != nil {
+		return nil, err
+	}
+	_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
+	for {
+		command, arg0, arg1, payload, packetErr := readADBPacket(connection)
+		if packetErr != nil {
+			return nil, packetErr
+		}
+		switch command {
+		case adbOKAY:
+			if arg1 == localID {
+				_ = connection.SetDeadline(time.Time{})
+				success = true
+				return &adbServiceConn{
+					conn:     connection,
+					localID:  localID,
+					remoteID: arg0,
+				}, nil
+			}
+		case adbCLSE:
+			if arg1 == localID {
+				return nil, fmt.Errorf("ADB service rejected: %s", strings.TrimSpace(string(payload)))
+			}
+		}
+	}
+}
+
+func adbAuthenticate(connection net.Conn, privateKey *rsa.PrivateKey, publicKey string) error {
+	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
+	defer connection.SetDeadline(time.Time{})
+	if err := writeADBPacket(connection, adbCNXN, adbVersion, adbMaxPayload, []byte("host::")); err != nil {
+		return err
+	}
+	signatureSent := false
+	publicKeySent := false
+	for {
+		command, arg0, _, payload, err := readADBPacket(connection)
+		if err != nil {
+			return err
+		}
+		switch command {
+		case adbCNXN:
+			return nil
+		case adbAUTH:
+			switch arg0 {
+			case adbAuthToken:
+				switch {
+				case !signatureSent:
+					signature, signErr := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA1, payload)
+					if signErr != nil {
+						return signErr
+					}
+					if writeErr := writeADBPacket(connection, adbAUTH, adbAuthSignature, 0, signature); writeErr != nil {
+						return writeErr
+					}
+					signatureSent = true
+				case !publicKeySent:
+					keyPayload := append([]byte(publicKey), 0)
+					if writeErr := writeADBPacket(connection, adbAUTH, adbAuthPublicKey, 0, keyPayload); writeErr != nil {
+						return writeErr
+					}
+					publicKeySent = true
+				default:
+					return errors.New("ADB key was not authorized")
+				}
+			}
+		}
+	}
+}
+
+func writeADBPacket(connection net.Conn, command, arg0, arg1 uint32, payload []byte) error {
+	var checksum uint32
+	for _, item := range payload {
+		checksum += uint32(item)
+	}
+	message := adbMessage{
+		Command:    command,
+		Arg0:       arg0,
+		Arg1:       arg1,
+		DataLength: uint32(len(payload)),
+		DataCheck:  checksum,
+		Magic:      command ^ 0xffffffff,
+	}
+	if err := binary.Write(connection, binary.LittleEndian, message); err != nil {
+		return err
+	}
+	if len(payload) > 0 {
+		_, err := connection.Write(payload)
+		return err
+	}
+	return nil
+}
+
+func readADBPacket(connection net.Conn) (uint32, uint32, uint32, []byte, error) {
+	var message adbMessage
+	if err := binary.Read(connection, binary.LittleEndian, &message); err != nil {
+		return 0, 0, 0, nil, err
+	}
+	if message.Magic != message.Command^0xffffffff {
+		return 0, 0, 0, nil, errors.New("invalid ADB packet magic")
+	}
+	if message.DataLength > 16*1024*1024 {
+		return 0, 0, 0, nil, errors.New("ADB packet too large")
+	}
+	payload := make([]byte, int(message.DataLength))
+	if _, err := io.ReadFull(connection, payload); err != nil {
+		return 0, 0, 0, nil, err
+	}
+	return message.Command, message.Arg0, message.Arg1, payload, nil
+}
+
+func (connection *adbServiceConn) Read(target []byte) (int, error) {
+	connection.readMu.Lock()
+	defer connection.readMu.Unlock()
+	for {
+		if connection.buffer.Len() > 0 {
+			return connection.buffer.Read(target)
+		}
+		if connection.remoteClosed {
+			return 0, io.EOF
+		}
+		command, arg0, arg1, payload, err := readADBPacket(connection.conn)
+		if err != nil {
+			return 0, err
+		}
+		switch command {
+		case adbWRTE:
+			if arg0 == connection.remoteID && arg1 == connection.localID {
+				_, _ = connection.buffer.Write(payload)
+			}
+		case adbCLSE:
+			if arg1 == connection.localID {
+				connection.remoteClosed = true
+			}
+		}
+	}
+}
+
+func (connection *adbServiceConn) Write(payload []byte) (int, error) {
+	connection.writeMu.Lock()
+	defer connection.writeMu.Unlock()
+	written := 0
+	for len(payload) > 0 {
+		chunk := len(payload)
+		if chunk > adbMaxPayload {
+			chunk = adbMaxPayload
+		}
+		if err := writeADBPacket(connection.conn, adbWRTE, connection.localID, connection.remoteID, payload[:chunk]); err != nil {
+			return written, err
+		}
+		written += chunk
+		payload = payload[chunk:]
+	}
+	return written, nil
+}
+
+func (connection *adbServiceConn) Close() error {
+	connection.writeMu.Lock()
+	_ = writeADBPacket(connection.conn, adbCLSE, connection.localID, connection.remoteID, nil)
+	connection.writeMu.Unlock()
+	return connection.conn.Close()
+}
+
+func (connection *adbServiceConn) LocalAddr() net.Addr                { return connection.conn.LocalAddr() }
+func (connection *adbServiceConn) RemoteAddr() net.Addr               { return connection.conn.RemoteAddr() }
+func (connection *adbServiceConn) SetDeadline(value time.Time) error  { return connection.conn.SetDeadline(value) }
+func (connection *adbServiceConn) SetReadDeadline(value time.Time) error {
+	return connection.conn.SetReadDeadline(value)
+}
+func (connection *adbServiceConn) SetWriteDeadline(value time.Time) error {
+	return connection.conn.SetWriteDeadline(value)
 }
 
 func logf(format string, arguments ...any) {

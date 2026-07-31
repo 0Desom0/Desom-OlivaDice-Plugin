@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -211,5 +213,45 @@ func TestWebSocketFrameReadAndWrite(t *testing.T) {
 	}
 	if err = <-writeDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestADBPacketRoundTrip(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	payload := []byte("localabstract:chrome_devtools_remote")
+	go func() {
+		_ = writeADBPacket(client, adbOPEN, 7, 0, payload)
+	}()
+	command, arg0, arg1, received, err := readADBPacket(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command != adbOPEN || arg0 != 7 || arg1 != 0 || !bytes.Equal(received, payload) {
+		t.Fatalf("unexpected ADB packet: command=%d arg0=%d arg1=%d payload=%q", command, arg0, arg1, received)
+	}
+}
+
+func TestAndroidPublicKeyEncoding(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := encodeAndroidPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 524 {
+		t.Fatalf("expected 524 byte Android public key, got %d", len(raw))
+	}
+	publicKey, err := androidPublicKeyString(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(publicKey)
+	if err != nil || len(decoded) != 524 {
+		t.Fatalf("public key is not valid 524 byte base64: len=%d err=%v", len(decoded), err)
 	}
 }

@@ -39,6 +39,7 @@ command_configs = [
     ('notes', '物量'),
     ('rating', 'rating'),
     ('bind', '绑定'),
+    ('unbind', '解绑'),
     ('user', '用户'),
     ('friend', '好友码'),
     ('china', '国服'),
@@ -86,6 +87,8 @@ subcommand_alias_dict = {
     'rating': 'rating',
     'bind': 'bind',
     '绑定': 'bind',
+    'unbind': 'unbind',
+    '解绑': 'unbind',
     'user': 'user',
     '用户': 'user',
     '玩家': 'user',
@@ -1060,12 +1063,46 @@ def handle_bind(plugin_event, argument: str) -> None:
         utils.reply_message(plugin_event, f'绑定失败：{portal.format_error(exception_object)}')
 
 
+def handle_unbind(plugin_event, argument: str) -> None:
+    unbind_parts = argument.strip().split()
+    region = 'global'
+    if unbind_parts and unbind_parts[0].casefold() in [
+        'global',
+        'international',
+        'intl',
+        '国际服',
+        'cn',
+        'china',
+        '中国',
+        '中国服',
+        '国服',
+    ]:
+        region = portal.normalize_region(unbind_parts.pop(0))
+    try:
+        success, message_text = portal.unbind_nano_id(plugin_event, region=region)
+        utils.reply_message(plugin_event, message_text if success else f'解绑失败：{message_text}')
+    except Exception as exception_object:
+        utils.error_log(None, f'Lanota 好友码解绑失败：{type(exception_object).__name__}: {exception_object}')
+        utils.reply_message(plugin_event, f'解绑失败：{portal.format_error(exception_object)}')
+
+
 def handle_user(plugin_event, argument: str) -> None:
     user_argument = argument.strip().lower()
     if user_argument in ['friend', '好友码']:
-        nano_id = portal.get_bound_nano_id(plugin_event)
-        region_name = portal.region_display_name(portal.get_bound_region(plugin_event))
-        message_text = f'你绑定的 Lanota {region_name}好友码：{nano_id}' if nano_id else '尚未绑定 Lanota 好友码。'
+        bound_items = []
+        for region in ('global', 'china'):
+            nano_id = portal.get_bound_nano_id(plugin_event, region)
+            if nano_id:
+                bound_items.append((portal.region_display_name(region), nano_id))
+        if not bound_items:
+            message_text = '尚未绑定 Lanota 好友码。'
+        elif len(bound_items) == 1:
+            region_name, nano_id = bound_items[0]
+            message_text = f'你绑定的 Lanota {region_name}好友码：{nano_id}'
+        else:
+            message_text = '你绑定的 Lanota 好友码：\n' + '\n'.join(
+                f'{region_name}：{nano_id}' for region_name, nano_id in bound_items
+            )
         if not utils.get_group_id_from_event(plugin_event):
             utils.reply_message(plugin_event, message_text)
             return
@@ -1075,11 +1112,23 @@ def handle_user(plugin_event, argument: str) -> None:
             return
         utils.reply_message(plugin_event, '私聊发送失败，请私聊 Bot 使用 .la friend 查询。')
         return
+    region = None
+    if user_argument in ['cn', 'china', '国服']:
+        region = 'china'
+    elif user_argument in ['global', 'international', 'intl', '国际服']:
+        region = 'global'
     if user_argument:
-        reply_text(plugin_event, '用法：.la user 或 .la user friend')
-        return
+        if region is None:
+            reply_text(plugin_event, '用法：.la user、.la user cn 或 .la user friend')
+            return
     try:
-        player_data, _nano_id = portal.get_user_data(plugin_event)
+        player_data, _nano_id, cache_error = portal.get_user_data_cached(plugin_event, region)
+        if cache_error is not None:
+            utils.reply_message(
+                plugin_event,
+                f'网络查询失败：{portal.format_error(cache_error)}\n'
+                '请联系管理员检查国际服账号或国服 Token；正在显示上次缓存。',
+            )
         image_path = portal.render_player_card(player_data)
         fallback_text = portal.build_fallback_text(player_data)
         if image_path:
@@ -1415,7 +1464,10 @@ help_categories = {
             '/la rating - 显示当前的Max Rating，并且给出可能的B30和R5',
             '/la bind <好友码> - 绑定自己的 Lanota 好友码',
             '/la bind cn <好友码> - 绑定自己的国服 Lanota 好友码',
+            '/la unbind - 解除国际服好友码绑定',
+            '/la unbind cn - 解除国服好友码绑定',
             '/la user - 查询绑定玩家的 Portal 状态卡片',
+            '/la user cn - 查询绑定玩家的国服 Portal 状态卡片',
             '/la friend - 私聊查询当前绑定的好友码，并显示国际服/国服',
             '/la user friend - .la friend 的兼容写法',
             '/la china status - 查看国服 Portal 登录状态（骰主/插件管理员）',
@@ -1429,7 +1481,10 @@ help_categories = {
             '/la rating',
             '/la bind <好友码>',
             '/la bind cn <好友码>',
+            '/la unbind',
+            '/la unbind cn',
             '/la user',
+            '/la user cn',
             '/la friend',
             '/la user friend',
             '/la china status',
@@ -1662,6 +1717,7 @@ command_handler_dict = {
     'notes': lambda event, arg: handle_notes(event),
     'rating': lambda event, arg: handle_rating(event),
     'bind': handle_bind,
+    'unbind': handle_unbind,
     'user': handle_user,
     'friend': lambda event, arg: handle_user(event, 'friend'),
     'china': handle_china,

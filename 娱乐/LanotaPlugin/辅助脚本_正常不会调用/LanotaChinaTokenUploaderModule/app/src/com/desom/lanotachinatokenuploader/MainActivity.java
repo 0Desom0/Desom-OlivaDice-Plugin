@@ -13,6 +13,7 @@ import android.widget.TextView;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import org.json.JSONObject;
 
 public final class MainActivity extends Activity {
     private static final String MODULE = "/data/adb/modules/lanota_china_token_uploader";
@@ -23,6 +24,7 @@ public final class MainActivity extends Activity {
     private Button scanButton;
     private Button uploadButton;
     private Button clearButton;
+    private Button authorizeButton;
     private Process runningProcess;
     private volatile boolean scanning;
     private volatile boolean busy;
@@ -47,9 +49,14 @@ public final class MainActivity extends Activity {
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView hint = new TextView(this);
-        hint.setText("先点开始扫描，再从国服 Lanota 打开 Portal。模块会持续监听瞬时请求；扫描不会上传。");
+        hint.setText("一键授权上传会自动唤醒 Lanota 并完成 Token 获取与上传。");
         hint.setTextSize(14);
         root.addView(hint, new LinearLayout.LayoutParams(-1, -2));
+
+        authorizeButton = new Button(this);
+        authorizeButton.setText("一键授权上传");
+        authorizeButton.setOnClickListener(v -> runCommand("authorize"));
+        root.addView(authorizeButton, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -102,26 +109,29 @@ public final class MainActivity extends Activity {
         scanButton.setEnabled(command.equals("scan"));
         uploadButton.setEnabled(false);
         clearButton.setEnabled(false);
+        authorizeButton.setEnabled(false);
         status.setText(command.equals("scan")
-                ? "持续监听已启动。现在从国服 Lanota 打开 Portal；捕获前不要停止扫描。\n"
+                ? "正在启动捕获，请从国服 Lanota 打开 Portal...\n"
+                : command.equals("authorize")
+                ? "正在唤醒 Lanota 并创建授权会话...\n"
                 : "正在执行 " + command + "...\n");
         Thread worker = new Thread(() -> {
             Process process = null;
             String resultText = "";
             try {
-                StringBuilder output = new StringBuilder();
+                String lastLine = "";
                 String shell = DAEMON + " -config " + CONFIG + " -command " + command;
                 process = new ProcessBuilder("su", "-c", shell).redirectErrorStream(true).start();
                 runningProcess = process;
                 BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    output.append(line).append('\n');
-                    final String display = output.toString();
+                    lastLine = line;
+                    final String display = humanMessage(line);
                     handler.post(() -> status.setText(display));
                 }
                 process.waitFor();
-                resultText = output.toString();
+                resultText = lastLine;
             } catch (IOException | InterruptedException e) {
                 resultText = "执行失败：" + e.getMessage() + "\n";
             } finally {
@@ -132,12 +142,17 @@ public final class MainActivity extends Activity {
                 busy = false;
                 final String result = resultText;
                 handler.post(() -> {
-                    status.setText(result.length() == 0 ? "没有返回结果" : result);
+                    if (command.equals("scan") && !result.contains("\"found\":true") && !result.contains("\"pending\":true")) {
+                        status.setText("未捕获到 Token，扫描已结束");
+                    } else {
+                        status.setText(result.length() == 0 ? "没有返回结果" : humanMessage(result));
+                    }
                     scanButton.setEnabled(true);
                     scanButton.setText("开始扫描");
                     scanning = false;
                     clearButton.setEnabled(true);
-                    if (result.contains("\"pending\":true") || result.contains("\"found\":true")) {
+                    authorizeButton.setEnabled(true);
+                    if (result.contains("\"pending\":true") || result.contains("\"found\":true") || result.contains("\"uploaded\":true")) {
                         pendingAvailable = true;
                     } else if (command.equals("clear") || command.equals("status")) {
                         pendingAvailable = false;
@@ -147,6 +162,22 @@ public final class MainActivity extends Activity {
             }
         });
         worker.start();
+    }
+
+    private String humanMessage(String rawLine) {
+        String line = rawLine == null ? "" : rawLine.trim();
+        if (!line.startsWith("{")) {
+            return line;
+        }
+        try {
+            JSONObject json = new JSONObject(line);
+            String message = json.optString("message", "");
+            if (!message.isEmpty()) {
+                return message;
+            }
+        } catch (Exception ignored) {
+        }
+        return line;
     }
 
     @Override
