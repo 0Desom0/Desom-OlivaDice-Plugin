@@ -695,7 +695,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 - 有有效图片摘要时禁止说"看不到图片""不会识图"；只有写着"未识别成功"才说暂时无法识别
 - 不要暴露文件路径/Base64/OCR/模型等实现细节%s
 - 【最高优先级】最终只输出一个 JSON 对象：要回复输出 {"r":["内容1","内容2"]}，不回复输出 {"r":[]}；多条消息拆成多个元素；不要在 JSON 前后加任何文字
-- 发图片用单独一条消息，格式 [发图片:图片内容或意图关键词]
+- 主回复模型可根据动态上下文中的图片缓存自行决定是否发图、选择或改选图片，不必等待前置模型指定
+- 发图片用单独一条消息，格式 [发图片:缓存文件名或图片内容/意图关键词]；不要编造缓存中不存在的图片
 
 # 人格设定
 - %s
@@ -773,7 +774,11 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         patch['当前记忆']['长期事实'] = semantic_facts
     if agent_mem:
         patch['当前记忆']['互通记忆'] = agent_mem
-    image_cache = OlivaAIAgent.vision.groupImageCacheDict(group_id)
+    image_cache = OlivaAIAgent.vision.emojiIntentCache(
+        bot_hash,
+        group_id,
+        int(cfg('intent_image_cache_size', 10)),
+    )
     if image_cache:
         patch['图片缓存'] = image_cache
     if skills_ctx:
@@ -828,6 +833,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             system_content,
             self_id,
             trace_id=trace_id,
+            image_candidates=image_cache,
         )
         if decision == 'SKIP':
             _logConversationDecision(Proc, trace_id, '跳过', '前置判断决定不进入主回复模型')
@@ -838,8 +844,13 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         cache_map = OlivaAIAgent.vision.imageCacheMap(bot_hash)
         fn = OlivaAIAgent.vision.resolveImageRef(image_ref, cache_map, trace_id=trace_id)
         if fn:
-            messages.append({'role': 'user',
-                             'content': '本次若发图，优先用真实文件名：[发图片:%s]，不要改写。' % fn})
+            messages.append({
+                'role': 'user',
+                'content': (
+                    '前置模型建议本次可用图片：[发图片:%s]。这只是建议；'
+                    '你可以采用、从图片缓存改选其他图片，或决定不发。'
+                ) % fn,
+            })
 
     # 调用回复模型（可选带工具）
     reply_list = _callReply(
@@ -993,11 +1004,24 @@ def _intentBackend():
     return bc
 
 
-def _firstThink(Proc, bot_hash, group_id, history, patch, system_ref, self_id, trace_id=None):
+def _firstThink(
+    Proc,
+    bot_hash,
+    group_id,
+    history,
+    patch,
+    system_ref,
+    self_id,
+    trace_id=None,
+    image_candidates=None,
+):
     '''返回 ('NEXT'|'SKIP', image_ref)。判定失败默认 NEXT（不丢消息）。'''
     try:
-        max_size = int(OlivaAIAgent.conf.get('ambient', 'intent_image_cache_size', default=10))
-        intent_imgs = OlivaAIAgent.vision.emojiIntentCache(bot_hash, group_id, max_size)
+        if image_candidates is None:
+            max_size = int(OlivaAIAgent.conf.get('ambient', 'intent_image_cache_size', default=10))
+            intent_imgs = OlivaAIAgent.vision.emojiIntentCache(bot_hash, group_id, max_size)
+        else:
+            intent_imgs = dict(image_candidates)
         sys_prompt = '''# 你是二分类器，只判断最新一条群消息是否值得交给正式回复模型
 - 只输出 {"d":"NEXT","i":"图片内容或意图关键词或空"} 或 {"d":"SKIP","i":""}
 - NEXT: 最新消息@你/回复你/叫你名字/问候你/向你提问/要求你做事，或明显在邀请你接话

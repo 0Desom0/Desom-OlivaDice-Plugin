@@ -1043,7 +1043,7 @@ def repairVisionDenial(reply_list, history):
 
 
 def emojiIntentCache(bot_hash, group_id, max_size):
-    '''给前置判定模型看的表情包候选（内容/意图，供它挑一个关键词）。'''
+    '''给前置与主模型共用的表情包候选（内容/意图，供模型选择）。'''
     cache_map = imageCacheMap(bot_hash)
     with _cache_lock:
         current = [str(item[0]) for item in list(_imageCache.get(group_id, [])) if isinstance(item, tuple)]
@@ -1057,7 +1057,7 @@ def emojiIntentCache(bot_hash, group_id, max_size):
     import random
     random.shuffle(cur_cand)
     random.shuffle(glob_cand)
-    selected = cur_cand + glob_cand[:max_size]
+    selected = (cur_cand + glob_cand)[:max_size]
     return {fn: _publicImageData(cache_map[fn]) for fn in selected if isinstance(cache_map.get(fn), dict)}
 
 

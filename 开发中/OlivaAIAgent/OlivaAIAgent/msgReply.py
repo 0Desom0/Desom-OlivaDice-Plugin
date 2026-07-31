@@ -1129,6 +1129,11 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
     cheat = str(conf.get('prompt', 'dice_cheatsheet', default=''))
     if cheat:
         parts.append('【官方指令速查(用 run_command 执行；也能调用其他已加载插件指令)】\n%s' % cheat)
+    parts.append(
+        '【主动发图】若动态上下文提供“可发送图片缓存”，你可以自行决定是否发图并选择其中的图片。'
+        '需要发图时输出 [发图片:缓存文件名或图片内容/意图关键词]；不要编造缓存中不存在的图片。'
+        '插件会自动匹配并转换为当前平台的真实图片消息。'
+    )
     env_lines = [
         '【当前环境(固定部分)】',
         '平台场景: %s' % ('群聊' if ctx['func_type'] == 'group_message' else '私聊'),
@@ -1198,6 +1203,20 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
             % json.dumps(identifiers, ensure_ascii=False)
         )
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
+    try:
+        image_candidates = OlivaAIAgent.vision.emojiIntentCache(
+            bot_hash,
+            ctx.get('group_id'),
+            int(conf.get('ambient', 'intent_image_cache_size', default=10)),
+        )
+    except Exception:
+        image_candidates = {}
+    if image_candidates:
+        blocks.append(
+            '【可发送图片缓存】\n'
+            + json.dumps(image_candidates, ensure_ascii=False)
+            + '\n可以自行决定不发、选一张或按语境改选；发送时使用 [发图片:缓存文件名或内容/意图关键词]。'
+        )
     user_mem = OlivaAIAgent.memory.memFormat(
         OlivaAIAgent.memory.userMemKey(platform, ctx['user_id']),
         '该用户的跨群记忆',
@@ -1664,6 +1683,14 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
                 source=source,
             )
             text = OlivaAIAgent.contentSafety.refusal()
+    trace_id = parsed.get('trace_id') if isinstance(parsed, dict) else None
+    if re.search(r'\[发图片[:：]', text):
+        try:
+            bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
+            translated = OlivaAIAgent.vision.translateOutgoing([text], bot_hash, trace_id=trace_id)
+            text = translated[0] if translated else ''
+        except Exception:
+            pass
     split_len = int(conf.get('reply', 'split_length', default=1500))
     max_count = int(conf.get('reply', 'max_split_count', default=3))
     prefix = ''
@@ -1691,7 +1718,7 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
             plugin_event,
             payload,
             quote_msg_id=outgoing_reference_id if i == 0 else None,
-            trace_id=parsed.get('trace_id') if isinstance(parsed, dict) else None,
+            trace_id=trace_id,
         )
         if result is None:
             result = plugin_event.reply(payload)
@@ -1710,7 +1737,7 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
         'message.outgoing.sent',
-        parsed.get('trace_id') if isinstance(parsed, dict) else None,
+        trace_id,
         message_id=message_ids[0] if message_ids else None,
         message_ids=message_ids,
         ok=sent,
