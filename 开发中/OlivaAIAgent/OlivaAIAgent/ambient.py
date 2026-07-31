@@ -681,16 +681,49 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     voice_ready = OlivaAIAgent.voice.getStatus()['ready']
     if allow_tools or voice_ready:
         runtime_tool_ctx = _makeToolContext(plugin_event, Proc, group_id, trace_id)
-    selected_tool_names = []
+
+    image_cache = OlivaAIAgent.vision.emojiIntentCache(
+        bot_hash,
+        group_id,
+        int(cfg('intent_image_cache_size', 10)),
+    )
+    aux_tasks = {}
     if allow_tools:
-        selected_tool_names = OlivaAIAgent.tools.selectToolNames(
-            runtime_tool_ctx,
+        aux_tasks['tools'] = lambda: OlivaAIAgent.tools.selectToolNames(
+            runtime_tool_ctx, message, history=history, trace_id=trace_id,
+        )
+    if _shouldFirstThink(cfg('first_thinking', False), skip_first_thinking):
+        aux_tasks['reply'] = lambda: _firstThink(
+            Proc,
+            bot_hash,
+            group_id,
+            history,
+            {},
+            '',
+            self_id,
+            trace_id=trace_id,
+        )[0]
+    if image_cache:
+        aux_tasks['image'] = lambda: OlivaAIAgent.preflight.selectImageIntent(
+            Proc,
             message,
-            history=history,
+            history,
+            image_cache,
             trace_id=trace_id,
         )
-    elif voice_ready:
+    aux_results = OlivaAIAgent.preflight.runCluster(aux_tasks, Proc=Proc, trace_id=trace_id)
+
+    if aux_results.get('reply') == 'SKIP':
+        _logConversationDecision(Proc, trace_id, '跳过', '独立参与判断决定不进入主回复模型')
+        return
+    selected_tool_names = aux_results.get('tools')
+    if not isinstance(selected_tool_names, list):
+        selected_tool_names = [
+            item['name'] for item in OlivaAIAgent.tools.getToolsForRequest(runtime_tool_ctx)
+        ] if allow_tools else []
+    if not allow_tools and voice_ready:
         selected_tool_names = ['send_voice']
+    image_ref = str(aux_results.get('image') or '')
     tool_defs = OlivaAIAgent.tools.getToolsForRequest(
         runtime_tool_ctx,
         names=selected_tool_names,
@@ -789,11 +822,6 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         patch['当前记忆']['长期事实'] = semantic_facts
     if agent_mem:
         patch['当前记忆']['互通记忆'] = agent_mem
-    image_cache = OlivaAIAgent.vision.emojiIntentCache(
-        bot_hash,
-        group_id,
-        int(cfg('intent_image_cache_size', 10)),
-    )
     if image_cache:
         patch['图片缓存'] = image_cache
     if skills_ctx:
@@ -834,28 +862,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     messages.append({'role': 'user',
                      'content': '根据最新群消息决定是否回复，只输出 {"r":["回复"]} 或 {"r":[]}，不要解释。'})
 
-    # @/引用机器人绕过概率和冷却后进入小模型；关键词/.ai 跳过小模型。
-    image_ref = ''
-    if _shouldFirstThink(
-        cfg('first_thinking', False),
-        skip_first_thinking,
-    ):
-        decision, image_ref = _firstThink(
-            Proc,
-            bot_hash,
-            group_id,
-            history,
-            patch,
-            system_content,
-            self_id,
-            trace_id=trace_id,
-            image_candidates=image_cache,
-        )
-        if decision == 'SKIP':
-            _logConversationDecision(Proc, trace_id, '跳过', '前置判断决定不进入主回复模型')
-            return
-
-    # 若前置判定选了表情意图，提示真实文件名
+    # 独立图片判断只提供建议，主模型仍可采用、改选或不发。
     if image_ref:
         cache_map = OlivaAIAgent.vision.imageCacheMap(bot_hash)
         fn = OlivaAIAgent.vision.resolveImageRef(image_ref, cache_map, trace_id=trace_id)
@@ -1012,6 +1019,31 @@ def _intentBackend():
     return OlivaAIAgent.aiClient.getAuxiliaryBackendConf(max_tokens=64, temperature=0.0)
 
 
+def _parseParticipationDecision(raw):
+    '''兼容 JSON 字段别名和直接文本；无法识别时默认 NEXT。'''
+    text = str(raw or '').strip()
+    value = None
+    match = re.search(r'\{.*\}', text, re.S)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            for key in ('d', 'decision', 'reply', 'should_reply', 'result'):
+                if key in data:
+                    value = data.get(key)
+                    break
+    if isinstance(value, bool):
+        return 'NEXT' if value else 'SKIP'
+    target = str(value if value is not None else text).strip().upper()
+    if re.search(r'\bSKIP\b|不回复|不参与|跳过|无需回复|不需要(?:回复|接话)?|保持沉默', target, re.I):
+        return 'SKIP'
+    if re.search(r'\bNEXT\b|回复|参与|接话|需要回答', target, re.I):
+        return 'NEXT'
+    return 'NEXT'
+
+
 def _firstThink(
     Proc,
     bot_hash,
@@ -1023,36 +1055,27 @@ def _firstThink(
     trace_id=None,
     image_candidates=None,
 ):
-    '''返回 ('NEXT'|'SKIP', image_ref)。判定失败默认 NEXT（不丢消息）。'''
+    '''独立参与判断，兼容旧返回结构 ('NEXT'|'SKIP', '')。失败默认 NEXT。'''
     try:
-        if image_candidates is None:
-            max_size = int(OlivaAIAgent.conf.get('ambient', 'intent_image_cache_size', default=10))
-            intent_imgs = OlivaAIAgent.vision.emojiIntentCache(bot_hash, group_id, max_size)
-        else:
-            intent_imgs = dict(image_candidates)
         sys_prompt = '''# 你是二分类器，只判断最新一条群消息是否值得交给正式回复模型
-- 只输出 {"d":"NEXT","i":"图片内容或意图关键词或空"} 或 {"d":"SKIP","i":""}
+- 值得回复只输出 NEXT，不值得回复只输出 SKIP
 - NEXT: 最新消息@你/回复你/叫你名字/问候你/向你提问/要求你做事，或明显在邀请你接话
 - SKIP: 只是群友互相闲聊、与你无关、纯语气词短句且你无合适接话点
-- i: 若适合发表情包，从图片缓存里挑一个贴切图片的内容/意图关键词填入(保守，别硬发)，否则空字符串
-- 不要填文件名/扩展名，不要输出解释'''
-        patch2 = dict(patch)
-        patch2['图片缓存'] = intent_imgs
-        messages = buildContextMessages(sys_prompt, history, patch2)
-        messages.append({'role': 'user', 'content': '完成二分类，只输出 {"d":"NEXT","i":""} 或 {"d":"SKIP","i":""}。'})
+- 不判断图片、工具和回复内容，不要解释'''
+        messages = buildContextMessages(sys_prompt, list(history or [])[-8:], {})
+        messages.append({'role': 'user', 'content': '完成参与判断，只输出 NEXT 或 SKIP。'})
         bc = _intentBackend()
         OlivaAIAgent.conf.traceLog(
             Proc,
             'first_thinking.started',
             trace_id,
-            images=len(intent_imgs),
             messages=len(messages),
             model=bc.get('model', ''),
         )
         res = OlivaAIAgent.aiClient.chat(messages, tools=None, backend_conf=bc,
-                                         force_no_stream=True, response_json=True, thinking_off=True,
+                                         force_no_stream=True, response_json=False, thinking_off=True,
                                          timeout_override=bc.get('timeout_sec', 45), trace_id=trace_id,
-                                         purpose='前置判断')
+                                         purpose='参与判断')
         if not res.get('ok'):
             OlivaAIAgent.conf.traceLog(
                 Proc,
@@ -1062,22 +1085,14 @@ def _firstThink(
                 fallback='NEXT',
             )
             return 'NEXT', ''
-        text = res.get('text', '')
-        m = re.search(r'\{.*\}', text, re.S)
-        data = json.loads(m.group(0)) if m else {}
-        d = str(data.get('d', '')).upper()
-        i = str(data.get('i', '')).strip()
-        decision = 'SKIP' if d.startswith('SKIP') else 'NEXT'
+        decision = _parseParticipationDecision(res.get('text', ''))
         OlivaAIAgent.conf.traceLog(
             Proc,
             'first_thinking.result',
             trace_id,
             decision=decision,
-            image_intent=i or '无',
         )
-        if d.startswith('SKIP'):
-            return 'SKIP', ''
-        return 'NEXT', i
+        return decision, ''
     except Exception as e:
         OlivaAIAgent.conf.traceLog(
             Proc,

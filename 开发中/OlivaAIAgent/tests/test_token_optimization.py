@@ -94,6 +94,35 @@ class TokenOptimizationTest(unittest.TestCase):
         self.assertIn('web_search', names)
         self.assertIn('fetch_url', names)
 
+    def test_tool_router_retries_malformed_small_model_output(self):
+        responses = [
+            {'ok': True, 'text': '{"d":"NEXT"}'},
+            {'ok': True, 'text': 'web_search'},
+        ]
+        with (
+            mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=responses) as chat,
+            mock.patch.object(OlivaAIAgent.voice, 'getStatus', return_value={'ready': False}),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+        ):
+            names = OlivaAIAgent.tools.selectToolNames({}, '帮我查一下资料')
+
+        self.assertIn('web_search', names)
+        self.assertIn('fetch_url', names)
+        self.assertEqual(2, chat.call_count)
+
+    def test_tool_route_parser_accepts_aliases_and_plain_text(self):
+        available = {'web_search': {}, 'fetch_url': {}}
+
+        self.assertEqual(
+            {'web_search'},
+            OlivaAIAgent.tools._parseToolRoute('{"tool":"web_search"}', available),
+        )
+        self.assertEqual(
+            {'fetch_url'},
+            OlivaAIAgent.tools._parseToolRoute('建议调用 fetch_url 即可', available),
+        )
+        self.assertEqual(set(), OlivaAIAgent.tools._parseToolRoute('无需任何工具', available))
+
     def test_tool_router_failure_preserves_all_available_tools(self):
         with (
             mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=RuntimeError('offline')),
@@ -129,6 +158,45 @@ class TokenOptimizationTest(unittest.TestCase):
 
         self.assertEqual(['直接回复内容'], replies)
         self.assertEqual(1, chat.call_count)
+
+    def test_participation_parser_accepts_json_alias_and_plain_text(self):
+        self.assertEqual(
+            'SKIP',
+            OlivaAIAgent.ambient._parseParticipationDecision('{"should_reply":false}'),
+        )
+        self.assertEqual('SKIP', OlivaAIAgent.ambient._parseParticipationDecision('不需要回复'))
+        self.assertEqual('NEXT', OlivaAIAgent.ambient._parseParticipationDecision('NEXT，因为被点名了'))
+
+    def test_image_parser_accepts_alias_filename_and_plain_text(self):
+        candidates = {'fox.gif': {'content': '狐狸捂脸', 'intent': '无奈'}}
+
+        self.assertEqual(
+            '无奈',
+            OlivaAIAgent.preflight._imageValue('{"i":"无奈"}', candidates),
+        )
+        self.assertEqual(
+            'fox.gif',
+            OlivaAIAgent.preflight._imageValue('建议选择 fox.gif 比较合适', candidates),
+        )
+        self.assertEqual(
+            '狐狸捂脸',
+            OlivaAIAgent.preflight._imageValue('图片：狐狸捂脸', candidates),
+        )
+
+    def test_auxiliary_cluster_isolates_failed_task(self):
+        def failed():
+            raise RuntimeError('bad output')
+
+        with mock.patch.object(OlivaAIAgent.conf, 'traceLog'):
+            results = OlivaAIAgent.preflight.runCluster({
+                'reply': lambda: 'NEXT',
+                'image': failed,
+                'tools': lambda: ['web_search'],
+            })
+
+        self.assertEqual('NEXT', results['reply'])
+        self.assertIsNone(results['image'])
+        self.assertEqual(['web_search'], results['tools'])
 
 
 if __name__ == '__main__':

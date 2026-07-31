@@ -1,7 +1,6 @@
 # -*- encoding: utf-8 -*-
 
 import copy
-import json
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -81,7 +80,7 @@ class MainImageSendingTest(unittest.TestCase):
         self.assertIn('fox.gif', context)
         self.assertIn('狐狸捂脸', context)
 
-    def test_first_model_reuses_main_model_image_candidates(self):
+    def test_image_judge_reuses_main_model_image_candidates(self):
         candidates = {
             'fox.gif': {'content': '狐狸捂脸', 'intent': '无奈', 'type': '表情包'},
         }
@@ -89,26 +88,20 @@ class MainImageSendingTest(unittest.TestCase):
 
         def fake_chat(messages, **_kwargs):
             captured['messages'] = messages
-            return {'ok': True, 'text': json.dumps({'d': 'NEXT', 'i': '狐狸捂脸'}, ensure_ascii=False)}
+            return {'ok': True, 'text': '图片：狐狸捂脸'}
 
         with (
             mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=fake_chat),
-            mock.patch.object(OlivaAIAgent.vision, 'emojiIntentCache') as build_candidates,
             mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
         ):
-            decision, image_ref = OlivaAIAgent.ambient._firstThink(
+            image_ref = OlivaAIAgent.preflight.selectImageIntent(
                 None,
-                'bot-hash',
-                'group-1',
+                '这也太难了吧',
                 [],
-                {},
-                'system',
-                'bot-1',
-                image_candidates=candidates,
+                candidates,
             )
 
-        self.assertEqual(('NEXT', '狐狸捂脸'), (decision, image_ref))
-        build_candidates.assert_not_called()
+        self.assertEqual('狐狸捂脸', image_ref)
         self.assertIn('fox.gif', '\n'.join(item['content'] for item in captured['messages']))
 
     def test_agent_reply_uses_existing_outgoing_image_translation(self):

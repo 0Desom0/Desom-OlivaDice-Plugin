@@ -1226,19 +1226,26 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
                 % json.dumps(identifiers, ensure_ascii=False)
             )
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
-    try:
-        image_candidates = OlivaAIAgent.vision.emojiIntentCache(
-            bot_hash,
-            ctx.get('group_id'),
-            int(conf.get('ambient', 'intent_image_cache_size', default=10)),
-        )
-    except Exception:
-        image_candidates = {}
+    image_candidates = ctx.get('image_candidates')
+    if not isinstance(image_candidates, dict):
+        try:
+            image_candidates = OlivaAIAgent.vision.emojiIntentCache(
+                bot_hash,
+                ctx.get('group_id'),
+                int(conf.get('ambient', 'intent_image_cache_size', default=10)),
+            )
+        except Exception:
+            image_candidates = {}
     if image_candidates:
         blocks.append(
             '【可发送图片缓存】\n'
             + json.dumps(image_candidates, ensure_ascii=False)
             + '\n可以自行决定不发、选一张或按语境改选；发送时使用 [发图片:缓存文件名或内容/意图关键词]。'
+        )
+    if ctx.get('suggested_image_file'):
+        blocks.append(
+            '【辅助图片建议】本轮可考虑 [发图片:%s]；这只是建议，你仍可改选或不发。'
+            % ctx['suggested_image_file']
         )
     user_mem = OlivaAIAgent.memory.memFormat(
         OlivaAIAgent.memory.userMemKey(platform, ctx['user_id']),
@@ -1432,13 +1439,40 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
         ctx['query_text'] = user_text
         session_key = OlivaAIAgent.memory.sessionKey(platform, group_id, user_id)
         history = OlivaAIAgent.memory.getSession(session_key, bot_hash=bot_hash)
-        selected_tool_names = OlivaAIAgent.tools.selectToolNames(
-            ctx,
-            user_text,
-            history=history,
-            trace_id=trace_id,
-        )
+        try:
+            image_candidates = OlivaAIAgent.vision.emojiIntentCache(
+                bot_hash,
+                ctx.get('group_id'),
+                int(conf.get('ambient', 'intent_image_cache_size', default=10)),
+            )
+        except Exception:
+            image_candidates = {}
+        ctx['image_candidates'] = image_candidates
+        aux_tasks = {
+            'tools': lambda: OlivaAIAgent.tools.selectToolNames(
+                ctx, user_text, history=history, trace_id=trace_id,
+            ),
+        }
+        if image_candidates:
+            aux_tasks['image'] = lambda: OlivaAIAgent.preflight.selectImageIntent(
+                Proc,
+                user_text,
+                history,
+                image_candidates,
+                trace_id=trace_id,
+            )
+        aux_results = OlivaAIAgent.preflight.runCluster(aux_tasks, Proc=Proc, trace_id=trace_id)
+        selected_tool_names = aux_results.get('tools')
+        if not isinstance(selected_tool_names, list):
+            selected_tool_names = [item['name'] for item in OlivaAIAgent.tools.getToolsForRequest(ctx)]
         ctx['selected_tool_names'] = selected_tool_names
+        image_ref = str(aux_results.get('image') or '')
+        if image_ref:
+            ctx['suggested_image_file'] = OlivaAIAgent.vision.resolveImageRef(
+                image_ref,
+                OlivaAIAgent.vision.imageCacheMap(bot_hash),
+                trace_id=trace_id,
+            )
         try:
             main_rounds = max(2, int(conf.get('memory', 'max_rounds', default=8)))
         except (TypeError, ValueError):
