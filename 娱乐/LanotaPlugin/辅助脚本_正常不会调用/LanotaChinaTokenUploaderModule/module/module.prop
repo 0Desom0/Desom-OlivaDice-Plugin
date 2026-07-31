@@ -1,0 +1,6 @@
+id=lanota_china_token_uploader
+name=Lanota China Token Uploader
+version=1.2.0
+versionCode=12000
+author=0Desom0
+description=Root module with continuous DevTools capture and manual upload for Lanota China Portal tokens.

@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lanota Player Card</title>
+  <title>Lanota China Player Card</title>
   <style>
     @font-face {
       font-family: Kawoszeh;
-      src: url('https://noxygames.com/lanota/portal/assets/kawoszeh.otf') format('opentype');
+      src: url('https://lanota.gmzon.com/portal/assets/kawoszeh.otf') format('opentype');
     }
     * { box-sizing: border-box; }
     :root {
@@ -42,8 +42,8 @@
     }
     .eyebrow-row { min-height: 28px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; }
     .region-tag {
-      min-width: 154px; padding: 6px 10px; border: 1px solid rgba(94,196,212,.55); border-radius: 4px;
-      color: #8bdae5; background: rgba(94,196,212,.08); text-align: center; font-size: 10px;
+      min-width: 154px; padding: 6px 10px; border: 1px solid rgba(224,85,85,.62); border-radius: 4px;
+      color: #f0aaa5; background: rgba(224,85,85,.09); text-align: center; font-size: 10px;
       font-weight: 800; letter-spacing: .08em;
     }
     .hero {
@@ -122,7 +122,7 @@
   <main class="page">
     <div class="eyebrow-row">
       <div class="eyebrow">Lanota Portal · Player Profile</div>
-      <div class="region-tag">国际服 · INTERNATIONAL</div>
+      <div class="region-tag">国服 · CHINA</div>
     </div>
     <section class="hero">
       <div class="avatar">
@@ -165,7 +165,7 @@
       const data = window.__LANOTA_DATA__ || {};
       const player = data.player || {};
       const stats = data.stats || {};
-      const asset = data.portalAssetBaseUrl || 'https://noxygames.com/lanota/portal';
+      const asset = data.portalAssetBaseUrl || 'https://lanota.gmzon.com/portal';
       const num = value => Number(value || 0).toLocaleString('en-US');
       const text = (id, value) => { document.getElementById(id).textContent = value; };
 
@@ -174,7 +174,7 @@
       text('notalium', num(player.notalium));
       text('played', num(stats.totalSongsPlayed));
       text('total-charts', num(stats.totalCharts));
-      text('portal-source', `DATA: ${data.portalSourceLabel || 'NOXYGAMES LANOTA PORTAL'}`);
+      text('portal-source', `DATA: ${data.portalSourceLabel || 'GMZON LANOTA PORTAL'}`);
       text('generated-at', new Date().toLocaleString('zh-CN', {hour12: false}));
       document.getElementById('avatar-image').src = `${asset}/avatars/${player.avatarId || 'av_default'}.webp`;
       document.getElementById('avatar-outline').src = `${asset}/avatars/outline-default.webp`;

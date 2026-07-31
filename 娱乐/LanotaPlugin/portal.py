@@ -44,8 +44,13 @@ def _china_auth_file_path() -> str:
     return os.path.join(utils.get_plugin_data_dir(), 'portal_auth_china.json')
 
 
-def _template_path() -> Path:
-    file_name = config.lanota_portal_template_file_name
+def _template_path(region: str = 'global') -> Path:
+    normalized_region = normalize_region(region)
+    file_name = (
+        config.lanota_portal_china_template_file_name
+        if normalized_region == 'china'
+        else config.lanota_portal_template_file_name
+    )
     runtime_data_dir = Path(utils.get_plugin_data_dir()).resolve()
     candidates = [
         config.package_dir / 'Data' / file_name,
@@ -57,7 +62,9 @@ def _template_path() -> Path:
         if candidate.is_file():
             return candidate
     checked_paths = '\n'.join(f'- {candidate.resolve()}' for candidate in candidates)
-    raise FileNotFoundError(f'未找到 Lanota Portal HTML 模板，已检查：\n{checked_paths}')
+    raise FileNotFoundError(
+        f'未找到 Lanota Portal {region_display_name(normalized_region)} HTML 模板，已检查：\n{checked_paths}'
+    )
 
 
 def _request_headers(token: str) -> dict[str, str]:
@@ -304,7 +311,8 @@ def get_china_token() -> str:
     """读取尚未过期的国服 chinaToken；国服没有刷新接口。"""
     global china_portal_token
     with portal_lock:
-        candidates = [china_portal_token, utils.read_json_file(_china_auth_file_path(), {})]
+        # 手机上传的新文件优先于内存缓存，使 Token 无需重载插件即可热更新。
+        candidates = [utils.read_json_file(_china_auth_file_path(), {}), china_portal_token]
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 continue
@@ -364,13 +372,18 @@ def api_get(
     normalized_region = normalize_region(region)
     if normalized_region == 'china':
         url = f'{config.lanota_portal_china_api_base_url}/{path.lstrip("/")}'
+        request_token = get_china_token()
         try:
-            return _request_json('GET', url, params=params, headers=_request_headers(get_china_token()))
+            return _request_json('GET', url, params=params, headers=_request_headers(request_token))
         except PermissionError as exception_object:
             global china_portal_token
             with portal_lock:
                 china_portal_token = {}
-                _save_china_token_data({})
+                saved = utils.read_json_file(_china_auth_file_path(), {})
+                saved_token = str(saved.get('china_token', '') or '') if isinstance(saved, dict) else ''
+                # 只清除本次请求实际使用的旧 Token，不覆盖手机刚上传的新 Token。
+                if saved_token == request_token:
+                    _save_china_token_data({})
             raise PermissionError(
                 '国服 Portal 登录已失效，请管理员使用 .la china login 重新扫码授权。'
             ) from exception_object
@@ -631,12 +644,13 @@ def _device_scale_factor() -> float:
 
 
 def _template_html(data: dict[str, Any]) -> str:
-    template = _template_path().read_text(encoding='utf-8')
+    normalized_region = normalize_region(data.get('_portal_region', 'global'))
+    template = _template_path(normalized_region).read_text(encoding='utf-8')
     placeholder = '/*__LANOTA_DATA__*/'
     if placeholder not in template:
         raise RuntimeError('Lanota Portal HTML 模板缺少数据占位符。')
     template_data = dict(data)
-    normalized_region = normalize_region(template_data.pop('_portal_region', 'global'))
+    template_data.pop('_portal_region', None)
     asset_base_url = (
         config.lanota_portal_china_asset_base_url
         if normalized_region == 'china'

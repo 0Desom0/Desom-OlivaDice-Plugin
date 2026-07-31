@@ -4,8 +4,8 @@
   "namespace": "LanotaPlugin",
   "message_mode": "olivos_string",
   "info": "Lanota 曲库查询、Portal 玩家绑定与状态卡片、曲绘缓存、随机、定数与 Wiki API 同步插件",
-  "version": "1.4.0",
-  "svn": 12,
+  "version": "1.5.0",
+  "svn": 13,
   "compatible_svn": 190,
   "priority": 30000,
   "support": [

@@ -40,6 +40,7 @@ command_configs = [
     ('rating', 'rating'),
     ('bind', '绑定'),
     ('user', '用户'),
+    ('friend', '好友码'),
     ('china', '国服'),
     ('category', 'cate'),
     ('table', '定数表'),
@@ -88,6 +89,8 @@ subcommand_alias_dict = {
     'user': 'user',
     '用户': 'user',
     '玩家': 'user',
+    'friend': 'friend',
+    '好友码': 'friend',
     'china': 'china',
     'cn': 'china',
     '国服': 'china',
@@ -1070,7 +1073,7 @@ def handle_user(plugin_event, argument: str) -> None:
         if utils.send_private_message(plugin_event, user_id, message_text):
             utils.reply_message(plugin_event, '绑定的 Lanota 好友码已通过私聊发送。')
             return
-        utils.reply_message(plugin_event, '私聊发送失败，请私聊 Bot 使用 .la user friend 查询。')
+        utils.reply_message(plugin_event, '私聊发送失败，请私聊 Bot 使用 .la friend 查询。')
         return
     if user_argument:
         reply_text(plugin_event, '用法：.la user 或 .la user friend')
@@ -1413,7 +1416,8 @@ help_categories = {
             '/la bind <好友码> - 绑定自己的 Lanota 好友码',
             '/la bind cn <好友码> - 绑定自己的国服 Lanota 好友码',
             '/la user - 查询绑定玩家的 Portal 状态卡片',
-            '/la user friend - 私聊查询当前绑定的好友码',
+            '/la friend - 私聊查询当前绑定的好友码，并显示国际服/国服',
+            '/la user friend - .la friend 的兼容写法',
             '/la china status - 查看国服 Portal 登录状态（骰主/插件管理员）',
             '/la china login - 私聊扫码登录国服 Portal（骰主/插件管理员）',
             '/la ritmo - 显示里莫绝赞昏睡时间',
@@ -1426,6 +1430,7 @@ help_categories = {
             '/la bind <好友码>',
             '/la bind cn <好友码>',
             '/la user',
+            '/la friend',
             '/la user friend',
             '/la china status',
             '/la china login',
@@ -1658,6 +1663,7 @@ command_handler_dict = {
     'rating': lambda event, arg: handle_rating(event),
     'bind': handle_bind,
     'user': handle_user,
+    'friend': lambda event, arg: handle_user(event, 'friend'),
     'china': handle_china,
     'category': handle_category,
     'table': handle_table,

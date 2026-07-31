@@ -35,6 +35,7 @@ lanota_portal_browser_path = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Applicat
 lanota_portal_connect_timeout_seconds = 10
 lanota_portal_timeout_seconds = 25
 lanota_portal_template_file_name = 'lanota_portal_user.html'
+lanota_portal_china_template_file_name = 'lanota_portal_user_china.html'
 lanota_portal_screenshot_width = 1200
 lanota_portal_screenshot_height = 1360
 lanota_portal_device_scale_factor = 2
