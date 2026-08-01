@@ -171,7 +171,14 @@
         return source.replace(/(?<=\d)\.0(?=\D|$)/g, '');
       };
       const constantLabel = (officialValue, folkValue, fallbackValue) => {
-        const official = compactNumber(officialValue ?? fallbackValue) || '未知';
+        const level = String(fallbackValue ?? '').trim();
+        const officialConstant = compactNumber(officialValue);
+        let official = officialConstant || compactNumber(fallbackValue) || '未知';
+        const plusLevel = level.match(/^(\d+)\+$/);
+        if (plusLevel && officialConstant) {
+          const constantMatch = officialConstant.match(new RegExp(`^${plusLevel[1]}(?:\\.(\\d+))?$`));
+          if (constantMatch) official = constantMatch[1] && Number(constantMatch[1]) !== 0 ? `${level}.${constantMatch[1]}` : level;
+        }
         if (folkValue == null || String(folkValue).trim() === '') return official;
         let folk = compactNumber(folkValue);
         const major = official.match(/^\d+/)?.[0];

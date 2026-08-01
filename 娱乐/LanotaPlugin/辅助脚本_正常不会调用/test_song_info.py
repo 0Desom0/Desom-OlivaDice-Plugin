@@ -39,6 +39,10 @@ class SongInfoTest(unittest.TestCase):
             message.function.format_compact_chart_constant(15.3, '15.8-15.9', '15'),
             '15.3(.8-.9)',
         )
+        self.assertEqual(
+            message.function.format_compact_chart_constant(15.5, 15.6, '15+'),
+            '15+.5(.6)',
+        )
 
     def test_default_bound_region_prefers_global(self) -> None:
         with patch.object(

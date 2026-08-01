@@ -177,6 +177,21 @@ class SongSyncTest(unittest.TestCase):
         title = "Anökumene of the endless ocher"
         self.assertEqual(song_sync.clean_title_text(title), title)
 
+    def test_strip_nowiki_markup_recurses_without_removing_content(self):
+        song = {
+            "title": "<nowiki>#</nowiki>1f1e33",
+            "cover_art": "<nowiki>:Poin7less</nowiki>",
+            "nested": ["<NOWIKI>kept</NOWIKI>"],
+        }
+        self.assertEqual(
+            song_sync.strip_nowiki_markup(song),
+            {
+                "title": "#1f1e33",
+                "cover_art": ":Poin7less",
+                "nested": ["kept"],
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

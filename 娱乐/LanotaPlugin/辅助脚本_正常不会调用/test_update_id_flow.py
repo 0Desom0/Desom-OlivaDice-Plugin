@@ -30,6 +30,61 @@ def official_song(song_id: str, title: str) -> dict:
 
 
 class UpdateIdFlowTest(unittest.TestCase):
+    @staticmethod
+    def _complete_song_with_nowiki() -> dict:
+        return {
+            'id': 1,
+            'title': '<nowiki>#</nowiki>1f1e33',
+            'chapter': 'Event-6',
+            'official_songid': '1f1e33',
+            'bpm': '181',
+            'time': '2:49',
+            'notes': {'whisper': '1', 'acoustic': '2', 'ultra': '3', 'master': '4'},
+        }
+
+    def test_wiki_field_removes_nowiki_tags(self):
+        self.assertEqual(
+            crawler.clean_wiki_links('<nowiki>#</nowiki>1f1e33'),
+            '#1f1e33',
+        )
+
+    def test_update_strips_historical_nowiki_before_save(self):
+        song = self._complete_song_with_nowiki()
+        empty_match = {'matched': [], 'review': [], 'legacy_review': []}
+        empty_new = {'added_songs': [], 'title_outside_updates': [], 'official_pending': []}
+        with (
+            patch.object(function, 'load_song_data', return_value=[song]),
+            patch.object(crawler, 'fetch_official_song_catalog', return_value=([], [])),
+            patch.object(
+                crawler,
+                'match_and_apply_official_catalog',
+                side_effect=lambda data, _catalog: (data, {}, empty_match),
+            ),
+            patch.object(crawler, 'sync_new_songs_from_wiki', return_value=empty_new),
+            patch.object(function, 'save_song_data', return_value=True) as save_song_data,
+        ):
+            crawler.run_update()
+        self.assertEqual(save_song_data.call_args.args[0][0]['title'], '#1f1e33')
+
+    def test_fullcheck_apply_strips_historical_nowiki_before_save(self):
+        song = self._complete_song_with_nowiki()
+        empty_match = {'matched': [], 'review': [], 'legacy_review': []}
+        empty_new = {'added_songs': [], 'title_outside_updates': [], 'official_pending': []}
+        with (
+            patch.object(function, 'load_song_data', return_value=[song]),
+            patch.object(crawler, 'fetch_official_song_catalog', return_value=([], [])),
+            patch.object(crawler.song_sync, 'match_song_catalog', return_value=empty_match),
+            patch.object(
+                crawler.song_sync,
+                'apply_catalog_matches',
+                side_effect=lambda data, _catalog, _matches: (data, {}),
+            ),
+            patch.object(crawler, 'sync_new_songs_from_wiki', return_value=empty_new),
+            patch.object(function, 'save_song_data', return_value=True) as save_song_data,
+        ):
+            crawler.run_full_check(apply=True)
+        self.assertEqual(save_song_data.call_args.args[0][0]['title'], '#1f1e33')
+
     def test_fullcheck_reapplies_legacy_official_fields_after_fandom_parse(self):
         current_official = official_song('song_new', 'Song')
         legacy_official = official_song('song', 'Song (Legacy)')

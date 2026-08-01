@@ -15,6 +15,7 @@ DIFFICULTY_NAMES = ("whisper", "acoustic", "ultra", "master")
 DIFFICULTY_LABELS = ("Whisper", "Acoustic", "Ultra", "Master")
 OFFICIAL_SONG_ID_FIELD = "official_songid"
 MEDIAWIKI_TAG_PATTERN = re.compile(r"<[^>]+>")
+NOWIKI_TAG_PATTERN = re.compile(r"</?nowiki\b[^>]*>", flags=re.I)
 NON_ALNUM_PATTERN = re.compile(r"[^\w]+", flags=re.UNICODE)
 CHARACTER_FOLD_MAP = str.maketrans(
     {
@@ -48,13 +49,23 @@ def next_numeric_song_id(songs: list[dict[str, Any]]) -> int:
     return max(numeric_ids, default=0) + 1
 
 
+def strip_nowiki_markup(value: Any) -> Any:
+    """递归移除 Fandom 残留的 nowiki 标签，保留标签内容和数据结构。"""
+    if isinstance(value, dict):
+        return {key: strip_nowiki_markup(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [strip_nowiki_markup(item) for item in value]
+    if isinstance(value, str):
+        return NOWIKI_TAG_PATTERN.sub("", value)
+    return value
+
+
 def clean_title_text(value: Any) -> str:
     """去掉 Fandom 标题残留的 HTML/MediaWiki 标记并统一实体。"""
-    text = str(value or "")
+    text = str(strip_nowiki_markup(value or ""))
     for _unused in range(2):
         text = html.unescape(text)
     text = MEDIAWIKI_TAG_PATTERN.sub("", text)
-    text = re.sub(r"</?nowiki>", "", text, flags=re.I)
     return re.sub(r"\s+", " ", text).strip()
 
 

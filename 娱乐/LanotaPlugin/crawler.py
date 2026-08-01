@@ -38,7 +38,7 @@ def clean_ref(text: str) -> str:
 
 
 def clean_wiki_links(text: str) -> str:
-    source = str(text)
+    source = str(song_sync.strip_nowiki_markup(text))
     source = re.sub(r'\[\[(?:[^|\]]+\|)?([^\]]+)\]\]', r'\1', source)
     return re.sub(r"'{2,}", '', source).strip()
 
@@ -1110,7 +1110,7 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
         }
     )
 
-    data = function.load_song_data()
+    data = song_sync.strip_nowiki_markup(function.load_song_data())
     original_count = len(data)
     official_catalog, official_source_errors = fetch_official_song_catalog()
     official_match_result = song_sync.match_song_catalog(data, official_catalog)
@@ -1274,7 +1274,7 @@ def run_update() -> dict[str, Any]:
         }
     )
 
-    data = function.load_song_data()
+    data = song_sync.strip_nowiki_markup(function.load_song_data())
     original_count = len(data)
     official_catalog, official_source_errors = fetch_official_song_catalog()
     data, official_update_stats, official_match_result = match_and_apply_official_catalog(

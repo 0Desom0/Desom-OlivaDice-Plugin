@@ -206,9 +206,19 @@ def format_compact_chart_constant(
     folk_value: Any = None,
     fallback_value: Any = None,
 ) -> str:
-    """格式化为 15.3(.4)；没有民间定数时只显示官方值。"""
+    """同时显示大等级与定数，例如 15.3(.4) 或 15+.5(.6)。"""
     source_value = official_value if official_value not in [None, ''] else fallback_value
     official_text = format_table_constant(source_value)
+    level_text = str(fallback_value or '').strip()
+    plus_level_match = re.fullmatch(r'(\d+)\+', level_text)
+    if plus_level_match:
+        constant_match = re.fullmatch(
+            rf'{re.escape(plus_level_match.group(1))}(?:\.(\d+))?',
+            official_text,
+        )
+        if constant_match:
+            fraction = constant_match.group(1)
+            official_text = level_text if not fraction or int(fraction) == 0 else f'{level_text}.{fraction}'
     official_text = re.sub(r'(?<=\d)\.0(?=\D|$)', '', official_text)
     if not official_text:
         official_text = '未知'
