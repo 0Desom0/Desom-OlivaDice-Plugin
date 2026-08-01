@@ -17,6 +17,8 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunpa
 
 from . import config
 from . import function
+from . import portal
+from . import song_sync
 from . import utils
 
 try:
@@ -182,6 +184,86 @@ def fetch_song_list_from_api(session) -> list[dict[str, str]]:
     return songs_info
 
 
+def fetch_official_song_catalog() -> tuple[list[dict[str, Any]], list[str]]:
+    """合并可用的国际服/国服官方曲库；重叠项优先国际服账号。"""
+    catalogs = {}
+    errors = []
+    for region in ('global', 'china'):
+        try:
+            songs = portal.api_get('songs', region=region).get('songs', [])
+            catalogs[region] = [
+                dict(song, _portal_region=region)
+                for song in song_sync.validate_official_catalog(songs)
+            ]
+        except Exception as exception_object:
+            errors.append(f'{region}: {type(exception_object).__name__}: {exception_object}')
+    if not catalogs:
+        raise RuntimeError('无法取得 Portal 官方曲库：' + '；'.join(errors))
+
+    primary_region = max(catalogs, key=lambda item: len(catalogs[item]))
+    merged_by_id = {str(song['songId']): song for song in catalogs[primary_region]}
+    for region in ('china', 'global'):
+        for song in catalogs.get(region, []):
+            merged_by_id[str(song['songId'])] = song
+    merged = sorted(merged_by_id.values(), key=lambda song: str(song['songId']).casefold())
+    return merged, errors
+
+
+def get_rating_record_total(data: dict[str, Any], difficulty_index: int) -> str:
+    for score in data.get('scores', []):
+        if not isinstance(score, dict) or int(score.get('difficulty', -1)) != difficulty_index:
+            continue
+        rating_record = score.get('ratingRecord')
+        if not isinstance(rating_record, dict):
+            return ''
+        total = rating_record.get('total')
+        return str(total) if total not in [None, ''] else ''
+    return ''
+
+
+def fill_missing_notes_from_portal(
+    song: dict[str, Any],
+    official_song: dict[str, Any],
+) -> dict[str, int]:
+    """Fandom 物量为空时，按单曲个人成绩 ratingRecord.total 回退。"""
+    notes = song.get('notes')
+    if not isinstance(notes, dict):
+        notes = {}
+        song['notes'] = notes
+    stats = {'requested': 0, 'filled': 0, 'unavailable': 0}
+    region = str(official_song.get('_portal_region', 'global'))
+    song_id = str(official_song.get('songId', ''))
+    for difficulty_index, difficulty_name in enumerate(song_sync.DIFFICULTY_NAMES):
+        if str(notes.get(difficulty_name, '') or '').strip():
+            continue
+        stats['requested'] += 1
+        try:
+            detail = portal.api_get(
+                'score/song',
+                params={'songId': song_id, 'difficulty': difficulty_index},
+                region=region,
+            )
+            total = get_rating_record_total(detail, difficulty_index)
+        except Exception:
+            total = ''
+        if total:
+            notes[difficulty_name] = total
+            stats['filled'] += 1
+        else:
+            notes[difficulty_name] = ''
+            stats['unavailable'] += 1
+    return stats
+
+
+def match_and_apply_official_catalog(
+    data: list[dict[str, Any]],
+    official_catalog: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    match_result = song_sync.match_song_catalog(data, official_catalog)
+    updated_data, update_stats = song_sync.apply_catalog_matches(data, official_catalog, match_result)
+    return updated_data, update_stats, match_result
+
+
 def check_missing_fields(song: dict[str, Any]) -> list[str]:
     missing = []
     if not str(song.get('bpm', '')).strip():
@@ -291,7 +373,7 @@ def get_song_cover_files(template) -> list[str]:
     return [variant['file_title'] for variant in get_song_cover_variants(template)]
 
 
-def parse_song_from_wikitext(wikitext: str, info: dict[str, str], next_id: int) -> dict[str, Any] | None:
+def parse_song_from_wikitext(wikitext: str, info: dict[str, str], next_id: Any) -> dict[str, Any] | None:
     template, wikicode = get_song_template(wikitext)
     if template is None:
         return None
@@ -810,30 +892,38 @@ def run_cover_update(force: bool = False, progress_callback=None) -> dict[str, A
     }
 
 
-def update_existing_song_from_wiki(session, song: dict[str, Any]):
-    source_url = song.get('source_url')
-    if not source_url:
-        return None, []
-    wikitext = fetch_wikitext(session, wiki_url_to_page_name(source_url))
-    if not wikitext:
-        return None, []
-    parsed_song = parse_song_from_wikitext(
-        wikitext,
-        {
-            'display_title': str(song.get('title', '')),
-            'href': str(source_url),
-            'page_name': wiki_url_to_page_name(source_url),
-        },
-        int(song.get('id', 0) or 0),
-    )
-    if not parsed_song:
-        return None, []
-
+def update_existing_song_from_wiki(
+    session,
+    song: dict[str, Any],
+    official_song: dict[str, Any],
+    legacy_official_song: dict[str, Any] | None = None,
+):
     before_missing = set(check_missing_fields(song))
     merged = dict(song)
-    for key, value in parsed_song.items():
-        if value not in [None, '', {}, []]:
-            merged[key] = value
+    source_url = song.get('source_url')
+    if source_url:
+        wikitext = fetch_wikitext(session, wiki_url_to_page_name(source_url))
+        if wikitext:
+            parsed_song = parse_song_from_wikitext(
+                wikitext,
+                {
+                    'display_title': str(song.get('title', '')),
+                    'href': str(source_url),
+                    'page_name': wiki_url_to_page_name(source_url),
+                },
+                song.get('id', ''),
+            )
+            if parsed_song:
+                for key, value in parsed_song.items():
+                    if value not in [None, '', {}, []]:
+                        merged[key] = value
+    merged, _official_changed = song_sync.apply_official_song(merged, official_song)
+    if legacy_official_song is not None:
+        merged, _legacy_changed = song_sync.apply_legacy_official_song(
+            merged,
+            legacy_official_song,
+        )
+    fill_missing_notes_from_portal(merged, official_song)
     after_missing = set(check_missing_fields(merged))
     updated_fields = sorted(before_missing - after_missing)
     return merged, updated_fields
@@ -867,8 +957,13 @@ def _song_field_diff(old_song: dict[str, Any], new_song: dict[str, Any], preserv
     return changed
 
 
-def overwrite_existing_song_from_wiki(session, song: dict[str, Any]):
-    """用 wiki 数据全量覆盖本地曲目，但保留 id / 章节号 / 谱师。"""
+def overwrite_existing_song_from_wiki(
+    session,
+    song: dict[str, Any],
+    official_song: dict[str, Any],
+    legacy_official_song: dict[str, Any] | None = None,
+):
+    """用 wiki 数据全量覆盖本地曲目，但保留数字 id / 章节号 / 谱师。"""
     source_url = song.get('source_url')
     page_name = ''
     if source_url:
@@ -892,13 +987,13 @@ def overwrite_existing_song_from_wiki(session, song: dict[str, Any]):
             'href': href,
             'page_name': page_name,
         },
-        int(song.get('id', 0) or 0),
+        song.get('id', ''),
     )
     if not parsed_song:
         return None, []
 
     merged = dict(parsed_song)
-    # 章节号与谱师绝对保留本地值；id 也保持本地
+    # 章节号、谱师与数字 id 绝对保留本地值。
     for key in PRESERVE_ON_FULL_CHECK:
         if key in song:
             merged[key] = song.get(key)
@@ -915,12 +1010,25 @@ def overwrite_existing_song_from_wiki(session, song: dict[str, Any]):
         # wiki 没有 Legacy 时，不凭空塞整表；仅当本地本身有 Legacy 且 wiki 解析出 Legacy 才处理
         pass
 
+    merged, _official_changed = song_sync.apply_official_song(merged, official_song)
+    if legacy_official_song is not None:
+        merged, _legacy_changed = song_sync.apply_legacy_official_song(
+            merged,
+            legacy_official_song,
+        )
+    fill_missing_notes_from_portal(merged, official_song)
     changed_fields = _song_field_diff(song, merged, PRESERVE_ON_FULL_CHECK)
     return merged, changed_fields
 
 
-def sync_new_songs_from_wiki(session, data: list[dict[str, Any]], apply: bool = False) -> dict[str, Any]:
-    """发现 wiki 新曲并按需写入本地；同时兼容同章节补 title_outside。"""
+def sync_new_songs_from_wiki(
+    session,
+    data: list[dict[str, Any]],
+    official_catalog: list[dict[str, Any]],
+    matched_official_ids: set[str] | None = None,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """发现 Fandom 新曲并分配数字 id；新曲官方 ID 留给辅助脚本匹配。"""
     songs_info = fetch_song_list_from_api(session)
     existing_titles = {str(item.get('title', '')).lower() for item in data}
     existing_outside = {str(item.get('title_outside', '')).lower() for item in data if item.get('title_outside')}
@@ -934,12 +1042,14 @@ def sync_new_songs_from_wiki(session, data: list[dict[str, Any]], apply: bool = 
 
     added_songs = []
     title_outside_updates = []
+    official_pending = []
+    next_numeric_id = song_sync.next_numeric_song_id(data)
     for info in candidates:
         page_name = info.get('page_name') or wiki_url_to_page_name(info.get('href', ''))
         wikitext = fetch_wikitext(session, page_name)
         if not wikitext:
             continue
-        parsed_song = parse_song_from_wikitext(wikitext, info, len(data) + len(added_songs) + 1)
+        parsed_song = parse_song_from_wikitext(wikitext, info, next_numeric_id)
         if not parsed_song:
             continue
 
@@ -966,6 +1076,15 @@ def sync_new_songs_from_wiki(session, data: list[dict[str, Any]], apply: bool = 
         if apply:
             data.append(parsed_song)
         added_songs.append(parsed_song)
+        official_pending.append(
+            {
+                'title': parsed_song.get('title', ''),
+                'chapter': parsed_song.get('chapter', ''),
+                'candidates': [],
+                'reason': '新曲等待辅助脚本匹配 official_songid',
+            }
+        )
+        next_numeric_id += 1
         existing_chapters.add(chapter)
         existing_titles.add(str(parsed_song.get('title', '')).lower())
         existing_outside.add(str(parsed_song.get('title_outside', '')).lower())
@@ -974,11 +1093,12 @@ def sync_new_songs_from_wiki(session, data: list[dict[str, Any]], apply: bool = 
     return {
         'added_songs': added_songs,
         'title_outside_updates': title_outside_updates,
+        'official_pending': official_pending,
     }
 
 
 def run_full_check(apply: bool = False) -> dict[str, Any]:
-    """对数据库中全部歌曲做 wiki 全量检测；仅在 apply=True 时写回本地。"""
+    """全量检测 Fandom 元数据，并用 Portal 覆盖官方 ID、难度与定数。"""
     if not API_DEPENDENCIES_AVAILABLE:
         raise RuntimeError('缺少依赖：requests 与 mwparserfromhell')
 
@@ -992,6 +1112,26 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
 
     data = function.load_song_data()
     original_count = len(data)
+    official_catalog, official_source_errors = fetch_official_song_catalog()
+    official_match_result = song_sync.match_song_catalog(data, official_catalog)
+    _official_preview, official_update_stats = song_sync.apply_catalog_matches(
+        data,
+        official_catalog,
+        official_match_result,
+    )
+    official_by_local_index = {
+        int(item['local_index']): item['official_song']
+        for item in official_match_result.get('matched', [])
+    }
+    legacy_official_by_local_index = {
+        int(item['local_index']): item['official_song']
+        for item in official_match_result.get('legacy_matched', [])
+    }
+    matched_official_ids = {
+        str(item.get('song_id', ''))
+        for item in official_match_result.get('matched', [])
+        if item.get('song_id')
+    }
     checked = 0
     updated = 0
     unchanged = 0
@@ -1001,8 +1141,26 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
     for index, song in enumerate(data):
         checked += 1
         title = str(song.get('title') or song.get('title_outside') or song.get('chapter') or index)
+        official_song = official_by_local_index.get(index)
+        if official_song is None:
+            failed += 1
+            results.append(
+                {
+                    'title': title,
+                    'chapter': song.get('chapter', ''),
+                    'success': False,
+                    'changed': [],
+                    'error': '没有取得唯一可信的官方 songId 匹配',
+                }
+            )
+            continue
         try:
-            overwritten, changed_fields = overwrite_existing_song_from_wiki(session, song)
+            overwritten, changed_fields = overwrite_existing_song_from_wiki(
+                session,
+                song,
+                official_song,
+                legacy_official_by_local_index.get(index),
+            )
             if overwritten is None:
                 failed += 1
                 results.append(
@@ -1049,12 +1207,37 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
             )
         time.sleep(0.15)
 
-    new_song_result = sync_new_songs_from_wiki(session, data, apply=apply)
+    new_song_result = sync_new_songs_from_wiki(
+        session,
+        data,
+        official_catalog,
+        matched_official_ids=matched_official_ids,
+        apply=apply,
+    )
     added_songs = new_song_result.get('added_songs', [])
     title_outside_updates = new_song_result.get('title_outside_updates', [])
+    official_pending = [
+        {
+            'title': item.get('title', ''),
+            'chapter': item.get('chapter', ''),
+            'candidates': item.get('candidates', []),
+        }
+        for item in official_match_result.get('review', [])
+    ]
+    official_pending.extend(
+        {
+            'title': item.get('title', ''),
+            'chapter': item.get('chapter', ''),
+            'chart_type': 'legacy',
+            'candidates': item.get('candidates', []),
+        }
+        for item in official_match_result.get('legacy_review', [])
+    )
+    official_pending.extend(new_song_result.get('official_pending', []))
 
-    if apply and not function.save_song_data(data):
-        raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
+    if apply:
+        if not function.save_song_data(data):
+            raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
     return {
         'mode': 'full_check_apply' if apply else 'full_check_detect',
         'apply': apply,
@@ -1065,6 +1248,11 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
         'added_titles': [str(song.get('title', '')) for song in added_songs],
         'title_outside_updated': len(title_outside_updates),
         'title_outside_updates': title_outside_updates,
+        'official_matched': official_update_stats.get('matched', 0),
+        'official_legacy_matched': official_update_stats.get('legacy_matched', 0),
+        'official_updated': official_update_stats.get('changed_songs', 0),
+        'official_pending': official_pending,
+        'official_source_errors': official_source_errors,
         'unchanged': unchanged,
         'failed': failed,
         'results': results,
@@ -1088,6 +1276,12 @@ def run_update() -> dict[str, Any]:
 
     data = function.load_song_data()
     original_count = len(data)
+    official_catalog, official_source_errors = fetch_official_song_catalog()
+    data, official_update_stats, official_match_result = match_and_apply_official_catalog(
+        data,
+        official_catalog,
+    )
+    official_by_id = {str(song.get('songId', '')): song for song in official_catalog}
     songs_with_missing = [
         {
             'song': song,
@@ -1100,7 +1294,31 @@ def run_update() -> dict[str, Any]:
     update_results = []
     for item in songs_with_missing:
         song = item['song']
-        updated_song, updated_fields = update_existing_song_from_wiki(session, song)
+        official_song = official_by_id.get(str(song.get(song_sync.OFFICIAL_SONG_ID_FIELD, '')))
+        if official_song is None:
+            update_results.append(
+                {
+                    'title': song.get('title', ''),
+                    'chapter': song.get('chapter', ''),
+                    'missing': item['missing'],
+                    'updated': [],
+                    'success': False,
+                    'error': '没有取得唯一可信的官方 songId 匹配',
+                }
+            )
+            continue
+        legacy_data = song.get('Legacy', {})
+        legacy_song_id = (
+            str(legacy_data.get(song_sync.OFFICIAL_SONG_ID_FIELD, '') or '')
+            if isinstance(legacy_data, dict)
+            else ''
+        )
+        updated_song, updated_fields = update_existing_song_from_wiki(
+            session,
+            song,
+            official_song,
+            official_by_id.get(legacy_song_id),
+        )
         success = bool(updated_song and updated_fields)
         if updated_song:
             for index, old_song in enumerate(data):
@@ -1118,10 +1336,40 @@ def run_update() -> dict[str, Any]:
         )
         time.sleep(0.2)
 
-    new_song_result = sync_new_songs_from_wiki(session, data, apply=True)
+    matched_official_ids = {
+        str(item.get('song_id', ''))
+        for item in official_match_result.get('matched', [])
+        if item.get('song_id')
+    }
+    new_song_result = sync_new_songs_from_wiki(
+        session,
+        data,
+        official_catalog,
+        matched_official_ids=matched_official_ids,
+        apply=True,
+    )
     new_titles = [str(song.get('title', '')) for song in new_song_result.get('added_songs', [])]
 
-    function.save_song_data(data)
+    if not function.save_song_data(data):
+        raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
+    official_pending = [
+        {
+            'title': item.get('title', ''),
+            'chapter': item.get('chapter', ''),
+            'candidates': item.get('candidates', []),
+        }
+        for item in official_match_result.get('review', [])
+    ]
+    official_pending.extend(
+        {
+            'title': item.get('title', ''),
+            'chapter': item.get('chapter', ''),
+            'chart_type': 'legacy',
+            'candidates': item.get('candidates', []),
+        }
+        for item in official_match_result.get('legacy_review', [])
+    )
+    official_pending.extend(new_song_result.get('official_pending', []))
     return {
         'before': original_count,
         'missing_songs': len(songs_with_missing),
@@ -1129,5 +1377,10 @@ def run_update() -> dict[str, Any]:
         'missing_results': update_results,
         'added': len(new_titles),
         'added_titles': new_titles,
+        'official_matched': official_update_stats.get('matched', 0),
+        'official_legacy_matched': official_update_stats.get('legacy_matched', 0),
+        'official_updated': official_update_stats.get('changed_songs', 0),
+        'official_pending': official_pending,
+        'official_source_errors': official_source_errors,
         'total': len(data),
     }

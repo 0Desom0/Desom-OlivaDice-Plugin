@@ -36,8 +36,12 @@ lanota_portal_connect_timeout_seconds = 10
 lanota_portal_timeout_seconds = 25
 lanota_portal_template_file_name = 'lanota_portal_user.html'
 lanota_portal_china_template_file_name = 'lanota_portal_user_china.html'
+lanota_portal_song_template_file_name = 'lanota_portal_song.html'
+# 歌曲卡片通过数据中的区域标签动态区分国际服/国服，共用一份模板，避免部署时漏装副本。
+lanota_portal_china_song_template_file_name = 'lanota_portal_song.html'
 lanota_portal_screenshot_width = 1200
 lanota_portal_screenshot_height = 1360
+lanota_portal_song_screenshot_height = 1600
 lanota_portal_device_scale_factor = 2
 
 allowed_prefix_list = ['.', '。', '/', '／']
@@ -81,5 +85,6 @@ default_bot_config = {
     'bot_enable_switch': True,
     'send_as_image': True,
     'plain_text_mode': False,
+    'song_card_html_enable': True,
     'disabled_group_list': [],
 }

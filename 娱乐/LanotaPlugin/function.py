@@ -201,6 +201,30 @@ def format_table_constant(value: Any) -> str:
         return text
 
 
+def format_compact_chart_constant(
+    official_value: Any,
+    folk_value: Any = None,
+    fallback_value: Any = None,
+) -> str:
+    """格式化为 15.3(.4)；没有民间定数时只显示官方值。"""
+    source_value = official_value if official_value not in [None, ''] else fallback_value
+    official_text = format_table_constant(source_value)
+    official_text = re.sub(r'(?<=\d)\.0(?=\D|$)', '', official_text)
+    if not official_text:
+        official_text = '未知'
+    if folk_value in [None, '']:
+        return official_text
+    folk_text = format_table_constant(folk_value)
+    folk_text = re.sub(r'(?<=\d)\.0(?=\D|$)', '', folk_text)
+    major_match = re.match(r'^(\d+)', official_text)
+    if major_match and re.fullmatch(
+        rf'{re.escape(major_match.group(1))}(?:\.\d+)?(?:\s*[~-]\s*{re.escape(major_match.group(1))}(?:\.\d+)?)?',
+        folk_text,
+    ):
+        folk_text = re.sub(rf'\b{re.escape(major_match.group(1))}(?=\.)', '', folk_text)
+    return f'{official_text}({folk_text})'
+
+
 def format_song_info(song: dict[str, Any]) -> str:
     """按原 nonebot 插件格式渲染乐曲信息。"""
     table_data = load_table_data()
@@ -208,29 +232,47 @@ def format_song_info(song: dict[str, Any]) -> str:
     chapter_difficulty = table_data.get(chapter, {}) if chapter else {}
     legacy_info = song.get('Legacy', {})
     difficulty = song.get('difficulty', {}) if isinstance(song.get('difficulty'), dict) else {}
+    official_constant = (
+        song.get('official_constant', {})
+        if isinstance(song.get('official_constant'), dict)
+        else {}
+    )
     notes = song.get('notes', {}) if isinstance(song.get('notes'), dict) else {}
 
     def format_difficulty_info(diff_type: str) -> str:
         diff_str = get_value(difficulty.get(diff_type))
-        notes_str = f'物量: {get_value(notes.get(diff_type))}'
+        official_value = official_constant.get(diff_type)
         table_key = diff_type.capitalize()
         table_diff = chapter_difficulty.get(table_key)
-        if table_diff:
-            return f'{diff_str}({format_table_constant(table_diff)}) ({notes_str})'
-        return f'{diff_str} ({notes_str})'
+        constant_text = format_compact_chart_constant(official_value, table_diff, diff_str)
+        return f'{constant_text} (物量: {get_value(notes.get(diff_type))})'
 
     def format_legacy_difficulty(diff_key: str, max_key: str) -> str:
         if not isinstance(legacy_info, dict):
             return '无信息'
         diff_value = legacy_info.get(diff_key)
         max_value = legacy_info.get(max_key)
+        legacy_constant = legacy_info.get('official_constant', {})
+        constant_value = None
+        if isinstance(legacy_constant, dict):
+            constant_value = legacy_constant.get(diff_key.removeprefix('Diff').lower())
         if diff_value or max_value:
-            return f'{get_value(diff_value)} (物量: {get_value(max_value)})'
+            constant_text = format_compact_chart_constant(
+                constant_value,
+                legacy_info.get('folk_constant', {}).get(
+                    diff_key.removeprefix('Diff').lower(),
+                )
+                if isinstance(legacy_info.get('folk_constant'), dict)
+                else None,
+                diff_value,
+            )
+            return f'{constant_text} (物量: {get_value(max_value)})'
         return '无信息'
 
     line_list = [
         '══════════ 乐曲信息 ══════════',
         f'▪ 乐曲ID: {get_value(song.get("id"))}',
+        f'▪ 官方songId: {get_value(song.get("official_songid"))}',
         f'▪ 曲名: {get_value(song.get("title"))}',
         f'▪ 分类: {category_name_map.get(song.get("category"), get_value(song.get("category")))}',
         f'▪ 章节: {chapter}',
@@ -251,6 +293,7 @@ def format_song_info(song: dict[str, Any]) -> str:
         line_list.extend(
             [
                 '══════════ 旧谱信息 ══════════',
+                f'▪ 官方songId: {get_value(legacy_info.get("official_songid"))}',
                 f'▪ 谱师: {get_value(legacy_info.get("Chart Design"))}',
                 f'    ┌ Whisper: {format_legacy_difficulty("DiffWhisper", "MaxWhisper")}',
                 f'    ├ Acoustic: {format_legacy_difficulty("DiffAcoustic", "MaxAcoustic")}',
@@ -355,12 +398,16 @@ def find_song_by_search_term(
     match_type = '章节号匹配' if matched_songs else None
 
     if not matched_songs:
-        try:
-            song_id = int(search_text)
-            matched_songs = [song for song in song_data if int(song.get('id', -1)) == song_id]
-            match_type = 'ID匹配' if matched_songs else None
-        except Exception:
-            pass
+        matched_songs = [
+            song
+            for song in song_data
+            if search_text.casefold()
+            in {
+                str(song.get('id', '')).casefold(),
+                str(song.get('official_songid', '')).casefold(),
+            }
+        ]
+        match_type = 'ID匹配' if matched_songs else None
 
     if not matched_songs:
         alias_matches = []
@@ -605,9 +652,9 @@ def format_search_results_with_pagination(results: list[dict[str, Any]], page_in
     result_text = result_text.rstrip('\n')
     
     if total_count > page_size:
-        result_text += f'\n\n【输入序号查看详情 | 下一页/上一页/第X页 | 结束】'
+        result_text += '\n\n【输入序号查看详情 | 下一页/上一页/第X页 | 结束】'
     else:
-        result_text += f'\n\n【输入序号查看详情 | 结束】'
+        result_text += '\n\n【输入序号查看详情 | 结束】'
     
     return result_text, total_pages, page_index
 
@@ -689,6 +736,15 @@ def create_text_image(text: str, user_id: str = '', max_chars: int | None = None
 def build_update_report(result: dict[str, Any]) -> str:
     message = '乐曲数据更新完成！\n'
     message += f'原有乐曲: {result.get("before", 0)}首\n'
+    message += '\n【官方 Portal 对标】\n'
+    message += f'已匹配: {result.get("official_matched", 0)}首\n'
+    message += f'Legacy 已匹配: {result.get("official_legacy_matched", 0)}首\n'
+    message += f'本次更新官方字段: {result.get("official_updated", 0)}首\n'
+    official_pending = result.get('official_pending') or []
+    message += f'待人工确认: {len(official_pending)}首\n'
+    if official_pending:
+        for item in official_pending[:20]:
+            message += f'• {item.get("chapter", "?")} {item.get("title", "?")}\n'
 
     missing_songs = result.get('missing_songs', 0)
     missing_updated = result.get('missing_updated', 0)
@@ -733,10 +789,20 @@ def build_full_check_report(result: dict[str, Any]) -> str:
     message += f'新增歌曲: {result.get("added", 0)}首\n'
     message += f'无变化: {result.get("unchanged", 0)}首\n'
     message += f'失败: {result.get("failed", 0)}首\n'
+    message += f'官方 songId 匹配: {result.get("official_matched", 0)}首\n'
+    message += f'Legacy songId 匹配: {result.get("official_legacy_matched", 0)}首\n'
+    message += f'官方字段变化: {result.get("official_updated", 0)}首\n'
+    official_pending = result.get('official_pending') or []
+    message += f'官方匹配待确认: {len(official_pending)}首\n'
     if apply_mode:
-        message += '说明: 已用 wiki 数据覆盖本地字段，并补充新增歌曲；章节号与谱师保持不变。\n'
+        message += '说明: Fandom 覆盖元数据，Portal 覆盖已有歌曲及 Legacy 的官方 ID、难度和官方定数；新曲不自动匹配 ID。\n'
     else:
-        message += '说明: 当前仅检测 wiki 与本地差异及新增歌曲，未写入本地；章节号与谱师保持不变。\n'
+        message += '说明: 当前仅检测 Fandom/Portal 与本地差异及新增歌曲，未写入本地。\n'
+
+    if official_pending:
+        message += '\n【官方匹配待确认】\n'
+        for item in official_pending[:20]:
+            message += f'• {item.get("chapter", "?")} {item.get("title", "?")}\n'
 
     added_titles = [str(title) for title in (result.get('added_titles') or []) if str(title).strip()]
     if added_titles:

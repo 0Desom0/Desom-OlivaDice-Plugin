@@ -26,6 +26,8 @@ command_configs = [
     ('today', '今日曲'),
     ('random', '随机'),
     ('alias', '别名'),
+    ('song', '歌曲'),
+    ('info', '查分'),
     ('find', '查找'),
     ('artist', '曲师'),
     ('help', '帮助'),
@@ -58,9 +60,12 @@ subcommand_alias_dict = {
     '随机': 'random',
     'alias': 'alias',
     '别名': 'alias',
-    'find': 'find',
-    'info': 'find',
-    '查找': 'find',
+    'song': 'song',
+    '歌曲': 'song',
+    'find': 'song',
+    '查找': 'song',
+    'info': 'info',
+    '查分': 'info',
     'artist': 'artist',
     '曲师': 'artist',
     'help': 'help',
@@ -135,12 +140,20 @@ def build_session_key(plugin_event) -> str:
     return f'{bot_hash}|private|{user_id}'
 
 
-def save_search_session(plugin_event, results: list[dict[str, Any]], match_type: str | None) -> None:
+def save_search_session(
+    plugin_event,
+    results: list[dict[str, Any]],
+    match_type: str | None,
+    view_mode: str = 'song',
+    region: str | None = None,
+) -> None:
     """保存搜索结果为会话。"""
     session_key = build_session_key(plugin_event)
     search_session_dict[session_key] = {
         'results': results,
         'match_type': match_type,
+        'view_mode': view_mode,
+        'region': region,
         'page_index': 0,
         'updated_at': time.time(),
     }
@@ -257,7 +270,10 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
         
         selected_song = results[selected_index - 1]
         clear_search_session(plugin_event)
-        reply_song_detail(plugin_event, '选择的乐曲:', selected_song)
+        if session_data.get('view_mode') == 'info':
+            reply_song_info(plugin_event, selected_song, region=session_data.get('region'))
+        else:
+            reply_song_card(plugin_event, selected_song)
         return True
     
     # 如果输入不符合预期的格式
@@ -338,7 +354,6 @@ def reply_song_detail(plugin_event, header: str, song: dict[str, Any]) -> None:
     if is_plain_text_mode(plugin_event):
         utils.reply_images_with_text(plugin_event, cover_paths, message_text)
         return
-
     linked_bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
     text_image_path = function.create_text_image(
         message_text,
@@ -350,6 +365,181 @@ def reply_song_detail(plugin_event, header: str, song: dict[str, Any]) -> None:
         utils.reply_images_with_text(plugin_event, [*cover_paths, text_image_path])
     else:
         utils.reply_images_with_text(plugin_event, cover_paths, message_text)
+
+
+def _song_info_fallback_text(
+    song: dict[str, Any],
+    *,
+    info_mode: bool = False,
+    region: str | None = None,
+    player: dict[str, Any] | None = None,
+    scores: list[dict[str, Any]] | None = None,
+    notice: str = '',
+) -> str:
+    """浏览器不可用时使用的歌曲/查分文本回退。"""
+    lines = [function.format_song_info(song)]
+    if info_mode and player:
+        lines.extend([
+            '',
+            f'玩家：{player.get("username") or "未知玩家"}（{portal.region_display_name(region or "global")}）',
+            f'Rating：{player.get("rating", "未知")}',
+        ])
+        score_map = {
+            (
+                str(item.get('chartSet', 'current')),
+                int(item.get('difficulty', -1)),
+            ): item
+            for item in (scores or [])
+            if isinstance(item, dict)
+        }
+        diff_names = ['Whisper', 'Acoustic', 'Ultra', 'Master']
+        chart_sets = [('现行谱面', 'current')]
+        if isinstance(song.get('Legacy'), dict) and song.get('Legacy'):
+            chart_sets.append(('Legacy 谱面', 'legacy'))
+        for chart_set_name, chart_set in chart_sets:
+            lines.append(f'[{chart_set_name}]')
+            for difficulty_index, difficulty_name in enumerate(diff_names):
+                row = score_map.get((chart_set, difficulty_index))
+                if row:
+                    lines.append(
+                        f'{difficulty_name}：分数 {row.get("score", "未知")} / '
+                        f'Clear {row.get("clear", "未知")} / Rank {row.get("rank", "未知")}',
+                    )
+                else:
+                    lines.append(f'{difficulty_name}：未游玩')
+    if notice:
+        lines.extend(['', notice])
+    return '\n'.join(lines)
+
+
+def reply_song_card(
+    plugin_event,
+    song: dict[str, Any],
+    *,
+    info_mode: bool = False,
+    region: str | None = None,
+    player_data: dict[str, Any] | None = None,
+    score_rows: list[dict[str, Any]] | None = None,
+    notice: str = '',
+) -> None:
+    """发送歌曲卡片；曲绘与 HTML 成绩卡片分开发送。"""
+    selected_region = portal.normalize_region(region or (player_data or {}).get('_portal_region', 'global'))
+    player = {}
+    if isinstance(player_data, dict):
+        candidate = player_data.get('friend') or player_data.get('player') or {}
+        if isinstance(candidate, dict):
+            player = dict(candidate)
+    effective_info_mode = bool(info_mode and player and score_rows)
+    fallback_text = _song_info_fallback_text(
+        song,
+        info_mode=effective_info_mode,
+        region=selected_region,
+        player=player,
+        scores=score_rows,
+        notice=notice,
+    )
+
+    global_config = utils.load_global_config()
+    if global_config.get('send_cover_art', True):
+        try:
+            cover_paths = crawler.ensure_song_covers(song)
+            if cover_paths:
+                utils.reply_images_with_text(plugin_event, cover_paths)
+        except Exception as exception_object:
+            utils.debug_log(None, f'歌曲曲绘发送失败：{type(exception_object).__name__}: {exception_object}')
+
+    card_song = dict(song)
+    chapter_table = function.load_table_data().get(str(song.get('chapter', '')), {})
+    if isinstance(chapter_table, dict):
+        card_song['folk_constant'] = {
+            difficulty_name: chapter_table.get(difficulty_name.capitalize())
+            for difficulty_name in ['whisper', 'acoustic', 'ultra', 'master']
+            if chapter_table.get(difficulty_name.capitalize()) not in [None, '']
+        }
+    card_data = {
+        '_portal_region': selected_region,
+        'song': card_song,
+        'infoMode': effective_info_mode,
+        'player': player,
+        'scores': score_rows or [],
+        'notice': notice,
+    }
+    bot_config = utils.load_bot_config(utils.get_bot_hash_from_event(plugin_event))
+    html_card_enabled = bool(bot_config.get('song_card_html_enable', True))
+    if is_plain_text_mode(plugin_event) or not html_card_enabled:
+        reply_text(plugin_event, fallback_text, max_chars=config.image_max_chars)
+        return
+    try:
+        image_path = portal.render_song_card(card_data)
+    except Exception as exception_object:
+        utils.debug_log(None, f'歌曲 HTML 卡片渲染失败：{type(exception_object).__name__}: {exception_object}')
+        image_path = None
+    if image_path:
+        utils.reply_image(plugin_event, image_path, fallback_text)
+        return
+    reply_text(plugin_event, f'{fallback_text}\n\nHTML 卡片截图失败。\n{portal.render_status_text()}')
+
+
+def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = None) -> None:
+    """查询绑定玩家该歌曲成绩；没有成绩时回退为歌曲卡片并提示。"""
+    legacy_data = song.get('Legacy', {})
+    legacy_song_id = (
+        str(legacy_data.get('official_songid', '') or '').strip()
+        if isinstance(legacy_data, dict)
+        else ''
+    )
+    current_song_id = str(song.get('official_songid', '') or '').strip()
+    if not current_song_id and not legacy_song_id:
+        reply_song_card(
+            plugin_event,
+            song,
+            region=region,
+            notice='这首歌曲尚未关联官方 ID，暂时无法查询个人成绩。',
+        )
+        return
+    try:
+        compare_data, _nano_id, cache_error = portal.get_compare_data_cached(plugin_event, region)
+        selected_region = portal.normalize_region(region or compare_data.get('_portal_region', 'global'))
+        score_rows = portal.find_compare_song_scores(
+            compare_data,
+            current_song_id,
+            chart_set='current',
+        )
+        if legacy_song_id:
+            score_rows.extend(
+                portal.find_compare_song_scores(
+                    compare_data,
+                    legacy_song_id,
+                    chart_set='legacy',
+                )
+            )
+        notice = ''
+        if cache_error is not None:
+            notice = f'网络查询失败，当前显示最近缓存：{portal.format_error(cache_error)}'
+        if not score_rows:
+            no_score_notice = '你没有这首曲子的分数。'
+            notice = f'{no_score_notice} {notice}'.strip()
+            reply_song_card(
+                plugin_event,
+                song,
+                info_mode=False,
+                region=selected_region,
+                player_data=compare_data,
+                notice=notice,
+            )
+            return
+        reply_song_card(
+            plugin_event,
+            song,
+            info_mode=True,
+            region=selected_region,
+            player_data=compare_data,
+            score_rows=score_rows,
+            notice=notice,
+        )
+    except Exception as exception_object:
+        reply_text(plugin_event, f'查询成绩失败：{portal.format_error(exception_object)}')
+        return
 
 
 def match_command(message_text: str) -> tuple[str, str]:
@@ -373,7 +563,7 @@ def match_command(message_text: str) -> tuple[str, str]:
     if not subcommand_info['is_command']:
         if not subcommand_source.strip():
             return 'help', ''
-        return 'find', subcommand_source
+        return 'song', subcommand_source
 
     subcommand_key = subcommand_info['command_name']
     if subcommand_key in group_short_action_set:
@@ -451,12 +641,16 @@ def handle_labot(plugin_event, argument: str) -> None:
         return
     bot_hash = utils.get_bot_hash_from_event(plugin_event)
     bot_config = utils.load_bot_config(bot_hash)
-    action, value = parse_action(argument, ['status', 'master', 'image', 'plain', 'text', '纯文本', 'off', 'on'])
+    action, value = parse_action(
+        argument,
+        ['status', 'master', 'image', 'songcard', 'card', '歌曲卡片', 'plain', 'text', '纯文本', 'off', 'on'],
+    )
     if action in ['', 'status']:
         reply_text(
             plugin_event,
             f'当前 Bot 开关：{"ON" if bot_config.get("bot_enable_switch", True) else "OFF"}\n'
             f'图片回复：{"ON" if bot_config.get("send_as_image", True) and not bot_config.get("plain_text_mode", False) else "OFF"}\n'
+            f'歌曲 HTML 卡片：{"ON" if bot_config.get("song_card_html_enable", True) else "OFF"}\n'
             f'纯文本模式：{"ON" if is_plain_text_mode(plugin_event) else "OFF"}',
         )
         return
@@ -478,6 +672,15 @@ def handle_labot(plugin_event, argument: str) -> None:
         bot_config['plain_text_mode'] = not bot_config['send_as_image']
         utils.save_bot_config(bot_hash, bot_config)
         reply_text(plugin_event, f'当前 Bot 图片回复已{"开启" if bot_config["send_as_image"] else "关闭"}。')
+        return
+    if action in ['songcard', 'card', '歌曲卡片']:
+        if value.lower() not in ['on', 'off']:
+            reply_text(plugin_event, '用法：.labot songcard on/off')
+            return
+        bot_config['song_card_html_enable'] = value.lower() == 'on'
+        utils.save_bot_config(bot_hash, bot_config)
+        state_text = '开启' if bot_config['song_card_html_enable'] else '关闭'
+        reply_text(plugin_event, f'歌曲 HTML 卡片已{state_text}。关闭时 song/info 使用兼容文本排版。')
         return
     if action in ['plain', 'text', '纯文本']:
         if value.lower() not in ['on', 'off']:
@@ -507,7 +710,11 @@ def handle_labot(plugin_event, argument: str) -> None:
             utils.set_configured_master_list(bot_hash, masters)
             reply_text(plugin_event, f'已更新全局管理员：{", ".join(masters) or "无"}')
             return
-    reply_text(plugin_event, '用法：.labot status/on/off/image on/image off/plain on/plain off；管理员请用 .laglobal master list/add/del [用户ID]')
+    reply_text(
+        plugin_event,
+        '用法：.labot status/on/off/image on/off/songcard on/off/plain on/off；'
+        '管理员请用 .laglobal master list/add/del [用户ID]',
+    )
 
 
 def handle_lagroup(plugin_event, argument: str) -> None:
@@ -555,9 +762,9 @@ def handle_fullcheck(plugin_event, argument: str = '') -> None:
         return
     reply_text(
         plugin_event,
-        '开始对数据库全部歌曲进行 wiki 全量检测（含新增歌曲检查），请稍候……'
+        '开始对数据库全部歌曲进行 Fandom/Portal 全量检测（含新增歌曲检查），请稍候……'
         if not apply_edit
-        else '开始对数据库全部歌曲进行 wiki 全量覆盖写入（含新增歌曲补充），请稍候……',
+        else '开始对数据库全部歌曲进行 Fandom/Portal 全量覆盖写入（含新增歌曲补充），请稍候……',
     )
     try:
         result = crawler.run_full_check(apply=apply_edit)
@@ -822,33 +1029,97 @@ def render_song_list(header: str, songs: list[dict[str, Any]], start_index: int 
     return '\n'.join(lines)
 
 
-def handle_find(plugin_event, argument: str) -> None:
-    raw_arg = argument.strip()
-    if not raw_arg:
-        reply_text(plugin_event, '用法：/la info <搜索词> 或 /la info <搜索词> p<页码>')
-        return
-    search_term = raw_arg
-    
+def _search_songs(plugin_event, search_term: str, view_mode: str) -> None:
+    """执行歌曲搜索，并根据 view_mode 打开歌曲或查分卡片。"""
     song_data = function.load_song_data()
     alias_data = function.load_alias_data()
-    matched_songs, match_type, total_count = function.find_song_by_search_term(search_term, song_data, alias_data, len(song_data))
+    matched_songs, match_type, total_count = function.find_song_by_search_term(
+        search_term,
+        song_data,
+        alias_data,
+        len(song_data),
+    )
     if not matched_songs:
         reply_text(plugin_event, f'没有找到与[{search_term}]相关的乐曲。')
         return
-    
-    # 如果只有一个结果，直接显示详情
+
     if total_count == 1:
         clear_search_session(plugin_event)
-        reply_song_detail(plugin_event, f'通过搜索词[{search_term}]进行[{match_type}]找到这首乐曲:', matched_songs[0])
+        if view_mode == 'info':
+            reply_song_info(plugin_event, matched_songs[0])
+        else:
+            reply_song_card(plugin_event, matched_songs[0])
         return
-    
-    # 多个结果使用分页展示
-    save_search_session(plugin_event, matched_songs, match_type)
-    formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
-    
-    header = f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)，请输入序号查看详情，或输入“结束”退出：\n'
-    message = header + formatted_results
-    reply_text(plugin_event, message, max_chars=config.image_max_chars)
+
+    save_search_session(plugin_event, matched_songs, match_type, view_mode=view_mode)
+    formatted_results, _total_pages, _page_index = function.format_search_results_with_pagination(
+        matched_songs,
+        0,
+        config.result_page_size,
+    )
+    action_name = '查分' if view_mode == 'info' else '查看歌曲信息'
+    header = (
+        f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)，'
+        f'请输入序号{action_name}，或输入“结束”退出：\n'
+    )
+    reply_text(plugin_event, header + formatted_results, max_chars=config.image_max_chars)
+
+
+def handle_song(plugin_event, argument: str) -> None:
+    raw_arg = argument.strip()
+    if not raw_arg:
+        reply_text(plugin_event, '用法：/la song <搜索词>（只显示歌曲信息）')
+        return
+    _search_songs(plugin_event, raw_arg, 'song')
+
+
+def handle_find(plugin_event, argument: str) -> None:
+    """兼容旧命令：.la find 等同于 .la song。"""
+    handle_song(plugin_event, argument)
+
+
+def handle_info(plugin_event, argument: str) -> None:
+    raw_arg = argument.strip()
+    region = None
+    first_token, remaining = utils.split_first_token(raw_arg)
+    if first_token.casefold() in {'cn', 'china', '国服'}:
+        region = 'china'
+        raw_arg = remaining.strip()
+    elif first_token.casefold() in {'global', 'international', 'intl', '国际服'}:
+        region = 'global'
+        raw_arg = remaining.strip()
+    if not raw_arg:
+        reply_text(plugin_event, '用法：/la info <搜索词>，或 /la info cn <搜索词>（查询国服成绩）')
+        return
+
+    song_data = function.load_song_data()
+    alias_data = function.load_alias_data()
+    matched_songs, match_type, total_count = function.find_song_by_search_term(
+        raw_arg,
+        song_data,
+        alias_data,
+        len(song_data),
+    )
+    if not matched_songs:
+        reply_text(plugin_event, f'没有找到与[{raw_arg}]相关的乐曲。')
+        return
+    if total_count == 1:
+        clear_search_session(plugin_event)
+        reply_song_info(plugin_event, matched_songs[0], region=region)
+        return
+
+    save_search_session(plugin_event, matched_songs, match_type, view_mode='info', region=region)
+    formatted_results, _total_pages, _page_index = function.format_search_results_with_pagination(
+        matched_songs,
+        0,
+        config.result_page_size,
+    )
+    region_hint = '国服' if region == 'china' else '绑定区域'
+    header = (
+        f'通过搜索词[{raw_arg}]进行[{match_type}]找到匹配的乐曲({total_count}首)，'
+        f'请输入序号查询{region_hint}成绩，或输入“结束”退出：\n'
+    )
+    reply_text(plugin_event, header + formatted_results, max_chars=config.image_max_chars)
 
 
 def handle_artist(plugin_event, argument: str) -> None:
@@ -1383,12 +1654,14 @@ help_categories = {
         ],
     },
     'search': {
-        'name': '查找乐曲',
-        'aliases': ['info', '查找', 'find'],
+        'name': '歌曲信息与单曲查分',
+        'aliases': ['song', 'info', '查找', 'find'],
         'commands': [
-            '/la info <搜索词> - 查找乐曲信息',
-            '/la find <搜索词> - 同上',
-            '/la info <搜索词> p<页码> - 分页查看搜索结果',
+            '/la song <搜索词> - 只查看歌曲信息',
+            '/la info <搜索词> - 查看绑定玩家的该曲成绩（双区绑定时默认国际服）',
+            '/la info cn <搜索词> - 查看国服绑定玩家的该曲成绩',
+            '/la info global <搜索词> - 查看国际服绑定玩家的该曲成绩',
+            '/la find <搜索词> - .la song 的兼容写法',
         ],
         'priority': [
             '1. 完全匹配章节号',
@@ -1398,9 +1671,9 @@ help_categories = {
             '5. 模糊匹配曲名或别名',
         ],
         'examples': [
+            '/la song Frey',
             '/la info Frey',
-            '/la info Frey p2',
-            '/la info Frey 页3',
+            '/la info cn Frey',
         ],
     },
     'artist': {
@@ -1528,10 +1801,11 @@ help_categories = {
             '/la off - 在当前群关闭普通命令',
             '/la on - 在当前群开启普通命令',
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
+            '/la bot songcard on/off - 开关 song/info HTML 卡片（默认开启，关闭后使用兼容文本排版）',
             '/la global status/on/off - 查看或修改全局开关',
-            '/la update - 通过 Fandom/MediaWiki API 更新曲库（补全缺失+新增）',
-            '/la fullcheck - 全量检测：检查 wiki 与本地差异，并检测新增歌曲（不写入）',
-            '/la fullcheck apply - 全量覆盖：覆盖本地字段，并补充 wiki 新增歌曲（保留章节号与谱师）',
+            '/la update - Fandom 补元数据/物量，Portal 更新 official_songid、难度与官方定数',
+            '/la fullcheck - 全量检测 Fandom/Portal 与本地差异及新增歌曲（不写入）',
+            '/la fullcheck apply - 全量覆盖 Fandom 数据；新曲不自动匹配 official_songid（保留数字ID、章节号与谱师）',
             '/la sync - 预览 Wiki Songs 页面同步（仅骰主）',
             '/la sync apply - 实际同步 Wiki Songs 页面（仅骰主）',
             '/la cover status - 查看本地曲绘缓存（仅骰主）',
@@ -1701,6 +1975,8 @@ command_handler_dict = {
     'today': lambda event, arg: handle_today(event),
     'random': handle_random,
     'alias': handle_alias,
+    'song': handle_song,
+    'info': handle_info,
     'find': handle_find,
     'artist': handle_artist,
     'help': handle_help,

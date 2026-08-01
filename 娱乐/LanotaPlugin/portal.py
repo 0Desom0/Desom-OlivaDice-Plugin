@@ -34,6 +34,9 @@ portal_lock = threading.RLock()
 portal_token: dict[str, Any] = {}
 china_portal_token: dict[str, Any] = {}
 render_context = threading.local()
+compare_cache_lock = threading.RLock()
+compare_cache: dict[str, dict[str, Any]] = {}
+compare_cache_ttl_seconds = 60
 
 
 def _auth_file_path() -> str:
@@ -44,13 +47,20 @@ def _china_auth_file_path() -> str:
     return os.path.join(utils.get_plugin_data_dir(), 'portal_auth_china.json')
 
 
-def _template_path(region: str = 'global') -> Path:
+def _template_path(region: str = 'global', card_type: str = 'user') -> Path:
     normalized_region = normalize_region(region)
-    file_name = (
-        config.lanota_portal_china_template_file_name
-        if normalized_region == 'china'
-        else config.lanota_portal_template_file_name
-    )
+    if card_type == 'song':
+        file_name = (
+            config.lanota_portal_china_song_template_file_name
+            if normalized_region == 'china'
+            else config.lanota_portal_song_template_file_name
+        )
+    else:
+        file_name = (
+            config.lanota_portal_china_template_file_name
+            if normalized_region == 'china'
+            else config.lanota_portal_template_file_name
+        )
     runtime_data_dir = Path(utils.get_plugin_data_dir()).resolve()
     candidates = [
         config.package_dir / 'Data' / file_name,
@@ -579,6 +589,110 @@ def get_user_data_cached(
         raise
 
 
+def get_compare_data_cached(
+    plugin_event,
+    region: str | None = None,
+) -> tuple[dict[str, Any], str, Exception | None]:
+    """读取绑定玩家逐谱面成绩；一分钟内复用缓存，失败时回退到旧缓存。"""
+    selected_region = normalize_region(region) if region else get_bound_region(plugin_event)
+    if not selected_region:
+        raise RuntimeError('尚未绑定 Lanota 好友码，请先使用 .la bind <好友码>。')
+    nano_id = get_bound_nano_id(plugin_event, selected_region)
+    if not nano_id:
+        region_name = region_display_name(selected_region)
+        raise RuntimeError(f'尚未绑定 Lanota {region_name}好友码，请先使用 .la bind {"cn " if selected_region == "china" else ""}<好友码>。')
+
+    cache_key = f'{selected_region}|{nano_id.casefold()}'
+    now_time = time.time()
+    with compare_cache_lock:
+        cached_entry = compare_cache.get(cache_key, {})
+        cached_data = cached_entry.get('data') if isinstance(cached_entry, dict) else None
+        saved_at = float(cached_entry.get('saved_at', 0) or 0) if isinstance(cached_entry, dict) else 0
+        if isinstance(cached_data, dict) and now_time - saved_at <= compare_cache_ttl_seconds:
+            return cached_data, nano_id, None
+
+    try:
+        data = api_get('compare', params={'friendNanoId': nano_id}, region=selected_region)
+        data['_portal_region'] = selected_region
+        with compare_cache_lock:
+            compare_cache[cache_key] = {'data': data, 'saved_at': now_time}
+        return data, nano_id, None
+    except Exception as exception_object:
+        if isinstance(cached_data, dict):
+            return cached_data, nano_id, exception_object
+        raise
+
+
+def _difficulty_index(value: Any) -> int | None:
+    difficulty_text = str(value if value is not None else '').strip().casefold()
+    difficulty_map = {
+        '0': 0,
+        'whisper': 0,
+        '1': 1,
+        'acoustic': 1,
+        '2': 2,
+        'ultra': 2,
+        '3': 3,
+        'master': 3,
+    }
+    return difficulty_map.get(difficulty_text)
+
+
+def _clear_display_name(value: Any) -> Any:
+    clear_name_map = {
+        '0': 'No Play',
+        '1': 'Failed',
+        '2': 'Tuned',
+        '3': 'Purified',
+        '4': 'All Combo',
+        '5': 'Perfect Purified',
+    }
+    return clear_name_map.get(str(value), value)
+
+
+def find_compare_song_scores(
+    compare_data: dict[str, Any],
+    official_songid: Any,
+    chart_set: str = 'current',
+) -> list[dict[str, Any]]:
+    """从 compare 响应提取目标玩家指定歌曲的已游玩成绩。"""
+    target_song_id = str(official_songid or '').strip().casefold()
+    if not target_song_id:
+        return []
+    song_rows = compare_data.get('songs', [])
+    if not isinstance(song_rows, list):
+        return []
+
+    result_by_difficulty: dict[int, dict[str, Any]] = {}
+    for raw_row in song_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        row_song_id = str(raw_row.get('songId', '') or '').strip().casefold()
+        if row_song_id != target_song_id:
+            continue
+        difficulty_index = _difficulty_index(raw_row.get('difficulty'))
+        if difficulty_index is None:
+            continue
+        score = raw_row.get('friendScore')
+        clear = raw_row.get('friendClear')
+        rank = raw_row.get('friendRank')
+        if score is None and clear is None and rank is None:
+            continue
+        result_by_difficulty[difficulty_index] = {
+            'chartSet': chart_set,
+            'difficulty': difficulty_index,
+            'score': score,
+            'clear': _clear_display_name(clear),
+            'rank': rank,
+            # compare 接口不公开目标玩家的单谱 Rating 和判定明细。
+            'singleRating': None,
+            'harmony': None,
+            'tune': None,
+            'fail': None,
+        }
+    return [result_by_difficulty[index] for index in sorted(result_by_difficulty)]
+
+
 def _escape_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
 
@@ -761,9 +875,30 @@ def _device_scale_factor() -> float:
     return max(2.0, min(3.0, scale_factor))
 
 
-def _template_html(data: dict[str, Any]) -> str:
+def _crop_song_card(path: Path, scale_factor: float) -> None:
+    """按页面实际内容裁掉歌曲卡片底部空白，并保留稳定外边距。"""
+    try:
+        from PIL import Image, ImageChops
+
+        with Image.open(path) as source_image:
+            image = source_image.convert('RGB')
+        background = Image.new('RGB', image.size, image.getpixel((0, image.height - 1)))
+        difference = ImageChops.difference(image, background).convert('L')
+        visible = difference.point(lambda value: 255 if value > 3 else 0)
+        bounding_box = visible.getbbox()
+        if not bounding_box:
+            return
+        bottom_padding = max(48, int(round(52 * scale_factor)))
+        target_bottom = min(image.height, bounding_box[3] + bottom_padding)
+        if target_bottom < image.height - 4:
+            image.crop((0, 0, image.width, target_bottom)).save(path)
+    except Exception as exception_object:
+        utils.debug_log(None, f'歌曲卡片自适应裁切失败：{type(exception_object).__name__}: {exception_object}')
+
+
+def _template_html(data: dict[str, Any], card_type: str = 'user') -> str:
     normalized_region = normalize_region(data.get('_portal_region', 'global'))
-    template = _template_path(normalized_region).read_text(encoding='utf-8')
+    template = _template_path(normalized_region, card_type).read_text(encoding='utf-8')
     placeholder = '/*__LANOTA_DATA__*/'
     if placeholder not in template:
         raise RuntimeError('Lanota Portal HTML 模板缺少数据占位符。')
@@ -781,14 +916,15 @@ def _template_html(data: dict[str, Any]) -> str:
         'GMZON LANOTA PORTAL' if normalized_region == 'china' else 'NOXYGAMES LANOTA PORTAL'
     )
     template_data['portalRegionName'] = region_display_name(normalized_region)
-    player = dict(data.get('player', {}))
-    player.pop('nanoId', None)
-    template_data['player'] = player
+    if card_type == 'user':
+        player = dict(data.get('player', {}))
+        player.pop('nanoId', None)
+        template_data['player'] = player
     return template.replace(placeholder, f'window.__LANOTA_DATA__ = {_escape_json(template_data)};', 1)
 
 
-def render_player_card(data: dict[str, Any]) -> str | None:
-    """使用固定 HTML 模板截图；模板只读取一次，数据按请求填充。"""
+def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> str | None:
+    """使用固定 HTML 模板截图，用户卡片与歌曲卡片共用浏览器渲染流程。"""
     _set_render_error('')
     browser = _find_browser()
     if not browser:
@@ -797,13 +933,18 @@ def render_player_card(data: dict[str, Any]) -> str | None:
     function.cleanup_image_cache()
     output_dir = Path(utils.get_generate_image_dir()).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f'lanota_portal_{uuid.uuid4().hex[:12]}.png'
+    output_path = output_dir / f'{output_prefix}_{uuid.uuid4().hex[:12]}.png'
     html_path = Path(tempfile.gettempdir()) / f'lanota_portal_{uuid.uuid4().hex[:12]}.html'
     browser_data_dir = Path(tempfile.gettempdir()) / f'lanota_portal_browser_{uuid.uuid4().hex[:12]}'
     try:
-        html_path.write_text(_template_html(data), encoding='utf-8')
+        html_path.write_text(_template_html(data, card_type), encoding='utf-8')
         browser_data_dir.mkdir(parents=True, exist_ok=True)
         scale_factor = _device_scale_factor()
+        screenshot_height = (
+            config.lanota_portal_song_screenshot_height
+            if card_type == 'song'
+            else config.lanota_portal_screenshot_height
+        )
         last_error = ''
         for headless_mode in ['--headless=new', '--headless']:
             output_path.unlink(missing_ok=True)
@@ -823,7 +964,7 @@ def render_player_card(data: dict[str, Any]) -> str | None:
                 '--allow-file-access-from-files',
                 '--run-all-compositor-stages-before-draw',
                 '--virtual-time-budget=8000',
-                f'--window-size={config.lanota_portal_screenshot_width},{config.lanota_portal_screenshot_height}',
+                f'--window-size={config.lanota_portal_screenshot_width},{screenshot_height}',
                 f'--user-data-dir={browser_data_dir}',
                 f'--screenshot={output_path}',
                 html_path.resolve().as_uri(),
@@ -844,6 +985,8 @@ def render_player_card(data: dict[str, Any]) -> str | None:
                 last_error = f'{headless_mode} 启动异常：{type(exception_object).__name__}: {exception_object}'
                 continue
             if result.returncode == 0 and output_path.exists() and output_path.stat().st_size >= 1000:
+                if card_type == 'song':
+                    _crop_song_card(output_path, scale_factor)
                 return str(output_path)
             detail = (result.stderr or result.stdout or '').strip().replace('\r', ' ').replace('\n', ' ')
             if not detail:
@@ -866,6 +1009,16 @@ def render_player_card(data: dict[str, Any]) -> str | None:
             shutil.rmtree(browser_data_dir, ignore_errors=True)
         except Exception:
             pass
+
+
+def render_player_card(data: dict[str, Any]) -> str | None:
+    """使用 Portal 用户 HTML 模板截图。"""
+    return _render_card(data, 'user', 'lanota_portal_user')
+
+
+def render_song_card(data: dict[str, Any]) -> str | None:
+    """使用歌曲/查分 HTML 模板截图。"""
+    return _render_card(data, 'song', 'lanota_portal_song')
 
 
 def build_fallback_text(data: dict[str, Any]) -> str:
