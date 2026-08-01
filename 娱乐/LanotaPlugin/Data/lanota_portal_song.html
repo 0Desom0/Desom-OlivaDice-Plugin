@@ -180,12 +180,7 @@
           if (constantMatch) official = constantMatch[1] && Number(constantMatch[1]) !== 0 ? `${level}.${constantMatch[1]}` : level;
         }
         if (folkValue == null || String(folkValue).trim() === '') return official;
-        let folk = compactNumber(folkValue);
-        const major = official.match(/^\d+/)?.[0];
-        if (major) {
-          const sameMajor = new RegExp(`^${major}(?:\\.\\d+)?(?:\\s*[~-]\\s*${major}(?:\\.\\d+)?)?$`);
-          if (sameMajor.test(folk)) folk = folk.replace(new RegExp(`\\b${major}(?=\\.)`, 'g'), '');
-        }
+        const folk = compactNumber(folkValue);
         return `${official}(${folk})`;
       };
       const renderCharts = (containerId, chartSet, difficulty, constants, folkConstants, notes) => {

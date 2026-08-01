@@ -29,7 +29,7 @@ class SongInfoTest(unittest.TestCase):
     def test_compact_constant_format(self) -> None:
         self.assertEqual(
             message.function.format_compact_chart_constant(15.3, 15.4, '15'),
-            '15.3(.4)',
+            '15.3(15.4)',
         )
         self.assertEqual(
             message.function.format_compact_chart_constant(15.3, None, '15'),
@@ -37,11 +37,59 @@ class SongInfoTest(unittest.TestCase):
         )
         self.assertEqual(
             message.function.format_compact_chart_constant(15.3, '15.8-15.9', '15'),
-            '15.3(.8-.9)',
+            '15.3(15.8-15.9)',
         )
         self.assertEqual(
             message.function.format_compact_chart_constant(15.5, 15.6, '15+'),
-            '15+.5(.6)',
+            '15+.5(15.6)',
+        )
+
+    def test_info_china_token_error_adds_admin_hint_to_cached_card(self) -> None:
+        event = object()
+        song = {'id': 1, 'title': 'Song', 'official_songid': 'song'}
+        compare_data = {'_portal_region': 'china', 'friend': {'username': 'Player'}, 'songs': []}
+        with (
+            patch.object(
+                message.portal,
+                'get_compare_data_cached',
+                return_value=(compare_data, 'NANO', PermissionError('国服 Portal 登录已失效。')),
+            ),
+            patch.object(message, 'reply_song_card') as reply_song_card,
+        ):
+            message.reply_song_info(event, song, region='china')
+        self.assertIn('.la china login', reply_song_card.call_args.kwargs['notice'])
+
+    def test_info_global_invalid_credentials_returns_admin_hint(self) -> None:
+        event = object()
+        song = {'id': 1, 'title': 'Song', 'official_songid': 'song'}
+        with (
+            patch.object(
+                message.portal,
+                'get_compare_data_cached',
+                side_effect=PermissionError('Lanota Portal 登录账号或密码不正确。'),
+            ),
+            patch.object(message, 'reply_text') as reply_text,
+        ):
+            message.reply_song_info(event, song, region='global')
+        self.assertIn('检查登录账号或密码配置', reply_text.call_args.args[1])
+
+    def test_user_china_token_error_keeps_admin_hint(self) -> None:
+        event = object()
+        with (
+            patch.object(
+                message.portal,
+                'get_user_data_cached',
+                side_effect=PermissionError('国服 Portal 登录已失效。'),
+            ),
+            patch.object(message, 'reply_text') as reply_text,
+        ):
+            message.handle_user(event, 'cn')
+        self.assertIn('.la china login', reply_text.call_args.args[1])
+
+    def test_normal_network_error_has_no_credential_hint(self) -> None:
+        self.assertEqual(
+            message.portal.credential_error_hint(TimeoutError('请求超时'), 'global'),
+            '',
         )
 
     def test_default_bound_region_prefers_global(self) -> None:

@@ -206,7 +206,7 @@ def format_compact_chart_constant(
     folk_value: Any = None,
     fallback_value: Any = None,
 ) -> str:
-    """同时显示大等级与定数，例如 15.3(.4) 或 15+.5(.6)。"""
+    """同时显示大等级与定数，例如 15.3(15.4) 或 15+.5(15.6)。"""
     source_value = official_value if official_value not in [None, ''] else fallback_value
     official_text = format_table_constant(source_value)
     level_text = str(fallback_value or '').strip()
@@ -226,12 +226,6 @@ def format_compact_chart_constant(
         return official_text
     folk_text = format_table_constant(folk_value)
     folk_text = re.sub(r'(?<=\d)\.0(?=\D|$)', '', folk_text)
-    major_match = re.match(r'^(\d+)', official_text)
-    if major_match and re.fullmatch(
-        rf'{re.escape(major_match.group(1))}(?:\.\d+)?(?:\s*[~-]\s*{re.escape(major_match.group(1))}(?:\.\d+)?)?',
-        folk_text,
-    ):
-        folk_text = re.sub(rf'\b{re.escape(major_match.group(1))}(?=\.)', '', folk_text)
     return f'{official_text}({folk_text})'
 
 

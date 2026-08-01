@@ -516,6 +516,9 @@ def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = Non
         notice = ''
         if cache_error is not None:
             notice = f'网络查询失败，当前显示最近缓存：{portal.format_error(cache_error)}'
+            credential_hint = portal.credential_error_hint(cache_error, selected_region)
+            if credential_hint:
+                notice = f'{notice} {credential_hint}'
         if not score_rows:
             no_score_notice = '你没有这首曲子的分数。'
             notice = f'{no_score_notice} {notice}'.strip()
@@ -538,7 +541,12 @@ def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = Non
             notice=notice,
         )
     except Exception as exception_object:
-        reply_text(plugin_event, f'查询成绩失败：{portal.format_error(exception_object)}')
+        selected_region = region or portal.get_bound_region(plugin_event)
+        error_text = f'查询成绩失败：{portal.format_error(exception_object)}'
+        credential_hint = portal.credential_error_hint(exception_object, selected_region)
+        if credential_hint:
+            error_text = f'{error_text}\n{credential_hint}'
+        reply_text(plugin_event, error_text)
         return
 
 
@@ -1395,10 +1403,13 @@ def handle_user(plugin_event, argument: str) -> None:
     try:
         player_data, _nano_id, cache_error = portal.get_user_data_cached(plugin_event, region)
         if cache_error is not None:
+            selected_region = region or player_data.get('_portal_region') or portal.get_bound_region(plugin_event)
+            credential_hint = portal.credential_error_hint(cache_error, selected_region)
+            hint_line = credential_hint or '若问题持续，请联系管理员检查 Portal 连接。'
             utils.reply_message(
                 plugin_event,
                 f'网络查询失败：{portal.format_error(cache_error)}\n'
-                '请联系管理员检查国际服账号或国服 Token；正在显示上次缓存。',
+                f'{hint_line}\n正在显示上次缓存。',
             )
         image_path = portal.render_player_card(player_data)
         fallback_text = portal.build_fallback_text(player_data)
@@ -1407,7 +1418,12 @@ def handle_user(plugin_event, argument: str) -> None:
             return
         reply_text(plugin_event, f'{fallback_text}\n\nHTML 截图失败。\n{portal.render_status_text()}')
     except Exception as exception_object:
-        reply_text(plugin_event, f'查询失败：{portal.format_error(exception_object)}')
+        selected_region = region or portal.get_bound_region(plugin_event)
+        error_text = f'查询失败：{portal.format_error(exception_object)}'
+        credential_hint = portal.credential_error_hint(exception_object, selected_region)
+        if credential_hint:
+            error_text = f'{error_text}\n{credential_hint}'
+        reply_text(plugin_event, error_text)
 
 
 def _china_login_worker(plugin_event, user_id: str, login_key: str, session_id: str) -> None:

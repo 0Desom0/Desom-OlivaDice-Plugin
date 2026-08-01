@@ -235,6 +235,19 @@ def region_display_name(region: Any) -> str:
     return '国服' if normalize_region(region) == 'china' else '国际服'
 
 
+def credential_error_hint(exception_object: Exception, region: Any) -> str:
+    """Portal 凭据失效时返回面向查询用户的管理员处理提示。"""
+    error_text = format_error(exception_object).casefold()
+    credential_markers = ('token', '登录', '账号', '密码', '授权', 'credential')
+    if not isinstance(exception_object, PermissionError) and not any(
+        marker in error_text for marker in credential_markers
+    ):
+        return ''
+    if normalize_region(region) == 'china':
+        return '国服 Portal Token 可能已过期，请联系管理员使用 .la china login 重新扫码授权。'
+    return '国际服 Portal 登录失败，请联系管理员检查登录账号或密码配置。'
+
+
 def _jwt_exp(token: str) -> int:
     try:
         payload_text = str(token).split('.')[1]
