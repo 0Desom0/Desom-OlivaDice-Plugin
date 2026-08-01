@@ -21,6 +21,7 @@ cover_art_folder_name = 'CoverArt'
 excel_table_folder_name = 'excel_table'
 excel_table_extension_list = ['.xlsx', '.xlsm']
 font_file_name = 'fonts.ttf'
+portal_font_file_name_list = ('Kawoszeh.ttf', '千图雪花体.ttf')
 
 # Firebase Web API Key 来自 Portal 前端公开配置，不是登录时实时生成的秘密；站点迁移项目时可在运行配置覆盖。
 lanota_portal_api_base_url = 'https://noxygames.com/lanota/portal/api'
@@ -37,16 +38,19 @@ lanota_portal_timeout_seconds = 25
 lanota_portal_template_file_name = 'lanota_portal_user.html'
 lanota_portal_china_template_file_name = 'lanota_portal_user_china.html'
 lanota_portal_song_template_file_name = 'lanota_portal_song.html'
+lanota_portal_b30_template_file_name = 'lanota_portal_b30.html'
 # 歌曲卡片通过数据中的区域标签动态区分国际服/国服，共用一份模板，避免部署时漏装副本。
 lanota_portal_china_song_template_file_name = 'lanota_portal_song.html'
 lanota_portal_screenshot_width = 1200
 lanota_portal_screenshot_height = 1360
 lanota_portal_song_screenshot_height = 1600
+lanota_portal_b30_screenshot_height = 2600
 lanota_portal_device_scale_factor = 2
 
 allowed_prefix_list = ['.', '。', '/', '／']
 image_cache_limit = 40
 image_max_chars = 100
+b30_cooldown_seconds = 300
 
 # 搜索结果分页配置
 result_page_size = 10  # 每页显示的结果数

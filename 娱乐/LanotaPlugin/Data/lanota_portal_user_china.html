@@ -7,7 +7,13 @@
   <style>
     @font-face {
       font-family: Kawoszeh;
-      src: url('https://lanota.gmzon.com/portal/assets/kawoszeh.otf') format('opentype');
+      src: url('./Kawoszeh.ttf') format('truetype');
+      font-display: block;
+    }
+    @font-face {
+      font-family: QianTuSnow;
+      src: url('./千图雪花体.ttf') format('truetype');
+      font-display: block;
     }
     * { box-sizing: border-box; }
     :root {
@@ -27,7 +33,7 @@
     html, body { margin: 0; width: 1200px; min-height: 100%; }
     body {
       color: var(--text);
-      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-family: Kawoszeh, QianTuSnow, sans-serif;
       background:
         radial-gradient(circle at 12% 8%, rgba(176, 108, 207, .17), transparent 30%),
         radial-gradient(circle at 90% 15%, rgba(201, 166, 107, .13), transparent 27%),
@@ -55,14 +61,14 @@
     }
     .hero::before {
       content: "PLAYER"; position: absolute; right: 25px; top: -42px;
-      font-family: Georgia, serif; font-size: 150px; color: rgba(255,255,255,.018); letter-spacing: .08em;
+      font-family: Kawoszeh, QianTuSnow, serif; font-size: 150px; color: rgba(255,255,255,.018); letter-spacing: .08em;
     }
     .avatar { width: 156px; height: 156px; position: relative; display: grid; place-items: center; }
     .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
     .avatar .avatar-outline { transform: scale(1.06); pointer-events: none; }
     .identity { min-width: 0; }
     .username {
-      margin: 0 0 9px; font-family: Georgia, "Microsoft YaHei", serif; font-size: 45px;
+      margin: 0 0 9px; font-family: Kawoszeh, QianTuSnow, serif; font-size: 45px;
       line-height: 1.05; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .quick { display: flex; flex-wrap: wrap; gap: 14px 25px; margin-top: 25px; }
@@ -70,7 +76,7 @@
       display: block; color: #827b76; font-size: 11px; font-weight: 700; letter-spacing: .17em;
       text-transform: uppercase; margin-bottom: 5px;
     }
-    .quick-item .value { font-family: Consolas, monospace; font-size: 17px; }
+    .quick-item .value { font-family: Kawoszeh, QianTuSnow, sans-serif; font-size: 17px; }
     .rating-wrap { display: flex; justify-content: center; align-items: center; min-height: 170px; }
     .rating-badge { position: relative; width: 164px; height: 164px; display: grid; place-items: center; }
     .rating-badge img, .rating-value { position: absolute; }
@@ -78,13 +84,13 @@
     .rating-frame { transform-origin: center; }
     .rating-star { width: 10px; height: 10px; }
     .rating-value {
-      font-family: Kawoszeh, Georgia, serif; font-size: 45px; font-style: italic; font-weight: 800;
+      font-family: Kawoszeh, QianTuSnow, serif; font-size: 45px; font-style: italic; font-weight: 800;
       color: #f7e5a1; text-shadow: 0 2px 2px #4b2200, 0 0 13px rgba(255,219,107,.8);
       transform: translate(-2px, -4px) scale(1.05); z-index: 5;
     }
     .section { margin-top: 25px; }
     .section-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0 2px 13px; }
-    .section-title { margin: 0; font-family: Georgia, "Microsoft YaHei", serif; font-size: 25px; font-weight: 600; }
+    .section-title { margin: 0; font-family: Kawoszeh, QianTuSnow, serif; font-size: 25px; font-weight: 600; }
     .section-sub { color: var(--muted); font-size: 12px; letter-spacing: .06em; }
     .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
     .stat-card, .rank-card, .diff-card {
@@ -94,7 +100,7 @@
     .stat-card { min-height: 110px; display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 14px; padding: 18px; }
     .stat-card img { width: 48px; height: 48px; object-fit: contain; }
     .stat-name { color: var(--muted); font-size: 12px; margin-bottom: 7px; white-space: nowrap; }
-    .stat-value { font-family: Consolas, monospace; font-size: 27px; font-weight: 700; }
+    .stat-value { font-family: Kawoszeh, QianTuSnow, sans-serif; font-size: 27px; font-weight: 700; }
     .rank-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
     .rank-card { min-height: 112px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 13px; }
     .rank-card img { width: 46px; height: 46px; object-fit: contain; }
@@ -103,8 +109,8 @@
     .diff-card { padding: 20px; position: relative; overflow: hidden; }
     .diff-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--diff-color); }
     .diff-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 15px; }
-    .diff-name { color: var(--diff-color); font-family: Georgia, serif; font-size: 20px; font-weight: 700; }
-    .diff-progress { color: var(--muted); font-family: Consolas, monospace; font-size: 13px; }
+    .diff-name { color: var(--diff-color); font-family: Kawoszeh, QianTuSnow, serif; font-size: 20px; font-weight: 700; }
+    .diff-progress { color: var(--muted); font-family: Kawoszeh, QianTuSnow, sans-serif; font-size: 13px; }
     .mini-label { color: #766f6b; font-size: 9px; font-weight: 800; letter-spacing: .18em; margin: 13px 0 7px; }
     .mini-grid { display: grid; gap: 6px; }
     .mini-grid.clear { grid-template-columns: repeat(4, 1fr); }
@@ -114,14 +120,14 @@
       border: 1px solid rgba(255,255,255,.045);
     }
     .mini b { display: block; color: #d9d4c9; font-size: 10px; margin-bottom: 3px; }
-    .mini span { font-family: Consolas, monospace; font-size: 13px; }
+    .mini span { font-family: Kawoszeh, QianTuSnow, sans-serif; font-size: 13px; }
     .footer { margin-top: 22px; display: flex; justify-content: space-between; color: #716966; font-size: 10px; letter-spacing: .12em; }
   </style>
 </head>
 <body>
   <main class="page">
     <div class="eyebrow-row">
-      <div class="eyebrow">Lanota Portal · Player Profile</div>
+      <div class="eyebrow">Lanota · Player Profile</div>
       <div class="region-tag">国服 · CHINA</div>
     </div>
     <section class="hero">
@@ -156,7 +162,7 @@
       <div class="difficulty-grid" id="difficulty-grid"></div>
     </section>
 
-    <footer class="footer"><span id="portal-source"></span><span id="generated-at"></span></footer>
+    <footer class="footer"><span id="generated-at"></span></footer>
   </main>
 
   <script>/*__LANOTA_DATA__*/</script>
@@ -174,7 +180,6 @@
       text('notalium', num(player.notalium));
       text('played', num(stats.totalSongsPlayed));
       text('total-charts', num(stats.totalCharts));
-      text('portal-source', `DATA: ${data.portalSourceLabel || 'GMZON LANOTA PORTAL'}`);
       text('generated-at', new Date().toLocaleString('zh-CN', {hour12: false}));
       document.getElementById('avatar-image').src = `${asset}/avatars/${player.avatarId || 'av_default'}.webp`;
       document.getElementById('avatar-outline').src = `${asset}/avatars/outline-default.webp`;

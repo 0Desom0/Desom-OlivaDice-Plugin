@@ -697,13 +697,14 @@ def _t_mem_save(ctx, args):
     'schedule_reminder',
     '设定一个定时提醒/定时消息：到点后你会【主动】给用户发一条消息。'
     '相对时间用 delay_seconds（“3小时后”=10800，“半小时后”=1800）；绝对时间点用 at_time（"12:52"、"09:00:00"、"2026-07-27 09:00"、"07-27 09:00"）。'
-    'delay_seconds 与 at_time 二选一。content 写用户让你到时提醒/传达的事。触发时会把 content 交给你生成自然的提醒话术再发出。',
+    'delay_seconds 与 at_time 二选一。content 写提醒事项；final_text 必须在本轮按当前人设直接写好到点发送的完整话术，触发时不会再次调用模型。',
     params={
         'content': _p('string', '到点要提醒或传达的内容，如“喝水”“开组会”“该睡了”'),
+        'final_text': _p('string', '到点直接发送的完整最终提醒话术；现在按当前人设写好，简短自然，不要写系统说明或时间解析过程'),
         'delay_seconds': _p('integer', '多少秒之后触发（相对时间，与 at_time 二选一）'),
         'at_time': _p('string', '触发的绝对时间点，支持 "HH:MM"/"HH:MM:SS"/"YYYY-MM-DD HH:MM"/"MM-DD HH:MM"（与 delay_seconds 二选一）'),
     },
-    required=['content'],
+    required=['content', 'final_text'],
 )
 def _t_schedule_reminder(ctx, args):
     if not OlivaAIAgent.conf.get('reminder', 'enable', default=True):
@@ -711,6 +712,9 @@ def _t_schedule_reminder(ctx, args):
     content = str(args.get('content', '')).strip()
     if content == '':
         return {'error': 'content 不能为空'}
+    final_text = str(args.get('final_text', '')).strip()
+    if final_text == '':
+        final_text = '提醒：%s' % content
     if _blockSensitiveContent(ctx, '定时提醒', content):
         return {'active': False, 'data': {'error': '该内容不在可设定提醒的话题范围内'}}
     fire_ts = OlivaAIAgent.reminder.parseFireTs(
@@ -746,7 +750,7 @@ def _t_schedule_reminder(ctx, args):
         name = ''
     job = OlivaAIAgent.reminder.schedule(
         bot_hash, ctx['platform'], send_type, target_id, host_id, content,
-        ctx.get('user_id'), name, fire_ts)
+        ctx.get('user_id'), name, fire_ts, final_text=final_text)
     return {'active': True, 'data': '已设定提醒，将在 %s 主动提醒你：%s（编号 %s）'
             % (OlivaAIAgent.reminder.fmtTs(fire_ts), content, job['id'])}
 

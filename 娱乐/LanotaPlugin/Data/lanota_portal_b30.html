@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lanota Best 30</title>
+  <style>
+    @font-face {
+      font-family: Kawoszeh;
+      src: url('./Kawoszeh.ttf') format('truetype');
+      font-display: block;
+    }
+    @font-face {
+      font-family: QianTuSnow;
+      src: url('./千图雪花体.ttf') format('truetype');
+      font-display: block;
+    }
+
+    * { box-sizing: border-box; }
+
+    :root {
+      --surface: #1d1b19;
+      --surface-raised: #2c2520;
+      --surface-soft: #302925;
+      --line: rgba(75, 38, 21, .24);
+      --line-strong: rgba(75, 38, 21, .45);
+      --text: #3b291d;
+      --card-text: #f6f1e7;
+      --muted: #76634f;
+      --quiet: #927b61;
+      --gold: #9f6339;
+      --cyan: #168f92;
+      --warning: #b7612e;
+      --danger: #ff786f;
+      --whisper: #62cddd;
+      --acoustic: #72c985;
+      --ultra: #ef756d;
+      --master: #ce83d9;
+    }
+
+    html, body { margin: 0; width: 100%; min-height: 100%; }
+
+    html { background: #1d0d08; }
+
+    body {
+      position: relative;
+      min-width: 320px;
+      padding: 34px 42px 28px;
+      border: 10px solid #35140c;
+      color: var(--text);
+      background-color: #d8bd7c;
+      background-image:
+        linear-gradient(90deg, rgba(73, 31, 14, .16), transparent 7%, transparent 93%, rgba(73, 31, 14, .16)),
+        linear-gradient(180deg, rgba(73, 31, 14, .13), transparent 5%, transparent 95%, rgba(73, 31, 14, .13)),
+        repeating-linear-gradient(7deg, transparent 0 3px, rgba(87, 53, 27, .019) 3px 4px),
+        repeating-linear-gradient(97deg, transparent 0 5px, rgba(255, 250, 220, .026) 5px 6px);
+      box-shadow:
+        inset 0 0 0 3px #8c4f2e,
+        inset 0 0 0 6px rgba(43, 16, 9, .82),
+        inset 0 0 42px rgba(73, 31, 14, .26);
+      font-family: Kawoszeh, QianTuSnow, sans-serif;
+      letter-spacing: 0;
+      text-rendering: geometricPrecision;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: absolute;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    body::before {
+      inset: 15px;
+      border: 2px solid rgba(67, 27, 13, .72);
+    }
+
+    body::after {
+      inset: 20px;
+      border: 1px solid rgba(102, 53, 28, .54);
+    }
+
+    .page { position: relative; z-index: 1; width: min(1096px, 100%); margin: 0 auto; }
+
+    .masthead {
+      position: relative;
+      padding: 0 4px 22px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .masthead::after {
+      content: "";
+      position: absolute;
+      left: 4px;
+      bottom: -1px;
+      width: 132px;
+      height: 2px;
+      background: #6f321d;
+    }
+
+    .brand-row {
+      position: relative;
+      min-height: 76px;
+      display: grid;
+      grid-template-columns: 178px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .brand-row::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      left: -22px;
+      top: -10px;
+      width: 250px;
+      height: 96px;
+      background: radial-gradient(ellipse at 34% 50%, rgba(59, 25, 13, .52), rgba(80, 40, 19, .24) 48%, transparent 78%);
+      filter: blur(11px);
+      pointer-events: none;
+    }
+
+    .brand-logo {
+      display: block;
+      width: 170px;
+      height: 72px;
+      object-fit: contain;
+      object-position: left center;
+      filter: contrast(1.16) saturate(1.08) drop-shadow(0 2px 3px rgba(47, 20, 10, .46));
+      transform: translateX(12px);
+    }
+
+    .edition {
+      color: #765f47;
+      font-family: Kawoszeh, QianTuSnow, sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.4;
+      text-transform: uppercase;
+    }
+
+    .edition strong {
+      display: block;
+      color: #4a2d1c;
+      font-family: Kawoszeh, QianTuSnow, serif;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .region {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #6e563f;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .region::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 0 3px rgba(22, 143, 146, .13);
+    }
+
+    .profile-row {
+      min-height: 126px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 240px;
+      align-items: center;
+      gap: 30px;
+    }
+
+    .identity {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+    }
+
+    .avatar {
+      position: relative;
+      flex: 0 0 92px;
+      width: 92px;
+      height: 92px;
+      border-radius: 50%;
+      background: rgba(67, 39, 25, .16);
+    }
+
+    .avatar::after {
+      content: "";
+      position: absolute;
+      inset: -5px;
+      border: 1px solid rgba(227, 191, 114, .48);
+      border-radius: 50%;
+    }
+
+    .avatar img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      border-radius: 50%;
+    }
+
+    .avatar-outline { transform: scale(1.055); pointer-events: none; }
+
+    .player-copy { min-width: 0; }
+
+    .player-name {
+      margin: 0;
+      overflow: hidden;
+      color: #3c271b;
+      font-family: Kawoszeh, QianTuSnow, serif;
+      font-size: 31px;
+      font-weight: 700;
+      line-height: 1.25;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .player-meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .player-meta strong { color: var(--cyan); font-weight: 700; }
+
+    .rating-wrap {
+      min-height: 126px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      transform: translateY(-10px);
+    }
+    .rating-badge { position: relative; width: 138px; height: 126px; display: grid; place-items: center; }
+    .rating-badge img, .rating-value { position: absolute; }
+    .rating-bg { width: 112px; height: 112px; border-radius: 50%; }
+    .rating-frame { transform-origin: center; }
+    .rating-star { width: 8px; height: 8px; }
+    .rating-value {
+      z-index: 5;
+      color: #fff0b0;
+      font-family: Kawoszeh, QianTuSnow, serif;
+      font-size: 35px;
+      font-weight: 800;
+      line-height: 1;
+      text-shadow: 0 2px 2px #4b2200, 0 0 12px rgba(255, 219, 107, .68);
+      transform: translate(-1px, -4px);
+    }
+
+    .rating-cap {
+      flex: 0 0 88px;
+      min-height: 58px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 8px 10px;
+      border: 1px solid rgba(75, 38, 21, .42);
+      border-radius: 6px;
+      background: rgba(255, 248, 215, .19);
+    }
+
+    .rating-cap span { color: var(--muted); font-size: 8px; font-weight: 700; line-height: 1.2; }
+    .rating-cap strong { margin-top: 4px; color: #4a2d1c; font-size: 20px; font-weight: 800; line-height: 1; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      padding-top: 6px;
+    }
+
+    .metric {
+      min-width: 0;
+      min-height: 82px;
+      display: grid;
+      grid-template-rows: auto auto;
+      align-content: center;
+      justify-items: center;
+      padding: 12px 22px;
+      border: 1px solid rgba(75, 38, 21, .42);
+      border-radius: 6px;
+      background: rgba(255, 248, 215, .19);
+      box-shadow: inset 0 1px rgba(255, 251, 226, .30), 0 3px 10px rgba(71, 36, 18, .08);
+      text-align: center;
+    }
+
+    .metric-label { color: var(--muted); font-size: 10px; font-weight: 700; }
+    .metric-value { margin-top: 4px; color: #3c271b; font: 700 28px/1 Kawoszeh, QianTuSnow, sans-serif; }
+    .metric-note { display: none; }
+
+    .notice {
+      display: none;
+      margin: 16px 4px 0;
+      padding: 9px 13px;
+      border-left: 3px solid var(--warning);
+      color: #63361f;
+      background: rgba(132, 65, 30, .075);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .notice.visible { display: block; }
+
+    .content-section { margin-top: 24px; }
+
+    .section-head {
+      min-height: 38px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 20px;
+      margin: 0 4px 11px;
+    }
+
+    .section-title { margin: 0; color: #3c271b; font: 600 24px/1.2 Kawoszeh, QianTuSnow, serif; }
+    .section-title span { color: var(--gold); }
+    .section-sub { color: var(--muted); font-size: 10px; font-weight: 700; text-align: right; }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .chart-card {
+      --difficulty-color: var(--master);
+      position: relative;
+      min-width: 0;
+      height: 150px;
+      display: grid;
+      grid-template-columns: 148px minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--card-text);
+      background: rgba(30, 32, 36, .96);
+      box-shadow: 0 7px 18px rgba(0, 0, 0, .22);
+    }
+
+    .chart-card::after {
+      content: "";
+      position: absolute;
+      left: 148px;
+      right: 0;
+      top: 0;
+      height: 2px;
+      background: var(--difficulty-color);
+      opacity: .88;
+    }
+
+    .chart-card.warning-card {
+      border-color: rgba(255, 120, 111, .72);
+      background: rgba(46, 29, 30, .97);
+      box-shadow: 0 0 0 1px rgba(255, 120, 111, .12), 0 7px 18px rgba(0, 0, 0, .24);
+    }
+
+    .difficulty-whisper { --difficulty-color: var(--whisper); }
+    .difficulty-acoustic { --difficulty-color: var(--acoustic); }
+    .difficulty-ultra { --difficulty-color: var(--ultra); }
+    .difficulty-master { --difficulty-color: var(--master); }
+
+    .cover-wrap {
+      position: relative;
+      width: 148px;
+      height: 148px;
+      overflow: hidden;
+      background: #24272b;
+    }
+
+    .cover,
+    .cover-placeholder {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .cover { z-index: 1; object-fit: cover; object-position: center; }
+    .cover-placeholder {
+      display: grid;
+      place-items: center;
+      color: rgba(255, 255, 255, .34);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .cover-shade {
+      position: absolute;
+      z-index: 2;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(0, 0, 0, .02) 52%, rgba(0, 0, 0, .72) 100%);
+      pointer-events: none;
+    }
+
+    .rank {
+      position: absolute;
+      z-index: 3;
+      left: 9px;
+      bottom: 8px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 800;
+      line-height: 1;
+      text-shadow: 0 1px 4px #000;
+    }
+
+    .chart-copy {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 10px 11px 8px 12px;
+    }
+
+    .song-title {
+      min-height: 34px;
+      padding-right: 2px;
+      overflow: hidden;
+      display: -webkit-box;
+      color: #f8f4eb;
+      font-family: Kawoszeh, QianTuSnow, sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 17px;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+
+    .score {
+      margin-top: 2px;
+      color: var(--card-text);
+      font: 700 25px/1.05 Kawoszeh, QianTuSnow, sans-serif;
+      white-space: nowrap;
+    }
+
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 4px 7px;
+      margin-top: 8px;
+    }
+
+    .fact { min-width: 0; }
+    .fact-label { display: block; color: var(--quiet); font-size: 9px; font-weight: 700; line-height: 1; white-space: nowrap; }
+    .fact-value {
+      display: block;
+      margin-top: 2px;
+      overflow: hidden;
+      color: #ddd9d0;
+      font: 700 11px/1.1 Kawoszeh, QianTuSnow, sans-serif;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .fact.difficulty-accent .fact-label,
+    .fact-value.accent { color: var(--difficulty-color); }
+
+    .entry-warning {
+      min-height: 12px;
+      margin-top: auto;
+      overflow: hidden;
+      color: var(--danger);
+      font-size: 9px;
+      font-weight: 800;
+      line-height: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .overflow { margin-top: 25px; }
+    .overflow.hidden { display: none; }
+    .overflow-divider {
+      min-height: 42px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 18px;
+      margin: 0 4px 11px;
+    }
+
+    .overflow-divider::before,
+    .overflow-divider::after { content: ""; height: 1px; background: var(--line-strong); }
+    .overflow-title { color: #6f321d; font: 600 19px/1 Kawoszeh, QianTuSnow, serif; }
+
+    .footer {
+      min-height: 46px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 24px;
+      border-top: 1px solid var(--line);
+      padding: 0 4px;
+      color: #765f47;
+      font-size: 9px;
+    }
+
+    .watermark { color: #513522; font-size: 16px; font-weight: 700; text-align: center; }
+
+    @media (max-width: 920px) {
+      body { padding: 30px 34px 24px; }
+      .chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .chart-card { grid-template-columns: 156px minmax(0, 1fr); height: 158px; }
+      .chart-card::after { left: 156px; }
+      .cover-wrap { width: 156px; height: 156px; }
+      .song-title { font-size: 14px; line-height: 18px; }
+      .score { font-size: 26px; }
+      .fact-value { font-size: 11px; }
+    }
+
+    @media (max-width: 620px) {
+      body { padding: 25px 12px 20px; border-width: 7px; }
+      body::before { inset: 10px; }
+      body::after { inset: 14px; }
+      .masthead { padding-bottom: 17px; }
+      .brand-row { grid-template-columns: 126px minmax(0, 1fr); gap: 14px; }
+      .brand-logo { width: 122px; height: 60px; }
+      .edition { font-size: 9px; }
+      .edition strong { font-size: 12px; }
+      .region { grid-column: 1 / -1; justify-self: start; margin-top: -8px; }
+      .profile-row { grid-template-columns: 1fr; gap: 0; }
+      .identity { gap: 13px; }
+      .avatar { flex-basis: 70px; width: 70px; height: 70px; }
+      .player-name { font-size: 22px; }
+      .player-meta { font-size: 10px; }
+      .rating-wrap { min-height: 126px; justify-content: center; }
+      .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+      .metric { min-height: 72px; padding: 10px 6px; }
+      .metric-label { font-size: 9px; }
+      .metric-value { font-size: 24px; }
+      .section-head { align-items: flex-start; gap: 8px; }
+      .section-sub { max-width: 58%; overflow-wrap: anywhere; }
+      .chart-grid { grid-template-columns: 1fr; }
+      .chart-card { width: 100%; max-width: 450px; justify-self: center; }
+      .footer { flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+      .watermark { text-align: center; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <div class="brand-row">
+        <img class="brand-logo" id="brand-image" alt="Lanota">
+        <div class="edition"><strong>Best 30 Record</strong>Lanota Rating Archive</div>
+        <div class="region" id="region"></div>
+      </div>
+      <div class="profile-row">
+        <div class="identity">
+          <div class="avatar">
+            <img id="avatar" alt="">
+            <img class="avatar-outline" id="avatar-outline" alt="">
+          </div>
+          <div class="player-copy">
+            <h1 class="player-name" id="player-name"></h1>
+            <div class="player-meta" id="player-meta"></div>
+          </div>
+        </div>
+        <div class="rating-wrap">
+          <div class="rating-badge" id="rating-badge"></div>
+          <div class="rating-cap"><span>可达最高 Rating</span><strong id="max-rating"></strong></div>
+        </div>
+      </div>
+      <section class="metrics" id="metrics"></section>
+      <div class="notice" id="notice"></div>
+    </header>
+
+    <section class="content-section">
+      <div class="section-head">
+        <h2 class="section-title"><span>Best</span> 30</h2>
+        <span class="section-sub" id="best-sub"></span>
+      </div>
+      <div class="chart-grid" id="best-grid"></div>
+    </section>
+
+    <section class="overflow" id="overflow">
+      <div class="overflow-divider"><span class="overflow-title">Overflow</span></div>
+      <div class="chart-grid" id="overflow-grid"></div>
+    </section>
+
+    <footer class="footer"><span class="watermark" id="watermark"></span></footer>
+  </main>
+
+  <script>/*__LANOTA_DATA__*/</script>
+  <script>
+    (() => {
+      const data = window.__LANOTA_DATA__ || {};
+      const player = data.player || {};
+      const metrics = data.metrics || {};
+      const portalAsset = data.portalAssetBaseUrl || 'https://noxygames.com/lanota/portal';
+      const b30Asset = data.b30AssetBaseUrl || './B30Assets';
+
+      const brand = document.getElementById('brand-image');
+      brand.src = `${b30Asset}/Lanotalogo_top.png`;
+      brand.onerror = () => brand.remove();
+      document.getElementById('region').textContent = `${data.portalRegionName || '国际服'} · ${data.accurate ? 'ACCURATE' : 'ESTIMATED'}`;
+      document.getElementById('player-name').textContent = player.username || 'Player';
+      document.getElementById('player-meta').innerHTML = data.accurate
+        ? '<strong>准确 B30</strong> · Rating 明细'
+        : '<strong>推断 B30</strong> · Rating 明细';
+      document.getElementById('avatar').src = `${portalAsset}/avatars/${player.avatarId || 'av_default'}.webp`;
+      document.getElementById('avatar-outline').src = `${portalAsset}/avatars/outline-default.webp`;
+      document.getElementById('watermark').textContent = `Generated by Fronia @ ${data.generatedAt || new Date().toLocaleString('zh-CN', {hour12: false})}`;
+
+      const formatRating = value => Number(value || 0).toFixed(2);
+      const metricRows = [
+        ['B30 部分', metrics.b30Contribution, 'B30 单曲 Rating 合计 ÷ 35'],
+        [data.accurate ? '当前 R5' : '可能 R5', metrics.possibleR5, data.accurate ? '准确值' : '由 Rating 与 B30 推定'],
+        ['最高 R5', metrics.maxR5, '当前玩家 B1 × 5 ÷ 35'],
+      ];
+      document.getElementById('max-rating').textContent = formatRating(metrics.maxRating);
+      document.getElementById('metrics').innerHTML = metricRows.map(([label, value, note]) =>
+        `<div class="metric" title="${note}"><span class="metric-label">${label}</span><span class="metric-value">${formatRating(value)}</span><span class="metric-note">${note}</span></div>`
+      ).join('');
+
+      const notice = String(data.notice || '').trim();
+      if (notice) {
+        const noticeElement = document.getElementById('notice');
+        noticeElement.textContent = notice;
+        noticeElement.classList.add('visible');
+      }
+
+      const tiers = [
+        [0,'brown','wood',0],[1,'brown','wood',1],[2,'brown','bronze',2],[3,'brown','bronze',3],
+        [4,'blue','wood',0],[5,'blue','wood',1],[6,'blue','bronze',2],[7,'blue','bronze',3],
+        [8,'green','wood',0],[9,'green','wood',1],[10,'green','bronze',2],[10.5,'green','bronze',3],
+        [11,'red','bronze',0],[11.5,'red','bronze',1],[12,'red','silver',2],[12.5,'red','silver',3],
+        [13,'purple','bronze',0],[13.5,'purple','bronze',1],[14,'purple','silver',2],[14.5,'purple','silver',3],
+        [15,'purple-plus','gold',1],[15.25,'purple-plus','gold',2],[15.5,'purple-plus','gold',3],
+        [15.75,'purple-plus','gold',4],[16,'purple-plus','gold',5],[16.5,'nightsky','gold',5],[17,'rainbow','gold',5]
+      ];
+      const rating = Number(player.rating || 0);
+      let tier = tiers[0];
+      tiers.forEach(item => { if (item[0] <= rating) tier = item; });
+      const [, bg, frame, stars] = tier;
+      const frameSize = {wood:[109,36,43],bronze:[115,61,28],silver:[118,49,37],gold:[131,77,29]}[frame];
+      const badge = document.getElementById('rating-badge');
+      badge.innerHTML = `<img class="rating-bg" src="${portalAsset}/assets/rating/rating-bg-${bg}.webp">` +
+        `<img class="rating-frame" src="${portalAsset}/assets/rating/rating-frame-${frame}.webp" style="width:${frameSize[0]}px;height:${frameSize[1]}px;transform:translateY(${frameSize[2]}px)">` +
+        `<span class="rating-value">${rating.toFixed(2)}</span>`;
+      const starPos = [[0,-36],[-14,-33],[14,-33],[-26,-26],[26,-26]];
+      const starSets = {1:[0],2:[1,2],3:[0,1,2],4:[1,2,3,4],5:[0,1,2,3,4]};
+      (starSets[stars] || []).forEach(index => {
+        const image = document.createElement('img');
+        image.className = 'rating-star';
+        image.src = `${portalAsset}/assets/rating/rating-star.webp`;
+        image.style.transform = `translate(${starPos[index][0]}px,${starPos[index][1]}px)`;
+        badge.appendChild(image);
+      });
+
+      const incomingEntries = Array.isArray(data.entries) ? data.entries : [];
+      const hasRuntimeData = Boolean(data.player || data.metrics || incomingEntries.length);
+      const entries = incomingEntries.slice();
+      if (!hasRuntimeData) {
+        for (let rank = 1; rank <= 33; rank += 1) entries.push({rank, placeholder: true});
+      }
+
+      const diffClass = value => ['whisper','acoustic','ultra','master'][Number(value)] || 'master';
+      const fact = (label, value, accent = false) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'fact';
+        if (accent) wrapper.classList.add('difficulty-accent');
+        const labelElement = document.createElement('span');
+        labelElement.className = 'fact-label';
+        labelElement.textContent = label;
+        const valueElement = document.createElement('span');
+        valueElement.className = `fact-value${accent ? ' accent' : ''}`;
+        valueElement.textContent = value;
+        wrapper.append(labelElement, valueElement);
+        return wrapper;
+      };
+
+      const buildCard = entry => {
+        const card = document.createElement('article');
+        card.className = `chart-card difficulty-${diffClass(entry.difficulty)}`;
+        if (entry.warning) card.classList.add('warning-card');
+
+        const coverWrap = document.createElement('div');
+        coverWrap.className = 'cover-wrap';
+        const coverPlaceholder = document.createElement('div');
+        coverPlaceholder.className = 'cover-placeholder';
+        coverPlaceholder.textContent = entry.placeholder ? 'EMPTY' : 'LANOTA';
+        coverWrap.appendChild(coverPlaceholder);
+        if (entry.coverUrl) {
+          const cover = document.createElement('img');
+          cover.className = 'cover';
+          cover.src = entry.coverUrl;
+          cover.alt = '';
+          cover.onerror = () => cover.remove();
+          coverWrap.appendChild(cover);
+        }
+        const coverShade = document.createElement('div');
+        coverShade.className = 'cover-shade';
+        const rank = document.createElement('span');
+        rank.className = 'rank';
+        rank.textContent = `#${entry.rank || ''}`;
+        coverWrap.append(coverShade, rank);
+
+        const copy = document.createElement('div');
+        copy.className = 'chart-copy';
+        const title = document.createElement('div');
+        title.className = 'song-title';
+        title.textContent = entry.placeholder ? 'Empty Slot' : entry.title;
+        const score = document.createElement('div');
+        score.className = 'score';
+        score.textContent = entry.placeholder ? '---,---' : Number(entry.score || 0).toLocaleString('en-US');
+        const facts = document.createElement('div');
+        facts.className = 'facts';
+        if (entry.placeholder) {
+          facts.append(fact('准度', '--.--%'), fact('谱面', '---', true), fact('物量', '---'));
+          facts.append(fact('基础', '--.--'), fact('单曲', '--.--'), fact('Rating%', '--.--%'));
+        } else {
+          const prefix = entry.exact ? '' : '≈';
+          facts.append(fact('准度', `${Number(entry.scoreAccuracy).toFixed(2)}%`));
+          facts.append(fact(entry.difficultyName || '谱面', entry.constantText || '未知', true));
+          facts.append(fact('物量', Number(entry.total || 0).toLocaleString('en-US')));
+          facts.append(fact('基础', Number(entry.baseRating).toFixed(2)));
+          facts.append(fact('单曲', `${prefix}${Number(entry.singleRating).toFixed(2)}`));
+          facts.append(fact('Rating%', `${prefix}${Number(entry.ratingPercent).toFixed(2)}%`));
+        }
+        const warning = document.createElement('div');
+        warning.className = 'entry-warning';
+        warning.textContent = entry.warning || '';
+        copy.append(title, score, facts, warning);
+        card.append(coverWrap, copy);
+        return card;
+      };
+
+      const bestEntries = entries
+        .filter(entry => !entry.overflow && Number(entry.rank || 0) <= 30)
+        .slice(0, 30);
+      bestEntries.forEach(entry => document.getElementById('best-grid').appendChild(buildCard(entry)));
+      document.getElementById('best-sub').textContent = `${bestEntries.length} ENTRIES · B30 / 35 = ${formatRating(metrics.b30Contribution)}`;
+
+      const overflow = document.getElementById('overflow');
+      const overflowEntries = entries
+        .filter(entry => entry.overflow || Number(entry.rank || 0) > 30)
+        .slice(0, 3);
+      if (hasRuntimeData && !overflowEntries.length) {
+        overflow.classList.add('hidden');
+      } else {
+        overflowEntries.forEach(entry => document.getElementById('overflow-grid').appendChild(buildCard(entry)));
+      }
+    })();
+  </script>
+</body>
+</html>

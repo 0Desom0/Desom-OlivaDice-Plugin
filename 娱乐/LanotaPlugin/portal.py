@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -38,6 +39,18 @@ compare_cache_lock = threading.RLock()
 compare_cache: dict[str, dict[str, Any]] = {}
 compare_cache_ttl_seconds = 60
 
+REGION_ALIAS_MAP = {
+    'global': 'global',
+    'international': 'global',
+    'intl': 'global',
+    '国际服': 'global',
+    'cn': 'china',
+    'china': 'china',
+    '中国': 'china',
+    '中国服': 'china',
+    '国服': 'china',
+}
+
 
 def _auth_file_path() -> str:
     return os.path.join(utils.get_plugin_data_dir(), 'portal_auth.json')
@@ -49,7 +62,9 @@ def _china_auth_file_path() -> str:
 
 def _template_path(region: str = 'global', card_type: str = 'user') -> Path:
     normalized_region = normalize_region(region)
-    if card_type == 'song':
+    if card_type == 'b30':
+        file_name = config.lanota_portal_b30_template_file_name
+    elif card_type == 'song':
         file_name = (
             config.lanota_portal_china_song_template_file_name
             if normalized_region == 'china'
@@ -226,9 +241,19 @@ def get_id_token() -> str:
 def normalize_region(region: Any) -> str:
     """把命令参数和旧绑定统一为 global/china。"""
     region_text = str(region or '').strip().casefold()
-    if region_text in ['cn', 'china', '中国', '中国服', '国服']:
-        return 'china'
-    return 'global'
+    return REGION_ALIAS_MAP.get(region_text, 'global')
+
+
+def split_region_argument(argument: Any) -> tuple[str | None, str]:
+    """从命令参数首项提取区域别名，未指定时保留原参数。"""
+    source = str(argument or '').strip()
+    if not source:
+        return None, ''
+    parts = source.split(maxsplit=1)
+    region = REGION_ALIAS_MAP.get(parts[0].casefold())
+    if region is None:
+        return None, source
+    return region, parts[1].strip() if len(parts) > 1 else ''
 
 
 def region_display_name(region: Any) -> str:
@@ -888,6 +913,16 @@ def _device_scale_factor() -> float:
     return max(2.0, min(3.0, scale_factor))
 
 
+def _b30_screenshot_height(data: dict[str, Any]) -> int:
+    entries = data.get('entries', [])
+    entry_count = len(entries) if isinstance(entries, list) else 0
+    best_rows = math.ceil(min(entry_count, 30) / 3) if entry_count else 0
+    overflow_rows = math.ceil(min(max(entry_count - 30, 0), 3) / 3)
+    content_height = 570 + best_rows * 162 + overflow_rows * 230
+    maximum_height = int(config.lanota_portal_b30_screenshot_height)
+    return max(900, min(maximum_height, content_height))
+
+
 def _crop_song_card(path: Path, scale_factor: float) -> None:
     """按页面实际内容裁掉歌曲卡片底部空白，并保留稳定外边距。"""
     try:
@@ -929,7 +964,18 @@ def _template_html(data: dict[str, Any], card_type: str = 'user') -> str:
         'GMZON LANOTA PORTAL' if normalized_region == 'china' else 'NOXYGAMES LANOTA PORTAL'
     )
     template_data['portalRegionName'] = region_display_name(normalized_region)
-    if card_type == 'user':
+    if card_type == 'b30':
+        utils.sync_b30_assets()
+        template_data['b30AssetBaseUrl'] = Path(utils.get_b30_asset_dir()).resolve().as_uri()
+    for portal_font_file_name in config.portal_font_file_name_list:
+        runtime_font_path = Path(utils.get_portal_font_path(portal_font_file_name)).resolve()
+        font_path = (
+            runtime_font_path
+            if runtime_font_path.is_file()
+            else config.asset_data_dir / portal_font_file_name
+        )
+        template = template.replace(f'./{portal_font_file_name}', font_path.resolve().as_uri())
+    if card_type in {'user', 'b30'}:
         player = dict(data.get('player', {}))
         player.pop('nanoId', None)
         template_data['player'] = player
@@ -953,11 +999,12 @@ def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> st
         html_path.write_text(_template_html(data, card_type), encoding='utf-8')
         browser_data_dir.mkdir(parents=True, exist_ok=True)
         scale_factor = _device_scale_factor()
-        screenshot_height = (
-            config.lanota_portal_song_screenshot_height
-            if card_type == 'song'
-            else config.lanota_portal_screenshot_height
-        )
+        if card_type == 'song':
+            screenshot_height = config.lanota_portal_song_screenshot_height
+        elif card_type == 'b30':
+            screenshot_height = _b30_screenshot_height(data)
+        else:
+            screenshot_height = config.lanota_portal_screenshot_height
         last_error = ''
         for headless_mode in ['--headless=new', '--headless']:
             output_path.unlink(missing_ok=True)
@@ -1032,6 +1079,11 @@ def render_player_card(data: dict[str, Any]) -> str | None:
 def render_song_card(data: dict[str, Any]) -> str | None:
     """使用歌曲/查分 HTML 模板截图。"""
     return _render_card(data, 'song', 'lanota_portal_song')
+
+
+def render_b30_card(data: dict[str, Any]) -> str | None:
+    """使用 B30 HTML 模板截图。"""
+    return _render_card(data, 'b30', 'lanota_portal_b30')
 
 
 def build_fallback_text(data: dict[str, Any]) -> str:

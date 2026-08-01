@@ -340,6 +340,28 @@ def get_font_path() -> str:
     return os.path.join(config.plugin_data_dir, config.font_file_name)
 
 
+def get_portal_font_path(file_name: str) -> str:
+    return os.path.join(config.plugin_data_dir, file_name)
+
+
+def get_b30_asset_dir() -> str:
+    return ensure_folder(os.path.join(config.plugin_data_dir, 'B30Assets'))
+
+
+def sync_b30_assets() -> None:
+    """把 B30 图片资源同步到 OlivOS 运行期数据目录。"""
+    try:
+        source_dir = config.asset_data_dir / 'B30Assets'
+        if not source_dir.is_dir():
+            return
+        target_dir = Path(get_b30_asset_dir())
+        for source_path in source_dir.iterdir():
+            if source_path.is_file():
+                shutil.copy2(source_path, target_dir / source_path.name)
+    except Exception as exception_object:
+        error_log(None, f'B30 资源同步失败：{type(exception_object).__name__}: {exception_object}')
+
+
 def copy_seed_file(seed_path: Path, target_path: str, default_value: Any) -> None:
     try:
         if os.path.exists(target_path):
@@ -382,6 +404,13 @@ def initialize_plugin(Proc=None) -> None:
         copy_seed_file(config.asset_data_dir / 'SongList' / config.song_table_file_name, get_song_table_path(), {})
         copy_seed_excel_table_if_empty()
         copy_seed_file(config.asset_data_dir / config.font_file_name, get_font_path(), {})
+        for portal_font_file_name in config.portal_font_file_name_list:
+            copy_seed_file(
+                config.asset_data_dir / portal_font_file_name,
+                get_portal_font_path(portal_font_file_name),
+                {},
+            )
+        sync_b30_assets()
         if not os.path.exists(get_user_data_path()):
             save_json_file(get_user_data_path(), {})
         if not initialized:

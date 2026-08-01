@@ -496,41 +496,6 @@ def find_artist_by_search_term(search_term: str, song_data: list[dict[str, Any]]
     return matched[:max_display], match_type, len(matched)
 
 
-def calculate_rating(harmony: int, tune: int, fail: int, notes: int, level: str):
-    try:
-        notes = int(notes)
-    except Exception:
-        return 0.0, fail, 0, False, False, 0, 0
-    if harmony < 0 or tune < 0 or fail < 0 or notes < 0:
-        return 0.0, fail, 0, False, True, 0, 0
-    if not (notes > 0):
-        return 0.0, fail, 0, False, False, 0, 0
-    if harmony + tune + fail > notes:
-        return 0.0, fail, 0, True, False, 0, 0
-
-    level_text = str(level).strip()
-    bonus = 0.0
-    if level_text.endswith('+'):
-        try:
-            base_level = float(level_text[:-1])
-        except ValueError:
-            return 0.0, fail, 0, False, False, 0, 0
-        bonus = {'13+': 0.5, '14+': 0.5, '15+': 0.75, '16+': 1.25}.get(level_text, 0.0)
-    else:
-        try:
-            base_level = float(level_text)
-        except ValueError:
-            return 0.0, fail, 0, False, False, 0, 0
-        bonus = 0.5 if base_level == 16 else 0.0
-    if not 1 <= base_level <= 16:
-        return 0.0, fail, 0, False, False, 0, 0
-
-    adjustment = notes - (harmony + tune + fail)
-    adjusted_fail = fail + adjustment
-    rating = (harmony + tune / 3) / notes * (base_level + 1 + bonus)
-    return round(rating, 5), adjusted_fail, adjustment, False, False, bonus, base_level
-
-
 def random_index(max_index: int) -> int:
     try:
         import requests

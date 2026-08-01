@@ -1,0 +1,267 @@
+# -*- encoding: utf-8 -*-
+"""B30 公式、数据筛选、命令路由与冷却的离线回归测试。"""
+
+from __future__ import annotations
+
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+PLUGIN_PARENT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PLUGIN_PARENT))
+
+from LanotaPlugin import b30  # noqa: E402
+from LanotaPlugin import config  # noqa: E402
+from LanotaPlugin import message  # noqa: E402
+from LanotaPlugin import portal  # noqa: E402
+from LanotaPlugin import utils  # noqa: E402
+
+
+class B30FormulaTest(unittest.TestCase):
+    def test_immaculate_known_result(self) -> None:
+        result = b30.calculate_score_rating(934_838, 2701, 16.5)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['exScore'], 5050)
+        self.assertEqual(result['scoreAccuracy'], 93.48)
+        self.assertEqual(result['singleRating'], 17.26)
+        self.assertEqual(result['ratingPercent'], 92.10)
+
+    def test_invalid_old_score_is_rejected(self) -> None:
+        self.assertIsNone(b30.calculate_score_rating(123_456, 1000, 15.8))
+
+    def test_zero_score_has_zero_rating(self) -> None:
+        result = b30.calculate_score_rating(0, 1000, 16.5)
+        self.assertEqual(result['singleRating'], 0)
+        self.assertEqual(result['ratingPercent'], 0)
+
+    def test_known_judgement_scores_use_new_ex_formula(self) -> None:
+        samples = [
+            (1497, 1, 1, 1499, 998_999),
+            (1497, 1, 0, 1498, 999_666),
+            (1912, 100, 7, 2019, 971_768),
+            (2261, 20, 5, 2286, 993_438),
+        ]
+        for harmony, tune, fail, total, expected_score in samples:
+            with self.subTest(total=total, expected_score=expected_score):
+                result = b30.calculate_judgement_rating(harmony, tune, fail, total, 16.5)
+                self.assertIsNotNone(result)
+                self.assertEqual(result['score'], expected_score)
+
+    def test_player_limit_uses_b1_for_all_five_recent_entries(self) -> None:
+        entries = [
+            {'_singleRatingExact': 18.75},
+            *[{'_singleRatingExact': 17.0} for _index in range(29)],
+        ]
+        limits = b30.calculate_player_limits(entries, b30_contribution=14.82)
+        self.assertEqual(limits['maxR5'], 2.67)
+        self.assertEqual(limits['maxRating'], 17.49)
+
+    def test_inferred_entries_skip_invalid_and_unmapped_scores(self) -> None:
+        song = {'title': 'Valid Song', 'chapter': 'A-1'}
+        catalog = {
+            ('valid', 3): {
+                'songId': 'valid',
+                'title': 'Valid Song',
+                'chapter': 'A-1',
+                'difficulty': 3,
+                'difficultyName': 'Master',
+                'constantText': '15+.8(15.6)',
+                'chartConstant': 15.8,
+                'total': 1000,
+                'chartSet': 'current',
+                '_sourceSong': song,
+            },
+            ('invalid', 3): {
+                'songId': 'invalid',
+                'title': 'Invalid Song',
+                'chapter': 'A-2',
+                'difficulty': 3,
+                'difficultyName': 'Master',
+                'constantText': '15.8',
+                'chartConstant': 15.8,
+                'total': 1000,
+                'chartSet': 'current',
+                '_sourceSong': {'title': 'Invalid Song', 'chapter': 'A-2'},
+            },
+        }
+        compare_data = {
+            'songs': [
+                {'songId': 'valid', 'difficulty': 3, 'friendScore': 1_000_000},
+                {'songId': 'invalid', 'difficulty': 3, 'friendScore': 123_456},
+                {'songId': 'missing', 'difficulty': 3, 'friendScore': 1_000_000},
+            ]
+        }
+        entries, validation = b30.build_inferred_entries(compare_data, catalog)
+        self.assertEqual([item['songId'] for item in entries], ['valid'])
+        self.assertEqual(validation['invalid'], 1)
+        self.assertEqual(validation['unmapped'], 1)
+
+    def test_exact_entry_marks_stale_portal_score(self) -> None:
+        source = {
+            'songId': 'song',
+            'title': 'Song',
+            'difficulty': 3,
+            'level': 15,
+            'levelFraction': 8,
+            'harmony': 99,
+            'tune': 1,
+            'fail': 0,
+            'total': 100,
+            'exScore': 199,
+            'maxExScore': 200,
+            'exScoreRate': 99.5,
+            'singleRating': 17.59,
+            'ratingPercent': 99.4,
+        }
+        rating_data = {'best30': {'entries': [source]}}
+        scores_data = {'songs': [{'songId': 'song', 'difficulty': 3, 'score': 1_000_000}]}
+        entries, validation = b30.build_exact_entries(rating_data, scores_data, {})
+        self.assertEqual(entries[0]['score'], 995_000)
+        self.assertIn('当前最高分 1,000,000', entries[0]['warning'])
+        self.assertEqual(validation['mismatch'], 1)
+
+    def test_exact_entries_append_inferred_overflow(self) -> None:
+        exact_source = {
+            'songId': 'best',
+            'difficulty': 3,
+            'level': 15,
+            'levelFraction': 8,
+            'harmony': 99,
+            'tune': 1,
+            'fail': 0,
+            'total': 100,
+            'exScore': 199,
+            'maxExScore': 200,
+            'singleRating': 17.59,
+        }
+        catalog = {}
+        for song_id in ('overflow-1', 'overflow-2', 'overflow-3', 'overflow-4'):
+            catalog[(song_id, 3)] = {
+                'songId': song_id,
+                'title': song_id,
+                'chapter': 'Test',
+                'difficulty': 3,
+                'difficultyName': 'Master',
+                'constantText': '15+.8(15.8)',
+                'chartConstant': 15.8,
+                'total': 1000,
+                '_sourceSong': {'title': song_id},
+            }
+        scores_data = {
+            'songs': [
+                {'songId': 'best', 'difficulty': 3, 'score': 995_000},
+                {'songId': 'overflow-1', 'difficulty': 3, 'score': 1_000_000},
+                {'songId': 'overflow-2', 'difficulty': 3, 'score': 999_500},
+                {'songId': 'overflow-3', 'difficulty': 3, 'score': 999_000},
+                {'songId': 'overflow-4', 'difficulty': 3, 'score': 998_500},
+            ]
+        }
+        rating_data = {'best30': {'entries': [exact_source]}}
+
+        entries, validation = b30.build_exact_entries(rating_data, scores_data, catalog)
+
+        overflow = [item for item in entries if item['overflow']]
+        self.assertEqual([item['songId'] for item in overflow], ['overflow-1', 'overflow-2', 'overflow-3'])
+        self.assertEqual([item['rank'] for item in overflow], [31, 32, 33])
+        self.assertTrue(all(not item['exact'] for item in overflow))
+        self.assertEqual(validation['overflow'], 3)
+
+        card_data = b30.build_exact_card_data(rating_data, scores_data, catalog, 'global')
+        expected_b30 = b30.truncate_two(float(entries[0]['_singleRatingExact']) / 35)
+        self.assertEqual(card_data['metrics']['b30Contribution'], expected_b30)
+
+
+class B30CommandTest(unittest.TestCase):
+    def setUp(self) -> None:
+        message.b30_last_used.clear()
+
+    def test_b30_command_replaces_rating_command(self) -> None:
+        self.assertEqual(message.match_command('la b30 cn'), ('b30', 'cn'))
+        self.assertNotEqual(message.match_command('la rating')[0], 'rating')
+
+    def test_calculate_alias_uses_reimplemented_handler(self) -> None:
+        argument = '1497/1/1/1499/16.5'
+        self.assertEqual(message.match_command(f'la calculate {argument}'), ('cal', argument))
+        with patch.object(message, 'reply_text') as reply_text:
+            message.handle_cal(object(), argument)
+        output = reply_text.call_args.args[1]
+        self.assertIn('新版分数: 998,999', output)
+        self.assertIn('EX = 2×Harmony + Tune', output)
+        self.assertNotIn('Tune/3', output)
+
+    def test_all_region_aliases_use_shared_table(self) -> None:
+        for alias in ('global', 'international', 'intl', '国际服'):
+            self.assertEqual(portal.split_region_argument(f'{alias} value'), ('global', 'value'))
+        for alias in ('cn', 'china', '中国', '中国服', '国服'):
+            self.assertEqual(portal.split_region_argument(f'{alias} value'), ('china', 'value'))
+
+    def test_b30_cooldown_is_shared_between_regions(self) -> None:
+        event = SimpleNamespace(
+            bot_info=SimpleNamespace(hash='bot'),
+            data=SimpleNamespace(user_id='user'),
+        )
+        with patch.object(message.time, 'monotonic', side_effect=[1000.0, 1001.0, 1300.0]):
+            self.assertEqual(message._consume_b30_cooldown(event), 0)
+            self.assertEqual(message._consume_b30_cooldown(event), 299)
+            self.assertEqual(message._consume_b30_cooldown(event), 0)
+
+    def test_different_users_have_independent_cooldowns(self) -> None:
+        first = SimpleNamespace(bot_info=SimpleNamespace(hash='bot'), data=SimpleNamespace(user_id='one'))
+        second = SimpleNamespace(bot_info=SimpleNamespace(hash='bot'), data=SimpleNamespace(user_id='two'))
+        with patch.object(message.time, 'monotonic', side_effect=[1000.0, 1000.0]):
+            self.assertEqual(message._consume_b30_cooldown(first), 0)
+            self.assertEqual(message._consume_b30_cooldown(second), 0)
+
+
+class B30RenderTest(unittest.TestCase):
+    def test_screenshot_height_tracks_entry_rows(self) -> None:
+        expected_heights = {
+            0: 900,
+            10: 1218,
+            30: 2190,
+            33: 2420,
+        }
+        for entry_count, expected_height in expected_heights.items():
+            with self.subTest(entry_count=entry_count):
+                data = {'entries': [{} for _index in range(entry_count)]}
+                self.assertEqual(portal._b30_screenshot_height(data), expected_height)
+
+    def test_all_portal_templates_use_local_fonts(self) -> None:
+        for card_type in ('user', 'song', 'b30'):
+            with self.subTest(card_type=card_type):
+                html = portal._template_html({'_portal_region': 'china'}, card_type)
+                self.assertNotIn('./Kawoszeh.ttf', html)
+                self.assertNotIn('./千图雪花体.ttf', html)
+                self.assertIn('Kawoszeh.ttf', html)
+                self.assertIn('%E5%8D%83%E5%9B%BE%E9%9B%AA%E8%8A%B1%E4%BD%93.ttf', html)
+
+    def test_b30_logo_is_synced_to_runtime_asset_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            source_data_dir = root / 'package-data'
+            source_asset_dir = source_data_dir / 'B30Assets'
+            source_asset_dir.mkdir(parents=True)
+            (source_asset_dir / 'Lanotalogo_top.png').write_bytes(b'logo-data')
+            runtime_data_dir = root / 'plugin' / 'data' / 'LanotaPlugin'
+            with (
+                patch.object(config, 'asset_data_dir', source_data_dir),
+                patch.object(config, 'plugin_data_dir', str(runtime_data_dir)),
+            ):
+                html = portal._template_html({'_portal_region': 'global'}, 'b30')
+
+            runtime_logo = runtime_data_dir / 'B30Assets' / 'Lanotalogo_top.png'
+            self.assertEqual(runtime_logo.read_bytes(), b'logo-data')
+            self.assertIn((runtime_data_dir / 'B30Assets').resolve().as_uri(), html)
+
+    def test_b30_template_colors_difficulty_name_and_keeps_exact_overflow(self) -> None:
+        html = portal._template_html({'_portal_region': 'global'}, 'b30')
+        self.assertIn("wrapper.classList.add('difficulty-accent')", html)
+        self.assertNotIn('data.accurate || (hasRuntimeData && !overflowEntries.length)', html)
+
+
+if __name__ == '__main__':
+    unittest.main()

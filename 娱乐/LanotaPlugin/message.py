@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Any
 
+from . import b30
 from . import config
 from . import crawler
 from . import function
@@ -21,6 +22,8 @@ search_session_dict = {}
 management_command_name_set = {'laglobal', 'labot', 'lagroup', 'sync', 'cover', 'china'}
 china_login_lock = threading.RLock()
 china_login_in_progress: set[str] = set()
+b30_cooldown_lock = threading.RLock()
+b30_last_used: dict[str, float] = {}
 
 command_configs = [
     ('today', '今日曲'),
@@ -39,7 +42,7 @@ command_configs = [
     ('cover', '曲绘'),
     ('cal', '计算'),
     ('notes', '物量'),
-    ('rating', 'rating'),
+    ('b30', 'b30'),
     ('bind', '绑定'),
     ('unbind', '解绑'),
     ('user', '用户'),
@@ -89,7 +92,7 @@ subcommand_alias_dict = {
     '计算': 'cal',
     'notes': 'notes',
     '物量': 'notes',
-    'rating': 'rating',
+    'b30': 'b30',
     'bind': 'bind',
     '绑定': 'bind',
     'unbind': 'unbind',
@@ -1088,14 +1091,9 @@ def handle_find(plugin_event, argument: str) -> None:
 
 def handle_info(plugin_event, argument: str) -> None:
     raw_arg = argument.strip()
-    region = None
-    first_token, remaining = utils.split_first_token(raw_arg)
-    if first_token.casefold() in {'cn', 'china', '国服'}:
-        region = 'china'
-        raw_arg = remaining.strip()
-    elif first_token.casefold() in {'global', 'international', 'intl', '国际服'}:
-        region = 'global'
-        raw_arg = remaining.strip()
+    region, remaining = portal.split_region_argument(raw_arg)
+    if region is not None:
+        raw_arg = remaining
     if not raw_arg:
         reply_text(plugin_event, '用法：/la info <搜索词>，或 /la info cn <搜索词>（查询国服成绩）')
         return
@@ -1185,7 +1183,7 @@ def handle_all(plugin_event) -> None:
 
 def handle_cal(plugin_event, argument: str) -> None:
     if not argument.strip():
-        reply_text(plugin_event, '用法：\n/la cal harmony/tune/fail/难度/曲目\n/la cal harmony/tune/fail/物量/等级')
+        reply_text(plugin_event, '用法：\n/la cal harmony/tune/fail/难度/曲目\n/la cal harmony/tune/fail/物量/官方定数')
         return
     parts = argument.split('/', 4)
     if len(parts) < 5:
@@ -1212,34 +1210,72 @@ def handle_cal(plugin_event, argument: str) -> None:
         song = matched_songs[0]
         difficulty_value = song.get('difficulty', {}).get(difficulty_type, '未知')
         notes_value = song.get('notes', {}).get(difficulty_type, 0)
-        if difficulty_value == '未知' or not notes_value:
+        official_constant = song.get('official_constant', {}).get(difficulty_type)
+        if difficulty_value == '未知' or not notes_value or official_constant in [None, '']:
             reply_text(plugin_event, f'乐曲[{song.get("title")}]没有{difficulty_type}难度的数据。')
             return
-        rating, adjusted_fail, adjustment, exceeded, negative, bonus, base_level = function.calculate_rating(harmony, tune, fail, notes_value, str(difficulty_value))
-        prefix = f'乐曲: {song.get("title")}\n难度: {difficulty_type.capitalize()} {difficulty_value}\n总物量: {notes_value}\n'
+        chapter_constants = function.load_table_data().get(str(song.get('chapter', '')), {})
+        folk_constant = (
+            chapter_constants.get(difficulty_type.capitalize())
+            if isinstance(chapter_constants, dict)
+            else None
+        )
+        constant_text = function.format_compact_chart_constant(
+            official_constant,
+            folk_constant,
+            difficulty_value,
+        )
+        prefix = (
+            f'乐曲: {song.get("title")}\n'
+            f'谱面: {difficulty_type.capitalize()} {constant_text}\n'
+            f'官方定数: {float(official_constant):.2f}\n'
+            f'总物量: {notes_value}\n'
+        )
     else:
         try:
             notes_value = int(parts[3])
         except ValueError:
             reply_text(plugin_event, '物量参数必须是数字。')
             return
-        level = parts[4]
-        if level not in [str(i) for i in range(1, 17)] + ['13+', '14+', '15+', '16+']:
-            reply_text(plugin_event, '等级必须是1-16或13+,14+,15+,16+。')
+        try:
+            official_constant = float(parts[4])
+        except ValueError:
+            reply_text(plugin_event, '官方定数必须是数字，例如 15.8 或 16.5。')
             return
-        rating, adjusted_fail, adjustment, exceeded, negative, bonus, base_level = function.calculate_rating(harmony, tune, fail, notes_value, level)
-        prefix = f'总物量: {notes_value}\n等级: {level}\n'
+        if not 0 < official_constant <= 30:
+            reply_text(plugin_event, '官方定数必须大于 0 且不超过 30。')
+            return
+        prefix = f'总物量: {notes_value}\n官方定数: {official_constant:.2f}\n'
 
-    if negative:
-        reply_text(plugin_event, '输入的判定/物量不能为负数！')
-    elif exceeded:
+    if notes_value <= 0:
+        reply_text(plugin_event, '总物量必须大于 0。')
+        return
+    if harmony + tune + fail > int(notes_value):
         reply_text(plugin_event, prefix + f'当前输入总物量为：{harmony + tune + fail}，已经高于物量：{notes_value}，无法计算。')
-    else:
-        message = prefix + f'输入判定: {harmony + tune + fail} (Harmony: {harmony}, Tune: {tune}, Fail: {fail})\n'
-        if adjustment != 0:
-            message += f'自动调整: Fail {fail} -> {adjusted_fail} ({adjustment:+})\n'
-        message += f'单曲Rating: {rating}\n计算方式: ({harmony} + {tune}/3) / {notes_value} * ({base_level} + 1 + 难度加成({bonus}))'
-        reply_text(plugin_event, message)
+        return
+    result = b30.calculate_judgement_rating(
+        harmony,
+        tune,
+        fail,
+        int(notes_value),
+        float(official_constant),
+    )
+    if result is None:
+        reply_text(plugin_event, '输入数据无法按新版公式计算，请检查判定、物量和官方定数。')
+        return
+    message = prefix + f'输入判定: {harmony + tune + fail} (Harmony: {harmony}, Tune: {tune}, Fail: {fail})\n'
+    if result['adjustment']:
+        message += f'自动调整: Fail {fail} -> {result["fail"]} (+{result["adjustment"]})\n'
+    message += (
+        f'EX Score: {result["exScore"]}/{result["maxExScore"]}\n'
+        f'新版分数: {int(result["score"]):,}\n'
+        f'分数准度: {float(result["scoreAccuracy"]):.2f}%\n'
+        f'基础 Rating: {float(result["baseRating"]):.2f}\n'
+        f'Single Rating: {float(result["singleRating"]):.2f}\n'
+        f'ratingPercent: {float(result["ratingPercent"]):.2f}%\n'
+        f'计算核心: EX = 2×Harmony + Tune = {result["exScore"]}'
+    )
+    reply_text(plugin_event, message)
 
 
 def handle_notes(plugin_event) -> None:
@@ -1261,75 +1297,129 @@ def handle_notes(plugin_event) -> None:
     reply_large_text(plugin_event, '\n'.join(lines) if len(lines) > 1 else '没有找到有效的谱面数据。')
 
 
-def handle_rating(plugin_event) -> None:
-    high_level_charts = []
-    for song in function.load_song_data():
-        for diff_type in ['master', 'ultra']:
-            level_text = str(song.get('difficulty', {}).get(diff_type, '未知'))
-            try:
-                notes_value = int(song.get('notes', {}).get(diff_type, 0))
-                base_level = float(level_text[:-1] if level_text.endswith('+') else level_text)
-            except Exception:
-                continue
-            if base_level >= 15:
-                high_level_charts.append({'song': song, 'diff': diff_type.capitalize(), 'level': level_text, 'notes': notes_value})
-    if not high_level_charts:
-        reply_text(plugin_event, '没有找到15级以上的Master或Ultra难度谱面。')
+def _consume_b30_cooldown(plugin_event) -> int:
+    cooldown_seconds = max(1, int(config.b30_cooldown_seconds))
+    user_key = '|'.join([
+        utils.get_bot_hash_from_event(plugin_event, use_linked=True),
+        utils.get_sender_id_from_event(plugin_event),
+    ])
+    now_time = time.monotonic()
+    with b30_cooldown_lock:
+        expired_keys = [
+            key for key, used_at in b30_last_used.items()
+            if now_time - used_at >= cooldown_seconds
+        ]
+        for key in expired_keys:
+            b30_last_used.pop(key, None)
+        last_used = b30_last_used.get(user_key)
+        if last_used is not None:
+            return max(1, math.ceil(cooldown_seconds - (now_time - last_used)))
+        b30_last_used[user_key] = now_time
+    return 0
+
+
+def _append_b30_notice(card_data: dict[str, Any], notice: str) -> None:
+    clean_notice = str(notice or '').strip()
+    if not clean_notice:
         return
-    level_groups = {}
-    for chart in high_level_charts:
-        level_groups.setdefault(chart['level'], []).append(chart)
-    sorted_levels = sorted(level_groups.keys(), key=lambda item: (-float(item[:-1] if item.endswith('+') else item), -item.endswith('+')))
-    b30 = []
-    remaining = 30
-    for level in sorted_levels:
-        charts = level_groups[level]
-        random.shuffle(charts)
-        take = min(len(charts), remaining)
-        for chart in charts[:take]:
-            rating, *_unused = function.calculate_rating(chart['notes'], 0, 0, chart['notes'], chart['level'])
-            b30.append({**chart, 'rating': rating})
-        remaining -= take
-        if remaining <= 0:
-            break
-    if not b30:
-        reply_text(plugin_event, '没有可用于计算 rating 的谱面。')
+    current_notice = str(card_data.get('notice', '') or '').strip()
+    card_data['notice'] = f'{current_notice} {clean_notice}'.strip()
+
+
+def handle_b30(plugin_event, argument: str) -> None:
+    region, remaining = portal.split_region_argument(argument)
+    if remaining or (argument.strip() and region is None):
+        reply_text(plugin_event, '用法：/la b30 或 /la b30 cn')
         return
-    while len(b30) < 30:
-        b30.append({**b30[-1], 'song': {'title': 'N/A'}})
-    max_rating = max(item['rating'] for item in b30)
-    top_rated = [item for item in b30 if item['rating'] == max_rating]
-    r5 = (top_rated * 5)[:5] if len(top_rated) < 5 else random.sample(top_rated, 5)
-    total_rating = (sum(item['rating'] for item in b30) + sum(item['rating'] for item in r5)) / 35
-    lines = [
-        '========== Rating计算 ==========',
-        f'理论Max Rating: {total_rating:.2f}',
-        f'B30平均: {sum(item["rating"] for item in b30) / 30:.2f}',
-        f'R5平均: {sum(item["rating"] for item in r5) / 5:.2f}',
-        '========== B30谱面 ==========',
-    ]
-    lines.extend(f'{i:2d}. {item["song"].get("title")} -|- {item["diff"]} {item["level"]} (Rating: {item["rating"]:.2f})' for i, item in enumerate(b30, 1))
-    lines.append('========== R5谱面 ==========')
-    lines.extend(f'{i}. {item["song"].get("title")} -|- {item["diff"]} {item["level"]} (Rating: {item["rating"]:.2f})' for i, item in enumerate(r5, 1))
-    reply_large_text(plugin_event, '\n'.join(lines))
+    selected_region = region or portal.get_bound_region(plugin_event)
+    if not selected_region:
+        reply_text(plugin_event, '尚未绑定 Lanota 好友码，请先使用 /la bind <好友码>。')
+        return
+    nano_id = portal.get_bound_nano_id(plugin_event, selected_region)
+    if not nano_id:
+        region_name = portal.region_display_name(selected_region)
+        bind_prefix = 'cn ' if selected_region == 'china' else ''
+        reply_text(plugin_event, f'尚未绑定 Lanota {region_name}好友码，请先使用 /la bind {bind_prefix}<好友码>。')
+        return
+
+    cooldown_remaining = _consume_b30_cooldown(plugin_event)
+    if cooldown_remaining:
+        minutes, seconds = divmod(cooldown_remaining, 60)
+        reply_text(plugin_event, f'/la b30 每人 5 分钟只能使用一次，请在 {minutes}分{seconds:02d}秒后重试。')
+        return
+
+    utils.reply_message(
+        plugin_event,
+        f'正在生成 Lanota {portal.region_display_name(selected_region)} B30，请稍候...',
+    )
+    try:
+        catalog = b30.build_chart_catalog()
+        card_data = None
+        exact_check_error = None
+        try:
+            me_data = portal.get_me(selected_region)
+            is_current_account = str(me_data.get('nanoId', '')).casefold() == nano_id.casefold()
+            if is_current_account:
+                rating_data = portal.api_get('rating', region=selected_region)
+                exact_entries = rating_data.get('best30', {}).get('entries', [])
+                if isinstance(exact_entries, list) and exact_entries:
+                    try:
+                        scores_data = portal.api_get('scores', region=selected_region)
+                    except Exception as exception_object:
+                        scores_data = None
+                        exact_check_error = exception_object
+                    card_data = b30.build_exact_card_data(
+                        rating_data,
+                        scores_data,
+                        catalog,
+                        selected_region,
+                    )
+                else:
+                    exact_check_error = RuntimeError('Portal 当前账号未开放 B30/R15 明细。')
+        except Exception as exception_object:
+            exact_check_error = exception_object
+
+        if card_data is None:
+            compare_data, _bound_id, cache_error = portal.get_compare_data_cached(
+                plugin_event,
+                selected_region,
+            )
+            card_data = b30.build_inferred_card_data(compare_data, catalog, selected_region)
+            if exact_check_error is not None:
+                _append_b30_notice(
+                    card_data,
+                    f'未使用准确 B30：{portal.format_error(exact_check_error)}',
+                )
+            if cache_error is not None:
+                _append_b30_notice(
+                    card_data,
+                    f'网络查询失败，当前使用最近缓存：{portal.format_error(cache_error)}',
+                )
+
+        fallback_text = b30.build_fallback_text(card_data)
+        if is_plain_text_mode(plugin_event):
+            b30.strip_internal_fields(card_data)
+            reply_large_text(plugin_event, fallback_text)
+            return
+        b30.attach_cover_urls(card_data)
+        image_path = portal.render_b30_card(card_data)
+        if image_path:
+            utils.reply_image(plugin_event, image_path, fallback_text)
+            return
+        reply_text(plugin_event, f'{fallback_text}\n\nHTML 截图失败。\n{portal.render_status_text()}')
+    except Exception as exception_object:
+        selected_region = selected_region or portal.get_bound_region(plugin_event)
+        error_text = f'B30 查询失败：{portal.format_error(exception_object)}'
+        credential_hint = portal.credential_error_hint(exception_object, selected_region)
+        if credential_hint:
+            error_text = f'{error_text}\n{credential_hint}'
+        reply_text(plugin_event, error_text)
 
 
 def handle_bind(plugin_event, argument: str) -> None:
-    bind_parts = argument.strip().split()
-    region = 'global'
-    if bind_parts and bind_parts[0].casefold() in [
-        'global',
-        'international',
-        'intl',
-        '国际服',
-        'cn',
-        'china',
-        '中国',
-        '中国服',
-        '国服',
-    ]:
-        region = portal.normalize_region(bind_parts.pop(0))
-    nano_id = ''.join(bind_parts).strip()
+    region, remaining = portal.split_region_argument(argument)
+    region = region or 'global'
+    nano_id = ''.join(remaining.split()).strip()
     if not nano_id:
         utils.reply_message(plugin_event, '用法：.la bind <好友码> 或 .la bind cn <国服好友码>')
         return
@@ -1343,20 +1433,11 @@ def handle_bind(plugin_event, argument: str) -> None:
 
 
 def handle_unbind(plugin_event, argument: str) -> None:
-    unbind_parts = argument.strip().split()
-    region = 'global'
-    if unbind_parts and unbind_parts[0].casefold() in [
-        'global',
-        'international',
-        'intl',
-        '国际服',
-        'cn',
-        'china',
-        '中国',
-        '中国服',
-        '国服',
-    ]:
-        region = portal.normalize_region(unbind_parts.pop(0))
+    region, remaining = portal.split_region_argument(argument)
+    if remaining or (argument.strip() and region is None):
+        utils.reply_message(plugin_event, '用法：.la unbind 或 .la unbind cn')
+        return
+    region = region or 'global'
     try:
         success, message_text = portal.unbind_nano_id(plugin_event, region=region)
         utils.reply_message(plugin_event, message_text if success else f'解绑失败：{message_text}')
@@ -1366,8 +1447,9 @@ def handle_unbind(plugin_event, argument: str) -> None:
 
 
 def handle_user(plugin_event, argument: str) -> None:
-    user_argument = argument.strip().lower()
-    if user_argument in ['friend', '好友码']:
+    user_argument = argument.strip()
+    normalized_argument = user_argument.casefold()
+    if normalized_argument in ['friend', '好友码']:
         bound_items = []
         for region in ('global', 'china'):
             nano_id = portal.get_bound_nano_id(plugin_event, region)
@@ -1391,13 +1473,9 @@ def handle_user(plugin_event, argument: str) -> None:
             return
         utils.reply_message(plugin_event, '私聊发送失败，请私聊 Bot 使用 .la friend 查询。')
         return
-    region = None
-    if user_argument in ['cn', 'china', '国服']:
-        region = 'china'
-    elif user_argument in ['global', 'international', 'intl', '国际服']:
-        region = 'global'
+    region, remaining = portal.split_region_argument(user_argument)
     if user_argument:
-        if region is None:
+        if region is None or remaining:
             reply_text(plugin_event, '用法：.la user、.la user cn 或 .la user friend')
             return
     try:
@@ -1710,21 +1788,21 @@ help_categories = {
         ],
     },
     'calculate': {
-        'name': '定数计算功能',
+        'name': '单曲rating计算功能',
         'aliases': ['cal', '计算', 'calculate'],
         'commands': [
-            '/la cal harmony数目/tune数目/fail数目/难度/曲目 - 根据曲目计算rating',
-            '/la cal harmony数目/tune数目/fail数目/物量/等级 - 直接计算rating',
+            '/la cal harmony数目/tune数目/fail数目/难度/曲目 - 使用曲目官方定数计算新版 Rating',
+            '/la cal harmony数目/tune数目/fail数目/物量/官方定数 - 直接计算新版 Rating',
         ],
         'priority': [
             '1. 前三个参数必须是数字',
             '2. 难度可以是: Whisper, Acoustic, Ultra, Master',
-            '3. 等级可以是: 1-16, 13+, 14+, 15+, 16+',
+            '3. 直接计算时最后一项必须是官方定数，例如 15.8 或 16.5',
             '4. 如果输入的物量之和不正确，将自动补到fail数目',
         ],
         'examples': [
             '/la cal 900/300/50/Master/8-6',
-            '/la cal 900/300/50/2000/16',
+            '/la cal 900/300/50/2000/16.5',
         ],
     },
     'category': {
@@ -1750,7 +1828,8 @@ help_categories = {
             '/la time - 显示长于3分钟和短于2分钟的乐曲列表',
             '/la all - 显示曲库统计信息',
             '/la notes - 物量最多的前50个谱面',
-            '/la rating - 显示当前的Max Rating，并且给出可能的B30和R5',
+            '/la b30 - 查询国际服优先的 B30；每人每 5 分钟一次',
+            '/la b30 cn - 查询国服 B30',
             '/la bind <好友码> - 绑定自己的 Lanota 好友码',
             '/la bind cn <好友码> - 绑定自己的国服 Lanota 好友码',
             '/la unbind - 解除国际服好友码绑定',
@@ -1767,7 +1846,8 @@ help_categories = {
             '/la time',
             '/la all',
             '/la notes',
-            '/la rating',
+            '/la b30',
+            '/la b30 cn',
             '/la bind <好友码>',
             '/la bind cn <好友码>',
             '/la unbind',
@@ -2007,7 +2087,7 @@ command_handler_dict = {
     'cover': handle_cover,
     'cal': handle_cal,
     'notes': lambda event, arg: handle_notes(event),
-    'rating': lambda event, arg: handle_rating(event),
+    'b30': handle_b30,
     'bind': handle_bind,
     'unbind': handle_unbind,
     'user': handle_user,

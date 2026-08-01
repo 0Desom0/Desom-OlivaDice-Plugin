@@ -572,6 +572,29 @@ def fetch_image_info(session, file_title_list: list[str]) -> dict[str, dict[str,
     return result
 
 
+def search_wiki_page_name(session, search_text: Any) -> str:
+    """源页面失效时按歌曲名查找最接近的 Wiki 页面。"""
+    clean_text = str(search_text or '').strip()
+    if not clean_text:
+        return ''
+    response = session.get(
+        config.api_url,
+        params={
+            'action': 'query',
+            'list': 'search',
+            'srsearch': clean_text,
+            'srnamespace': 0,
+            'srlimit': 5,
+            'format': 'json',
+            'formatversion': 2,
+        },
+        timeout=config.api_timeout_seconds,
+    )
+    response.raise_for_status()
+    rows = response.json().get('query', {}).get('search', [])
+    return str(rows[0].get('title', '') or '').strip() if rows else ''
+
+
 def fetch_song_cover_sources(session, song: dict[str, Any]) -> list[dict[str, Any]]:
     """获取单曲筛选后的曲绘及 imageinfo；只访问 MediaWiki API。"""
     variants = song.get('cover_variants') if isinstance(song.get('cover_variants'), list) else []
@@ -583,6 +606,18 @@ def fetch_song_cover_sources(session, song: dict[str, Any]) -> list[dict[str, An
         wikitext = fetch_wikitext(session, page_name)
         template, _wikicode = get_song_template(wikitext)
         variants = get_song_cover_variants(template)
+        if not variants:
+            searched_page_name = search_wiki_page_name(
+                session,
+                song.get('title') or song.get('title_outside'),
+            )
+            if searched_page_name and searched_page_name.casefold() != page_name.casefold():
+                searched_wikitext = fetch_wikitext(session, searched_page_name)
+                searched_template, _wikicode = get_song_template(searched_wikitext)
+                searched_variants = get_song_cover_variants(searched_template)
+                if searched_variants:
+                    page_name = searched_page_name
+                    variants = searched_variants
         if not variants:
             variants = [
                 {'label': 'Colored', 'file_title': f'File:{page_name}.png'},

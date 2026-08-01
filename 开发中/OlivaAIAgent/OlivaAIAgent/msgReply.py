@@ -1146,9 +1146,6 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
         '平台场景: %s' % ('群聊' if ctx['func_type'] == 'group_message' else '私聊'),
         '机器人id: %s' % ctx.get('self_id'),
     ]
-    masters = conf.getMasters(plugin_event)
-    if masters:
-        env_lines.append('骰主列表: %s' % ', '.join(masters[:10]))
     env_lines.append(conf.platformBrief(
         plugin_event,
         include_interfaces=has_tool('olivos_discover') or has_tool('olivos_call'),

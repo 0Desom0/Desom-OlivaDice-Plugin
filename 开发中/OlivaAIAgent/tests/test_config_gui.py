@@ -40,6 +40,8 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual(8, default_conf['ambient']['history_size'])
         self.assertEqual(16, default_conf['ambient']['prompt_cache_history_size'])
         self.assertTrue(default_conf['security']['use_olivadice_censor'])
+        self.assertEqual('骰主', default_conf['masters']['default_title'])
+        self.assertEqual({}, default_conf['masters']['titles'])
 
     def test_legacy_prompts_and_permissions_are_migrated_once(self):
         config = {
@@ -83,6 +85,28 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual('openai_compatible', config['voice']['provider'])
         self.assertNotIn('instructions', config['voice'])
         self.assertEqual(10, config['voice']['max_files'])
+
+    def test_legacy_persona_master_ids_move_to_internal_titles(self):
+        config = {
+            'prompt': {
+                'system': (
+                    '前文。你的主人Desom-fu认主唯一标准是发送者的QQ号（openid）为PRIMARY-ID'
+                    '或其小号SECONDARY-ID，若昵称同但QQ号（openid）不符直接称呼QQ号（openid）。'
+                    '主人喜欢音游。后文。'
+                ),
+            },
+            'masters': {'from_olivadice': True, 'extra': []},
+            'ambient': {},
+            'permissions': {},
+        }
+
+        OlivaAIAgent.conf._migrate(config)
+
+        self.assertEqual('主人', config['masters']['titles']['PRIMARY-ID'])
+        self.assertEqual('主人小号', config['masters']['titles']['SECONDARY-ID'])
+        self.assertEqual('骰主', config['masters']['default_title'])
+        self.assertIn('Desom-fu喜欢音游', config['prompt']['system'])
+        self.assertNotIn('认主唯一标准', config['prompt']['system'])
 
     def test_persisted_config_omits_description_metadata(self):
         clean = OlivaAIAgent.conf._persistableConfig({
@@ -170,6 +194,10 @@ class ConfigGuiSchemaTest(unittest.TestCase):
         self.assertIn('olivadice_logger', OlivaAIAgent.gui.SECTION_ORDER)
         self.assertEqual('OlivaDice 团日志', OlivaAIAgent.gui.SECTION_LABELS['olivadice_logger'])
         self.assertTrue(OlivaAIAgent.conf.DEFAULT_CONF['olivadice_logger']['enabled'])
+        self.assertEqual('骰主与专属称呼', OlivaAIAgent.gui.SECTION_LABELS['masters'])
+        self.assertEqual('未单独设置时的骰主称呼', labels['default_title'])
+        self.assertEqual('骰主专属称呼（JSON）', labels['titles'])
+        self.assertIn('titles', OlivaAIAgent.gui.JSON_OBJECT_NAMES)
 
     def test_group_table_has_no_per_group_trigger_override_columns(self):
         self.assertNotIn('prefixes', OlivaAIAgent.gui.GROUP_TREE_COLUMNS)

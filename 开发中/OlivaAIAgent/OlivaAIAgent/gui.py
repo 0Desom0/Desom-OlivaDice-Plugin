@@ -58,7 +58,7 @@ SECTION_LABELS = {
     'permissions': '工具权限',
     'security': '内容与人设安全',
     'olivadice_logger': 'OlivaDice 团日志',
-    'masters': '骰主来源',
+    'masters': '骰主与专属称呼',
     'groupchain': '群链共享',
     'reminder': '定时提醒',
     'knowledge': '知识库',
@@ -166,6 +166,8 @@ FIELD_LABELS = {
     'sensitive_word_dirs': '本地词库目录（JSON）',
     'from_olivadice': '读取 OlivaDiceCore 骰主',
     'extra': '额外骰主 ID',
+    'default_title': '未单独设置时的骰主称呼',
+    'titles': '骰主专属称呼（JSON）',
     'groups': '群 ID 列表',
     'max_per_user': '每人提醒上限',
     'max_total': '全局提醒上限',
@@ -242,6 +244,7 @@ JSON_OBJECT_NAMES = {
     'extra_body',
     'embedding_extra_headers',
     'group_persona',
+    'titles',
 }
 GROUP_SWITCHES = [
     ('enabled', '插件启用'),
