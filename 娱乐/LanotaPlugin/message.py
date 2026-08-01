@@ -3,7 +3,6 @@
 
 import datetime
 import math
-import random
 import re
 import threading
 import time
@@ -228,12 +227,12 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
             return True
         if page_index >= total_pages - 1:
             formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index, page_size)
-            reply_text(plugin_event, f'已是最后一页\n\n{formatted_results}', max_chars=config.image_max_chars)
+            reply_text(plugin_event, f'已是最后一页\n\n{formatted_results}', max_chars=config.search_image_max_chars)
             return True
         session_data['page_index'] = page_index + 1
         session_data['updated_at'] = time.time()
         formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index + 1, page_size)
-        reply_text(plugin_event, formatted_results, max_chars=config.image_max_chars)
+        reply_text(plugin_event, formatted_results, max_chars=config.search_image_max_chars)
         return True
     
     if stripped_text.lower() in ['上一页', 'prev', 'up']:
@@ -242,12 +241,12 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
             return True
         if page_index <= 0:
             formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index, page_size)
-            reply_text(plugin_event, f'已是第一页\n\n{formatted_results}', max_chars=config.image_max_chars)
+            reply_text(plugin_event, f'已是第一页\n\n{formatted_results}', max_chars=config.search_image_max_chars)
             return True
         session_data['page_index'] = page_index - 1
         session_data['updated_at'] = time.time()
         formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index - 1, page_size)
-        reply_text(plugin_event, formatted_results, max_chars=config.image_max_chars)
+        reply_text(plugin_event, formatted_results, max_chars=config.search_image_max_chars)
         return True
     
     # 处理"第X页"命令
@@ -260,7 +259,7 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
         session_data['page_index'] = target_page - 1
         session_data['updated_at'] = time.time()
         formatted_results, _, _ = function.format_search_results_with_pagination(results, target_page - 1, page_size)
-        reply_text(plugin_event, formatted_results, max_chars=config.image_max_chars)
+        reply_text(plugin_event, formatted_results, max_chars=config.search_image_max_chars)
         return True
     
     # 处理序号选择
@@ -320,10 +319,12 @@ def reply_text(plugin_event, text: str, max_chars: int | None = None) -> None:
     bot_hash = utils.get_bot_hash_from_event(plugin_event)
     bot_config = utils.load_bot_config(bot_hash)
     user_id = utils.get_sender_id_from_event(plugin_event)
-    if bot_config.get('send_as_image', True) and not is_plain_text_mode(plugin_event):
+    text_content = utils.safe_str(text)
+    use_text_image = len(text_content.strip()) >= config.text_image_min_chars
+    if use_text_image and bot_config.get('send_as_image', True) and not is_plain_text_mode(plugin_event):
         linked_bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
         image_path = function.create_text_image(
-            text,
+            text_content,
             user_id=user_id,
             max_chars=max_chars,
             bot_hash=linked_bot_hash,
@@ -331,7 +332,7 @@ def reply_text(plugin_event, text: str, max_chars: int | None = None) -> None:
         if image_path:
             utils.reply_image(plugin_event, image_path, text)
             return
-    utils.reply_message(plugin_event, text)
+    utils.reply_message(plugin_event, text_content)
 
 
 def reply_large_text(plugin_event, text: str) -> None:
@@ -572,9 +573,7 @@ def match_command(message_text: str) -> tuple[str, str]:
         command_name=subcommand_name_list,
     )
     if not subcommand_info['is_command']:
-        if not subcommand_source.strip():
-            return 'help', ''
-        return 'song', subcommand_source
+        return 'help', ''
 
     subcommand_key = subcommand_info['command_name']
     if subcommand_key in group_short_action_set:
@@ -977,7 +976,7 @@ def handle_alias(plugin_event, argument: str) -> None:
             formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
             header = f'找到多个匹配的乐曲({total_count}个)，请输入序号选择，或输入“结束”退出：\n'
             message = header + formatted_results
-            reply_text(plugin_event, message, max_chars=config.image_max_chars)
+            reply_text(plugin_event, message, max_chars=config.search_image_max_chars)
             return
         std_name = str(matched_songs[0].get('title', ''))
         if alias.lower() in all_titles:
@@ -1028,7 +1027,7 @@ def handle_alias(plugin_event, argument: str) -> None:
         formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
         header = f'找到多个匹配的乐曲({total_count}个)，请输入序号查看别名，或输入“结束”退出：\n'
         message = header + formatted_results
-        reply_text(plugin_event, message, max_chars=config.image_max_chars)
+        reply_text(plugin_event, message, max_chars=config.search_image_max_chars)
         return
     reply_text(plugin_event, '无效操作，只能使用 add/del/show。')
 
@@ -1073,7 +1072,7 @@ def _search_songs(plugin_event, search_term: str, view_mode: str) -> None:
         f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)，'
         f'请输入序号{action_name}，或输入“结束”退出：\n'
     )
-    reply_text(plugin_event, header + formatted_results, max_chars=config.image_max_chars)
+    reply_text(plugin_event, header + formatted_results, max_chars=config.search_image_max_chars)
 
 
 def handle_song(plugin_event, argument: str) -> None:
@@ -1091,7 +1090,7 @@ def handle_find(plugin_event, argument: str) -> None:
 
 def handle_info(plugin_event, argument: str) -> None:
     raw_arg = argument.strip()
-    region, remaining = portal.split_region_argument(raw_arg)
+    region, remaining = portal.split_region_argument(raw_arg, greedy=True)
     if region is not None:
         raw_arg = remaining
     if not raw_arg:
@@ -1125,7 +1124,7 @@ def handle_info(plugin_event, argument: str) -> None:
         f'通过搜索词[{raw_arg}]进行[{match_type}]找到匹配的乐曲({total_count}首)，'
         f'请输入序号查询{region_hint}成绩，或输入“结束”退出：\n'
     )
-    reply_text(plugin_event, header + formatted_results, max_chars=config.image_max_chars)
+    reply_text(plugin_event, header + formatted_results, max_chars=config.search_image_max_chars)
 
 
 def handle_artist(plugin_event, argument: str) -> None:
@@ -1297,11 +1296,12 @@ def handle_notes(plugin_event) -> None:
     reply_large_text(plugin_event, '\n'.join(lines) if len(lines) > 1 else '没有找到有效的谱面数据。')
 
 
-def _consume_b30_cooldown(plugin_event) -> int:
+def _consume_b30_cooldown(plugin_event, region: str) -> int:
     cooldown_seconds = max(1, int(config.b30_cooldown_seconds))
     user_key = '|'.join([
         utils.get_bot_hash_from_event(plugin_event, use_linked=True),
         utils.get_sender_id_from_event(plugin_event),
+        portal.normalize_region(region),
     ])
     now_time = time.monotonic()
     with b30_cooldown_lock:
@@ -1342,10 +1342,11 @@ def handle_b30(plugin_event, argument: str) -> None:
         reply_text(plugin_event, f'尚未绑定 Lanota {region_name}好友码，请先使用 /la bind {bind_prefix}<好友码>。')
         return
 
-    cooldown_remaining = _consume_b30_cooldown(plugin_event)
+    cooldown_remaining = _consume_b30_cooldown(plugin_event, selected_region)
     if cooldown_remaining:
         minutes, seconds = divmod(cooldown_remaining, 60)
-        reply_text(plugin_event, f'/la b30 每人 5 分钟只能使用一次，请在 {minutes}分{seconds:02d}秒后重试。')
+        region_name = portal.region_display_name(selected_region)
+        reply_text(plugin_event, f'/la b30 在{region_name}每人 5 分钟只能使用一次，请在 {minutes}分{seconds:02d}秒后重试。')
         return
 
     utils.reply_message(
@@ -1375,7 +1376,7 @@ def handle_b30(plugin_event, argument: str) -> None:
                         selected_region,
                     )
                 else:
-                    exact_check_error = RuntimeError('Portal 当前账号未开放 B30/R15 明细。')
+                    exact_check_error = RuntimeError('当前账号未开放 B30/R15 明细。')
         except Exception as exception_object:
             exact_check_error = exception_object
 
@@ -1417,7 +1418,7 @@ def handle_b30(plugin_event, argument: str) -> None:
 
 
 def handle_bind(plugin_event, argument: str) -> None:
-    region, remaining = portal.split_region_argument(argument)
+    region, remaining = portal.split_region_argument(argument, greedy=True)
     region = region or 'global'
     nano_id = ''.join(remaining.split()).strip()
     if not nano_id:
@@ -1446,38 +1447,55 @@ def handle_unbind(plugin_event, argument: str) -> None:
         utils.reply_message(plugin_event, f'解绑失败：{portal.format_error(exception_object)}')
 
 
+def handle_friend(plugin_event, argument: str) -> None:
+    friend_argument = argument.strip()
+    region = None
+    if friend_argument:
+        region, remaining = portal.split_region_argument(friend_argument, greedy=True)
+        if region is None or remaining:
+            reply_text(plugin_event, '用法：.la friend 或 .la friend cn')
+            return
+
+    target_regions = (region,) if region else ('global', 'china')
+    bound_items = []
+    for target_region in target_regions:
+        nano_id = portal.get_bound_nano_id(plugin_event, target_region)
+        if nano_id:
+            bound_items.append((portal.region_display_name(target_region), nano_id))
+    if not bound_items:
+        if region:
+            message_text = f'尚未绑定 Lanota {portal.region_display_name(region)}好友码。'
+        else:
+            message_text = '尚未绑定 Lanota 好友码。'
+    elif len(bound_items) == 1:
+        region_name, nano_id = bound_items[0]
+        message_text = f'你绑定的 Lanota {region_name}好友码：{nano_id}'
+    else:
+        message_text = '你绑定的 Lanota 好友码：\n' + '\n'.join(
+            f'{region_name}：{nano_id}' for region_name, nano_id in bound_items
+        )
+    if not utils.get_group_id_from_event(plugin_event):
+        utils.reply_message(plugin_event, message_text)
+        return
+    user_id = utils.get_sender_id_from_event(plugin_event)
+    if utils.send_private_message(plugin_event, user_id, message_text):
+        utils.reply_message(plugin_event, '绑定的 Lanota 好友码已通过私聊发送。')
+        return
+    utils.reply_message(plugin_event, '私聊发送失败，请私聊 Bot 使用 .la friend 查询。')
+
+
 def handle_user(plugin_event, argument: str) -> None:
     user_argument = argument.strip()
     normalized_argument = user_argument.casefold()
     if normalized_argument in ['friend', '好友码']:
-        bound_items = []
-        for region in ('global', 'china'):
-            nano_id = portal.get_bound_nano_id(plugin_event, region)
-            if nano_id:
-                bound_items.append((portal.region_display_name(region), nano_id))
-        if not bound_items:
-            message_text = '尚未绑定 Lanota 好友码。'
-        elif len(bound_items) == 1:
-            region_name, nano_id = bound_items[0]
-            message_text = f'你绑定的 Lanota {region_name}好友码：{nano_id}'
-        else:
-            message_text = '你绑定的 Lanota 好友码：\n' + '\n'.join(
-                f'{region_name}：{nano_id}' for region_name, nano_id in bound_items
-            )
-        if not utils.get_group_id_from_event(plugin_event):
-            utils.reply_message(plugin_event, message_text)
-            return
-        user_id = utils.get_sender_id_from_event(plugin_event)
-        if utils.send_private_message(plugin_event, user_id, message_text):
-            utils.reply_message(plugin_event, '绑定的 Lanota 好友码已通过私聊发送。')
-            return
-        utils.reply_message(plugin_event, '私聊发送失败，请私聊 Bot 使用 .la friend 查询。')
+        handle_friend(plugin_event, '')
         return
     region, remaining = portal.split_region_argument(user_argument)
     if user_argument:
         if region is None or remaining:
             reply_text(plugin_event, '用法：.la user、.la user cn 或 .la user friend')
             return
+    utils.reply_message(plugin_event, '正在查询中，请稍等。')
     try:
         player_data, _nano_id, cache_error = portal.get_user_data_cached(plugin_event, region)
         if cache_error is not None:
@@ -1821,6 +1839,31 @@ help_categories = {
             '/la category inf 101/200 - 显示inf分类的第101-200首',
         ],
     },
+    'account': {
+        'name': '玩家账号与绑定',
+        'aliases': ['user', 'bind', '账号', '绑定'],
+        'commands': [
+            '/la bind <好友码> - 绑定自己的国际服 Lanota 好友码',
+            '/la bind cn <好友码> - 绑定自己的国服 Lanota 好友码',
+            '/la unbind - 解除国际服好友码绑定',
+            '/la unbind cn - 解除国服好友码绑定',
+            '/la user - 查询绑定玩家的国际服优先 Portal 状态卡片',
+            '/la user cn - 查询绑定玩家的国服 Portal 状态卡片',
+            '/la friend - 私聊查询当前绑定的国际服/国服好友码',
+            '/la friend cn - 私聊查询当前绑定的国服好友码',
+            '/la user friend - .la friend 的兼容写法',
+        ],
+        'examples': [
+            '/la bind <好友码>',
+            '/la bind cn <好友码>',
+            '/la unbind',
+            '/la unbind cn',
+            '/la user',
+            '/la user cn',
+            '/la friend',
+            '/la friend cn',
+        ],
+    },
     'stats': {
         'name': '其它功能',
         'aliases': ['other', '其它'],
@@ -1828,16 +1871,8 @@ help_categories = {
             '/la time - 显示长于3分钟和短于2分钟的乐曲列表',
             '/la all - 显示曲库统计信息',
             '/la notes - 物量最多的前50个谱面',
-            '/la b30 - 查询国际服优先的 B30；每人每 5 分钟一次',
+            '/la b30 - 查询国际服优先的 B30；国际服与国服分别计算 5 分钟冷却',
             '/la b30 cn - 查询国服 B30',
-            '/la bind <好友码> - 绑定自己的 Lanota 好友码',
-            '/la bind cn <好友码> - 绑定自己的国服 Lanota 好友码',
-            '/la unbind - 解除国际服好友码绑定',
-            '/la unbind cn - 解除国服好友码绑定',
-            '/la user - 查询绑定玩家的 Portal 状态卡片',
-            '/la user cn - 查询绑定玩家的国服 Portal 状态卡片',
-            '/la friend - 私聊查询当前绑定的好友码，并显示国际服/国服',
-            '/la user friend - .la friend 的兼容写法',
             '/la china status - 查看国服 Portal 登录状态（骰主/插件管理员）',
             '/la china login - 私聊扫码登录国服 Portal（骰主/插件管理员）',
             '/la ritmo - 显示里莫绝赞昏睡时间',
@@ -1848,14 +1883,6 @@ help_categories = {
             '/la notes',
             '/la b30',
             '/la b30 cn',
-            '/la bind <好友码>',
-            '/la bind cn <好友码>',
-            '/la unbind',
-            '/la unbind cn',
-            '/la user',
-            '/la user cn',
-            '/la friend',
-            '/la user friend',
             '/la china status',
             '/la china login',
             '/la ritmo',
@@ -2091,7 +2118,7 @@ command_handler_dict = {
     'bind': handle_bind,
     'unbind': handle_unbind,
     'user': handle_user,
-    'friend': lambda event, arg: handle_user(event, 'friend'),
+    'friend': handle_friend,
     'china': handle_china,
     'category': handle_category,
     'table': handle_table,

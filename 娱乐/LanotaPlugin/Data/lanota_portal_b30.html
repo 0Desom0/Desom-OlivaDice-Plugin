@@ -82,7 +82,7 @@
       border: 1px solid rgba(102, 53, 28, .54);
     }
 
-    .page { position: relative; z-index: 1; width: min(1096px, 100%); margin: 0 auto; }
+    .page { position: relative; z-index: 1; width: min(1296px, 100%); margin: 0 auto; }
 
     .masthead {
       position: relative;
@@ -100,44 +100,53 @@
       background: #6f321d;
     }
 
-    .brand-row {
+    .hero-row {
       position: relative;
-      min-height: 76px;
+      min-height: 150px;
       display: grid;
-      grid-template-columns: 178px minmax(0, 1fr) auto;
+      grid-template-columns: 174px minmax(0, 1fr) 244px;
       align-items: center;
-      gap: 24px;
+      gap: 18px;
+      padding: 0 4px 14px;
     }
 
-    .brand-row::before {
-      content: "";
-      position: absolute;
-      z-index: -1;
-      left: -22px;
-      top: -10px;
-      width: 250px;
-      height: 96px;
-      background: radial-gradient(ellipse at 34% 50%, rgba(59, 25, 13, .52), rgba(80, 40, 19, .24) 48%, transparent 78%);
-      filter: blur(11px);
-      pointer-events: none;
+    .brand-block {
+      position: relative;
+      min-width: 0;
+      height: 124px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .brand-block::before {
+      display: none;
     }
 
     .brand-logo {
       display: block;
-      width: 170px;
-      height: 72px;
+      width: 190px;
+      height: 80px;
       object-fit: contain;
-      object-position: left center;
-      filter: contrast(1.16) saturate(1.08) drop-shadow(0 2px 3px rgba(47, 20, 10, .46));
-      transform: translateX(12px);
+      object-position: center;
+      filter: contrast(1.12) saturate(1.06);
+      transform: translateX(-2px);
     }
 
     .edition {
+      position: absolute;
+      right: 266px;
+      bottom: 9px;
+      width: 148px;
+      margin: 0;
+      padding: 0;
       color: #765f47;
       font-family: Kawoszeh, QianTuSnow, sans-serif;
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 700;
       line-height: 1.4;
+      text-align: right;
       text-transform: uppercase;
     }
 
@@ -145,7 +154,7 @@
       display: block;
       color: #4a2d1c;
       font-family: Kawoszeh, QianTuSnow, serif;
-      font-size: 14px;
+      font-size: 16px;
       font-weight: 700;
     }
 
@@ -168,12 +177,16 @@
       box-shadow: 0 0 0 3px rgba(22, 143, 146, .13);
     }
 
-    .profile-row {
-      min-height: 126px;
+    .rating-panel {
+      height: 138px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 240px;
-      align-items: center;
-      gap: 30px;
+      grid-template-rows: 22px minmax(0, 1fr);
+      align-self: center;
+    }
+
+    .rating-panel .region {
+      justify-self: end;
+      align-self: end;
     }
 
     .identity {
@@ -240,7 +253,7 @@
       align-items: center;
       justify-content: flex-end;
       gap: 8px;
-      transform: translateY(-10px);
+      transform: translateY(-4px);
     }
     .rating-badge { position: relative; width: 138px; height: 126px; display: grid; place-items: center; }
     .rating-badge img, .rating-value { position: absolute; }
@@ -304,10 +317,11 @@
       margin: 16px 4px 0;
       padding: 9px 13px;
       border-left: 3px solid var(--warning);
-      color: #63361f;
+      color: #9f3f36;
       background: rgba(132, 65, 30, .075);
-      font-size: 11px;
-      line-height: 1.55;
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.45;
     }
 
     .notice.visible { display: block; }
@@ -337,9 +351,9 @@
       --difficulty-color: var(--master);
       position: relative;
       min-width: 0;
-      height: 150px;
+      height: 168px;
       display: grid;
-      grid-template-columns: 148px minmax(0, 1fr);
+      grid-template-columns: 166px minmax(0, 1fr);
       overflow: hidden;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -351,7 +365,7 @@
     .chart-card::after {
       content: "";
       position: absolute;
-      left: 148px;
+      left: 166px;
       right: 0;
       top: 0;
       height: 2px;
@@ -372,8 +386,9 @@
 
     .cover-wrap {
       position: relative;
-      width: 148px;
-      height: 148px;
+      width: 166px;
+      height: 166px;
+      aspect-ratio: 1 / 1;
       overflow: hidden;
       background: #24272b;
     }
@@ -386,7 +401,12 @@
       height: 100%;
     }
 
-    .cover { z-index: 1; object-fit: cover; object-position: center; }
+    .cover {
+      z-index: 1;
+      background-position: 50% 50%;
+      background-repeat: no-repeat;
+      background-size: auto 100%;
+    }
     .cover-placeholder {
       display: grid;
       place-items: center;
@@ -409,7 +429,7 @@
       left: 9px;
       bottom: 8px;
       color: #fff;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 800;
       line-height: 1;
       text-shadow: 0 1px 4px #000;
@@ -419,19 +439,19 @@
       min-width: 0;
       display: flex;
       flex-direction: column;
-      padding: 10px 11px 8px 12px;
+      padding: 11px 12px 9px 13px;
     }
 
     .song-title {
-      min-height: 34px;
+      min-height: 36px;
       padding-right: 2px;
       overflow: hidden;
       display: -webkit-box;
       color: #f8f4eb;
       font-family: Kawoszeh, QianTuSnow, sans-serif;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 700;
-      line-height: 17px;
+      line-height: 18px;
       -webkit-box-orient: vertical;
       -webkit-line-clamp: 2;
     }
@@ -439,7 +459,7 @@
     .score {
       margin-top: 2px;
       color: var(--card-text);
-      font: 700 25px/1.05 Kawoszeh, QianTuSnow, sans-serif;
+      font: 700 26px/1.05 Kawoszeh, QianTuSnow, sans-serif;
       white-space: nowrap;
     }
 
@@ -451,13 +471,13 @@
     }
 
     .fact { min-width: 0; }
-    .fact-label { display: block; color: var(--quiet); font-size: 9px; font-weight: 700; line-height: 1; white-space: nowrap; }
+    .fact-label { display: block; color: var(--quiet); font-size: 10px; font-weight: 700; line-height: 1; white-space: nowrap; }
     .fact-value {
       display: block;
       margin-top: 2px;
       overflow: hidden;
       color: #ddd9d0;
-      font: 700 11px/1.1 Kawoszeh, QianTuSnow, sans-serif;
+      font: 700 12px/1.15 Kawoszeh, QianTuSnow, sans-serif;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
@@ -466,15 +486,15 @@
     .fact-value.accent { color: var(--difficulty-color); }
 
     .entry-warning {
-      min-height: 12px;
+      min-height: 28px;
       margin-top: auto;
       overflow: hidden;
       color: var(--danger);
-      font-size: 9px;
+      font-size: 11px;
       font-weight: 800;
-      line-height: 12px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      line-height: 14px;
+      overflow-wrap: anywhere;
+      white-space: normal;
     }
 
     .overflow { margin-top: 25px; }
@@ -493,7 +513,7 @@
     .overflow-title { color: #6f321d; font: 600 19px/1 Kawoszeh, QianTuSnow, serif; }
 
     .footer {
-      min-height: 46px;
+      min-height: 52px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -504,57 +524,17 @@
       font-size: 9px;
     }
 
-    .watermark { color: #513522; font-size: 16px; font-weight: 700; text-align: center; }
+    .watermark { color: #513522; font-size: 22px; font-weight: 700; text-align: center; }
 
-    @media (max-width: 920px) {
-      body { padding: 30px 34px 24px; }
-      .chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .chart-card { grid-template-columns: 156px minmax(0, 1fr); height: 158px; }
-      .chart-card::after { left: 156px; }
-      .cover-wrap { width: 156px; height: 156px; }
-      .song-title { font-size: 14px; line-height: 18px; }
-      .score { font-size: 26px; }
-      .fact-value { font-size: 11px; }
-    }
-
-    @media (max-width: 620px) {
-      body { padding: 25px 12px 20px; border-width: 7px; }
-      body::before { inset: 10px; }
-      body::after { inset: 14px; }
-      .masthead { padding-bottom: 17px; }
-      .brand-row { grid-template-columns: 126px minmax(0, 1fr); gap: 14px; }
-      .brand-logo { width: 122px; height: 60px; }
-      .edition { font-size: 9px; }
-      .edition strong { font-size: 12px; }
-      .region { grid-column: 1 / -1; justify-self: start; margin-top: -8px; }
-      .profile-row { grid-template-columns: 1fr; gap: 0; }
-      .identity { gap: 13px; }
-      .avatar { flex-basis: 70px; width: 70px; height: 70px; }
-      .player-name { font-size: 22px; }
-      .player-meta { font-size: 10px; }
-      .rating-wrap { min-height: 126px; justify-content: center; }
-      .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-      .metric { min-height: 72px; padding: 10px 6px; }
-      .metric-label { font-size: 9px; }
-      .metric-value { font-size: 24px; }
-      .section-head { align-items: flex-start; gap: 8px; }
-      .section-sub { max-width: 58%; overflow-wrap: anywhere; }
-      .chart-grid { grid-template-columns: 1fr; }
-      .chart-card { width: 100%; max-width: 450px; justify-self: center; }
-      .footer { flex-direction: column; align-items: center; justify-content: center; text-align: center; }
-      .watermark { text-align: center; }
-    }
   </style>
 </head>
 <body>
   <main class="page">
     <header class="masthead">
-      <div class="brand-row">
-        <img class="brand-logo" id="brand-image" alt="Lanota">
-        <div class="edition"><strong>Best 30 Record</strong>Lanota Rating Archive</div>
-        <div class="region" id="region"></div>
-      </div>
-      <div class="profile-row">
+      <div class="hero-row">
+        <div class="brand-block">
+          <img class="brand-logo" id="brand-image" alt="Lanota">
+        </div>
         <div class="identity">
           <div class="avatar">
             <img id="avatar" alt="">
@@ -565,9 +545,13 @@
             <div class="player-meta" id="player-meta"></div>
           </div>
         </div>
-        <div class="rating-wrap">
-          <div class="rating-badge" id="rating-badge"></div>
-          <div class="rating-cap"><span>可达最高 Rating</span><strong id="max-rating"></strong></div>
+        <div class="edition"><strong>Best 30 Record</strong>Lanota Rating Archive</div>
+        <div class="rating-panel">
+          <div class="region" id="region"></div>
+          <div class="rating-wrap">
+            <div class="rating-badge" id="rating-badge"></div>
+            <div class="rating-cap"><span>可达最高 Rating</span><strong id="max-rating"></strong></div>
+          </div>
         </div>
       </div>
       <section class="metrics" id="metrics"></section>
@@ -691,11 +675,9 @@
         coverPlaceholder.textContent = entry.placeholder ? 'EMPTY' : 'LANOTA';
         coverWrap.appendChild(coverPlaceholder);
         if (entry.coverUrl) {
-          const cover = document.createElement('img');
+          const cover = document.createElement('div');
           cover.className = 'cover';
-          cover.src = entry.coverUrl;
-          cover.alt = '';
-          cover.onerror = () => cover.remove();
+          cover.style.backgroundImage = 'url(' + JSON.stringify(String(entry.coverUrl)) + ')';
           coverWrap.appendChild(cover);
         }
         const coverShade = document.createElement('div');
@@ -719,13 +701,13 @@
           facts.append(fact('准度', '--.--%'), fact('谱面', '---', true), fact('物量', '---'));
           facts.append(fact('基础', '--.--'), fact('单曲', '--.--'), fact('Rating%', '--.--%'));
         } else {
-          const prefix = entry.exact ? '' : '≈';
+          const ratingPercentPrefix = !entry.exact && Number(entry.score || 0) < 1000000 ? '≈' : '';
           facts.append(fact('准度', `${Number(entry.scoreAccuracy).toFixed(2)}%`));
           facts.append(fact(entry.difficultyName || '谱面', entry.constantText || '未知', true));
           facts.append(fact('物量', Number(entry.total || 0).toLocaleString('en-US')));
           facts.append(fact('基础', Number(entry.baseRating).toFixed(2)));
-          facts.append(fact('单曲', `${prefix}${Number(entry.singleRating).toFixed(2)}`));
-          facts.append(fact('Rating%', `${prefix}${Number(entry.ratingPercent).toFixed(2)}%`));
+          facts.append(fact('单曲', Number(entry.singleRating).toFixed(2)));
+          facts.append(fact('Rating%', `${ratingPercentPrefix}${Number(entry.ratingPercent).toFixed(2)}%`));
         }
         const warning = document.createElement('div');
         warning.className = 'entry-warning';

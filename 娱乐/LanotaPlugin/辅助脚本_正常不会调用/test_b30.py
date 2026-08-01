@@ -199,36 +199,58 @@ class B30CommandTest(unittest.TestCase):
         for alias in ('cn', 'china', '中国', '中国服', '国服'):
             self.assertEqual(portal.split_region_argument(f'{alias} value'), ('china', 'value'))
 
-    def test_b30_cooldown_is_shared_between_regions(self) -> None:
+    def test_b30_cooldown_is_separate_between_regions(self) -> None:
         event = SimpleNamespace(
             bot_info=SimpleNamespace(hash='bot'),
             data=SimpleNamespace(user_id='user'),
         )
-        with patch.object(message.time, 'monotonic', side_effect=[1000.0, 1001.0, 1300.0]):
-            self.assertEqual(message._consume_b30_cooldown(event), 0)
-            self.assertEqual(message._consume_b30_cooldown(event), 299)
-            self.assertEqual(message._consume_b30_cooldown(event), 0)
+        with patch.object(message.time, 'monotonic', side_effect=[1000.0, 1001.0, 1002.0, 1300.0]):
+            self.assertEqual(message._consume_b30_cooldown(event, 'global'), 0)
+            self.assertEqual(message._consume_b30_cooldown(event, 'china'), 0)
+            self.assertEqual(message._consume_b30_cooldown(event, 'global'), 298)
+            self.assertEqual(message._consume_b30_cooldown(event, 'global'), 0)
 
     def test_different_users_have_independent_cooldowns(self) -> None:
         first = SimpleNamespace(bot_info=SimpleNamespace(hash='bot'), data=SimpleNamespace(user_id='one'))
         second = SimpleNamespace(bot_info=SimpleNamespace(hash='bot'), data=SimpleNamespace(user_id='two'))
         with patch.object(message.time, 'monotonic', side_effect=[1000.0, 1000.0]):
-            self.assertEqual(message._consume_b30_cooldown(first), 0)
-            self.assertEqual(message._consume_b30_cooldown(second), 0)
+            self.assertEqual(message._consume_b30_cooldown(first, 'global'), 0)
+            self.assertEqual(message._consume_b30_cooldown(second, 'global'), 0)
 
 
 class B30RenderTest(unittest.TestCase):
     def test_screenshot_height_tracks_entry_rows(self) -> None:
         expected_heights = {
-            0: 900,
-            10: 1218,
-            30: 2190,
-            33: 2420,
+            0: 600,
+            1: 690,
+            10: 1230,
+            30: 2310,
+            33: 2558,
         }
         for entry_count, expected_height in expected_heights.items():
             with self.subTest(entry_count=entry_count):
                 data = {'entries': [{} for _index in range(entry_count)]}
                 self.assertEqual(portal._b30_screenshot_height(data), expected_height)
+
+        notice_data = {
+            'entries': [{} for _index in range(33)],
+            'notice': '4.0以前旧版本成绩无法查询真实 B30 与判定明细；请重新游玩歌曲获得更准确的结果。',
+        }
+        self.assertGreater(portal._b30_screenshot_height(notice_data), expected_heights[33])
+
+    def test_portal_webp_compression_keeps_pixel_dimensions(self) -> None:
+        try:
+            from PIL import Image
+        except Exception:
+            self.skipTest('Pillow unavailable')
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            source_path = Path(temporary_dir) / 'b30.png'
+            Image.new('RGB', (1200, 800), (242, 232, 215)).save(source_path)
+            output_path = portal._compress_rendered_card(source_path)
+            self.assertEqual(output_path.suffix, '.webp')
+            self.assertFalse(source_path.exists())
+            with Image.open(output_path) as output_image:
+                self.assertEqual(output_image.size, (1200, 800))
 
     def test_all_portal_templates_use_local_fonts(self) -> None:
         for card_type in ('user', 'song', 'b30'):
@@ -261,6 +283,15 @@ class B30RenderTest(unittest.TestCase):
         html = portal._template_html({'_portal_region': 'global'}, 'b30')
         self.assertIn("wrapper.classList.add('difficulty-accent')", html)
         self.assertNotIn('data.accurate || (hasRuntimeData && !overflowEntries.length)', html)
+        self.assertIn('width: min(1296px, 100%)', html)
+        self.assertIn('width: 190px', html)
+        self.assertIn('white-space: normal', html)
+        self.assertIn('background-size: auto 100%', html)
+        self.assertIn("const cover = document.createElement('div');", html)
+        self.assertNotIn("const cover = document.createElement('img');", html)
+        self.assertIn("fact('单曲', Number(entry.singleRating).toFixed(2))", html)
+        self.assertIn('Number(entry.score || 0) < 1000000', html)
+        self.assertEqual(config.lanota_portal_b30_screenshot_width, 1400)
 
 
 if __name__ == '__main__':

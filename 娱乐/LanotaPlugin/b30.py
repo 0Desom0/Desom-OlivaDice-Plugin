@@ -611,7 +611,7 @@ def build_inferred_card_data(
     b30_contribution = b30_sum / 35
     limits = calculate_player_limits(entries, b30_contribution)
     possible_r5 = max(0.0, min(limits['maxR5Exact'], player['rating'] - b30_contribution))
-    notice_parts = ['公开成绩无法查询真实 B30 与判定明细；请重新游玩歌曲获得更准确的结果。']
+    notice_parts = ['4.0以前旧版本成绩无法查询真实 B30 与判定明细；请重新游玩歌曲获得更准确的结果。']
     if validation['invalid']:
         notice_parts.append(f'已略过 {validation["invalid"]} 条无法按新版公式还原的成绩。')
     if validation['unmapped']:

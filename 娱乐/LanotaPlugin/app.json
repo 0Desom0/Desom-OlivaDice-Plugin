@@ -3,7 +3,7 @@
   "author": "Desom-fu",
   "namespace": "LanotaPlugin",
   "message_mode": "olivos_string",
-  "info": "Lanota 曲库查询、官方 songId/难度/定数同步、Portal 玩家绑定与状态卡片、曲绘缓存及 Wiki API 同步插件",
+  "info": "Lanota 曲库查询、官方 songId/难度/定数同步、玩家绑定与状态卡片、曲绘缓存及 Wiki API 同步插件",
   "version": "1.6.0",
   "svn": 14,
   "compatible_svn": 190,

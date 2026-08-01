@@ -570,7 +570,18 @@ def wrap_text(text: str, max_chars: int = 20) -> list[str]:
         current_line = []
         current_length = 0
         for token in token_list:
-            token_length = 1
+            token_length = get_text_display_length(token)
+            if token_length > max_chars:
+                if current_line:
+                    lines.append(''.join(current_line))
+                    current_line = []
+                    current_length = 0
+                token_parts = split_text_by_display_length(token, max_chars)
+                lines.extend(token_parts[:-1])
+                if token_parts:
+                    current_line = [token_parts[-1]]
+                    current_length = get_text_display_length(token_parts[-1])
+                continue
             if current_length + token_length <= max_chars:
                 current_line.append(token)
                 current_length += token_length
@@ -582,6 +593,42 @@ def wrap_text(text: str, max_chars: int = 20) -> list[str]:
         if current_line:
             lines.append(''.join(current_line))
     return lines
+
+
+def get_text_display_length(text: str) -> int:
+    """按字体视觉宽度估算行长，约 2-3 个 ASCII 字符等于一个中文字符。"""
+    source = str(text)
+    if not source:
+        return 0
+    display_length = 0
+    ascii_run_length = 0
+    for character in source:
+        if character.isascii():
+            ascii_run_length += 1
+            continue
+        if ascii_run_length:
+            display_length += max(1, round(ascii_run_length / 2.5))
+            ascii_run_length = 0
+        display_length += 1
+    if ascii_run_length:
+        display_length += max(1, round(ascii_run_length / 2.5))
+    return display_length
+
+
+def split_text_by_display_length(text: str, max_length: int) -> list[str]:
+    source = str(text)
+    parts = []
+    current_part = ''
+    for character in source:
+        candidate = current_part + character
+        if current_part and get_text_display_length(candidate) > max_length:
+            parts.append(current_part)
+            current_part = character
+        else:
+            current_part = candidate
+    if current_part:
+        parts.append(current_part)
+    return parts
 
 
 def cubic_bezier(t: float, p0: float, p1: float, p2: float, p3: float) -> float:
@@ -635,7 +682,14 @@ def get_line_size(draw, line: str, font) -> tuple[int, int]:
 
 def cleanup_image_cache() -> None:
     try:
-        files = sorted(Path(utils.get_generate_image_dir()).glob('lanota_*.png'), key=lambda item: item.stat().st_mtime)
+        files = sorted(
+            (
+                item
+                for item in Path(utils.get_generate_image_dir()).glob('lanota_*')
+                if item.suffix.casefold() in {'.png', '.webp'}
+            ),
+            key=lambda item: item.stat().st_mtime,
+        )
         for file_path in files[:-config.image_cache_limit]:
             file_path.unlink()
     except Exception:
@@ -697,9 +751,15 @@ def create_text_image(text: str, user_id: str = '', max_chars: int | None = None
         draw.text((PADDING, y), line, font=font, fill=text_color)
         y += line_height + LINE_SPACING
 
-    output_path = Path(utils.get_generate_image_dir()) / f'lanota_{uuid.uuid4().hex[:10]}.png'
-    image.convert('RGB').save(output_path)
-    return str(output_path)
+    output_dir = Path(utils.get_generate_image_dir())
+    output_path = output_dir / f'lanota_{uuid.uuid4().hex[:10]}.webp'
+    try:
+        image.convert('RGB').save(output_path, format='WEBP', quality=95, method=6)
+        return str(output_path)
+    except Exception:
+        fallback_path = output_path.with_suffix('.png')
+        image.convert('RGB').save(fallback_path, format='PNG', optimize=True)
+        return str(fallback_path)
 
 
 def build_update_report(result: dict[str, Any]) -> str:

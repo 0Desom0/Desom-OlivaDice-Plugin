@@ -17,8 +17,8 @@ from . import config
 runtime_proc = None
 initialized = False
 file_lock = threading.RLock()
-reply_segment_pattern = re.compile(r'^\[OP:reply,id=[^\]]+\]\s*')
-at_segment_pattern = re.compile(r'^\[OP:at,id=(?P<id>[^,\]]+?)(?:,name=(?P<name>[^\]]*))?\]')
+reply_segment_pattern = re.compile(r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]', re.IGNORECASE)
+at_segment_pattern = re.compile(r'^\[(?P<mode>OP|CQ):at,(?P<params>[^\]]*)\]', re.IGNORECASE)
 
 has_oliva_dice_core = False
 try:
@@ -459,17 +459,63 @@ def get_platform_from_event(plugin_event) -> str:
 
 
 def get_self_id_from_event(plugin_event) -> str:
+    target_id_list = get_current_bot_target_ids(plugin_event)
+    return target_id_list[0] if target_id_list else ''
+
+
+def get_current_bot_target_ids(plugin_event) -> list[str]:
+    """获取消息中可用于指名当前机器人的全部账号 ID。"""
+    target_id_list = []
+
     try:
-        return safe_str(plugin_event.base_info.get('self_id', ''))
+        base_info = plugin_event.base_info
+        if isinstance(base_info, dict):
+            target_id_list.append(base_info.get('self_id'))
+        else:
+            target_id_list.append(getattr(base_info, 'self_id', None))
     except Exception:
-        try:
-            return safe_str(plugin_event.bot_info.id)
-        except Exception:
-            return ''
+        pass
+
+    try:
+        target_id_list.append(plugin_event.bot_info.id)
+    except Exception:
+        pass
+
+    try:
+        extend = getattr(plugin_event.data, 'extend', {}) or {}
+        for key in ['sub_self_id', 'sub_self_open_id']:
+            if isinstance(extend, dict):
+                target_id_list.append(extend.get(key))
+            else:
+                target_id_list.append(getattr(extend, key, None))
+    except Exception:
+        pass
+
+    normalized_id_list = []
+    for target_id in target_id_list:
+        normalized_id = safe_str(target_id).strip() if target_id is not None else ''
+        if normalized_id and normalized_id not in normalized_id_list:
+            normalized_id_list.append(normalized_id)
+    return normalized_id_list
 
 
 def strip_reply_segment(message_text: str) -> str:
-    return reply_segment_pattern.sub('', safe_str(message_text), count=1)
+    remaining = safe_str(message_text)
+    while True:
+        remaining = remaining.lstrip()
+        match = reply_segment_pattern.match(remaining)
+        if not match:
+            return remaining
+        remaining = remaining[match.end() :]
+
+
+def parse_message_segment_params(param_text: str) -> dict[str, str]:
+    param_dict = {}
+    for param_item in safe_str(param_text).split(','):
+        key, separator, value = param_item.partition('=')
+        if separator:
+            param_dict[key.strip().casefold()] = value.strip()
+    return param_dict
 
 
 def parse_at_segments(message_text: str):
@@ -480,14 +526,17 @@ def parse_at_segments(message_text: str):
         match = at_segment_pattern.match(remaining)
         if not match:
             break
-        at_list.append({'id': safe_str(match.group('id')).strip(), 'raw': match.group(0)})
+        param_dict = parse_message_segment_params(match.group('params'))
+        target_id = param_dict.get('id') or param_dict.get('qq') or ''
+        at_list.append({'id': safe_str(target_id).strip(), 'raw': match.group(0)})
         remaining = remaining[match.end() :]
     return at_list, remaining.lstrip()
 
 
 def is_force_reply_to_current_bot(at_list: list[dict[str, str]], plugin_event) -> bool:
-    self_id = get_self_id_from_event(plugin_event)
-    return any(item.get('id') in [self_id, 'all'] for item in at_list)
+    current_bot_id_set = set(get_current_bot_target_ids(plugin_event))
+    current_bot_id_set.add('all')
+    return any(safe_str(item.get('id')).strip() in current_bot_id_set for item in at_list)
 
 
 def parse_prefix(message_text: str, prefix_list: list[str] | None = None):
@@ -699,9 +748,29 @@ def op_escape(value: Any) -> str:
     return safe_str(value).replace('&', '&amp;').replace('[', '&#91;').replace(']', '&#93;').replace(',', '&#44;')
 
 
+def build_reply_quote_segment(plugin_event) -> str:
+    """群聊回复时引用触发命令的原消息。"""
+    if not get_group_id_from_event(plugin_event):
+        return ''
+    try:
+        message_id = safe_str(getattr(plugin_event.data, 'message_id', '')).strip()
+    except Exception:
+        return ''
+    if not message_id or message_id == '-1':
+        return ''
+    return f'[OP:reply,id={op_escape(message_id)}]'
+
+
+def add_reply_quote(plugin_event, message_text: str) -> str:
+    source = safe_str(message_text)
+    if reply_segment_pattern.match(source.lstrip()):
+        return source
+    return f'{build_reply_quote_segment(plugin_event)}{source}'
+
+
 def reply_message(plugin_event, message_text: str) -> Any:
     try:
-        return plugin_event.reply(safe_str(message_text))
+        return plugin_event.reply(add_reply_quote(plugin_event, message_text))
     except Exception:
         return None
 
@@ -732,13 +801,13 @@ def reply_image(plugin_event, image_path: str, fallback_text: str) -> Any:
         image_message = build_image_message(image_path)
         if not image_message:
             raise ValueError('图片路径无效。')
-        return plugin_event.reply(image_message)
+        return plugin_event.reply(add_reply_quote(plugin_event, image_message))
     except Exception:
         return reply_message(plugin_event, fallback_text)
 
 
 def reply_images_with_text(plugin_event, image_path_list: list[str], message_text: str = '') -> Any:
-    """在一条 olivos_string 消息中发送多张本地图片，并可附带文本。"""
+    """逐张回复本地图片，确保平台拆分消息时每张图都保留引用。"""
     segment_list = []
     for image_path in image_path_list:
         if not image_path or not os.path.isfile(image_path):
@@ -746,11 +815,14 @@ def reply_images_with_text(plugin_event, image_path_list: list[str], message_tex
         file_uri = Path(image_path).resolve().as_uri()
         segment_list.append(f'[OP:image,file={op_escape(file_uri)}]')
     if message_text:
-        segment_list.append(f'\n{safe_str(message_text)}')
+        segment_list.append(safe_str(message_text))
     if not segment_list:
         return reply_message(plugin_event, message_text)
     try:
-        return plugin_event.reply(''.join(segment_list))
+        reply_result = None
+        for segment in segment_list:
+            reply_result = plugin_event.reply(add_reply_quote(plugin_event, segment))
+        return reply_result
     except Exception:
         return reply_message(plugin_event, message_text)
 

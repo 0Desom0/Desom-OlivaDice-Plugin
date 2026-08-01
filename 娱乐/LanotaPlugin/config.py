@@ -42,14 +42,17 @@ lanota_portal_b30_template_file_name = 'lanota_portal_b30.html'
 # 歌曲卡片通过数据中的区域标签动态区分国际服/国服，共用一份模板，避免部署时漏装副本。
 lanota_portal_china_song_template_file_name = 'lanota_portal_song.html'
 lanota_portal_screenshot_width = 1200
+lanota_portal_b30_screenshot_width = 1400
 lanota_portal_screenshot_height = 1360
 lanota_portal_song_screenshot_height = 1600
-lanota_portal_b30_screenshot_height = 2600
+lanota_portal_b30_screenshot_height = 2660
 lanota_portal_device_scale_factor = 2
 
 allowed_prefix_list = ['.', '。', '/', '／']
 image_cache_limit = 40
 image_max_chars = 100
+search_image_max_chars = 38
+text_image_min_chars = 120
 b30_cooldown_seconds = 300
 
 # 搜索结果分页配置

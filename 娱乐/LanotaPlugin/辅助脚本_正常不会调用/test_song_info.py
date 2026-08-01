@@ -25,6 +25,64 @@ class SongInfoTest(unittest.TestCase):
         self.assertEqual(message.match_command('la find Frey'), ('song', 'Frey'))
         self.assertEqual(message.match_command('la info Frey'), ('info', 'Frey'))
         self.assertEqual(message.match_command('la info cn Frey'), ('info', 'cn Frey'))
+        self.assertEqual(message.match_command('la infocnFrey'), ('info', 'cnFrey'))
+        self.assertEqual(message.match_command('la bindcnNANO'), ('bind', 'cnNANO'))
+        self.assertEqual(message.match_command('la friendcn'), ('friend', 'cn'))
+
+    def test_region_argument_greedy_matching_is_opt_in(self) -> None:
+        self.assertEqual(portal.split_region_argument('cnFrey'), (None, 'cnFrey'))
+        self.assertEqual(portal.split_region_argument('cnFrey', greedy=True), ('china', 'Frey'))
+        self.assertEqual(portal.split_region_argument('globalFrey', greedy=True), ('global', 'Frey'))
+
+    def test_bind_greedily_extracts_china_region(self) -> None:
+        event = object()
+        with (
+            patch.object(message.portal, 'bind_nano_id', return_value=(True, 'ok')) as bind_nano_id,
+            patch.object(message.utils, 'reply_message'),
+        ):
+            message.handle_bind(event, 'cnNANO')
+        bind_nano_id.assert_called_once_with(event, 'NANO', region='china')
+
+    def test_friend_greedily_extracts_china_region(self) -> None:
+        event = object()
+        with (
+            patch.object(
+                message.portal,
+                'get_bound_nano_id',
+                side_effect=lambda _event, region: 'CHINA-ID' if region == 'china' else '',
+            ) as get_bound_nano_id,
+            patch.object(message.utils, 'get_group_id_from_event', return_value=''),
+            patch.object(message.utils, 'reply_message') as reply_message,
+        ):
+            message.handle_friend(event, 'cn')
+        get_bound_nano_id.assert_called_once_with(event, 'china')
+        self.assertIn('CHINA-ID', reply_message.call_args.args[1])
+
+    def test_unknown_la_subcommand_opens_help(self) -> None:
+        self.assertEqual(message.match_command('la Frey'), ('help', ''))
+        self.assertEqual(message.match_command('la unknown-command'), ('help', ''))
+
+    def test_account_help_is_separate_from_other_commands(self) -> None:
+        account_commands = '\n'.join(message.help_categories['account']['commands'])
+        other_commands = '\n'.join(message.help_categories['stats']['commands'])
+        self.assertIn('/la bind', account_commands)
+        self.assertIn('/la user', account_commands)
+        self.assertNotIn('/la bind', other_commands)
+        self.assertNotIn('/la user', other_commands)
+
+    def test_search_image_wrap_uses_proportional_character_count(self) -> None:
+        source = '1. Event - ThisIsAnExtremelyLongUnbrokenSongTitleForWrapping (ID: 123)'
+        lines = message.function.wrap_text(source, max_chars=message.config.search_image_max_chars)
+        self.assertTrue(lines)
+        self.assertEqual(message.function.get_text_display_length('abc'), 1)
+        self.assertEqual(message.function.get_text_display_length('abcdef'), 2)
+        self.assertTrue(
+            all(
+                message.function.get_text_display_length(line) <= message.config.search_image_max_chars
+                for line in lines
+            )
+        )
+        self.assertTrue(any(len(line) > message.config.search_image_max_chars for line in lines))
 
     def test_compact_constant_format(self) -> None:
         self.assertEqual(
@@ -85,6 +143,20 @@ class SongInfoTest(unittest.TestCase):
         ):
             message.handle_user(event, 'cn')
         self.assertIn('.la china login', reply_text.call_args.args[1])
+
+    def test_user_command_sends_querying_notice_first(self) -> None:
+        event = object()
+        player_data = {'_portal_region': 'global', 'player': {}}
+        with (
+            patch.object(message.portal, 'get_user_data_cached', return_value=(player_data, 'NANO', None)),
+            patch.object(message.portal, 'render_player_card', return_value=None),
+            patch.object(message.portal, 'build_fallback_text', return_value='fallback'),
+            patch.object(message.portal, 'render_status_text', return_value='ready'),
+            patch.object(message.utils, 'reply_message') as reply_message,
+            patch.object(message, 'reply_text'),
+        ):
+            message.handle_user(event, '')
+        reply_message.assert_called_once_with(event, '正在查询中，请稍等。')
 
     def test_normal_network_error_has_no_credential_hint(self) -> None:
         self.assertEqual(

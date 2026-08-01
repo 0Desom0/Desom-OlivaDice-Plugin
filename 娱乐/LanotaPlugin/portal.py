@@ -244,16 +244,21 @@ def normalize_region(region: Any) -> str:
     return REGION_ALIAS_MAP.get(region_text, 'global')
 
 
-def split_region_argument(argument: Any) -> tuple[str | None, str]:
-    """从命令参数首项提取区域别名，未指定时保留原参数。"""
+def split_region_argument(argument: Any, greedy: bool = False) -> tuple[str | None, str]:
+    """从命令参数开头提取区域别名；greedy=True 时不要求别名后存在空格。"""
     source = str(argument or '').strip()
     if not source:
         return None, ''
     parts = source.split(maxsplit=1)
     region = REGION_ALIAS_MAP.get(parts[0].casefold())
-    if region is None:
-        return None, source
-    return region, parts[1].strip() if len(parts) > 1 else ''
+    if region is not None:
+        return region, parts[1].strip() if len(parts) > 1 else ''
+    if greedy:
+        compare_source = source.casefold()
+        for alias in sorted(REGION_ALIAS_MAP, key=len, reverse=True):
+            if compare_source.startswith(alias):
+                return REGION_ALIAS_MAP[alias], source[len(alias) :].lstrip()
+    return None, source
 
 
 def region_display_name(region: Any) -> str:
@@ -918,9 +923,12 @@ def _b30_screenshot_height(data: dict[str, Any]) -> int:
     entry_count = len(entries) if isinstance(entries, list) else 0
     best_rows = math.ceil(min(entry_count, 30) / 3) if entry_count else 0
     overflow_rows = math.ceil(min(max(entry_count - 30, 0), 3) / 3)
-    content_height = 570 + best_rows * 162 + overflow_rows * 230
+    notice_text = str(data.get('notice', '') or '').strip()
+    notice_lines = math.ceil(len(notice_text) / 48) if notice_text else 0
+    notice_height = 24 + notice_lines * 32 if notice_lines else 0
+    content_height = 510 + notice_height + best_rows * 180 + overflow_rows * 248
     maximum_height = int(config.lanota_portal_b30_screenshot_height)
-    return max(900, min(maximum_height, content_height))
+    return max(600, min(maximum_height, content_height))
 
 
 def _crop_song_card(path: Path, scale_factor: float) -> None:
@@ -942,6 +950,30 @@ def _crop_song_card(path: Path, scale_factor: float) -> None:
             image.crop((0, 0, image.width, target_bottom)).save(path)
     except Exception as exception_object:
         utils.debug_log(None, f'歌曲卡片自适应裁切失败：{type(exception_object).__name__}: {exception_object}')
+
+
+def _compress_rendered_card(path: Path) -> Path:
+    """保持截图像素尺寸不变，以高质量 WebP 缩小 Portal 卡片体积。"""
+    output_path = path.with_suffix('.webp')
+    try:
+        from PIL import Image
+
+        with Image.open(path) as source_image:
+            source_image.convert('RGB').save(
+                output_path,
+                format='WEBP',
+                quality=95,
+                method=6,
+            )
+        if output_path.stat().st_size >= path.stat().st_size:
+            output_path.unlink(missing_ok=True)
+            return path
+        path.unlink(missing_ok=True)
+        return output_path
+    except Exception as exception_object:
+        output_path.unlink(missing_ok=True)
+        utils.debug_log(None, f'Portal 图片压缩失败：{type(exception_object).__name__}: {exception_object}')
+        return path
 
 
 def _template_html(data: dict[str, Any], card_type: str = 'user') -> str:
@@ -1005,6 +1037,11 @@ def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> st
             screenshot_height = _b30_screenshot_height(data)
         else:
             screenshot_height = config.lanota_portal_screenshot_height
+        screenshot_width = (
+            config.lanota_portal_b30_screenshot_width
+            if card_type == 'b30'
+            else config.lanota_portal_screenshot_width
+        )
         last_error = ''
         for headless_mode in ['--headless=new', '--headless']:
             output_path.unlink(missing_ok=True)
@@ -1024,7 +1061,7 @@ def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> st
                 '--allow-file-access-from-files',
                 '--run-all-compositor-stages-before-draw',
                 '--virtual-time-budget=8000',
-                f'--window-size={config.lanota_portal_screenshot_width},{screenshot_height}',
+                f'--window-size={screenshot_width},{screenshot_height}',
                 f'--user-data-dir={browser_data_dir}',
                 f'--screenshot={output_path}',
                 html_path.resolve().as_uri(),
@@ -1047,7 +1084,7 @@ def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> st
             if result.returncode == 0 and output_path.exists() and output_path.stat().st_size >= 1000:
                 if card_type == 'song':
                     _crop_song_card(output_path, scale_factor)
-                return str(output_path)
+                return str(_compress_rendered_card(output_path))
             detail = (result.stderr or result.stdout or '').strip().replace('\r', ' ').replace('\n', ' ')
             if not detail:
                 detail = '浏览器未生成有效 PNG 文件。'
