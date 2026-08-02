@@ -82,7 +82,7 @@
       border: 1px solid rgba(102, 53, 28, .54);
     }
 
-    .page { position: relative; z-index: 1; width: min(1296px, 100%); margin: 0 auto; }
+    .page { position: relative; z-index: 1; width: min(1216px, 100%); margin: 0 auto; }
 
     .masthead {
       position: relative;
@@ -444,6 +444,7 @@
 
     .song-title {
       min-height: 36px;
+      height: 36px;
       padding-right: 2px;
       overflow: hidden;
       display: -webkit-box;
@@ -452,8 +453,19 @@
       font-size: 15px;
       font-weight: 700;
       line-height: 18px;
+      overflow-wrap: anywhere;
       -webkit-box-orient: vertical;
       -webkit-line-clamp: 2;
+    }
+
+    .song-title-measure {
+      position: absolute;
+      left: -10000px;
+      height: auto;
+      min-height: 0;
+      visibility: hidden;
+      display: block;
+      -webkit-line-clamp: unset;
     }
 
     .score {
@@ -489,6 +501,8 @@
       min-height: 28px;
       margin-top: auto;
       overflow: hidden;
+      display: flex;
+      align-items: center;
       color: var(--danger);
       font-size: 11px;
       font-weight: 800;
@@ -717,6 +731,20 @@
         return card;
       };
 
+      const fitSongTitle = title => {
+        const measure = title.cloneNode(true);
+        measure.classList.add('song-title-measure');
+        measure.style.width = `${title.clientWidth}px`;
+        document.body.appendChild(measure);
+        let fontSize = 15;
+        while (measure.scrollHeight > 36 && fontSize > 11.5) {
+          fontSize -= .25;
+          measure.style.fontSize = `${fontSize}px`;
+        }
+        title.style.fontSize = `${fontSize}px`;
+        measure.remove();
+      };
+
       const bestEntries = entries
         .filter(entry => !entry.overflow && Number(entry.rank || 0) <= 30)
         .slice(0, 30);
@@ -730,7 +758,10 @@
       if (hasRuntimeData && !overflowEntries.length) {
         overflow.classList.add('hidden');
       } else {
-        overflowEntries.forEach(entry => document.getElementById('overflow-grid').appendChild(buildCard(entry)));
+      overflowEntries.forEach(entry => document.getElementById('overflow-grid').appendChild(buildCard(entry)));
+      document.fonts.ready.then(() => {
+        document.querySelectorAll('.song-title').forEach(fitSongTitle);
+      });
       }
     })();
   </script>

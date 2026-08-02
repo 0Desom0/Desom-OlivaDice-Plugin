@@ -192,6 +192,26 @@ class SongSyncTest(unittest.TestCase):
             },
         )
 
+    def test_sanitize_song_markup_removes_html_and_preserves_visible_text(self):
+        song = {
+            "title": "VECTOR<span style=\"font-family: Arial\">↑</span>ZΣ",
+            "Trivia": [
+                "Master 14<sup>+</sup><br>visible",
+                "<!--remove this-->Keep this",
+            ],
+            "cover_art": "<!--comment only-->",
+            "literal": "Lian Meng Liang Mian <3 Syndrome",
+        }
+        self.assertEqual(
+            song_sync.sanitize_song_markup(song),
+            {
+                "title": "VECTOR↑ZΣ",
+                "Trivia": ["Master 14+ visible", "Keep this"],
+                "cover_art": "",
+                "literal": "Lian Meng Liang Mian <3 Syndrome",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -332,6 +332,8 @@ def reply_text(plugin_event, text: str, max_chars: int | None = None) -> None:
         if image_path:
             utils.reply_image(plugin_event, image_path, text)
             return
+    if not use_text_image:
+        text_content = re.sub(r'\s*\n+\s*', ' ', text_content).strip()
     utils.reply_message(plugin_event, text_content)
 
 
@@ -598,7 +600,7 @@ def parse_action(argument: str, action_name_list: list[str]) -> tuple[str, str]:
 
 def handle_laglobal(plugin_event, argument: str) -> None:
     if not utils.sender_has_master_permission(plugin_event):
-        reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以使用。')
+        reply_text(plugin_event, '权限不足，只有骰主或本插件配置管理员可以使用。')
         return
     global_config = utils.load_global_config()
     action, value = parse_action(argument, ['status', 'debug', 'master', 'off', 'on'])
@@ -647,7 +649,7 @@ def handle_laglobal(plugin_event, argument: str) -> None:
 
 def handle_labot(plugin_event, argument: str) -> None:
     if not utils.sender_has_master_permission(plugin_event):
-        reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以使用。')
+        reply_text(plugin_event, '权限不足，只有骰主或本插件配置管理员可以使用。')
         return
     bot_hash = utils.get_bot_hash_from_event(plugin_event)
     bot_config = utils.load_bot_config(bot_hash)
@@ -760,7 +762,7 @@ def handle_lagroup(plugin_event, argument: str) -> None:
 def handle_fullcheck(plugin_event, argument: str = '') -> None:
     """对本地曲库做包含新增歌曲在内的全量检测；仅 apply 时实际写入。"""
     if not utils.sender_has_master_permission(plugin_event):
-        reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以执行全量检测。')
+        reply_text(plugin_event, '权限不足，只有管理员可以执行全量检测。')
         return
     action_text = str(argument or '').strip().lower()
     if action_text in {'', 'detect', 'check', 'preview', '检测', '检查', '预览'}:
@@ -772,9 +774,9 @@ def handle_fullcheck(plugin_event, argument: str = '') -> None:
         return
     reply_text(
         plugin_event,
-        '开始对数据库全部歌曲进行 Fandom/Portal 全量检测（含新增歌曲检查），请稍候……'
+        '开始对数据库全部歌曲进行全量检测（含新增歌曲检查），请稍候……'
         if not apply_edit
-        else '开始对数据库全部歌曲进行 Fandom/Portal 全量覆盖写入（含新增歌曲补充），请稍候……',
+        else '开始对数据库全部歌曲进行全量覆盖写入（含新增歌曲补充），请稍候……',
     )
     try:
         result = crawler.run_full_check(apply=apply_edit)
@@ -867,7 +869,7 @@ def handle_cover(plugin_event, argument: str) -> None:
             plugin_event,
             f'本地曲绘缓存：{cache_status["cached"]}/{cache_status["total"]} 张\n'
             f'曲绘文件数量：{cache_status["images"]}\n'
-            f'预置目录：{cache_status["seed_dir"]}\n运行期目录：{cache_status["runtime_dir"]}\n'
+            # f'预置目录：{cache_status["seed_dir"]}\n运行期目录：{cache_status["runtime_dir"]}\n'
             '使用 /la cover update 下载缺失曲绘，或 /la cover force 强制重下。',
         )
         return
@@ -955,7 +957,7 @@ def handle_alias(plugin_event, argument: str) -> None:
     action, remaining = parse_action(argument, ['show', 'add', 'del'])
     action = action.lower()
     if action != 'show' and not utils.is_alias_group_allowed(plugin_event):
-        reply_text(plugin_event, '权限不足，只有 alias_groups 白名单群可以使用 alias add/del。')
+        reply_text(plugin_event, '权限不足，只有白名单群可以使用 alias add/del。')
         return
 
     alias_data = function.load_alias_data()
@@ -1069,7 +1071,8 @@ def _search_songs(plugin_event, search_term: str, view_mode: str) -> None:
     )
     action_name = '查分' if view_mode == 'info' else '查看歌曲信息'
     header = (
-        f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)，'
+        # f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)，'
+        f'找到匹配的乐曲({total_count}首)，'
         f'请输入序号{action_name}，或输入“结束”退出：\n'
     )
     reply_text(plugin_event, header + formatted_results, max_chars=config.search_image_max_chars)
@@ -1525,15 +1528,15 @@ def handle_user(plugin_event, argument: str) -> None:
 def _china_login_worker(plugin_event, user_id: str, login_key: str, session_id: str) -> None:
     try:
         portal.poll_china_login(session_id)
-        result_text = '国服 Lanota Portal 授权成功，现已可以使用 .la bind cn <好友码>。'
+        result_text = '国服 Lanota 授权成功，现已可以使用 .la bind cn <好友码>。'
     except Exception as exception_object:
-        result_text = f'国服 Lanota Portal 授权失败：{portal.format_error(exception_object)}'
-        utils.error_log(None, f'国服 Portal 授权失败：{type(exception_object).__name__}: {exception_object}')
+        result_text = f'国服 Lanota 授权失败：{portal.format_error(exception_object)}'
+        utils.error_log(None, f'国服授权失败：{type(exception_object).__name__}: {exception_object}')
     finally:
         with china_login_lock:
             china_login_in_progress.discard(login_key)
     if not utils.send_private_message(plugin_event, user_id, result_text):
-        utils.error_log(None, '国服 Portal 授权结果私聊发送失败。')
+        utils.error_log(None, '国服授权结果私聊发送失败。')
 
 
 def handle_china(plugin_event, argument: str) -> None:
@@ -1840,18 +1843,23 @@ help_categories = {
         ],
     },
     'account': {
-        'name': '玩家账号与绑定',
-        'aliases': ['user', 'bind', '账号', '绑定'],
+        'name': '用户相关',
+        'aliases': ['user', 'bind', '账号', '绑定', '用户'],
         'commands': [
             '/la bind <好友码> - 绑定自己的国际服 Lanota 好友码',
             '/la bind cn <好友码> - 绑定自己的国服 Lanota 好友码',
             '/la unbind - 解除国际服好友码绑定',
             '/la unbind cn - 解除国服好友码绑定',
-            '/la user - 查询绑定玩家的国际服优先 Portal 状态卡片',
-            '/la user cn - 查询绑定玩家的国服 Portal 状态卡片',
+            '/la user - 查询绑定玩家的国际服状态卡片',
+            '/la user cn - 查询绑定玩家的国服状态卡片',
             '/la friend - 私聊查询当前绑定的国际服/国服好友码',
             '/la friend cn - 私聊查询当前绑定的国服好友码',
             '/la user friend - .la friend 的兼容写法',
+            '/la b30 - 查询国际服优先的 B30；国际服与国服分别计算 5 分钟冷却',
+            '/la b30 cn - 查询国服 B30',
+        ],
+        'priority': [
+            '注：如果只绑定了国服好友码，所有 cn 均可忽略',
         ],
         'examples': [
             '/la bind <好友码>',
@@ -1871,10 +1879,7 @@ help_categories = {
             '/la time - 显示长于3分钟和短于2分钟的乐曲列表',
             '/la all - 显示曲库统计信息',
             '/la notes - 物量最多的前50个谱面',
-            '/la b30 - 查询国际服优先的 B30；国际服与国服分别计算 5 分钟冷却',
-            '/la b30 cn - 查询国服 B30',
-            '/la china status - 查看国服 Portal 登录状态（骰主/插件管理员）',
-            '/la china login - 私聊扫码登录国服 Portal（骰主/插件管理员）',
+            '/la china status - 查看国服登录状态（插件管理员）',
             '/la ritmo - 显示里莫绝赞昏睡时间',
         ],
         'examples': [
@@ -1894,7 +1899,7 @@ help_categories = {
         'commands': [
             '/la table - 按定数从高到低显示所有谱面',
             '/la 定数表 - 同上',
-            '/la table update - 从 excel_table 文件夹导入 Excel 定数表并覆盖 song_table.json（骰主/插件管理员）',
+            '/la table update - （插件管理员）',
         ],
         'examples': [
             '/la table',
@@ -1926,14 +1931,13 @@ help_categories = {
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
             '/la bot songcard on/off - 开关 song/info HTML 卡片（默认开启，关闭后使用兼容文本排版）',
             '/la global status/on/off - 查看或修改全局开关',
-            '/la update - Fandom 补元数据/物量，Portal 更新 official_songid、难度与官方定数',
-            '/la fullcheck - 全量检测 Fandom/Portal 与本地差异及新增歌曲（不写入）',
-            '/la fullcheck apply - 全量覆盖 Fandom 数据；新曲不自动匹配 official_songid（保留数字ID、章节号与谱师）',
+            '/la update - 更新本地曲库数据（仅骰主）',
+            '/la fullcheck - 全量检测 Fandom 与本地差异及新增歌曲（不写入，仅骰主）',
+            '/la fullcheck apply - 全量覆盖 Fandom 数据（仅骰主）',
             '/la sync - 预览 Wiki Songs 页面同步（仅骰主）',
             '/la sync apply - 实际同步 Wiki Songs 页面（仅骰主）',
             '/la cover status - 查看本地曲绘缓存（仅骰主）',
             '/la cover update - 下载缺失曲绘（仅骰主）',
-            '/la table update - 从 Excel 定数表更新 song_table.json',
         ],
         'priority': [
             '1. /la on 和 /la off 需要群主、群管、骰主或本插件管理员',
@@ -1982,7 +1986,7 @@ def handle_help(plugin_event, argument: str) -> None:
             break
 
     if matched_category is None:
-        reply_text(plugin_event, '未找到该分类，\n请输入 /la help\n查看所有分类')
+        reply_text(plugin_event, '未找到该分类，请输入 /la help 查看所有分类。')
         return
 
     lines = [
@@ -2052,7 +2056,7 @@ def handle_color(plugin_event, argument: str) -> None:
         user_info['event'] = 'changing_bgcolor'
         user_info['temp_bgcolor'] = 'default'
         function.save_user_data(user_data, linked_bot_hash)
-        reply_text(plugin_event, '你确定要将背景色重置为默认颜色吗？\n请输入 /la confirm 确认或 /la deny 取消。')
+        reply_text(plugin_event, '你确定要将背景色重置为默认颜色吗？请输入 /la confirm 确认或 /la deny 取消。')
         return
     if not re.match(r'^#?[0-9a-fA-F]{6}$', argument.strip()):
         reply_text(plugin_event, '请输入正确的色号格式，例如 #1f1e33；或使用 /la color default 重置。')
@@ -2063,7 +2067,11 @@ def handle_color(plugin_event, argument: str) -> None:
     user_info.setdefault('previous_bgcolor', user_info.get('bg_color', 'f7dbff'))
     user_info['bg_color'] = color_code
     function.save_user_data(user_data, linked_bot_hash)
-    reply_text(plugin_event, f'当前预览背景色: #{color_code}\n可以随便输入命令预览背景色\n请输入 /la confirm 确认或 /la deny 取消。')
+    reply_text(
+        plugin_event,
+        f'当前预览背景色: #{color_code}，可以随便输入命令预览背景色。'
+        '请输入 /la confirm 确认或 /la deny 取消。',
+    )
 
 
 def handle_confirm_or_deny(plugin_event, confirm: bool) -> None:

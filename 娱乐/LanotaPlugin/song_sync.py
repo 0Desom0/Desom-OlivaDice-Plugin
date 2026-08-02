@@ -7,6 +7,7 @@ import html
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -16,6 +17,7 @@ DIFFICULTY_LABELS = ("Whisper", "Acoustic", "Ultra", "Master")
 OFFICIAL_SONG_ID_FIELD = "official_songid"
 MEDIAWIKI_TAG_PATTERN = re.compile(r"<[^>]+>")
 NOWIKI_TAG_PATTERN = re.compile(r"</?nowiki\b[^>]*>", flags=re.I)
+HTML_MARKUP_PATTERN = re.compile(r"<!--[\s\S]*?-->|</?[a-zA-Z][^>]*>")
 NON_ALNUM_PATTERN = re.compile(r"[^\w]+", flags=re.UNICODE)
 CHARACTER_FOLD_MAP = str.maketrans(
     {
@@ -58,6 +60,43 @@ def strip_nowiki_markup(value: Any) -> Any:
     if isinstance(value, str):
         return NOWIKI_TAG_PATTERN.sub("", value)
     return value
+
+
+class _VisibleHtmlTextParser(HTMLParser):
+    """只保留 HTML 中用户可见的文字，换行标签转为空格。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.casefold() == "br":
+            self.parts.append(" ")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+
+def strip_html_markup(value: Any) -> Any:
+    """递归移除 HTML 标签和注释，同时保留标签内可见文字。"""
+    if isinstance(value, dict):
+        return {key: strip_html_markup(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [strip_html_markup(item) for item in value]
+    if not isinstance(value, str) or not HTML_MARKUP_PATTERN.search(value):
+        return value
+    parser = _VisibleHtmlTextParser()
+    parser.feed(value)
+    parser.close()
+    return re.sub(r"\s+", " ", "".join(parser.parts)).strip()
+
+
+def sanitize_song_markup(value: Any) -> Any:
+    """清理曲库中历史 nowiki/HTML 标记，供读取和落盘前统一调用。"""
+    return strip_html_markup(strip_nowiki_markup(value))
 
 
 def clean_title_text(value: Any) -> str:

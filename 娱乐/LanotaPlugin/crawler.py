@@ -1145,7 +1145,7 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
         }
     )
 
-    data = song_sync.strip_nowiki_markup(function.load_song_data())
+    data = song_sync.sanitize_song_markup(function.load_song_data())
     original_count = len(data)
     official_catalog, official_source_errors = fetch_official_song_catalog()
     official_match_result = song_sync.match_song_catalog(data, official_catalog)
@@ -1271,6 +1271,7 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
     official_pending.extend(new_song_result.get('official_pending', []))
 
     if apply:
+        data = song_sync.sanitize_song_markup(data)
         if not function.save_song_data(data):
             raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
     return {
@@ -1309,7 +1310,7 @@ def run_update() -> dict[str, Any]:
         }
     )
 
-    data = song_sync.strip_nowiki_markup(function.load_song_data())
+    data = song_sync.sanitize_song_markup(function.load_song_data())
     original_count = len(data)
     official_catalog, official_source_errors = fetch_official_song_catalog()
     data, official_update_stats, official_match_result = match_and_apply_official_catalog(
@@ -1385,6 +1386,7 @@ def run_update() -> dict[str, Any]:
     )
     new_titles = [str(song.get('title', '')) for song in new_song_result.get('added_songs', [])]
 
+    data = song_sync.sanitize_song_markup(data)
     if not function.save_song_data(data):
         raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
     official_pending = [

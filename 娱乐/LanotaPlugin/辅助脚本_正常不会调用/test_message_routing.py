@@ -119,6 +119,17 @@ class MessageRoutingTest(unittest.TestCase):
         create_text_image.assert_not_called()
         reply_message.assert_called_once_with(event, '简短提示')
 
+    def test_short_text_reply_removes_image_layout_newlines(self):
+        event = make_event('/la help')
+        with (
+            patch.object(message.utils, 'load_bot_config', return_value={'send_as_image': True}),
+            patch.object(message.function, 'create_text_image') as create_text_image,
+            patch.object(message.utils, 'reply_message') as reply_message,
+        ):
+            message.reply_text(event, '第一段\n\n第二段\n第三段')
+        create_text_image.assert_not_called()
+        reply_message.assert_called_once_with(event, '第一段 第二段 第三段')
+
     def test_long_text_reply_still_generates_image(self):
         event = make_event('/la help')
         long_text = '长内容' * message.config.text_image_min_chars

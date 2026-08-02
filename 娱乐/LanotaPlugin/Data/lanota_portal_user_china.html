@@ -235,7 +235,7 @@
         return `<article class="diff-card" style="--diff-color:${color}">
           <div class="diff-head"><div class="diff-name">${name}</div><div class="diff-progress">${num(row.count)} / ${num(row.total)}</div></div>
           <div class="mini-label">CLEAR TYPES</div>
-          <div class="mini-grid clear">${clearMeta.map(([key, label]) => `<div class="mini"><b>${label === 'Perfect Purified' ? 'PP' : label === 'All Combo' ? 'AC' : label}</b><span>${num(clear[key])}</span></div>`).join('')}</div>
+          <div class="mini-grid clear">${clearMeta.map(([key, label]) => `<div class="mini"><b>${label}</b><span>${num(clear[key])}</span></div>`).join('')}</div>
           <div class="mini-label">RANKS</div>
           <div class="mini-grid rank">${ranks.map(key => `<div class="mini"><b>${key}</b><span>${num(rank[key])}</span></div>`).join('')}</div>
         </article>`;

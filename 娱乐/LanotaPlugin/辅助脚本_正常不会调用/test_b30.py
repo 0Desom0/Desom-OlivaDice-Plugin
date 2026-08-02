@@ -18,7 +18,6 @@ from LanotaPlugin import b30  # noqa: E402
 from LanotaPlugin import config  # noqa: E402
 from LanotaPlugin import message  # noqa: E402
 from LanotaPlugin import portal  # noqa: E402
-from LanotaPlugin import utils  # noqa: E402
 
 
 class B30FormulaTest(unittest.TestCase):
@@ -283,7 +282,7 @@ class B30RenderTest(unittest.TestCase):
         html = portal._template_html({'_portal_region': 'global'}, 'b30')
         self.assertIn("wrapper.classList.add('difficulty-accent')", html)
         self.assertNotIn('data.accurate || (hasRuntimeData && !overflowEntries.length)', html)
-        self.assertIn('width: min(1296px, 100%)', html)
+        self.assertIn('width: min(1216px, 100%)', html)
         self.assertIn('width: 190px', html)
         self.assertIn('white-space: normal', html)
         self.assertIn('background-size: auto 100%', html)
@@ -291,7 +290,15 @@ class B30RenderTest(unittest.TestCase):
         self.assertNotIn("const cover = document.createElement('img');", html)
         self.assertIn("fact('单曲', Number(entry.singleRating).toFixed(2))", html)
         self.assertIn('Number(entry.score || 0) < 1000000', html)
-        self.assertEqual(config.lanota_portal_b30_screenshot_width, 1400)
+        self.assertIn("document.querySelectorAll('.song-title').forEach(fitSongTitle)", html)
+        self.assertEqual(config.lanota_portal_b30_screenshot_width, 1320)
+
+    def test_user_templates_spell_out_clear_types(self) -> None:
+        for region in ('global', 'china'):
+            with self.subTest(region=region):
+                html = portal._template_html({'_portal_region': region}, 'user')
+                self.assertIn('<b>${label}</b>', html)
+                self.assertNotIn("label === 'Perfect Purified' ? 'PP'", html)
 
 
 if __name__ == '__main__':

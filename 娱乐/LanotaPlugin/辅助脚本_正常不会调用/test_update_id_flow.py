@@ -34,12 +34,13 @@ class UpdateIdFlowTest(unittest.TestCase):
     def _complete_song_with_nowiki() -> dict:
         return {
             'id': 1,
-            'title': '<nowiki>#</nowiki>1f1e33',
+            'title': '<nowiki>#</nowiki><span style="font-family: Arial">1f1e33</span>',
             'chapter': 'Event-6',
             'official_songid': '1f1e33',
             'bpm': '181',
             'time': '2:49',
             'notes': {'whisper': '1', 'acoustic': '2', 'ultra': '3', 'master': '4'},
+            'Trivia': ['Master 14<sup>+</sup><br>visible'],
         }
 
     def test_wiki_field_removes_nowiki_tags(self):
@@ -65,6 +66,10 @@ class UpdateIdFlowTest(unittest.TestCase):
         ):
             crawler.run_update()
         self.assertEqual(save_song_data.call_args.args[0][0]['title'], '#1f1e33')
+        self.assertEqual(
+            save_song_data.call_args.args[0][0]['Trivia'],
+            ['Master 14+ visible'],
+        )
 
     def test_fullcheck_apply_strips_historical_nowiki_before_save(self):
         song = self._complete_song_with_nowiki()
@@ -84,6 +89,10 @@ class UpdateIdFlowTest(unittest.TestCase):
         ):
             crawler.run_full_check(apply=True)
         self.assertEqual(save_song_data.call_args.args[0][0]['title'], '#1f1e33')
+        self.assertEqual(
+            save_song_data.call_args.args[0][0]['Trivia'],
+            ['Master 14+ visible'],
+        )
 
     def test_fullcheck_reapplies_legacy_official_fields_after_fandom_parse(self):
         current_official = official_song('song_new', 'Song')
