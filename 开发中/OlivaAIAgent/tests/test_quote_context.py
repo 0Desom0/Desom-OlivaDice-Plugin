@@ -84,7 +84,8 @@ class QuoteContextTest(unittest.TestCase):
         context = OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text'])
         self.assertIn('【所引用的消息', context)
         self.assertIn('原消息的完整正文', context)
-        self.assertIn('【当前消息】\n这个结论是什么意思？', context)
+        self.assertIn('被引用消息作者（仅属于引用消息，不代表当前发言者）：青桔（user-2）', context)
+        self.assertIn('【当前发言者的新消息】\n这个结论是什么意思？', context)
         self.assertFalse(parsed['reply_to_me'])
 
     def test_reply_to_bot_is_detected_from_outgoing_registry(self):

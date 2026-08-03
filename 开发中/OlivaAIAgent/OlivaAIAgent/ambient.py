@@ -850,7 +850,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     sender_identity = conf.senderIdentity(plugin_event, parsed.get('at_list'))
     messages.append({
         'role': 'system',
-        'content': conf.senderIdentityPrompt(plugin_event, parsed.get('at_list')),
+        'content': conf.senderIdentityPrompt(plugin_event, parsed.get('at_list'), parsed.get('quote')),
     })
     conf.traceLog(
         Proc,
