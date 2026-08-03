@@ -356,7 +356,7 @@ def handle_tplgroup(plugin_event, command_argument: str) -> None:
 
     权限分层：
     - status/on/off/list：骰主、群主、群管均可使用。
-    - add [群号]/del [群号]：仅骰主可用（因为涉及跨群操作）。
+    - add [群号]/del [群号]：仅骰主可用（因为涉及跨群操作）
 
     管理命令本身始终不会被群级禁用拦截，保证随时可以重新开启。
     所有回复均通过自定义消息模板渲染，可在 message_custom.json 中修改。
