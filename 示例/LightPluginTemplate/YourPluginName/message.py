@@ -203,8 +203,8 @@ def handle_tplecho(plugin_event, command_argument: str) -> None:
     回声命令示例。
 
     这个命令专门演示 utils.reply_message 的 record_by_logger 开关。
-    - .tplecho 你好 -> 尝试按日志记录型回复发送
-    - .tplecho silent 你好 -> 纯净回复，不主动调用日志钩子
+    - .tplecho 你好 -> 尝试按日志记录型回复发送。
+    - .tplecho silent 你好 -> 纯净回复，不主动调用日志钩子。
     """
     action_name, remaining_argument = parse_secondary_action(command_argument)
     record_by_logger = True
