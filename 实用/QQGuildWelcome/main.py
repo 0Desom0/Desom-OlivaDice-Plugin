@@ -6,6 +6,7 @@ QQGuildWelcome - QQ官方机器人Markdown入群欢迎插件
 默认开启，设置 Markdown 内容后接管入群欢迎并拦截 OlivaDiceCore 默认欢迎；
 未设置内容时不拦截，原生欢迎正常触发。
 .welcome off 可关闭本插件回退到 OlivaDiceCore 原生 welcomeMsg。
+命令支持 .、/、。三种前缀。
 
 命令：
   .welcome on / off       开关本群 Markdown 欢迎（off 回退原生）
@@ -38,11 +39,12 @@ import OlivaDiceCore
 base_data_path = 'plugin/data/QQGuildWelcome'
 
 # 命令前缀
-CMD = '.welcome'
+CMD_PREFIXES = ('.', '/', '。')
 
 # 帮助文本
 HELP_STR = (
     'QQ官方机器人 Markdown 欢迎\n'
+    '命令前缀支持：. / 。\n'
     '━━━━━━━━━━━━━━\n'
     '.welcome on  开启本群Markdown欢迎\n'
     '.welcome off  关闭，回退OlivaDiceCore原生欢迎\n'
@@ -67,6 +69,18 @@ HELP_STR = (
     '━━━━━━━━━━━━━━\n'
     '仅 qqGuildV2 平台生效，其他平台走原生欢迎'
 )
+
+
+def parse_welcome_command(raw_msg):
+    """解析 welcome 命令，未匹配时返回 None。"""
+    raw_msg = raw_msg.strip()
+    for prefix in CMD_PREFIXES:
+        command = '%swelcome' % prefix
+        if raw_msg == command:
+            return ''
+        if raw_msg.startswith(command + ' '):
+            return raw_msg[len(command):].strip()
+    return None
 
 
 def get_config_path(bot_hash):
@@ -231,21 +245,14 @@ class Event(object):
             traceback.print_exc()
 
     def group_message(plugin_event, Proc):
-        """处理 .welcome 命令，仅 qqGuildV2，其他 SDK 直接 return"""
+        """处理 welcome 命令，仅 qqGuildV2，其他 SDK 直接 return"""
         if not is_qq_guild(plugin_event):
             return
 
         try:
-            raw_msg = plugin_event.data.message.strip()
-            if not raw_msg.startswith(CMD):
+            rest = parse_welcome_command(plugin_event.data.message)
+            if rest is None:
                 return
-
-            # 精确匹配 ".welcome" 或 ".welcome " 开头
-            rest = raw_msg[len(CMD):]
-            if rest != '' and not rest.startswith(' '):
-                return
-
-            rest = rest.strip()
 
             # 拦截事件，防止继续传到 OlivaDiceCore
             plugin_event.set_block()

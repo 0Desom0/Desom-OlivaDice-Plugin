@@ -18,6 +18,7 @@ song_alias_file_name = 'song_alias.json'
 song_table_file_name = 'song_table.json'
 cover_index_file_name = 'cover_index.json'
 cover_art_folder_name = 'CoverArt'
+adjusted_cover_art_folder_name = 'Adjusted'
 excel_table_folder_name = 'excel_table'
 excel_table_extension_list = ['.xlsx', '.xlsm']
 font_file_name = 'fonts.ttf'

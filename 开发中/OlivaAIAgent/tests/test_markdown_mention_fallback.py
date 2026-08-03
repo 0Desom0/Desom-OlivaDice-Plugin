@@ -15,6 +15,7 @@ class FakeEvent:
             group_id='group-1',
             user_id='user-1',
             message_id='current-1',
+            sender={'nickname': '哈基米路多', 'name': '哈基米路多'},
             extend={'flag_from_qq': True, 'flag_from_direct': False},
         )
         self.base_info = {'self_id': 'bot-1'}
@@ -84,6 +85,41 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
             {'content': '<qqbot-at-user id="user-2" /> 你好'},
             event.markdown_calls[0]['markdown'],
         )
+
+    def test_safe_reply_converts_literal_current_sender_mention(self):
+        event = FakeEvent()
+        with (
+            mock.patch.object(OlivaAIAgent.coreLogger, 'recordToolCall'),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(
+                event,
+                '@哈基米路多 就是说啊?',
+                safety_check=False,
+            )
+
+        self.assertEqual([], event.replies)
+        self.assertEqual(1, len(event.markdown_calls))
+        self.assertEqual(
+            {'content': '<qqbot-at-user id="user-1" /> 就是说啊?'},
+            event.markdown_calls[0]['markdown'],
+        )
+
+    def test_literal_other_user_mention_is_not_guessed(self):
+        event = FakeEvent()
+        with (
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(
+                event,
+                '@另一个群友 你好',
+                safety_check=False,
+            )
+
+        self.assertEqual([], event.markdown_calls)
+        self.assertEqual(['@另一个群友 你好'], event.replies)
 
     def test_markdown_failure_falls_back_to_normal_reply(self):
         event = FakeEvent(markdown_result={'active': False, 'data': {'error': 'denied'}})

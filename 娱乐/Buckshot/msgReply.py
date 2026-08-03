@@ -51,10 +51,14 @@ def unity_reply(plugin_event, Proc):
     tmp_id_str = str(plugin_event.base_info['self_id'])
     tmp_at_str_sub = None
     tmp_id_str_sub = None
+    tmp_id_str_sub_open = None
     if 'sub_self_id' in plugin_event.data.extend:
         if plugin_event.data.extend['sub_self_id'] != None:
             tmp_at_str_sub = OlivOS.messageAPI.PARA.at(plugin_event.data.extend['sub_self_id']).CQ()
             tmp_id_str_sub = str(plugin_event.data.extend['sub_self_id'])
+    if 'sub_self_open_id' in plugin_event.data.extend:
+        if plugin_event.data.extend['sub_self_open_id'] != None:
+            tmp_id_str_sub_open = str(plugin_event.data.extend['sub_self_open_id'])
     tmp_command_str_1 = '.'
     tmp_command_str_2 = '。'
     tmp_command_str_3 = '/'
@@ -91,6 +95,8 @@ def unity_reply(plugin_event, Proc):
         if tmp_id_str in tmp_at_list:
             flag_force_reply = True
         if tmp_id_str_sub in tmp_at_list:
+            flag_force_reply = True
+        if tmp_id_str_sub_open in tmp_at_list:
             flag_force_reply = True
         if 'all' in tmp_at_list:
             flag_force_reply = True
@@ -698,7 +704,6 @@ def unity_reply(plugin_event, Proc):
                         # 1/2扣对面一点血
                         if random.randint(1, 2) == 1:
                             demon_data['hp'][opponent_turn] -= 1
-                            demon_data['hp'][player_turn] = current_hp
                             msg += f"但是一不小心摔了一跤，hp-1！\n- 当前对方hp：{demon_data['hp'][opponent_turn]}/{hp_max}\n"
                     else:
                         msg += f"- 对方还顺手拿走了你的【{random_item_name}】，但是由于物品栏已满，他遗憾的把这件道具丢了！\n"

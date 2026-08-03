@@ -869,12 +869,41 @@ def handle_cover(plugin_event, argument: str) -> None:
             plugin_event,
             f'本地曲绘缓存：{cache_status["cached"]}/{cache_status["total"]} 张\n'
             f'曲绘文件数量：{cache_status["images"]}\n'
+            f'已校正曲绘：{cache_status["adjusted_images"]}\n'
             # f'预置目录：{cache_status["seed_dir"]}\n运行期目录：{cache_status["runtime_dir"]}\n'
-            '使用 /la cover update 下载缺失曲绘，或 /la cover force 强制重下。',
+            '使用 /la cover update 下载缺失曲绘，/la cover resize 批量校正，或 /la cover force 强制重下。',
         )
         return
+    if action_text in {'resize', 'adjust', 'stretch', '校正', '修复', '拉伸'}:
+        if not utils.sender_is_core_master(plugin_event):
+            reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主可以批量校正曲绘。')
+            return
+        reply_text(plugin_event, '开始校正本地曲绘，已有校正缓存会自动跳过，请稍候……')
+
+        def report_adjustment_progress(current: int, total: int, result: dict[str, Any]) -> None:
+            if current == total or current % 25 == 0:
+                utils.info_log(
+                    getattr(utils, 'runtime_proc', None),
+                    f'曲绘校正进度 {current}/{total}，新增 {result["adjusted"]}，失败 {result["failed"]}',
+                )
+
+        try:
+            result = crawler.run_cover_adjustment(progress_callback=report_adjustment_progress)
+            reply_text(
+                plugin_event,
+                f'曲绘校正完成！\n'
+                f'扫描原图：{result.get("total", 0)}\n'
+                f'本次校正：{result.get("adjusted", 0)}\n'
+                f'已有缓存：{result.get("cached", 0)}\n'
+                f'非 2:1 原图：{result.get("unchanged", 0)}\n'
+                f'失败：{result.get("failed", 0)}\n'
+                f'目录：{result.get("cover_dir", "")}',
+            )
+        except Exception as exception_object:
+            reply_text(plugin_event, f'曲绘校正失败：{type(exception_object).__name__}: {exception_object}')
+        return
     if action_text not in {'update', '更新', 'download', '下载', 'force', '强制'}:
-        reply_text(plugin_event, '用法：/la cover status、/la cover update、/la cover force')
+        reply_text(plugin_event, '用法：/la cover status、/la cover update、/la cover resize、/la cover force')
         return
 
     force = action_text in {'force', '强制'}
@@ -1938,6 +1967,7 @@ help_categories = {
             '/la sync apply - 实际同步 Wiki Songs 页面（仅骰主）',
             '/la cover status - 查看本地曲绘缓存（仅骰主）',
             '/la cover update - 下载缺失曲绘（仅骰主）',
+            '/la cover resize - 校正全部 2:1 曲绘，已有结果跳过（仅骰主）',
         ],
         'priority': [
             '1. /la on 和 /la off 需要群主、群管、骰主或本插件管理员',
@@ -1953,6 +1983,7 @@ help_categories = {
             '/la sync',
             '/la sync apply',
             '/la cover update',
+            '/la cover resize',
             '/la table update',
         ],
     },

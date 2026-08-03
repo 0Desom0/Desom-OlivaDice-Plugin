@@ -4,8 +4,8 @@
     "namespace": "OlivaAIAgent",
     "info": "AI全能群聊插件：自动内省OlivOS接口，兼具骰点、MCP、语音、潜行群友、长期事实、视觉、提醒及消息引用标识。",
     "priority": 30000,
-    "svn": 48,
-    "version": "2.20.13",
+    "svn": 50,
+    "version": "2.20.15",
     "compatible_svn": 190,
     "message_mode": "olivos_string",
     "support": [

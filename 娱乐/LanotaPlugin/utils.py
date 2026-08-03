@@ -213,7 +213,7 @@ def load_bot_config(bot_hash: Any) -> dict[str, Any]:
         file_data = dict(file_data)
         file_data.pop('configured_master_list', None)
     data = merge_dict_with_default(file_data, config.default_bot_config)
-    data['disabled_group_list'] = normalize_id_list(data.get('disabled_group_list', []))
+    data['disabled_group_list'] = normalize_group_id_list(data.get('disabled_group_list', []))
     if not file_exists or data != file_data:
         save_json_file(file_path, data)
     return data
@@ -224,7 +224,7 @@ def save_bot_config(bot_hash: Any, bot_config: dict[str, Any]) -> bool:
     if 'configured_master_list' in data:
         migrate_configured_master_list_to_global(data.get('configured_master_list', []))
         data.pop('configured_master_list', None)
-    data['disabled_group_list'] = normalize_id_list(data.get('disabled_group_list', []))
+    data['disabled_group_list'] = normalize_group_id_list(data.get('disabled_group_list', []))
     return save_json_file(get_bot_config_path(bot_hash), data)
 
 
@@ -278,6 +278,11 @@ def get_cover_art_dir() -> str:
 def get_cover_index_path() -> str:
     """获取曲绘缓存索引文件。"""
     return os.path.join(get_cover_art_dir(), config.cover_index_file_name)
+
+
+def get_adjusted_cover_art_dir() -> str:
+    """获取纵向校正后的曲绘缓存目录。"""
+    return ensure_folder(os.path.join(get_cover_art_dir(), config.adjusted_cover_art_folder_name))
 
 
 def get_seed_cover_art_dir() -> str:
@@ -394,6 +399,7 @@ def initialize_plugin(Proc=None) -> None:
         ensure_folder(get_storage_dir())
         ensure_folder(get_song_data_dir())
         ensure_folder(get_cover_art_dir())
+        ensure_folder(get_adjusted_cover_art_dir())
         ensure_folder(get_excel_table_dir())
         ensure_folder(get_generate_image_dir())
         save_global_config(load_global_config())
@@ -627,6 +633,24 @@ def normalize_id_list(value: Any) -> list[str]:
     return result
 
 
+def normalize_group_id_list(value: Any) -> list[str]:
+    """规范化跨平台群 ID，并保留 qqguildv2 等平台的非数字字符。"""
+    if isinstance(value, str):
+        raw_list = re.split(r'[\s,;，；]+', value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_list = value
+    else:
+        raw_list = []
+    result = []
+    for item in raw_list:
+        normalized = safe_str(item).strip()
+        if re.fullmatch(r'[0-9a-fA-F]{32}', normalized):
+            normalized = normalized.lower()
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return result
+
+
 def get_configured_master_list(bot_hash: Any = None) -> list[str]:
     return normalize_id_list(load_global_config().get('configured_master_list', []))
 
@@ -679,27 +703,27 @@ def sender_has_group_management_permission(plugin_event) -> bool:
 
 def get_disabled_group_list(bot_hash: Any) -> list[str]:
     """获取当前原始 bot 的群禁用列表。"""
-    return normalize_id_list(load_bot_config(bot_hash).get('disabled_group_list', []))
+    return normalize_group_id_list(load_bot_config(bot_hash).get('disabled_group_list', []))
 
 
 def set_disabled_group_list(bot_hash: Any, group_id_list: list[str]) -> bool:
     """保存当前原始 bot 的群禁用列表。"""
     bot_config = load_bot_config(bot_hash)
-    bot_config['disabled_group_list'] = normalize_id_list(group_id_list)
+    bot_config['disabled_group_list'] = normalize_group_id_list(group_id_list)
     return save_bot_config(bot_hash, bot_config)
 
 
 def is_group_disabled(plugin_event) -> bool:
     """检查当前群是否已在本插件中禁用。"""
-    group_id = get_group_id_from_event(plugin_event)
-    if not group_id:
+    group_id_list = normalize_group_id_list([get_group_id_from_event(plugin_event)])
+    if not group_id_list:
         return False
-    return group_id in get_disabled_group_list(get_bot_hash_from_event(plugin_event))
+    return group_id_list[0] in get_disabled_group_list(get_bot_hash_from_event(plugin_event))
 
 
 def add_disabled_group(bot_hash: Any, group_id: Any) -> bool:
     disabled_group_list = get_disabled_group_list(bot_hash)
-    target_group_list = normalize_id_list([group_id])
+    target_group_list = normalize_group_id_list([group_id])
     changed = False
     for target_group in target_group_list:
         if target_group not in disabled_group_list:
@@ -712,7 +736,7 @@ def add_disabled_group(bot_hash: Any, group_id: Any) -> bool:
 
 def remove_disabled_group(bot_hash: Any, group_id: Any) -> bool:
     disabled_group_list = get_disabled_group_list(bot_hash)
-    target_group_list = normalize_id_list([group_id])
+    target_group_list = normalize_group_id_list([group_id])
     new_group_list = [item for item in disabled_group_list if item not in target_group_list]
     return set_disabled_group_list(bot_hash, new_group_list)
 
@@ -722,10 +746,11 @@ def is_group_message(plugin_event) -> bool:
 
 
 def is_alias_group_allowed(plugin_event) -> bool:
-    group_id = get_group_id_from_event(plugin_event)
-    if not group_id:
+    group_id_list = normalize_group_id_list([get_group_id_from_event(plugin_event)])
+    if not group_id_list:
         return False
-    return group_id in normalize_id_list(load_global_config().get('alias_groups', []))
+    allowed_group_list = normalize_group_id_list(load_global_config().get('alias_groups', []))
+    return group_id_list[0] in allowed_group_list
 
 
 def check_core_group_enable(plugin_event) -> bool:

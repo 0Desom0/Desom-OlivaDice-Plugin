@@ -166,6 +166,32 @@ class CoreLoggerTest(unittest.TestCase):
         self.assertEqual([None, '29999', None], self.calls[0][3])
         self.assertEqual([], source.sends)
 
+    def test_async_snapshot_freezes_plugin_context_and_rebinds_event(self):
+        source = FakeEvent()
+        source.plugin_info = {'name': 'OlivaAIAgent', 'func_type': 'group_message'}
+        source.base_info = {'self_id': '10000'}
+        source.data.sender = {'name': '当前用户'}
+        source.data.extend = {'event_id': 'event-1'}
+        source.indeAPI = types.SimpleNamespace(event=source)
+        OlivaAIAgent.coreLogger.install(source)
+
+        snapshot = OlivaAIAgent.coreLogger.snapshotEvent(source)
+        source.plugin_info['name'] = '最终物语检定规则'
+        source.platform['sdk'] = 'changed-sdk'
+        source.base_info['self_id'] = 'changed-bot'
+        source.data.sender['name'] = 'changed-user'
+
+        self.assertIsNot(snapshot, source)
+        self.assertEqual('OlivaAIAgent', snapshot.plugin_info['name'])
+        self.assertEqual('onebot', snapshot.platform['sdk'])
+        self.assertEqual('10000', snapshot.base_info['self_id'])
+        self.assertEqual('当前用户', snapshot.data.sender['name'])
+        self.assertIs(snapshot, snapshot.indeAPI.event)
+
+        snapshot.reply('线程回复')
+
+        self.assertIs(snapshot, self.calls[0][0])
+
 
 if __name__ == '__main__':
     unittest.main()

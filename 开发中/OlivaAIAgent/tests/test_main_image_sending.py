@@ -104,6 +104,44 @@ class MainImageSendingTest(unittest.TestCase):
         self.assertEqual('狐狸捂脸', image_ref)
         self.assertIn('fox.gif', '\n'.join(item['content'] for item in captured['messages']))
 
+    def test_incomplete_image_json_falls_back_without_logging_it_as_intent(self):
+        candidates = {
+            'fox.gif': {'content': '狐狸捂脸', 'intent': '无奈', 'type': '表情包'},
+        }
+        with (
+            mock.patch.object(
+                OlivaAIAgent.aiClient,
+                'chat',
+                return_value={'ok': True, 'text': '{"image":"img_4f6b4a'},
+            ),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog') as trace_log,
+        ):
+            image_ref = OlivaAIAgent.preflight.selectImageIntent(
+                None,
+                '这是什么',
+                [],
+                candidates,
+            )
+
+        self.assertEqual('', image_ref)
+        self.assertEqual('aux.image.failed', trace_log.call_args.args[1])
+        self.assertIn('不完整的 JSON', trace_log.call_args.kwargs['error'])
+
+    def test_agent_reply_sends_blank_line_paragraphs_as_separate_messages(self):
+        event = FakeEvent()
+        with (
+            mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+            mock.patch.object(OlivaAIAgent.msgReply.time, 'sleep'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(
+                event,
+                '第一段\n\n第二段',
+                safety_check=False,
+            )
+
+        self.assertEqual(['第一段', '第二段'], event.replies)
+
     def test_agent_reply_uses_existing_outgoing_image_translation(self):
         event = FakeEvent()
         image_message = '[OP:image,file=file:///cache/fox.gif]'

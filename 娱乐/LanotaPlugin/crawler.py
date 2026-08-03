@@ -31,6 +31,7 @@ except Exception:
 
 
 cover_index_lock = threading.RLock()
+cover_adjustment_lock = threading.RLock()
 
 
 def clean_ref(text: str) -> str:
@@ -508,6 +509,123 @@ def get_cached_cover_path(song: dict[str, Any]) -> str:
     return cover_paths[0] if cover_paths else ''
 
 
+def get_adjusted_cover_path(source_path: str) -> str:
+    return os.path.join(utils.get_adjusted_cover_art_dir(), os.path.basename(source_path))
+
+
+def _prepare_cover_for_display(source_path: str) -> tuple[str, str]:
+    """把严格 2:1 的曲绘纵向拉伸 9/8；返回展示路径与处理状态。"""
+    source_path = os.path.abspath(str(source_path))
+    if not os.path.isfile(source_path):
+        return source_path, 'failed'
+    adjusted_path = get_adjusted_cover_path(source_path)
+    if os.path.isfile(adjusted_path):
+        return adjusted_path, 'cached'
+
+    with cover_adjustment_lock:
+        if os.path.isfile(adjusted_path):
+            return adjusted_path, 'cached'
+        temp_path = f'{adjusted_path}.{os.getpid()}.{threading.get_ident()}.part'
+        adjusted_image = None
+        try:
+            from PIL import Image
+
+            with Image.open(source_path) as source_image:
+                source_image.load()
+                width, height = source_image.size
+                if width <= 0 or height <= 0 or width != height * 2:
+                    return source_path, 'unchanged'
+                image_format = source_image.format
+                if not image_format:
+                    return source_path, 'failed'
+                target_height = round(height * 9 / 8)
+                resampling = getattr(Image, 'Resampling', Image).LANCZOS
+                adjusted_image = source_image.resize((width, target_height), resampling)
+                save_options = {}
+                if image_format.upper() in {'JPEG', 'JPG'}:
+                    save_options.update({'quality': 100, 'subsampling': 0})
+                elif image_format.upper() == 'WEBP':
+                    save_options.update({'lossless': True, 'quality': 100})
+                icc_profile = source_image.info.get('icc_profile')
+                if icc_profile:
+                    save_options['icc_profile'] = icc_profile
+                adjusted_image.save(temp_path, format=image_format, **save_options)
+            os.replace(temp_path, adjusted_path)
+            return adjusted_path, 'created'
+        except Exception as exception_object:
+            utils.debug_log(
+                None,
+                f'曲绘纵向校正失败：{os.path.basename(source_path)}：'
+                f'{type(exception_object).__name__}: {exception_object}',
+            )
+            return source_path, 'failed'
+        finally:
+            if adjusted_image is not None:
+                adjusted_image.close()
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+
+def prepare_cover_for_display(source_path: str) -> str:
+    """返回曲绘最终展示路径；非 2:1 或处理失败时使用原图。"""
+    display_path, _status = _prepare_cover_for_display(source_path)
+    return display_path
+
+
+def prepare_cover_paths_for_display(source_paths: list[str]) -> list[str]:
+    return [prepare_cover_for_display(source_path) for source_path in source_paths]
+
+
+def list_cover_source_paths() -> list[str]:
+    """列出运行期与预置目录中的原始曲绘，同名时优先运行期文件。"""
+    result_by_name = {}
+    for cover_dir in (utils.get_cover_art_dir(), utils.get_seed_cover_art_dir()):
+        if not os.path.isdir(cover_dir):
+            continue
+        try:
+            for entry in os.scandir(cover_dir):
+                if not entry.is_file() or entry.name == config.cover_index_file_name or entry.name.endswith('.part'):
+                    continue
+                result_by_name.setdefault(entry.name, entry.path)
+        except Exception:
+            continue
+    return list(result_by_name.values())
+
+
+def get_adjusted_cover_count() -> int:
+    try:
+        return sum(1 for entry in os.scandir(utils.get_adjusted_cover_art_dir()) if entry.is_file())
+    except Exception:
+        return 0
+
+
+def run_cover_adjustment(progress_callback=None) -> dict[str, Any]:
+    """批量生成缺失的展示曲绘；已有缓存直接跳过。"""
+    source_paths = list_cover_source_paths()
+    result = {
+        'total': len(source_paths),
+        'adjusted': 0,
+        'cached': 0,
+        'unchanged': 0,
+        'failed': 0,
+        'cover_dir': utils.get_adjusted_cover_art_dir(),
+    }
+    for current, source_path in enumerate(source_paths, 1):
+        _display_path, status = _prepare_cover_for_display(source_path)
+        if status in result:
+            result[status] += 1
+        elif status == 'created':
+            result['adjusted'] += 1
+        else:
+            result['failed'] += 1
+        if callable(progress_callback):
+            progress_callback(current, len(source_paths), result)
+    return result
+
+
 def build_cover_file_name(song: dict[str, Any], mime_type: str, variant_index: int) -> str:
     extension_map = {
         'image/jpeg': '.jpg',
@@ -695,8 +813,10 @@ def get_cover_cache_status(songs: list[dict[str, Any]] | None = None) -> dict[st
         'total': len(song_list),
         'cached': cached_count,
         'images': sum(len(path_list) for path_list in cached_path_lists),
+        'adjusted_images': get_adjusted_cover_count(),
         'missing': max(0, len(song_list) - cached_count),
         'runtime_dir': utils.get_cover_art_dir(),
+        'adjusted_dir': utils.get_adjusted_cover_art_dir(),
         'seed_dir': utils.get_seed_cover_art_dir(),
     }
 
@@ -705,7 +825,7 @@ def ensure_song_covers(song: dict[str, Any], force: bool = False) -> list[str]:
     """优先返回全部本地曲绘；需要时通过 API 按需下载。"""
     cached_paths = get_cached_cover_paths(song)
     if cached_paths and not force:
-        return cached_paths
+        return prepare_cover_paths_for_display(cached_paths)
     global_config = utils.load_global_config()
     if not force and not global_config.get('download_cover_on_demand', True):
         return []
@@ -741,7 +861,7 @@ def ensure_song_covers(song: dict[str, Any], force: bool = False) -> list[str]:
                     'files': file_entries,
                 }
                 save_cover_index(index_data)
-        return paths
+        return prepare_cover_paths_for_display(paths)
     except Exception:
         return []
 

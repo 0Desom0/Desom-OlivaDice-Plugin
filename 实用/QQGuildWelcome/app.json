@@ -3,7 +3,7 @@
     "author": "Desom-fu",
     "namespace": "QQGuildWelcome",
     "info": "为QQ官方机器人(qqGuildV2)提供自定义Markdown入群欢迎，支持内联标签与按钮，开启后拦截OlivaDiceCore默认欢迎（前置：OlivaDiceCore）",
-    "priority": 19990,
+    "priority": 10000,
     "svn": 1,
     "version": "1.0.0",
     "compatible_svn": 190,

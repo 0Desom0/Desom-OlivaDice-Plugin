@@ -4,8 +4,8 @@
     "namespace" : "LiarBar",
     "message_mode" : "old_string",
     "info" : "LiarBar骗子酒馆插件",
-    "version" : "1.0.0",
-    "svn" : 1,
+    "version" : "1.0.2",
+    "svn" : 3,
     "compatible_svn" : 190,
     "priority" : 21000,
     "support" : [

@@ -4,8 +4,8 @@
     "namespace" : "OlivaDiceRAD",
     "message_mode" : "old_string",
     "info" : "RAD命令的实现，实际只是copy了ra加了个随机而已。",
-    "version" : "1.0.1",
-    "svn" : 2,
+    "version" : "1.0.3",
+    "svn" : 4,
     "compatible_svn" : 190,
     "priority" : 19990,
     "support" : [

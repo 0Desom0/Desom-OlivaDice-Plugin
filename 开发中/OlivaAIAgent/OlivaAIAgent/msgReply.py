@@ -395,6 +395,61 @@ def parseMessage(plugin_event):
     }
 
 
+def stripMentionSegments(text):
+    '''从正文移除 @ 消息段；提及对象由 parseMessage.at_list 单独保存。'''
+    cleaned = re.sub(r'\[(?:OP|CQ):at[^\]]*\]', ' ', str(text), flags=re.I)
+    return re.sub(r'[ \t]+', ' ', cleaned).strip()
+
+
+def splitReplyText(text, split_length, max_count):
+    '''空白行优先作为消息边界，再对过长段落按字符数切分。'''
+    try:
+        split_length = max(1, int(split_length))
+    except (TypeError, ValueError):
+        split_length = 1500
+    try:
+        max_count = max(1, int(max_count))
+    except (TypeError, ValueError):
+        max_count = 3
+    paragraphs = re.split(r'\n[ \t]*\n+', str(text).replace('\r\n', '\n').replace('\r', '\n'))
+    chunks = []
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        for start in range(0, len(paragraph), split_length):
+            chunk = paragraph[start:start + split_length].strip()
+            if chunk:
+                chunks.append(chunk)
+            if len(chunks) >= max_count:
+                return chunks
+    return chunks
+
+
+def sanitizeSenderAddress(text, plugin_event):
+    '''非骰主发言时，移除模型误加在消息开头的骰主专属称呼。'''
+    if plugin_event is None:
+        return str(text).strip()
+    identity = OlivaAIAgent.conf.senderIdentity(plugin_event)
+    if identity['is_master']:
+        return str(text).strip()
+    titles = OlivaAIAgent.conf.get('masters', 'titles', default={})
+    title_values = list(titles.values()) if isinstance(titles, dict) else []
+    result = str(text).strip()
+    for title in sorted({str(item).strip() for item in title_values if str(item).strip()}, key=len, reverse=True):
+        if not result.startswith(title):
+            continue
+        rest = result[len(title):]
+        if not rest:
+            return ''
+        if rest[0] in '~～，,、:：!！?？ ' or rest.startswith(
+            ('你', '怎么', '为什么', '还', '快', '别', '要', '看', '在', '说', '不', '真', '好', '这', '那')
+        ):
+            result = rest.lstrip('~～，,、:：!！?？ ')
+            break
+    return result.strip()
+
+
 def _matchPrefix(text, platform=None, group_id=None):
     '''命中触发前缀则返回剩余文本，否则 None'''
     prefixes = (
@@ -1099,6 +1154,7 @@ def handleCommand(plugin_event, Proc, rest, is_master, in_group):
 # ---------------- Agent 主循环 ----------------
 
 def _startAgent(plugin_event, Proc, user_text, parsed, trigger):
+    plugin_event = OlivaAIAgent.coreLogger.snapshotEvent(plugin_event)
     OlivaAIAgent.conf.traceLog(
         Proc,
         'agent.queued',
@@ -1630,6 +1686,29 @@ _QQBOT_AT_TAG_PATTERN = re.compile(
 )
 
 
+def _normalizeQqGuildSenderMention(plugin_event, text):
+    '''把回复开头的字面 @当前发送者昵称 换成可由 SDK 处理的 OP at 段。'''
+    raw = str(text or '')
+    data = getattr(plugin_event, 'data', None)
+    user_id = str(getattr(data, 'user_id', '') or '').strip()
+    sender = getattr(data, 'sender', None)
+    if not user_id or not isinstance(sender, dict):
+        return raw
+    names = []
+    for key in ('nickname', 'name', 'card'):
+        name = str(sender.get(key) or '').strip()
+        if name and name not in names:
+            names.append(name)
+    for name in sorted(names, key=len, reverse=True):
+        pattern = re.compile(
+            r'^(\s*(?:\[(?:OP|CQ):reply\b[^\]]*\]\s*)?)[@＠]%s(?!\w)' % re.escape(name),
+            re.I,
+        )
+        if pattern.search(raw):
+            return pattern.sub(lambda match: match.group(1) + '[OP:at,id=%s]' % user_id, raw, count=1)
+    return raw
+
+
 def _qqGuildMarkdownMentionContent(text):
     '''把纯文本/at/reply 消息转成 Markdown；其他消息段交回原发送链路。'''
     raw = str(text or '')
@@ -1676,7 +1755,8 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
         return None
     if 'qqguildv2' not in sdk:
         return None
-    markdown_content = _qqGuildMarkdownMentionContent(text)
+    normalized_text = _normalizeQqGuildSenderMention(plugin_event, text)
+    markdown_content = _qqGuildMarkdownMentionContent(normalized_text)
     if markdown_content is None:
         return None
     data = getattr(plugin_event, 'data', None)
@@ -1776,7 +1856,9 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
                 outgoing_reference_id = str(msg_id)
     except Exception:
         prefix = ''
-    chunks = [text[i:i + split_len] for i in range(0, len(text), split_len)][:max_count]
+    chunks = splitReplyText(text, split_len, max_count)
+    chunks = [sanitizeSenderAddress(chunk, plugin_event) for chunk in chunks]
+    chunks = [chunk for chunk in chunks if chunk]
     message_ids = []
     sent = True
     for i, chunk in enumerate(chunks):

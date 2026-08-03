@@ -90,6 +90,9 @@ def _imageValue(raw, candidates=None):
             value = str(data.get(key, '')).strip()
             if value and value in text:
                 return value
+    # 结构化输出一旦损坏就不能再当作普通意图字符串，否则半截 JSON 会污染日志和图片匹配。
+    if text.lstrip('` \t\r\n').startswith(('{', '[')):
+        return ''
     labelled = re.search(
         r'(?:image(?:_intent)?|intent|图片|表情|意图)\s*[:：=]\s*["\']?([^\n"\'}]{1,160})',
         text,
@@ -134,7 +137,7 @@ def selectImageIntent(Proc, query_text, history, image_candidates, trace_id=None
             messages,
             tools=None,
             backend_conf=OlivaAIAgent.aiClient.getAuxiliaryBackendConf(
-                max_tokens=128,
+                max_tokens=256,
                 temperature=0.0,
             ),
             force_no_stream=True,
@@ -146,7 +149,14 @@ def selectImageIntent(Proc, query_text, history, image_candidates, trace_id=None
         )
         if not result.get('ok'):
             raise ValueError(result.get('error', '图片判断失败'))
-        image_ref = _imageValue(result.get('text', ''), candidates)[:160]
+        raw_result = str(result.get('text', '')).strip()
+        image_ref = _imageValue(raw_result, candidates)[:160]
+        if not image_ref and raw_result.lstrip('` \t\r\n').startswith(('{', '[')):
+            candidate = re.search(r'\{.*\}', raw_result, flags=re.S)
+            try:
+                json.loads(candidate.group(0) if candidate else raw_result)
+            except Exception as e:
+                raise ValueError('图片判断返回了不完整的 JSON') from e
         OlivaAIAgent.conf.traceLog(
             Proc,
             'aux.image.result',

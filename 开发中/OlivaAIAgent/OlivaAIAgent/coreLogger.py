@@ -2,6 +2,7 @@
 '''把本插件的出站消息补入 OlivaDiceCore msgHook，供 OlivaDiceLogger 记录。'''
 
 import contextlib
+import copy
 import inspect
 import os
 import re
@@ -14,6 +15,7 @@ import OlivaAIAgent
 
 _hint_local = threading.local()
 _INSTALL_FLAG = '_oliva_ai_core_logger_installed'
+_SNAPSHOT_FLAG = '_oliva_ai_event_snapshot'
 
 
 def enabled():
@@ -232,6 +234,46 @@ def prepareClone(plugin_event):
         except Exception:
             pass
     return install(plugin_event)
+
+
+def snapshotEvent(plugin_event):
+    '''冻结后台任务所需的事件上下文，避免后续插件分发改写当前插件信息。'''
+    if plugin_event is None or getattr(plugin_event, _SNAPSHOT_FLAG, False):
+        return plugin_event
+    try:
+        snapshot = copy.copy(plugin_event)
+    except Exception:
+        return plugin_event
+
+    for name in ('plugin_info', 'platform', 'base_info'):
+        value = getattr(plugin_event, name, None)
+        if isinstance(value, dict):
+            setattr(snapshot, name, dict(value))
+
+    data = getattr(plugin_event, 'data', None)
+    if data is not None:
+        try:
+            snapshot.data = copy.copy(data)
+            for name in ('sender', 'extend'):
+                value = getattr(data, name, None)
+                if isinstance(value, dict):
+                    setattr(snapshot.data, name, dict(value))
+        except Exception:
+            pass
+
+    inde_api = getattr(plugin_event, 'indeAPI', None)
+    if inde_api is not None:
+        try:
+            snapshot.indeAPI = copy.copy(inde_api)
+            if hasattr(snapshot.indeAPI, 'event'):
+                snapshot.indeAPI.event = snapshot
+        except Exception:
+            pass
+
+    setattr(snapshot, _SNAPSHOT_FLAG, True)
+    if not callable(getattr(snapshot, 'reply', None)) or not callable(getattr(snapshot, 'send', None)):
+        return snapshot
+    return prepareClone(snapshot)
 
 
 def _toolCallValues(ctx, path, args, kwargs):

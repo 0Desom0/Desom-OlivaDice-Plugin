@@ -142,9 +142,9 @@ class IntrospectionTest(unittest.TestCase):
         self.assertIn('当前协议已验证接口', prompt)
         self.assertIn('inde.create_markdown_message', prompt)
         self.assertIn('不得与模型训练知识冲突时擅自否认', prompt)
-        self.assertIn('回复中需要@用户时，请使用Markdown格式发送', prompt)
+        self.assertIn('必须输出[OP:at,id=当前发言者user_id]', prompt)
 
-    def test_qqguildv2_platform_prompt_requires_markdown_for_mentions(self):
+    def test_qqguildv2_platform_prompt_requires_op_at_for_final_reply(self):
         event = mock.Mock()
         event.platform = {'sdk': 'qqGuildv2_link', 'platform': 'qqGuild', 'model': 'public'}
         prompt = OlivaAIAgent.conf.platformBrief(event)
@@ -167,9 +167,10 @@ class IntrospectionTest(unittest.TestCase):
             agent_prompt = OlivaAIAgent.msgReply._buildSystemPrompt(event, ctx, False)
 
         self.assertIn('inde.create_markdown_message', agent_prompt)
-        self.assertIn('回复中需要@用户时，请使用Markdown格式发送', prompt)
-        self.assertIn('普通消息照常使用最终回复', prompt)
-        self.assertIn('回复中需要@用户时，请使用Markdown格式发送', agent_prompt)
+        self.assertIn('禁止输出字面“@昵称”', prompt)
+        self.assertIn('必须输出[OP:at,id=当前发言者user_id]', prompt)
+        self.assertIn('插件会自动通过SDK转成Markdown @', prompt)
+        self.assertIn('必须输出[OP:at,id=当前发言者user_id]', agent_prompt)
 
     def test_invokes_real_sdk_helper(self):
         result = OlivaAIAgent.introspection.invoke(

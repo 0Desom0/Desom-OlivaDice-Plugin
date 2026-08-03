@@ -54,12 +54,50 @@ def unity_reply(plugin_event, Proc):
             return ''
 
     # 解析命令
+    tmp_id_str = str(plugin_event.base_info['self_id'])
+    tmp_id_str_sub = None
+    tmp_id_str_sub_open = None
+    if 'sub_self_id' in plugin_event.data.extend:
+        if plugin_event.data.extend['sub_self_id'] != None:
+            tmp_id_str_sub = str(plugin_event.data.extend['sub_self_id'])
+    if 'sub_self_open_id' in plugin_event.data.extend:
+        if plugin_event.data.extend['sub_self_open_id'] != None:
+            tmp_id_str_sub_open = str(plugin_event.data.extend['sub_self_open_id'])
     tmp_reast_str = plugin_event.data.message
     flag_force_reply = False
 
     if isMatchWordStart(tmp_reast_str, '[CQ:reply,id='):
         tmp_reast_str = skipToRight(tmp_reast_str, ']')
         tmp_reast_str = tmp_reast_str[1:]
+
+    if flag_force_reply is False:
+        tmp_reast_str_old = tmp_reast_str
+        tmp_reast_obj = OlivOS.messageAPI.Message_templet('old_string', tmp_reast_str)
+        tmp_at_list = []
+        for tmp_reast_obj_this in tmp_reast_obj.data:
+            tmp_para_str_this = tmp_reast_obj_this.CQ()
+            if type(tmp_reast_obj_this) is OlivOS.messageAPI.PARA.at:
+                tmp_at_list.append(str(tmp_reast_obj_this.data['id']))
+                tmp_reast_str = tmp_reast_str.lstrip(tmp_para_str_this)
+            elif type(tmp_reast_obj_this) is OlivOS.messageAPI.PARA.text:
+                if tmp_para_str_this.strip(' ') == '':
+                    tmp_reast_str = tmp_reast_str.lstrip(tmp_para_str_this)
+                else:
+                    break
+            else:
+                break
+        if tmp_id_str in tmp_at_list:
+            flag_force_reply = True
+        if tmp_id_str_sub in tmp_at_list:
+            flag_force_reply = True
+        if tmp_id_str_sub_open in tmp_at_list:
+            flag_force_reply = True
+        if 'all' in tmp_at_list:
+            flag_force_reply = True
+        if flag_force_reply is True:
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
+        else:
+            tmp_reast_str = tmp_reast_str_old
 
     [tmp_reast_str, flag_is_command] = msgIsCommand(
         tmp_reast_str,

@@ -38,8 +38,8 @@ except Exception:
 file_lock = threading.RLock()
 runtime_proc = None
 
-reply_segment_pattern = re.compile(r'^\[OP:reply,id=[^\]]+\]\s*')
-at_segment_pattern = re.compile(r'^\[OP:at,id=(?P<id>[^,\]]+?)(?:,name=(?P<name>[^\]]*))?\]')
+reply_segment_pattern = re.compile(r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]', re.IGNORECASE)
+at_segment_pattern = re.compile(r'^\[(?:OP|CQ):at,(?P<params>[^\]]*)\]', re.IGNORECASE)
 
 
 def safe_str(value: Any) -> str:
@@ -52,6 +52,17 @@ def safe_str(value: Any) -> str:
         return str(value)
     except Exception:
         return ''
+
+
+def op_escape(value: Any) -> str:
+    """转义 OP 码参数中的保留字符。"""
+    return (
+        safe_str(value)
+        .replace('&', '&amp;')
+        .replace('[', '&#91;')
+        .replace(']', '&#93;')
+        .replace(',', '&#44;')
+    )
 
 
 def deep_copy_default(default_value: Any) -> Any:
@@ -319,10 +330,40 @@ def get_bot_id_from_event(plugin_event) -> str:
 
 def get_self_id_from_event(plugin_event) -> str:
     """拿到当前 bot 的 self_id，主要用于 at 判定。"""
+    target_id_list = get_current_bot_target_ids(plugin_event)
+    return target_id_list[0] if target_id_list else ''
+
+
+def get_current_bot_target_ids(plugin_event) -> List[str]:
+    """返回所有可用于指名当前 Bot 的账号 ID。"""
+    target_id_list = []
     try:
-        return safe_str(plugin_event.base_info.get('self_id', ''))
+        base_info = plugin_event.base_info
+        if isinstance(base_info, dict):
+            target_id_list.append(base_info.get('self_id'))
+        else:
+            target_id_list.append(getattr(base_info, 'self_id', None))
     except Exception:
-        return get_bot_id_from_event(plugin_event)
+        pass
+    try:
+        target_id_list.append(plugin_event.bot_info.id)
+    except Exception:
+        pass
+    try:
+        extend = getattr(plugin_event.data, 'extend', {}) or {}
+        for key in ['sub_self_id', 'sub_self_open_id']:
+            if isinstance(extend, dict):
+                target_id_list.append(extend.get(key))
+            else:
+                target_id_list.append(getattr(extend, key, None))
+    except Exception:
+        pass
+    normalized_id_list = []
+    for target_id in target_id_list:
+        normalized_id = safe_str(target_id).strip() if target_id is not None else ''
+        if normalized_id and normalized_id not in normalized_id_list:
+            normalized_id_list.append(normalized_id)
+    return normalized_id_list
 
 
 def get_sender_id_from_event(plugin_event) -> str:
@@ -714,7 +755,13 @@ def strip_reply_segment(message_text: str) -> str:
 
     模板的命令解析不应被回复头干扰，因此这里先统一做一次剥离。
     """
-    return reply_segment_pattern.sub('', safe_str(message_text), count=1)
+    remaining_text = safe_str(message_text)
+    while True:
+        remaining_text = remaining_text.lstrip()
+        matched_reply = reply_segment_pattern.match(remaining_text)
+        if not matched_reply:
+            return remaining_text
+        remaining_text = remaining_text[matched_reply.end() :]
 
 
 def parse_prefix(message_text: str, prefix_list: Optional[Iterable[str]] = None) -> Tuple[str, str]:
@@ -831,8 +878,7 @@ def parse_at_segments(message_text: str, allow_multi: bool = True) -> Tuple[List
     - 一旦遇到第一个“不是 at 的内容”，立即停止。
     - 返回值为 (at 列表, 剩余字符串)，两者都可能为空。
 
-    这里默认按 compatible_svn 190+、message_mode 为 olivos_string 的 OP 码处理，
-    因此识别的是 [OP:at,id=xxx,name=xxx] 或 [OP:at,id=xxx]。
+    输入同时兼容 OP/CQ 码以及 id/qq 参数。
     """
     remaining_text = safe_str(message_text)
     at_item_list: List[Dict[str, str]] = []
@@ -843,13 +889,16 @@ def parse_at_segments(message_text: str, allow_multi: bool = True) -> Tuple[List
         if not matched_at:
             break
 
-        at_item_list.append(
-            {
-                'id': safe_str(matched_at.group('id')).strip(),
-                'name': safe_str(matched_at.group('name')).strip(),
-                'raw': matched_at.group(0),
-            }
-        )
+        params = {}
+        for item in safe_str(matched_at.group('params')).split(','):
+            key, separator, value = item.partition('=')
+            if separator:
+                params[key.strip().casefold()] = value.strip()
+        at_item_list.append({
+            'id': safe_str(params.get('id') or params.get('qq') or ''),
+            'name': safe_str(params.get('name') or ''),
+            'raw': matched_at.group(0),
+        })
         remaining_text = remaining_text[matched_at.end() :]
         if not allow_multi:
             break
@@ -863,12 +912,12 @@ def is_force_reply_to_current_bot(at_item_list: List[Dict[str, str]], plugin_eve
 
     这类判断通常用于“前置 at 时，只允许 at 到当前 bot / all 的消息继续进入命令解析”。
     """
-    self_id = get_self_id_from_event(plugin_event)
-    for at_item in at_item_list:
-        target_id = safe_str(at_item.get('id', ''))
-        if target_id in [self_id, 'all']:
-            return True
-    return False
+    current_bot_id_set = set(get_current_bot_target_ids(plugin_event))
+    current_bot_id_set.add('all')
+    return any(
+        safe_str(at_item.get('id', '')).strip() in current_bot_id_set
+        for at_item in at_item_list
+    )
 
 
 def normalize_id_list(id_iterable: Any) -> List[str]:
@@ -1174,6 +1223,26 @@ def reply_message(
         record_reply_to_logger(plugin_event, final_message)
 
     try:
-        return plugin_event.reply(final_message)
+        return plugin_event.reply(add_reply_quote(plugin_event, final_message))
     except Exception:
         return None
+
+
+def build_reply_quote_segment(plugin_event) -> str:
+    """群聊回复时构造对触发消息的引用。"""
+    if not get_group_id_from_event(plugin_event):
+        return ''
+    try:
+        message_id = safe_str(getattr(plugin_event.data, 'message_id', '')).strip()
+    except Exception:
+        return ''
+    if not message_id or message_id == '-1':
+        return ''
+    return f'[OP:reply,id={op_escape(message_id)}]'
+
+
+def add_reply_quote(plugin_event, message_text: str) -> str:
+    source = safe_str(message_text)
+    if reply_segment_pattern.match(source.lstrip()):
+        return source
+    return f'{build_reply_quote_segment(plugin_event)}{source}'

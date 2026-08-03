@@ -26,8 +26,8 @@ except Exception:
 
 file_lock = threading.RLock()
 runtime_proc = None
-reply_segment_pattern = re.compile(r'^\[OP:reply,id=[^\]]+\]\s*')
-at_segment_pattern = re.compile(r'^\[OP:at,id=(?P<id>[^,\]]+?)(?:,name=(?P<name>[^\]]*))?\]')
+reply_segment_pattern = re.compile(r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]', re.IGNORECASE)
+at_segment_pattern = re.compile(r'^\[(?:OP|CQ):at,(?P<params>[^\]]*)\]', re.IGNORECASE)
 
 
 def safe_str(value: Any, default_value: str = '') -> str:
@@ -204,10 +204,40 @@ def get_bot_id_from_event(plugin_event) -> str:
 
 
 def get_self_id_from_event(plugin_event) -> str:
+    target_id_list = get_current_bot_target_ids(plugin_event)
+    return target_id_list[0] if target_id_list else ''
+
+
+def get_current_bot_target_ids(plugin_event) -> list[str]:
+    """Return every account id that can address the current bot."""
+    target_id_list = []
     try:
-        return safe_str(plugin_event.base_info.get('self_id', ''))
+        base_info = plugin_event.base_info
+        if isinstance(base_info, dict):
+            target_id_list.append(base_info.get('self_id'))
+        else:
+            target_id_list.append(getattr(base_info, 'self_id', None))
     except Exception:
-        return get_bot_id_from_event(plugin_event)
+        pass
+    try:
+        target_id_list.append(plugin_event.bot_info.id)
+    except Exception:
+        pass
+    try:
+        extend = getattr(plugin_event.data, 'extend', {}) or {}
+        for key in ['sub_self_id', 'sub_self_open_id']:
+            if isinstance(extend, dict):
+                target_id_list.append(extend.get(key))
+            else:
+                target_id_list.append(getattr(extend, key, None))
+    except Exception:
+        pass
+    normalized_id_list = []
+    for target_id in target_id_list:
+        normalized_id = safe_str(target_id).strip() if target_id is not None else ''
+        if normalized_id and normalized_id not in normalized_id_list:
+            normalized_id_list.append(normalized_id)
+    return normalized_id_list
 
 
 def get_sender_id_from_event(plugin_event) -> str:
@@ -362,7 +392,13 @@ def ensure_runtime_storage_by_event(plugin_event) -> str:
 
 
 def strip_reply_segment(message_text: str) -> str:
-    return reply_segment_pattern.sub('', safe_str(message_text), count=1)
+    remaining = safe_str(message_text)
+    while True:
+        remaining = remaining.lstrip()
+        matched = reply_segment_pattern.match(remaining)
+        if not matched:
+            return remaining
+        remaining = remaining[matched.end() :]
 
 
 def parse_prefix(message_text: str, prefix_list: Iterable[str] | None = None) -> tuple[str, str]:
@@ -421,14 +457,25 @@ def parse_at_segments(message_text: str) -> tuple[list[dict[str, str]], str]:
         matched = at_segment_pattern.match(remaining)
         if not matched:
             break
-        result.append({'id': safe_str(matched.group('id')), 'raw': matched.group(0)})
+        params = {}
+        for item in safe_str(matched.group('params')).split(','):
+            key, separator, value = item.partition('=')
+            if separator:
+                params[key.strip().casefold()] = value.strip()
+        result.append(
+            {
+                'id': safe_str(params.get('id') or params.get('qq') or ''),
+                'raw': matched.group(0),
+            }
+        )
         remaining = remaining[matched.end() :]
     return result, remaining.lstrip()
 
 
 def is_force_reply_to_current_bot(at_items: list[dict[str, str]], plugin_event) -> bool:
-    self_id = get_self_id_from_event(plugin_event)
-    return any(item.get('id') in [self_id, 'all'] for item in at_items)
+    current_bot_id_set = set(get_current_bot_target_ids(plugin_event))
+    current_bot_id_set.add('all')
+    return any(safe_str(item.get('id')).strip() in current_bot_id_set for item in at_items)
 
 
 def check_core_group_enable(plugin_event) -> bool:
@@ -557,9 +604,29 @@ def set_group_disabled(plugin_event, disabled: bool) -> bool:
 def reply_message(plugin_event, message_text: str) -> Any:
     """统一回复。"""
     try:
-        return plugin_event.reply(safe_str(message_text))
+        return plugin_event.reply(add_reply_quote(plugin_event, message_text))
     except Exception:
         return None
+
+
+def build_reply_quote_segment(plugin_event) -> str:
+    """Quote the triggering message for group replies."""
+    if not get_group_id_from_event(plugin_event):
+        return ''
+    try:
+        message_id = safe_str(getattr(plugin_event.data, 'message_id', '')).strip()
+    except Exception:
+        return ''
+    if not message_id or message_id == '-1':
+        return ''
+    return f'[OP:reply,id={op_escape(message_id)}]'
+
+
+def add_reply_quote(plugin_event, message_text: str) -> str:
+    source = safe_str(message_text)
+    if reply_segment_pattern.match(source.lstrip()):
+        return source
+    return f'{build_reply_quote_segment(plugin_event)}{source}'
 
 
 def split_long_text(message_text: str, chunk_size: int) -> list[str]:

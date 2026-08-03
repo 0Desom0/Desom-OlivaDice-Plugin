@@ -182,6 +182,10 @@ class TokenOptimizationTest(unittest.TestCase):
             '狐狸捂脸',
             OlivaAIAgent.preflight._imageValue('图片：狐狸捂脸', candidates),
         )
+        self.assertEqual(
+            '',
+            OlivaAIAgent.preflight._imageValue('{"image":"img_4f6b4a', candidates),
+        )
 
     def test_auxiliary_cluster_isolates_failed_task(self):
         def failed():

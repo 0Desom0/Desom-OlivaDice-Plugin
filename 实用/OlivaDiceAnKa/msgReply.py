@@ -355,9 +355,13 @@ def unity_reply(plugin_event, Proc):
 
     tmp_id_str = str(plugin_event.base_info['self_id'])
     tmp_id_str_sub = None
+    tmp_id_str_sub_open = None
     if 'sub_self_id' in plugin_event.data.extend:
         if plugin_event.data.extend['sub_self_id'] != None:
             tmp_id_str_sub = str(plugin_event.data.extend['sub_self_id'])
+    if 'sub_self_open_id' in plugin_event.data.extend:
+        if plugin_event.data.extend['sub_self_open_id'] != None:
+            tmp_id_str_sub_open = str(plugin_event.data.extend['sub_self_open_id'])
     tmp_reast_str = plugin_event.data.message
     flag_force_reply = False
     flag_is_command = False
@@ -387,6 +391,8 @@ def unity_reply(plugin_event, Proc):
         if tmp_id_str in tmp_at_list:
             flag_force_reply = True
         if tmp_id_str_sub in tmp_at_list:
+            flag_force_reply = True
+        if tmp_id_str_sub_open in tmp_at_list:
             flag_force_reply = True
         if 'all' in tmp_at_list:
             flag_force_reply = True

@@ -164,6 +164,7 @@ def addToHistory(
     msg_idx=None,
     ref_msg_idx=None,
     trace_id=None,
+    mentioned_user_ids=None,
 ):
     '''把一条消息（图片已转摘要）加入历史并持久化。'''
     key = _hkey(platform, group_id)
@@ -182,6 +183,11 @@ def addToHistory(
             'nickname': nickname,
             'message': msg,
         }
+        mentions = list(dict.fromkeys(
+            str(item) for item in (mentioned_user_ids or []) if str(item) not in ['', '-1']
+        ))
+        if mentions:
+            entry['mentioned_user_ids'] = mentions
         identifiers = {
             'message_id': message_id,
             'reference_message_id': reference_message_id,
@@ -258,8 +264,14 @@ def buildContextMessages(system_content, history, patch=None):
         if e.get('nickname') is None:
             messages.append({'role': 'assistant', 'content': str(e.get('message', ''))})
         else:
-            entry = {'time': e.get('time', ''), 'nickname': e.get('nickname'),
-                     'user_id': e.get('user_id', ''), 'message': e.get('message', '')}
+            entry = {
+                'time': e.get('time', ''),
+                'nickname': e.get('nickname'),
+                'user_id': e.get('user_id', ''),
+                'message': e.get('message', ''),
+            }
+            if e.get('mentioned_user_ids'):
+                entry['mentioned_user_ids'] = list(e['mentioned_user_ids'])
             messages.append({'role': 'user', 'content': json.dumps(entry, ensure_ascii=False)})
     if isinstance(patch, dict) and patch:
         messages.append({'role': 'user', 'content': '当前动态上下文：' + json.dumps(patch, ensure_ascii=False)})
@@ -415,6 +427,7 @@ def process(plugin_event, Proc, parsed, self_id,
     - tools=True：本次启用全部工具(整合两边能力)
     - attempt=False：只记录历史作上下文，不尝试回复
     - text_override：.ai 前缀后的正文，用作本条历史与关注焦点'''
+    plugin_event = OlivaAIAgent.coreLogger.snapshotEvent(plugin_event)
     platform = plugin_event.platform['platform']
     group_id = str(plugin_event.data.group_id)
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
@@ -513,6 +526,8 @@ def process(plugin_event, Proc, parsed, self_id,
             message = parsed['text']
     # reply 消息段只表示引用关系；正文改用已解析出的完整引用内容。
     message = re.sub(r'\[(?:CQ|OP):reply[^\]]*\]', ' ', str(message), flags=re.I).strip()
+    # @ 关系单独写入历史元数据，不能让模型把 OP/CQ 段误读成当前发言者。
+    message = OlivaAIAgent.msgReply.stripMentionSegments(message)
     quote_facts = OlivaAIAgent.msgReply.prepareQuotedImages(
         parsed,
         group_id,
@@ -545,7 +560,8 @@ def process(plugin_event, Proc, parsed, self_id,
                  message, message_id=parsed.get('message_id'),
                  reference_message_id=parsed.get('reference_message_id'),
                  event_id=parsed.get('event_id'), msg_idx=parsed.get('msg_idx'),
-                 ref_msg_idx=parsed.get('ref_msg_idx'), trace_id=trace_id)
+                 ref_msg_idx=parsed.get('ref_msg_idx'), trace_id=trace_id,
+                 mentioned_user_ids=parsed.get('at_list'))
     if blocked_source is not None:
         if force:
             OlivaAIAgent.msgReply._safeReply(
@@ -909,7 +925,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             _logConversationDecision(Proc, trace_id, '跳过', '主回复模型决定不参与')
         return
 
-    reply_list = _replyWash(reply_list)
+    reply_list = _replyWash(reply_list, plugin_event=plugin_event)
     reply_list = OlivaAIAgent.vision.repairVisionDenial(reply_list, history)
     if not reply_list:
         _logConversationDecision(Proc, trace_id, '跳过', '回复清洗后没有可发送内容')
@@ -925,17 +941,23 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         addSelfReply(platform, group_id, record['message'], message_ids=record['message_ids'])
 
 
-def _replyWash(reply_list):
+def _replyWash(reply_list, plugin_event=None):
     res = []
+    split_len = int(OlivaAIAgent.conf.get('reply', 'split_length', default=1500))
+    max_count = int(OlivaAIAgent.conf.get('reply', 'max_split_count', default=3))
     for i in reply_list:
         if not isinstance(i, str):
             continue
-        s = i.replace('\r', '').strip('\n').rstrip('。')
-        s = re.sub(r'\([^)]*\)', '', s)
-        s = re.sub(r'（[^）]*）', '', s)
-        s = s.strip()
-        if s:
-            res.append(s)
+        remaining = max_count - len(res)
+        if remaining <= 0:
+            break
+        for part in OlivaAIAgent.msgReply.splitReplyText(i, split_len, remaining):
+            s = part.rstrip('。')
+            s = re.sub(r'\([^)]*\)', '', s)
+            s = re.sub(r'（[^）]*）', '', s)
+            s = OlivaAIAgent.msgReply.sanitizeSenderAddress(s.strip(), plugin_event)
+            if s:
+                res.append(s)
     return res
 
 

@@ -39,8 +39,8 @@ except Exception:
 file_lock = threading.RLock()
 runtime_proc = None
 
-reply_segment_pattern = re.compile(r'^\[OP:reply,id=[^\]]+\]\s*')
-at_segment_pattern = re.compile(r'^\[OP:at,id=(?P<id>[^,\]]+?)(?:,name=(?P<name>[^\]]*))?\]')
+reply_segment_pattern = re.compile(r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]', re.IGNORECASE)
+at_segment_pattern = re.compile(r'^\[(?:OP|CQ):at,(?P<params>[^\]]*)\]', re.IGNORECASE)
 
 
 def safe_str(value: Any) -> str:
@@ -53,6 +53,17 @@ def safe_str(value: Any) -> str:
         return str(value)
     except Exception:
         return ''
+
+
+def op_escape(value: Any) -> str:
+    """转义 OP 码参数中的保留字符。"""
+    return (
+        safe_str(value)
+        .replace('&', '&amp;')
+        .replace('[', '&#91;')
+        .replace(']', '&#93;')
+        .replace(',', '&#44;')
+    )
 
 
 def get_user_hash(user_id: Any, user_type: Any, platform: Any, sub_id: Any = None) -> str:
@@ -334,11 +345,41 @@ def get_bot_id_from_event(plugin_event) -> str:
 
 
 def get_self_id_from_event(plugin_event) -> str:
-    """拿到当前 bot 的 self_id，主要用于 at 判定。"""
+    """拿到当前 bot 的首个可指名 ID。"""
+    target_id_list = get_current_bot_target_ids(plugin_event)
+    return target_id_list[0] if target_id_list else ''
+
+
+def get_current_bot_target_ids(plugin_event) -> List[str]:
+    """获取可用于指名当前机器人的全部账号 ID。"""
+    target_id_list = []
     try:
-        return safe_str(plugin_event.base_info.get('self_id', ''))
+        base_info = plugin_event.base_info
+        if isinstance(base_info, dict):
+            target_id_list.append(base_info.get('self_id'))
+        else:
+            target_id_list.append(getattr(base_info, 'self_id', None))
     except Exception:
-        return get_bot_id_from_event(plugin_event)
+        pass
+    try:
+        target_id_list.append(plugin_event.bot_info.id)
+    except Exception:
+        pass
+    try:
+        extend = getattr(plugin_event.data, 'extend', {}) or {}
+        for key in ['sub_self_id', 'sub_self_open_id']:
+            if isinstance(extend, dict):
+                target_id_list.append(extend.get(key))
+            else:
+                target_id_list.append(getattr(extend, key, None))
+    except Exception:
+        pass
+    normalized_id_list = []
+    for target_id in target_id_list:
+        normalized_id = safe_str(target_id).strip() if target_id is not None else ''
+        if normalized_id and normalized_id not in normalized_id_list:
+            normalized_id_list.append(normalized_id)
+    return normalized_id_list
 
 
 def get_sender_id_from_event(plugin_event) -> str:
@@ -729,7 +770,13 @@ def strip_reply_segment(message_text: str) -> str:
 
     模板的命令解析不应被回复头干扰，因此这里先统一做一次剥离。
     """
-    return reply_segment_pattern.sub('', safe_str(message_text), count=1)
+    remaining_text = safe_str(message_text)
+    while True:
+        remaining_text = remaining_text.lstrip()
+        matched_reply = reply_segment_pattern.match(remaining_text)
+        if not matched_reply:
+            return remaining_text
+        remaining_text = remaining_text[matched_reply.end() :]
 
 
 def parse_prefix(message_text: str, prefix_list: Optional[Iterable[str]] = None) -> Tuple[str, str]:
@@ -858,10 +905,15 @@ def parse_at_segments(message_text: str, allow_multi: bool = True) -> Tuple[List
         if not matched_at:
             break
 
+        param_dict = {}
+        for param_item in safe_str(matched_at.group('params')).split(','):
+            key, separator, value = param_item.partition('=')
+            if separator:
+                param_dict[key.strip().casefold()] = value.strip()
         at_item_list.append(
             {
-                'id': safe_str(matched_at.group('id')).strip(),
-                'name': safe_str(matched_at.group('name')).strip(),
+                'id': safe_str(param_dict.get('id') or param_dict.get('qq') or '').strip(),
+                'name': safe_str(param_dict.get('name')).strip(),
                 'raw': matched_at.group(0),
             }
         )
@@ -878,12 +930,12 @@ def is_force_reply_to_current_bot(at_item_list: List[Dict[str, str]], plugin_eve
 
     这类判断通常用于“前置 at 时，只允许 at 到当前 bot / all 的消息继续进入命令解析”。
     """
-    self_id = get_self_id_from_event(plugin_event)
-    for at_item in at_item_list:
-        target_id = safe_str(at_item.get('id', ''))
-        if target_id in [self_id, 'all']:
-            return True
-    return False
+    current_bot_id_set = set(get_current_bot_target_ids(plugin_event))
+    current_bot_id_set.add('all')
+    return any(
+        safe_str(at_item.get('id', '')).strip() in current_bot_id_set
+        for at_item in at_item_list
+    )
 
 
 def normalize_id_list(id_iterable: Any) -> List[str]:
@@ -1189,7 +1241,27 @@ def reply_message(
         record_reply_to_logger(plugin_event, final_message)
 
     try:
-        return plugin_event.reply(final_message)
+        return plugin_event.reply(add_reply_quote(plugin_event, final_message))
     except Exception:
         return None
+
+
+def build_reply_quote_segment(plugin_event) -> str:
+    """群聊回复时引用触发命令的原消息。"""
+    if not get_group_id_from_event(plugin_event):
+        return ''
+    try:
+        message_id = safe_str(getattr(plugin_event.data, 'message_id', '')).strip()
+    except Exception:
+        return ''
+    if not message_id or message_id == '-1':
+        return ''
+    return f'[OP:reply,id={op_escape(message_id)}]'
+
+
+def add_reply_quote(plugin_event, message_text: str) -> str:
+    source = safe_str(message_text)
+    if reply_segment_pattern.match(source.lstrip()):
+        return source
+    return f'{build_reply_quote_segment(plugin_event)}{source}'
 

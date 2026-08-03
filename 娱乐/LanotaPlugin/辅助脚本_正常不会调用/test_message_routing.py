@@ -143,6 +143,61 @@ class MessageRoutingTest(unittest.TestCase):
         create_text_image.assert_called_once()
         reply_image.assert_called_once_with(event, 'help.png', long_text)
 
+    def test_alias_group_accepts_numeric_group_id(self):
+        event = make_event('/la alias add test/1', group_id='1037559220')
+        with patch.object(utils, 'load_global_config', return_value={'alias_groups': ['1037559220']}):
+            self.assertTrue(utils.is_alias_group_allowed(event))
+
+    def test_alias_group_accepts_qqguildv2_group_id(self):
+        event = make_event(
+            '/la alias add test/1',
+            group_id='8CEC6B4340C40F71EC0CF2CAE8E817B0',
+        )
+        with patch.object(
+            utils,
+            'load_global_config',
+            return_value={'alias_groups': ['8CEC6B4340C40F71EC0CF2CAE8E817B0']},
+        ):
+            self.assertTrue(utils.is_alias_group_allowed(event))
+
+    def test_alias_group_qqguildv2_id_is_case_insensitive(self):
+        event = make_event(
+            '/la alias add test/1',
+            group_id='8CEC6B4340C40F71EC0CF2CAE8E817B0',
+        )
+        with patch.object(
+            utils,
+            'load_global_config',
+            return_value={'alias_groups': ['8cec6b4340c40f71ec0cf2cae8e817b0']},
+        ):
+            self.assertTrue(utils.is_alias_group_allowed(event))
+
+    def test_alias_group_does_not_strip_letters_before_comparison(self):
+        event = make_event(
+            '/la alias add test/1',
+            group_id='8CEC6B4340C40F71EC0CF2CAE8E817B0',
+        )
+        with patch.object(
+            utils,
+            'load_global_config',
+            return_value={'alias_groups': ['8684340407100288170']},
+        ):
+            self.assertFalse(utils.is_alias_group_allowed(event))
+
+    def test_alias_group_rejects_private_message(self):
+        event = make_event('/la alias add test/1', group_id='')
+        with patch.object(utils, 'load_global_config', return_value={'alias_groups': []}):
+            self.assertFalse(utils.is_alias_group_allowed(event))
+
+    def test_disabled_group_accepts_qqguildv2_group_id(self):
+        event = make_event('/la help', group_id='8CEC6B4340C40F71EC0CF2CAE8E817B0')
+        with patch.object(
+            utils,
+            'get_disabled_group_list',
+            return_value=['8cec6b4340c40f71ec0cf2cae8e817b0'],
+        ):
+            self.assertTrue(utils.is_group_disabled(event))
+
 
 if __name__ == '__main__':
     unittest.main()

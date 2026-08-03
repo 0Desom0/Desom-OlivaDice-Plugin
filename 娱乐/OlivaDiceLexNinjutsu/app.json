@@ -4,8 +4,8 @@
     "namespace" : "OlivaDiceLexNinjutsu",
     "message_mode" : "old_string",
     "info" : "（原插件作者：凛素子）握握手,握握双手。可用于释放忍术，从忍法帖获取忍术信息并释放忍术音频。支持忍术搜索、信息查询、同音匹配（可选）、数据持久化、本地音频下载等功能。",
-    "version" : "1.2.0",
-    "svn" : 3,
+    "version" : "1.2.2",
+    "svn" : 5,
     "compatible_svn" : 190,
     "priority" : 19990,
     "support" : [
