@@ -1,0 +1,29 @@
+name: Notify OlivOS Plugin Skill
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Dispatch template update
+        env:
+          GH_TOKEN: ${{ secrets.OLIVOS_PLUGIN_SKILL_DISPATCH_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Missing repository secret OLIVOS_PLUGIN_SKILL_DISPATCH_TOKEN"
+            exit 1
+          fi
+
+          gh api --method POST \
+            repos/Desom-fu/OlivOS-Plugin-Skill/dispatches \
+            -f event_type=desom-templates-updated \
+            -f "client_payload[source_sha]=$SOURCE_SHA"
