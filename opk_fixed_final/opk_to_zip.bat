@@ -8,4 +8,3 @@ for %%f in ("%SRC%*.opk") do (
 
 echo All done. Each .opk is now packed into its own .zip.
 pause
-

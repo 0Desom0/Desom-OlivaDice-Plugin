@@ -1316,6 +1316,7 @@ def reply_message(
     message_text: str,
     record_by_logger: bool = True,
     at_sender: bool = False,
+    quote_reply: bool = True,
 ) -> Any:
     """
     统一回复封装。
@@ -1324,6 +1325,8 @@ def reply_message(
     - record_by_logger=True：主动调用 Logger 钩子，便于被日志系统记录。
     - record_by_logger=False：不主动调用 Logger 钩子，只发送消息。
     - at_sender=True：在消息前追加一个 at 当前用户的 OP 码。
+    - quote_reply=True：群聊中引用触发消息；私聊或无有效消息 ID 时不追加引用。
+    - quote_reply=False：发送消息，但不引用触发消息。
     """
     final_message = safe_str(message_text)
     if at_sender:
@@ -1335,7 +1338,8 @@ def reply_message(
         record_reply_to_logger(plugin_event, final_message)
 
     try:
-        return plugin_event.reply(add_reply_quote(plugin_event, final_message))
+        outgoing_message = add_reply_quote(plugin_event, final_message) if quote_reply else final_message
+        return plugin_event.reply(outgoing_message)
     except Exception:
         return None
 
@@ -1354,6 +1358,7 @@ def build_reply_quote_segment(plugin_event) -> str:
 
 
 def add_reply_quote(plugin_event, message_text: str) -> str:
+    """为群聊消息补充对触发消息的引用，已有引用时保持原文。"""
     source = safe_str(message_text)
     if reply_segment_pattern.match(source.lstrip()):
         return source
