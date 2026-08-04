@@ -1194,7 +1194,10 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
     def has_tool(name):
         return not tool_routed or name in selected_tool_set
 
-    parts = [str(conf.get('prompt', 'system', default=''))]
+    parts = [
+        str(conf.get('prompt', 'system', default='')),
+        OlivaAIAgent.completion.COMPLETION_GUARD_PROMPT,
+    ]
     persona_guard = conf.personaGuardPrompt()
     if persona_guard:
         parts.append(persona_guard)
@@ -1590,24 +1593,36 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
         tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx, names=selected_tool_names)
         new_msgs = [user_msg]
         final_text = ''
-        max_rounds = int(conf.get('agent', 'max_tool_rounds', default=8))
-        for round_i in range(max_rounds + 1):
+        max_tool_rounds = max(0, int(conf.get('agent', 'max_tool_rounds', default=8)))
+        max_continuations = max(0, int(conf.get('agent', 'max_auto_continuations', default=2)))
+        tool_rounds = 0
+        completed_action = False
+        continuation_rounds = 0
+        request_round = 0
+        while True:
+            request_round += 1
             conf.traceLog(
                 Proc,
                 'agent.round.request',
                 trace_id,
                 messages=len(messages),
-                round=round_i + 1,
+                round=request_round,
                 tools=len(tool_defs),
             )
             result = OlivaAIAgent.aiClient.chat(
                 messages,
                 tools=tool_defs,
                 trace_id=trace_id,
-                purpose='智能体第%d轮' % (round_i + 1),
+                purpose='智能体第%d轮' % request_round,
             )
             if not result['ok']:
-                conf.traceLog(Proc, 'agent.round.failed', trace_id, error=result.get('error', ''), round=round_i + 1)
+                conf.traceLog(
+                    Proc,
+                    'agent.round.failed',
+                    trace_id,
+                    error=result.get('error', ''),
+                    round=request_round,
+                )
                 if OlivaAIAgent.voice.hasSentVoice(ctx):
                     conf.traceLog(Proc, 'voice.reply.text_suppressed', trace_id, messages=0)
                     return
@@ -1619,7 +1634,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 Proc,
                 'agent.round.response',
                 trace_id,
-                round=round_i + 1,
+                round=request_round,
                 text_chars=len(result.get('text', '')),
                 tool_calls=len(tool_calls),
             )
@@ -1627,11 +1642,39 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
             if tool_calls:
                 asst_msg['tool_calls'] = tool_calls
             messages.append(asst_msg)
-            new_msgs.append(asst_msg)
             if not tool_calls:
-                final_text = result.get('text', '')
+                candidate_text = result.get('text', '')
+                needs_continuation = OlivaAIAgent.completion.needsContinuation(
+                    candidate_text,
+                    action_performed=completed_action,
+                )
+                if needs_continuation and continuation_rounds < max_continuations:
+                    continuation_rounds += 1
+                    conf.traceLog(
+                        Proc,
+                        'agent.continuation.requested',
+                        trace_id,
+                        continuation=continuation_rounds,
+                        text=candidate_text[:300],
+                    )
+                    messages.append({
+                        'role': 'system',
+                        'content': OlivaAIAgent.completion.continuationPrompt(),
+                    })
+                    continue
+                if needs_continuation:
+                    conf.traceLog(
+                        Proc,
+                        'agent.continuation.exhausted',
+                        trace_id,
+                        continuations=continuation_rounds,
+                    )
+                    candidate_text = OlivaAIAgent.completion.exhaustedReply()
+                final_text = candidate_text
+                new_msgs.append({'role': 'assistant', 'content': final_text})
                 break
-            if round_i >= max_rounds:
+            new_msgs.append(asst_msg)
+            if tool_rounds >= max_tool_rounds:
                 final_text = result.get('text', '') or '(已达到最大工具调用轮数)'
                 break
             for tc in tool_calls:
@@ -1641,6 +1684,10 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                     args = {}
                 conf.debugLog(Proc, '工具调用: %s(%s)' % (tc.get('name'), str(args)[:200]))
                 tool_result = OlivaAIAgent.tools.execTool(tc.get('name', ''), args, ctx)
+                completed_action = completed_action or OlivaAIAgent.completion.toolCompletedAction(
+                    tc.get('name', ''),
+                    tool_result,
+                )
                 tool_msg = {
                     'role': 'tool',
                     'tool_call_id': tc.get('id', ''),
@@ -1649,6 +1696,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 }
                 messages.append(tool_msg)
                 new_msgs.append(tool_msg)
+            tool_rounds += 1
         sent_ids = []
         if final_text.strip() != '' and OlivaAIAgent.voice.hasSentVoice(ctx):
             conf.traceLog(Proc, 'voice.reply.text_suppressed', trace_id, messages=1)

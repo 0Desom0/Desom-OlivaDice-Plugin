@@ -1,5 +1,6 @@
 # -*- encoding: utf-8 -*-
 from OlivaAIAgent import conf  # noqa: F401
+from OlivaAIAgent import completion  # noqa: F401
 from OlivaAIAgent import contentSafety  # noqa: F401
 from OlivaAIAgent import coreLogger  # noqa: F401
 from OlivaAIAgent import lexiconUpdater  # noqa: F401

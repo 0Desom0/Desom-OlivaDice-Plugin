@@ -769,6 +769,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 
 # 已知信息
 - 你的QQ号是 %s，被@时是 %s''' % (tool_hint, persona, self_id, mention_str)
+    system_content += '\n\n' + OlivaAIAgent.completion.COMPLETION_GUARD_PROMPT
     persona_guard = conf.personaGuardPrompt()
     if persona_guard:
         system_content += '\n\n' + persona_guard
@@ -1258,28 +1259,66 @@ def _callReply(
             tool_ctx=tool_ctx,
             tool_defs=tool_defs,
         )
+    max_continuations = max(
+        0,
+        int(OlivaAIAgent.conf.get('agent', 'max_auto_continuations', default=2)),
+    )
+    continuation_rounds = 0
+    failed_attempts = 0
+    request_round = 0
+    convo = list(messages)
     reply_list = None
     res = None
-    for attempt in range(retry):
+    while failed_attempts < retry:
+        request_round += 1
         res = OlivaAIAgent.aiClient.chat(
-            messages,
+            convo,
             tools=None,
             force_no_stream=True,
             response_json=True,
             trace_id=trace_id,
-            purpose='主回复第%d次' % (attempt + 1),
+            purpose='主回复第%d次' % request_round,
         )
         if not res.get('ok'):
             OlivaAIAgent.conf.debugLog(Proc, '潜行调用失败: %s' % res.get('error'))
+            failed_attempts += 1
             continue
         text = res.get('text', '')
         reply_list = _parseR(text)
-        if reply_list is not None:
-            break
-        if text.strip():
+        if reply_list is None and text.strip():
             # 模型已成功生成内容时直接本地兜底，避免为格式问题重复整轮主模型请求。
             OlivaAIAgent.conf.debugLog(Proc, '潜行 JSON解析失败,立即兜底: %s' % text[:200])
-            return _fallback_parse_intent(text)
+            reply_list = _fallback_parse_intent(text)
+        elif reply_list is None:
+            failed_attempts += 1
+            continue
+        reply_text = '\n\n'.join(reply_list)
+        if OlivaAIAgent.completion.needsContinuation(reply_text):
+            if continuation_rounds < max_continuations:
+                continuation_rounds += 1
+                OlivaAIAgent.conf.traceLog(
+                    Proc,
+                    'agent.continuation.requested',
+                    trace_id,
+                    continuation=continuation_rounds,
+                    scene='ambient',
+                    text=reply_text[:300],
+                )
+                convo.append({'role': 'assistant', 'content': text})
+                convo.append({
+                    'role': 'system',
+                    'content': OlivaAIAgent.completion.continuationPrompt(json_reply=True),
+                })
+                continue
+            OlivaAIAgent.conf.traceLog(
+                Proc,
+                'agent.continuation.exhausted',
+                trace_id,
+                continuations=continuation_rounds,
+                scene='ambient',
+            )
+            return [OlivaAIAgent.completion.exhaustedReply()]
+        return reply_list
     # 接口失败或空响应重试完毕后，若仍有文本则做最后兜底。
     if reply_list is None:
         last_text = res.get('text', '') if res else ''
@@ -1310,19 +1349,33 @@ def _callReplyWithTools(
     ctx = tool_ctx or _makeToolContext(plugin_event, Proc, group_id, trace_id)
     if tool_defs is None:
         tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx, voice_only=voice_only)
-    max_rounds = int(conf.get('ambient', 'agent_max_turns', default=4))
+    max_rounds = max(0, int(conf.get('ambient', 'agent_max_turns', default=4)))
+    max_continuations = max(0, int(conf.get('agent', 'max_auto_continuations', default=2)))
+    tool_rounds = 0
+    completed_action = False
+    continuation_rounds = 0
+    request_round = 0
     convo = list(messages)
-    for rnd in range(max_rounds):
-        conf.debugLog(Proc, '潜行+工具 轮 %d/%d' % (rnd + 1, max_rounds))
+    while (
+        request_round == 0
+        or tool_rounds < max_rounds
+        or continuation_rounds < max_continuations
+    ):
+        request_round += 1
+        conf.debugLog(Proc, '潜行+工具 请求%d, 已执行工具轮数%d/%d' % (
+            request_round,
+            tool_rounds,
+            max_rounds,
+        ))
         res = OlivaAIAgent.aiClient.chat(
             convo,
             tools=tool_defs,
             force_no_stream=True,
             trace_id=trace_id,
-            purpose='主回复工具第%d轮' % (rnd + 1),
+            purpose='主回复工具第%d轮' % request_round,
         )
         if not res.get('ok'):
-            conf.debugLog(Proc, '潜行+工具 AI调用失败(轮%d): %s' % (rnd + 1, res.get('error')))
+            conf.debugLog(Proc, '潜行+工具 AI调用失败(请求%d): %s' % (request_round, res.get('error')))
             return _suppressTextAfterVoice(None, ctx, Proc, trace_id)
         calls = res.get('tool_calls') or []
         asst = {'role': 'assistant', 'content': res.get('text', '')}
@@ -1339,8 +1392,38 @@ def _callReplyWithTools(
                 reply_list = _fallback_parse_intent(text)
             elif reply_list is None:
                 conf.debugLog(Proc, '潜行+工具 空回复,跳过')
+            reply_text = '\n\n'.join(reply_list or [])
+            if OlivaAIAgent.completion.needsContinuation(
+                reply_text,
+                action_performed=completed_action,
+            ):
+                if continuation_rounds < max_continuations:
+                    continuation_rounds += 1
+                    conf.traceLog(
+                        Proc,
+                        'agent.continuation.requested',
+                        trace_id,
+                        continuation=continuation_rounds,
+                        scene='ambient_tools',
+                        text=reply_text[:300],
+                    )
+                    convo.append({
+                        'role': 'system',
+                        'content': OlivaAIAgent.completion.continuationPrompt(json_reply=True),
+                    })
+                    continue
+                conf.traceLog(
+                    Proc,
+                    'agent.continuation.exhausted',
+                    trace_id,
+                    continuations=continuation_rounds,
+                    scene='ambient_tools',
+                )
+                reply_list = [OlivaAIAgent.completion.exhaustedReply()]
             return _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id)
         # 有工具调用 → 执行并继续循环
+        if tool_rounds >= max_rounds:
+            break
         for tc in calls:
             try:
                 args = json.loads(tc.get('arguments') or '{}')
@@ -1348,6 +1431,10 @@ def _callReplyWithTools(
                 args = {}
             conf.debugLog(Proc, '潜行+工具 调用: %s(%s)' % (tc.get('name'), str(args)[:200]))
             result = OlivaAIAgent.tools.execTool(tc.get('name', ''), args, ctx)
+            completed_action = completed_action or OlivaAIAgent.completion.toolCompletedAction(
+                tc.get('name', ''),
+                result,
+            )
             # execTool 可能返回 dict,转成字符串给模型看
             if not isinstance(result, str):
                 try:
@@ -1357,6 +1444,7 @@ def _callReplyWithTools(
             convo.append({'role': 'tool', 'tool_call_id': tc.get('id', ''),
                           'name': tc.get('name', ''), 'content': result})
             conf.debugLog(Proc, '潜行+工具 结果: %s' % result[:200])
+        tool_rounds += 1
     # 循环用完 max_rounds → 强制收尾
     conf.debugLog(Proc, '潜行+工具 达到max_rounds=%d,强制收尾' % max_rounds)
     convo.append({'role': 'user', 'content': '现在直接输出最终 JSON：{"r":["回复"]} 或 {"r":[]}。'})
@@ -1374,6 +1462,19 @@ def _callReplyWithTools(
         if reply_list is None and text.strip():
             conf.debugLog(Proc, '潜行+工具 收尾JSON失败,兜底: %s' % text[:200])
             reply_list = _fallback_parse_intent(text)
+        reply_text = '\n\n'.join(reply_list or [])
+        if OlivaAIAgent.completion.needsContinuation(
+            reply_text,
+            action_performed=completed_action,
+        ):
+            conf.traceLog(
+                Proc,
+                'agent.continuation.exhausted',
+                trace_id,
+                continuations=continuation_rounds,
+                scene='ambient_tools_final',
+            )
+            reply_list = [OlivaAIAgent.completion.exhaustedReply()]
         return _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id)
     conf.debugLog(Proc, '潜行+工具 收尾AI调用失败: %s' % res.get('error'))
     return _suppressTextAfterVoice(None, ctx, Proc, trace_id)
