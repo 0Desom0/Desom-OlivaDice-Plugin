@@ -82,10 +82,7 @@ class QuoteContextTest(unittest.TestCase):
         self.assertEqual('青桔', parsed['quote']['sender_name'])
         self.assertEqual('event-1', parsed['event_id'])
         context = OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text'])
-        self.assertIn('【所引用的消息', context)
-        self.assertIn('原消息的完整正文', context)
-        self.assertIn('被引用消息作者（仅属于引用消息，不代表当前发言者）：青桔（user-2）', context)
-        self.assertIn('【当前发言者的新消息】\n这个结论是什么意思？', context)
+        self.assertEqual('[引用上文:原消息的完整正文] 这个结论是什么意思？', context)
         self.assertFalse(parsed['reply_to_me'])
 
     def test_reply_to_bot_is_detected_from_outgoing_registry(self):
@@ -98,6 +95,32 @@ class QuoteContextTest(unittest.TestCase):
         self.assertTrue(parsed['reply_to_me'])
         self.assertTrue(parsed['quote']['from_self'])
         self.assertEqual('机器人上一条回复', parsed['quote']['text'])
+
+    def test_resolves_old_outgoing_quote_by_qq_message_index_only(self):
+        source_event = FakeEvent('机器人很久以前的回复')
+        OlivaAIAgent.identifiers.recordOutgoing(
+            source_event,
+            '霓虹暴雨+义体黑市+旧城区失踪案',
+            [],
+            message_indexes=['REFIDX_OLD_BOT_REPLY'],
+        )
+        event = FakeEvent('这个大纲写好了吗？')
+        event.data.message_id = None
+        event.data.extend.update({
+            'qq_message_id': 'current-by-index',
+            'qq_ref_msg_idx': 'REFIDX_OLD_BOT_REPLY',
+        })
+        with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+
+        self.assertIsNone(parsed['reference_message_id'])
+        self.assertTrue(parsed['reply_to_me'])
+        self.assertEqual('插件消息注册表', parsed['quote']['source'])
+        self.assertEqual('REFIDX_OLD_BOT_REPLY', parsed['quote']['message_index'])
+        self.assertEqual(
+            '[引用上文:霓虹暴雨+义体黑市+旧城区失踪案] 这个大纲写好了吗？',
+            OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text']),
+        )
 
     def test_quote_identifiers_are_excluded_from_sensitive_word_scan(self):
         word_path = os.path.join(self.temp_dir.name, 'words.txt')
@@ -125,7 +148,7 @@ class QuoteContextTest(unittest.TestCase):
         full_context = OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text'])
         safety_text = OlivaAIAgent.msgReply._safetyInputText(parsed)
 
-        self.assertEqual('external_lexicon', OlivaAIAgent.contentSafety.match(full_context))
+        self.assertIsNone(OlivaAIAgent.contentSafety.match(full_context))
         self.assertIsNone(OlivaAIAgent.contentSafety.match(safety_text))
         self.assertNotIn('prefix-jzm-suffix', safety_text)
         self.assertIn('搜一下xterfusion', safety_text)
@@ -374,15 +397,17 @@ class QuoteContextTest(unittest.TestCase):
                 mock.patch.object(OlivaAIAgent.vision, 'describeImages', return_value=['[图片:一只橘猫]']):
             facts = OlivaAIAgent.msgReply.prepareQuotedImages(parsed, 'group-1', 'bot-1', 'trace-1')
         context = OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text'], facts)
-        self.assertIn('内容：[图片:一只橘猫]', context)
-        self.assertNotIn('引用图片：', context)
+        self.assertEqual('[引用上文:[图片:一只橘猫]] 图里是什么？', context)
 
     def test_unresolved_quote_does_not_invent_content(self):
         event = FakeEvent('[CQ:reply,id=missing]还记得吗？', {'active': False, 'data': {}})
         with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
             parsed = OlivaAIAgent.msgReply.parseMessage(event)
         self.assertIsNone(parsed['quote'])
-        self.assertEqual('还记得吗？', OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text']))
+        self.assertEqual(
+            '[引用上文:未能读取] 还记得吗？',
+            OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text']),
+        )
 
     def test_uses_qqguild_extend_identifiers_without_confusing_passive_reply_token(self):
         event = FakeEvent(
@@ -411,8 +436,23 @@ class QuoteContextTest(unittest.TestCase):
         self.assertEqual('REFIDX_QUOTED', parsed['ref_msg_idx'])
         self.assertEqual(['quoted-extend'], event.get_msg_calls)
         context = OlivaAIAgent.msgReply.attachQuotedContext(parsed, parsed['text'])
-        self.assertIn('引用消息ID：quoted-extend', context)
+        self.assertEqual('[引用上文:扩展字段引用的正文] 继续说说', context)
         self.assertNotIn('passive-token-must-not-be-used', context)
+
+    def test_current_turn_is_removed_from_history_copy_before_final_injection(self):
+        history = [
+            {'trace_id': 'old', 'message_id': 'old-1', 'message': '旧话题'},
+            {
+                'trace_id': 'current-trace',
+                'message_id': 'current-1',
+                'message': '[引用上文:赛博朋克设定] 这个写好了吗？',
+            },
+        ]
+        result = OlivaAIAgent.ambient._historyWithoutCurrentTurn(
+            history,
+            {'trace_id': 'current-trace', 'message_id': 'current-1'},
+        )
+        self.assertEqual([history[0]], result)
 
 
 if __name__ == '__main__':

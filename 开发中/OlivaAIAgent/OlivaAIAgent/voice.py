@@ -408,12 +408,14 @@ def sendVoice(ctx, text, instructions=''):
             result = plugin_event.reply(message)
         active = not isinstance(result, dict) or bool(result.get('active'))
         message_ids = _messageIds(result)
+        message_indexes = OlivaAIAgent.ambient._sendResultMessageIndexes(result)
         if active:
             _markVoiceSent(ctx)
             OlivaAIAgent.identifiers.recordOutgoing(
                 plugin_event,
                 '[语音消息:%s]' % str(text)[:200],
                 message_ids,
+                message_indexes=message_indexes,
             )
             try:
                 if ctx.get('func_type') == 'group_message' and ctx.get('group_id') not in [None, '']:
@@ -422,6 +424,7 @@ def sendVoice(ctx, text, instructions=''):
                         ctx['group_id'],
                         '[语音消息] %s' % str(text).strip(),
                         message_ids=message_ids,
+                        message_indexes=message_indexes,
                     )
             except Exception:
                 pass
@@ -430,6 +433,7 @@ def sendVoice(ctx, text, instructions=''):
             'active': active,
             'data': {
                 'message_ids': message_ids,
+                'message_indexes': message_indexes,
                 'instruction_chars': len(str(instructions or '')),
                 'text_chars': len(str(text)),
                 'format': actual_format,

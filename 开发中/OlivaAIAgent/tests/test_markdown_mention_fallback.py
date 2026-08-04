@@ -174,6 +174,24 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
         self.assertEqual(1, len(event.markdown_calls))
         self.assertEqual(1, len(records))
 
+    def test_ambient_plain_text_uses_passive_reply_path(self):
+        event = FakeEvent()
+        with (
+            mock.patch.object(OlivaAIAgent.ambient.time, 'sleep'),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            records = OlivaAIAgent.ambient._sendMulti(
+                event,
+                ['普通回复'],
+                total_past=0,
+                trace_id='trace-passive',
+            )
+
+        self.assertEqual(['普通回复'], event.replies)
+        self.assertEqual([], event.sends)
+        self.assertEqual(1, len(records))
+
 
 if __name__ == '__main__':
     unittest.main()

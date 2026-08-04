@@ -70,6 +70,8 @@ class SenderIdentityTest(unittest.TestCase):
 
     def test_quoted_master_never_replaces_current_sender(self):
         quote = {
+            'message_id': 'quoted-message',
+            'message_index': 'REFIDX_QUOTED',
             'sender_id': 'owner-openid',
             'sender_name': 'ob_Desom-fu',
             'text': '我说群里认识小芙的比认识我的多多了',
@@ -82,6 +84,11 @@ class SenderIdentityTest(unittest.TestCase):
         self.assertIn('"master_title":null', prompt)
         self.assertIn('"quoted_message_sender_id":"owner-openid"', prompt)
         self.assertIn('"quoted_message_sender_name":"ob_Desom-fu"', prompt)
+        self.assertIn('"has_quoted_message":true', prompt)
+        self.assertIn('"quoted_message_resolved":true', prompt)
+        self.assertIn('"quoted_message_id":"quoted-message"', prompt)
+        self.assertIn('"quoted_message_index":"REFIDX_QUOTED"', prompt)
+        self.assertIn('引用主题与近期无关话题冲突时也按引用理解', prompt)
         self.assertIn('只表示被引用消息的历史作者，不是当前发言者', prompt)
         self.assertIn('绝不能把其身份、称呼或“主人”关系转移给当前发言者', prompt)
 
@@ -113,6 +120,37 @@ class SenderIdentityTest(unittest.TestCase):
             ['message-1', 'message-2'],
             OlivaAIAgent.ambient._sendResultMessageIds(result),
         )
+
+    def test_extracts_qqguildv2_message_indexes_from_nested_results(self):
+        result = {
+            'active': True,
+            'data': {
+                'results': [{
+                    'active': True,
+                    'data': {
+                        'response': {
+                            'data': {'ext_info': {'ref_idx': 'REFIDX_SENT_1'}},
+                        },
+                    },
+                }],
+            },
+        }
+        self.assertEqual(
+            ['REFIDX_SENT_1'],
+            OlivaAIAgent.ambient._sendResultMessageIndexes(result),
+        )
+
+    def test_unresolved_quote_prompt_continues_with_current_text(self):
+        with mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False):
+            prompt = OlivaAIAgent.conf.senderIdentityPrompt(
+                FakeEvent(),
+                [],
+                None,
+                reference_message_index='REFIDX_MISSING',
+            )
+        self.assertIn('"has_quoted_message":true', prompt)
+        self.assertIn('"quoted_message_resolved":false', prompt)
+        self.assertIn('自然简短说明看不到这条回复，再根据当前文字继续聊天', prompt)
 
     def test_exposes_received_and_sent_ids_without_confusing_event_id(self):
         context = OlivaAIAgent.ambient.messageIdContext([

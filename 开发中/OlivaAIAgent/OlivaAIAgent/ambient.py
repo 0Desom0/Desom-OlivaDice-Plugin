@@ -183,6 +183,8 @@ def addToHistory(
             'nickname': nickname,
             'message': msg,
         }
+        if trace_id not in [None, '']:
+            entry['trace_id'] = str(trace_id)
         mentions = list(dict.fromkeys(
             str(item) for item in (mentioned_user_ids or []) if str(item) not in ['', '-1']
         ))
@@ -203,7 +205,7 @@ def addToHistory(
     _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=trace_id)
 
 
-def addSelfReply(platform, group_id, text, message_ids=None):
+def addSelfReply(platform, group_id, text, message_ids=None, message_indexes=None):
     '''把自己的回复以 assistant 身份记入历史（nickname=None 标记自己）。'''
     key = _hkey(platform, group_id)
     q = _getQueue(key)
@@ -211,6 +213,8 @@ def addSelfReply(platform, group_id, text, message_ids=None):
     clean = re.sub(r'\[(?:CQ|OP):image[^\]]*\]', '[发图片]', clean)
     ids = [str(item) for item in (message_ids or []) if item not in [None, '', '-1', -1]]
     ids = list(dict.fromkeys(ids))
+    indexes = [str(item) for item in (message_indexes or []) if item not in [None, '', '-1', -1]]
+    indexes = list(dict.fromkeys(indexes))
     with _history_lock:
         last_seq = max((int(item.get('history_seq', 0)) for item in q), default=0)
         entry = {
@@ -224,6 +228,9 @@ def addSelfReply(platform, group_id, text, message_ids=None):
         if ids:
             entry['message_id'] = ids[0]
             entry['message_ids'] = ids
+        if indexes:
+            entry['msg_idx'] = indexes[0]
+            entry['message_indexes'] = indexes
         q.append(entry)
         _persist(key)
 
@@ -402,6 +409,19 @@ def _mainDecisionTask(force=False):
             '(你不必每句都回，按心情，但有人找你尽量回)\n'
             '- 要回复就把内容追加到 r 列表，多条消息分开\n- 避免重复已回过的话题和自己说过的话\n'
             '- 只输出严格 JSON：{"r":[...]}')
+
+
+def _historyWithoutCurrentTurn(history, parsed):
+    '''当前轮会在动态上下文之后单独注入，历史副本中移除同一条记录。'''
+    trace_id = str(parsed.get('trace_id') or '')
+    message_id = str(parsed.get('message_id') or '')
+    for index in range(len(history) - 1, -1, -1):
+        entry = history[index]
+        trace_matched = trace_id and str(entry.get('trace_id') or '') == trace_id
+        message_matched = message_id and str(entry.get('message_id') or '') == message_id
+        if trace_matched or message_matched:
+            return history[:index] + history[index + 1:]
+    return list(history)
 
 
 # ---------------- 主流程 ----------------
@@ -845,13 +865,20 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         patch['技能片段'] = skills_ctx.strip()
 
     main_history_size = max(1, int(cfg('history_size', 8)))
-    messages = buildContextMessages(system_content, history[-main_history_size:], patch)
+    context_history = _historyWithoutCurrentTurn(history, parsed)[-main_history_size:]
+    messages = buildContextMessages(system_content, context_history, patch)
     # force 会随触发方式变化，不能拼入第一条稳定 system，否则兼容端可能整块缓存失效。
     messages.append({'role': 'system', 'content': _mainDecisionTask(force)})
     sender_identity = conf.senderIdentity(plugin_event, parsed.get('at_list'))
     messages.append({
         'role': 'system',
-        'content': conf.senderIdentityPrompt(plugin_event, parsed.get('at_list'), parsed.get('quote')),
+        'content': conf.senderIdentityPrompt(
+            plugin_event,
+            parsed.get('at_list'),
+            parsed.get('quote'),
+            reference_message_id=parsed.get('reference_message_id'),
+            reference_message_index=parsed.get('ref_msg_idx'),
+        ),
     })
     conf.traceLog(
         Proc,
@@ -876,21 +903,19 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             trace_id,
             scene='ambient',
         )
-    messages.append({'role': 'user',
-                     'content': '根据最新群消息决定是否回复，只输出 {"r":["回复"]} 或 {"r":[]}，不要解释。'})
-
     # 独立图片判断只提供建议，主模型仍可采用、改选或不发。
     if image_ref:
         cache_map = OlivaAIAgent.vision.imageCacheMap(bot_hash)
         fn = OlivaAIAgent.vision.resolveImageRef(image_ref, cache_map, trace_id=trace_id)
         if fn:
             messages.append({
-                'role': 'user',
+                'role': 'system',
                 'content': (
                     '前置模型建议本次可用图片：[发图片:%s]。这只是建议；'
                     '你可以采用、从图片缓存改选其他图片，或决定不发。'
                 ) % fn,
             })
+    messages.append({'role': 'user', 'content': message})
 
     # 调用回复模型（可选带工具）
     reply_list = _callReply(
@@ -939,7 +964,13 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     out = OlivaAIAgent.vision.translateOutgoing(reply_list, bot_hash, trace_id=trace_id)
     sent_records = _sendMulti(plugin_event, out, time.perf_counter() - total_start, trace_id=trace_id)
     for record in sent_records:
-        addSelfReply(platform, group_id, record['message'], message_ids=record['message_ids'])
+        addSelfReply(
+            platform,
+            group_id,
+            record['message'],
+            message_ids=record['message_ids'],
+            message_indexes=record['message_indexes'],
+        )
 
 
 def _replyWash(reply_list, plugin_event=None):
@@ -970,6 +1001,39 @@ def _sendResultMessageIds(result):
     if data.get('message_id') not in [None, '', '-1', -1]:
         ids.insert(0, data['message_id'])
     return list(dict.fromkeys(str(item) for item in ids if item not in [None, '', '-1', -1]))
+
+
+def _sendResultMessageIndexes(result):
+    '''从统一发送结果和 qqGuildv2 原始响应中提取可供后续引用恢复的消息索引。'''
+    if not isinstance(result, dict):
+        return []
+    values = []
+    visited = set()
+
+    def collect(value):
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if not isinstance(value, dict) or id(value) in visited:
+            return
+        visited.add(id(value))
+        indexes = value.get('message_indexes')
+        if isinstance(indexes, list):
+            values.extend(indexes)
+        elif indexes not in [None, '', '-1', -1]:
+            values.append(indexes)
+        for key in ('message_index', 'msg_idx', 'ref_idx', 'message_ref_idx'):
+            if value.get(key) not in [None, '', '-1', -1]:
+                values.append(value[key])
+        ext_info = value.get('ext_info')
+        if isinstance(ext_info, dict) and ext_info.get('ref_idx') not in [None, '', '-1', -1]:
+            values.append(ext_info['ref_idx'])
+        for key in ('data', 'response', 'results'):
+            collect(value.get(key))
+
+    collect(result)
+    return list(dict.fromkeys(str(item) for item in values if item not in [None, '', '-1', -1]))
 
 
 def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
@@ -1014,15 +1078,16 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
                 trace_id=trace_id,
             )
             if result is None:
-                result = plugin_event.send('group', str(plugin_event.data.group_id), i)
+                result = plugin_event.reply(i)
             sent = not isinstance(result, dict) or bool(result.get('active'))
         except Exception:
             try:
-                result = plugin_event.reply(i)
+                result = plugin_event.send('group', str(plugin_event.data.group_id), i)
                 sent = not isinstance(result, dict) or bool(result.get('active'))
             except Exception:
                 pass
         message_ids = _sendResultMessageIds(result)
+        message_indexes = _sendResultMessageIndexes(result)
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
             'message.outgoing.sent',
@@ -1031,8 +1096,17 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
             ok=sent,
         )
         if sent:
-            OlivaAIAgent.identifiers.recordOutgoing(plugin_event, str(i), message_ids)
-            sent_records.append({'message': str(i), 'message_ids': message_ids})
+            OlivaAIAgent.identifiers.recordOutgoing(
+                plugin_event,
+                str(i),
+                message_ids,
+                message_indexes=message_indexes,
+            )
+            sent_records.append({
+                'message': str(i),
+                'message_ids': message_ids,
+                'message_indexes': message_indexes,
+            })
     return sent_records
 
 

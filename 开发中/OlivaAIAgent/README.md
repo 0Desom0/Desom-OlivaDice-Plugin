@@ -117,10 +117,11 @@ GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `t
 
 ### 消息 ID 与引用 ID（插件内实现）
 
-- 当前消息 ID、引用消息 ID、事件 ID、`msg_idx/ref_msg_idx` 和出站消息 ID 统一写入 `message_registry.sqlite3`，默认保留 7 天。
-- QQ 群/C2C 在 OlivOS 重启后若只给出 `ref_msg_idx`，插件会用自己的持久化注册表恢复被引用消息 ID 和正文。
+- 当前消息 ID、引用消息 ID、事件 ID、`msg_idx/ref_msg_idx`、出站消息 ID 和出站 `ref_idx` 统一写入 `message_registry.sqlite3`，默认保留 7 天。
+- QQ 群/C2C 在 OlivOS 重启后若只给出 `ref_msg_idx`，插件会用自己的持久化注册表恢复被引用消息 ID 或机器人出站正文。
+- 本轮引用会作为最后一条当前用户消息传入模型，格式为 `[引用上文:引用正文] 当前文字`，不会只埋在滚动历史里；引用正文决定“这个/那个/大纲/背景”等指代。正文无法恢复时会标记为未能读取，让机器人简短说明看不到该回复后继续处理当前文字。
 - Milky 的 reply 段若只有会话内 `message_seq`，插件会利用当前完整消息 ID 补成 `scene|peer_id|seq` 后再调用 `get_msg`。
-- 上述兼容全部位于 OlivaAIAgent，不要求修改 OlivOS 主项目。平台从未向机器人上报过的消息仍无法恢复。
+- 上述引用恢复位于 OlivaAIAgent；平台从未向机器人上报过且注册表没有记录的消息仍无法恢复。
 
 ### MCP 工具与语音回复（v2.20）
 
@@ -130,6 +131,7 @@ GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `t
 - 原生请求体与官方 `dashscope.MultiModalConversation.call(..., stream=False)` 等价，但继续使用插件已有的 `requests` 直连，无需额外安装 `dashscope` SDK。
 - 语音与潜行不维护第二套提示词，全部继续使用唯一的 `prompt.system`。本地语音缓存位于 `voice/`，最多保留 10 个文件；配置为更小值时按较小值淘汰，旧配置中的更大数值会自动迁移为 10。
 - `qqGuildv2` 被 @ 判定兼容 `GROUP_AT_MESSAGE_CREATE`、`sub_self_id` 和群机器人 `sub_self_open_id`，与 MessageRecall 的官机处理方式一致。
+- 配套 OlivOS `qqGuildv2SDK` 会在单个被动消息 ID 达到回复上限后，依次轮换同一会话 5 分钟内仍有额度的入站消息 ID；全部候选耗尽或被平台拒绝后才改用主动消息。
 
 ## 定时提醒 / 定时主动消息（v2.7）
 

@@ -229,12 +229,25 @@ def recordIncoming(plugin_event, parsed):
     )
 
 
-def recordOutgoing(plugin_event, content, message_ids, reference_message_id=None):
-    for message_id in message_ids or []:
+def recordOutgoing(
+    plugin_event,
+    content,
+    message_ids,
+    reference_message_id=None,
+    message_indexes=None,
+):
+    ids = list(dict.fromkeys(
+        str(item) for item in (message_ids or []) if item not in [None, '', '-1', -1]
+    ))
+    indexes = list(dict.fromkeys(
+        str(item) for item in (message_indexes or []) if item not in [None, '', '-1', -1]
+    ))
+    for position in range(max(len(ids), len(indexes))):
         record(
             plugin_event,
             'outgoing',
-            message_id=message_id,
+            message_id=ids[position] if position < len(ids) else None,
+            message_index=indexes[position] if position < len(indexes) else None,
             reference_message_id=reference_message_id,
             content=content,
         )
