@@ -127,7 +127,8 @@ def _clean_single_rating(value: Any) -> float | None:
 
 def _clean_score(value: Any) -> int | None:
     try:
-        number = int(str(value).replace(',', '').replace('，', '').strip())
+        compact = re.sub(r'\s+', '', str(value))
+        number = int(compact.replace(',', '').replace('，', ''))
     except (TypeError, ValueError):
         return None
     return number if 0 <= number <= 1_000_000 else None
@@ -412,7 +413,7 @@ def _prediction_lines(result: Any) -> list[str]:
     return lines
 
 
-def _predict_ocr_text(path: Path) -> str:
+def _predict_ocr_text(ocr_input: Any) -> str:
     global _paddle_ocr
     with _paddle_ocr_lock:
         if _paddle_ocr is None:
@@ -427,7 +428,41 @@ def _predict_ocr_text(path: Path) -> str:
                 text_detection_model_name='PP-OCRv5_mobile_det',
                 text_recognition_model_name='PP-OCRv5_mobile_rec',
             )
-        return '\n'.join(_prediction_lines(_paddle_ocr.predict(str(path))))
+        paddle_input = str(ocr_input) if isinstance(ocr_input, (str, Path)) else ocr_input
+        return '\n'.join(_prediction_lines(_paddle_ocr.predict(paddle_input)))
+
+
+def _is_portrait_ocr_candidate(path: Path) -> bool:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return image.height > image.width
+    except Exception:
+        return False
+
+
+def _portal_fast_ocr_input(path: Path) -> Any | None:
+    """移除 Portal 纵向页面中无需录入的明细和导航区域，减少 OCR 像素量。"""
+    try:
+        import numpy as np
+        from PIL import Image
+
+        with Image.open(path) as source_image:
+            image = np.asarray(source_image.convert('RGB'))
+        height, width = image.shape[:2]
+        if height <= width:
+            return None
+        band_ratios = ((0.08, 0.34), (0.34, 0.57), (0.74, 0.91))
+        bands = [
+            image[int(top * height):int(bottom * height)]
+            for top, bottom in band_ratios
+        ]
+        if any(band.size == 0 for band in bands):
+            return None
+        return np.concatenate(bands, axis=0)
+    except Exception:
+        return None
 
 
 def _looks_like_game_result(text: str) -> bool:
@@ -443,7 +478,94 @@ def _looks_like_game_result(text: str) -> bool:
     return has_result_score and bool(re.search(r'(?i)harmony|rank|重试|继续|purified', source))
 
 
-def _adaptive_game_result_sections(path: Path) -> dict[str, str]:
+def _ocr_has_score(text: str) -> bool:
+    return any(
+        re.fullmatch(r'[01]\d{6}', re.sub(r'[\s,，]+', '', line))
+        for line in str(text or '').splitlines()
+    )
+
+
+def _ocr_has_difficulty_hint(text: str) -> bool:
+    for line in str(text or '').splitlines():
+        letters = re.sub(r'[^a-z]', '', line.casefold())
+        if 2 <= len(letters) <= 10 and letters.startswith('ma'):
+            return True
+        if any(
+            difflib.SequenceMatcher(None, letters, name.casefold()).ratio() >= 0.65
+            for name in DIFFICULTY_NAMES
+        ):
+            return True
+    return False
+
+
+def _ocr_plain_integer(line: str) -> int | None:
+    compact = re.sub(r'\s+', '', str(line or '')).translate(str.maketrans({'O': '0', 'o': '0', 'I': '1', 'l': '1'}))
+    if not re.fullmatch(r'\d{1,5}', compact):
+        return None
+    return int(compact)
+
+
+def _select_judgement_triplet(values: list[int], total: int) -> tuple[int, int, int] | None:
+    """从标签前的候选数字中选出物量校验成立的连续 H/T/F。"""
+    for index in range(len(values) - 3, -1, -1):
+        candidate = tuple(values[index:index + 3])
+        if sum(candidate) == total:
+            return candidate
+    return None
+
+
+def _needed_game_ocr_sections(text: str) -> tuple[str, ...]:
+    """判断完整 OCR 缺哪些字段，只为缺失字段追加裁切推理。"""
+    source = str(text or '')
+    needed = []
+    if not _ocr_has_score(source):
+        needed.append('score')
+    if not _ocr_has_difficulty_hint(source):
+        needed.append('meta')
+
+    labels = [
+        bool(re.search(rf'(?i)\b{label}\b', source))
+        for label in ('harmony', 'tune', 'fail')
+    ]
+    if any(labels):
+        if not all(labels):
+            needed.append('judgements')
+        else:
+            lines = [re.sub(r'\s+', ' ', line).strip() for line in source.splitlines() if line.strip()]
+            first_label = next(
+                (
+                    index for index, line in enumerate(lines)
+                    if re.search(r'(?i)\b(?:harmony|tune|fail)\b', line)
+                ),
+                len(lines),
+            )
+            judgement_values = [
+                value
+                for line in lines[:first_label]
+                if (value := _ocr_plain_integer(line)) is not None
+            ]
+            visible_totals = {
+                int(match.group(1))
+                for line in lines
+                for match in re.finditer(r'\d{1,5}\s*/\s*(\d{1,5})', line)
+            }
+            has_valid_triplet = any(
+                _select_judgement_triplet(judgement_values, total) is not None
+                for total in visible_totals
+            )
+            if (
+                len(judgement_values) < 3
+                or (visible_totals and not has_valid_triplet)
+                or (not visible_totals and len(judgement_values) != 3)
+            ):
+                needed.append('judgements')
+    return tuple(dict.fromkeys(needed))
+
+
+def _adaptive_game_result_sections(
+    path: Path,
+    section_names: tuple[str, ...] | None = None,
+) -> dict[str, str]:
     """按画面比例放大结算页关键区域，补足小号判定数字的 OCR。"""
     try:
         from PIL import Image, ImageEnhance, ImageFilter
@@ -457,9 +579,11 @@ def _adaptive_game_result_sections(path: Path) -> dict[str, str]:
             'score': (0.25, 0.58, 0.75, 0.92),
         }
         scale = 2 if width < 2400 else 1
+        requested_sections = section_names or ('meta', 'judgements', 'score')
         sections = {}
         with tempfile.TemporaryDirectory(prefix='lanota_ocr_') as temp_dir:
-            for section_name, ratios in section_boxes.items():
+            for section_name in requested_sections:
+                ratios = section_boxes[section_name]
                 left, top, right, bottom = (
                     int(ratios[0] * width),
                     int(ratios[1] * height),
@@ -479,13 +603,17 @@ def _adaptive_game_result_sections(path: Path) -> dict[str, str]:
         return {}
 
 
-def _ocr_text(path: Path) -> str:
+def _ocr_text(path: Path, force_full_image: bool = False) -> str:
     """使用 PaddleOCR 识别 Portal 或 4.0+ 游戏结算截图。"""
     try:
-        full_text = _predict_ocr_text(path)
+        fast_input = None if force_full_image else _portal_fast_ocr_input(path)
+        full_text = _predict_ocr_text(path if fast_input is None else fast_input)
         if not full_text or not _looks_like_game_result(full_text):
             return full_text
-        sections = _adaptive_game_result_sections(path)
+        needed_sections = _needed_game_ocr_sections(full_text)
+        if not needed_sections:
+            return full_text
+        sections = _adaptive_game_result_sections(path, needed_sections)
         parts = ['[[LANOTA_OCR_FULL]]', full_text]
         for section_name in ('meta', 'judgements', 'score'):
             section_text = sections.get(section_name, '')
@@ -526,13 +654,6 @@ def _ocr_difficulty(lines: list[str]) -> int | None:
         if difflib.SequenceMatcher(None, letters, best_name.casefold()).ratio() >= 0.65:
             return DIFFICULTY_NAMES.index(best_name)
     return None
-
-
-def _ocr_plain_integer(line: str) -> int | None:
-    compact = re.sub(r'\s+', '', str(line or '')).translate(str.maketrans({'O': '0', 'o': '0', 'I': '1', 'l': '1'}))
-    if not re.fullmatch(r'\d{1,5}', compact):
-        return None
-    return int(compact)
 
 
 def _parse_game_result_ocr(
@@ -638,7 +759,8 @@ def _parse_game_result_ocr(
         ]
         if len(judgement_values) < 3:
             return None, '游戏结算图未能完整识别 Harmony/Tune/Fail 三项数字，未录入。'
-        harmony, tune, fail = judgement_values[-3:]
+        triplet = _select_judgement_triplet(judgement_values, total)
+        harmony, tune, fail = triplet or tuple(judgement_values[-3:])
         if harmony + tune + fail != total:
             return None, (
                 f'游戏结算图判定合计 {harmony + tune + fail} 与总物量 {total} 不一致，'
@@ -728,7 +850,7 @@ def _parse_ocr(text: str, songs: list[dict[str, Any]], region: str) -> tuple[dic
 
     score = None
     for line in lines:
-        found = re.fullmatch(r'\s*(\d{1,3}(?:[,，]\d{3})+)\s*', line)
+        found = re.fullmatch(r'\s*(\d{1,3}(?:[,，]\s*\d{3})+)\s*', line)
         if found:
             candidate_score = _clean_score(found.group(1))
             if candidate_score is not None and candidate_score >= 100_000:
@@ -788,6 +910,9 @@ def process_images(plugin_event, message_text: str, region: str = 'global') -> t
         try:
             text = _ocr_text(path)
             record, error = _parse_ocr(text, songs, region)
+            if record is None and _is_portrait_ocr_candidate(path):
+                text = _ocr_text(path, force_full_image=True)
+                record, error = _parse_ocr(text, songs, region)
         except Exception as exception_object:
             record = None
             error = f'图片识别失败：{type(exception_object).__name__}: {exception_object}'

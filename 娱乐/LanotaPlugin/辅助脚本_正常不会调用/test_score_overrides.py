@@ -53,6 +53,50 @@ class ScoreOverrideTest(unittest.TestCase):
             ],
         )
 
+    def test_game_ocr_only_runs_missing_crop_sections(self) -> None:
+        image_path = FIXTURE_DIR / 'game_result_mononoke_score_only_valid.jpg'
+        complete_text = '\n'.join([
+            'Erasure: A World Without You', 'MASTER', '0978748',
+            '2449', '76', '16', '2', '96%', '3%', '1%',
+            'Harmony', 'Tune', 'Fail', '341/2541',
+        ])
+        with (
+            patch.object(score_overrides, '_predict_ocr_text', return_value=complete_text),
+            patch.object(score_overrides, '_adaptive_game_result_sections') as adaptive,
+        ):
+            self.assertEqual(score_overrides._ocr_text(image_path), complete_text)
+        adaptive.assert_not_called()
+
+        incomplete_text = '\n'.join([
+            'Nemexis', 'MASTER', '0993282', '2208', '20',
+            'Harmony', 'Tune', 'Fail',
+        ])
+        with (
+            patch.object(score_overrides, '_predict_ocr_text', return_value=incomplete_text),
+            patch.object(score_overrides, '_adaptive_game_result_sections', return_value={'judgements': '5'}) as adaptive,
+        ):
+            output = score_overrides._ocr_text(image_path)
+        adaptive.assert_called_once_with(image_path, ('judgements',))
+        self.assertIn('[[LANOTA_OCR_JUDGEMENTS]]', output)
+
+    def test_portrait_portal_ocr_can_force_full_image_fallback(self) -> None:
+        image_path = FIXTURE_DIR / 'portal_score_mobile_nightfall.png'
+        compact_input = object()
+        self.assertEqual(score_overrides._clean_score('981, 118'), 981_118)
+        with (
+            patch.object(score_overrides, '_portal_fast_ocr_input', return_value=compact_input),
+            patch.object(score_overrides, '_predict_ocr_text', return_value='') as predict,
+        ):
+            self.assertEqual(score_overrides._ocr_text(image_path), '')
+        predict.assert_called_once_with(compact_input)
+
+        with (
+            patch.object(score_overrides, '_portal_fast_ocr_input', return_value=compact_input),
+            patch.object(score_overrides, '_predict_ocr_text', return_value='') as predict,
+        ):
+            self.assertEqual(score_overrides._ocr_text(image_path, force_full_image=True), '')
+        predict.assert_called_once_with(image_path)
+
     def test_manual_input_uses_single_rating(self) -> None:
         title, _difficulty_text, difficulty, single_rating, region = (
             score_overrides.parse_manual_argument(
