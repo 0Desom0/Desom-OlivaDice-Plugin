@@ -102,6 +102,53 @@ def calculate_score_rating(score: int, total: int, chart_constant: float) -> dic
     return _calculate_ex_rating(ex_score, total_value, constant_value)
 
 
+def infer_score_from_single_rating(
+    single_rating: float,
+    total: int,
+    chart_constant: float,
+) -> dict[str, float | int | bool] | None:
+    """由两位 Single Rating 反推一个位于显示值区间中部的近似成绩。"""
+    rating_value = _safe_float(single_rating)
+    total_value = _safe_int(total)
+    constant_value = _safe_float(chart_constant)
+    if (
+        rating_value is None
+        or total_value is None
+        or constant_value is None
+        or rating_value < 0
+        or total_value <= 0
+        or constant_value <= 0
+    ):
+        return None
+
+    target_hundredths = math.floor(rating_value * 100 + 1e-7)
+    candidate_ex_scores = []
+    for ex_score in range(2 * total_value + 1):
+        candidate = _calculate_ex_rating(ex_score, total_value, constant_value)
+        candidate_hundredths = math.floor(float(candidate['singleRatingExact']) * 100 + 1e-9)
+        if candidate_hundredths == target_hundredths:
+            candidate_ex_scores.append(ex_score)
+
+    if not candidate_ex_scores:
+        return None
+
+    first_ex_score = candidate_ex_scores[0]
+    last_ex_score = candidate_ex_scores[-1]
+    inferred_ex_score = (first_ex_score + last_ex_score) // 2
+    result = _calculate_ex_rating(inferred_ex_score, total_value, constant_value)
+    first_result = _calculate_ex_rating(first_ex_score, total_value, constant_value)
+    last_result = _calculate_ex_rating(last_ex_score, total_value, constant_value)
+    result.update({
+        'inferred': True,
+        'singleRatingInput': target_hundredths / 100,
+        'inferredScoreMin': first_result['score'],
+        'inferredScoreMax': last_result['score'],
+        'inferredAccuracyMin': first_result['scoreAccuracy'],
+        'inferredAccuracyMax': last_result['scoreAccuracy'],
+    })
+    return result
+
+
 def calculate_judgement_rating(
     harmony: int,
     tune: int,

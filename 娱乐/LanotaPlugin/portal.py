@@ -274,8 +274,8 @@ def credential_error_hint(exception_object: Exception, region: Any) -> str:
     ):
         return ''
     if normalize_region(region) == 'china':
-        return '国服 Portal Token 可能已过期，请联系管理员使用 .la china login 重新扫码授权。'
-    return '国际服 Portal 登录失败，请联系管理员检查登录账号或密码配置。'
+        return '国服状态可能已过期，请联系管理员。'
+    return '国际服登录失败，请联系管理员。'
 
 
 def _jwt_exp(token: str) -> int:
@@ -355,9 +355,9 @@ def poll_china_login(session_id: str) -> dict[str, Any]:
         if status == 'ready' and code:
             return _exchange_china_login(clean_session_id, code)
         if status in ['expired', 'cancelled', 'canceled', 'failed', 'error']:
-            raise PermissionError(f'国服 Portal 授权未完成：{status}')
+            raise PermissionError(f'国服授权未完成：{status}')
         time.sleep(config.lanota_portal_china_poll_interval_seconds)
-    raise TimeoutError('国服 Portal 授权已超时，请重新执行 .la china login。')
+    raise TimeoutError('国服授权已超时，请重新授权')
 
 
 def get_china_token() -> str:
@@ -376,23 +376,23 @@ def get_china_token() -> str:
                 china_portal_token['expires_at'] = expires_at
                 return token
         china_portal_token = {}
-    raise PermissionError('国服 Portal 尚未登录或登录已过期，请管理员使用 .la china login 扫码授权。')
+    raise PermissionError('国服尚未登录或登录已过期，请联系管理员。')
 
 
 def china_auth_status_text() -> str:
     saved = utils.read_json_file(_china_auth_file_path(), {})
     if not isinstance(saved, dict):
-        return '国服 Portal：未登录'
+        return '国服未登录'
     token = str(saved.get('china_token', '') or '').strip()
     expires_at = int(saved.get('expires_at', 0) or _jwt_exp(token))
     if not token:
-        return '国服 Portal：未登录'
+        return '国服未登录'
     if expires_at and expires_at <= int(time.time()):
-        return '国服 Portal：登录已过期，需要重新扫码授权'
+        return '国服登录已过期，需要重新授权'
     if expires_at:
         remaining_minutes = max(0, (expires_at - int(time.time())) // 60)
-        return f'国服 Portal：已登录，Token 约 {remaining_minutes} 分钟后过期'
-    return '国服 Portal：已登录，Token 未提供过期时间'
+        return f'国服已登录，Token 约 {remaining_minutes} 分钟后过期'
+    return '国服已登录，Token 未提供过期时间'
 
 
 def render_china_login_qr(deep_link: str) -> str | None:
@@ -438,7 +438,7 @@ def api_get(
                 if saved_token == request_token:
                     _save_china_token_data({})
             raise PermissionError(
-                '国服 Portal 登录已失效，请管理员使用 .la china login 重新扫码授权。'
+                '国服登录已失效，请管理员重新授权。'
             ) from exception_object
 
     url = f'{config.lanota_portal_api_base_url}/{path.lstrip("/")}'

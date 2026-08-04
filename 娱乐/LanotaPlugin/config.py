@@ -55,6 +55,8 @@ image_max_chars = 100
 search_image_max_chars = 38
 text_image_min_chars = 120
 b30_cooldown_seconds = 300
+ocr_max_images_per_message = 12
+ocr_image_max_bytes = 30 * 1024 * 1024
 
 # 搜索结果分页配置
 result_page_size = 10  # 每页显示的结果数

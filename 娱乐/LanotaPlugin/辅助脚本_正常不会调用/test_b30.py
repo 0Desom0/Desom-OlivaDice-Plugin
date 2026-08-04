@@ -37,6 +37,18 @@ class B30FormulaTest(unittest.TestCase):
         self.assertEqual(result['singleRating'], 0)
         self.assertEqual(result['ratingPercent'], 0)
 
+    def test_single_rating_infers_midpoint_score_and_accuracy(self) -> None:
+        result = b30.infer_score_from_single_rating(17.74, 1000, 16.0)
+        self.assertIsNotNone(result)
+        self.assertTrue(result['inferred'])
+        self.assertEqual(result['singleRating'], 17.74)
+        self.assertLessEqual(result['inferredScoreMin'], result['score'])
+        self.assertLessEqual(result['score'], result['inferredScoreMax'])
+        self.assertIsNotNone(b30.calculate_score_rating(result['score'], 1000, 16.0))
+
+    def test_impossible_single_rating_cannot_be_inferred(self) -> None:
+        self.assertIsNone(b30.infer_score_from_single_rating(29.99, 1000, 16.0))
+
     def test_known_judgement_scores_use_new_ex_formula(self) -> None:
         samples = [
             (1497, 1, 1, 1499, 998_999),

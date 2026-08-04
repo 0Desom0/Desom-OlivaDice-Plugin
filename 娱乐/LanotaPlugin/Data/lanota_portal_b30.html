@@ -715,8 +715,12 @@
           facts.append(fact('准度', '--.--%'), fact('谱面', '---', true), fact('物量', '---'));
           facts.append(fact('基础', '--.--'), fact('单曲', '--.--'), fact('Rating%', '--.--%'));
         } else {
-          const ratingPercentPrefix = !entry.exact && Number(entry.score || 0) < 1000000 ? '≈' : '';
-          facts.append(fact('准度', `${Number(entry.scoreAccuracy).toFixed(2)}%`));
+          const ratingPercentPrefix = !entry.exact && !entry.override && Number(entry.score || 0) < 1000000 ? '≈' : '';
+          facts.append(
+            entry.override
+              ? fact(entry.accuracyInferred ? '≈录入准度' : '录入准度', `${Number(entry.scoreAccuracy).toFixed(2)}%`)
+              : fact('准度', `${Number(entry.scoreAccuracy).toFixed(2)}%`),
+          );
           facts.append(fact(entry.difficultyName || '谱面', entry.constantText || '未知', true));
           facts.append(fact('物量', Number(entry.total || 0).toLocaleString('en-US')));
           facts.append(fact('基础', Number(entry.baseRating).toFixed(2)));

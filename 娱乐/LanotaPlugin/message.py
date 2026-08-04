@@ -13,6 +13,7 @@ from . import config
 from . import crawler
 from . import function
 from . import portal
+from . import score_overrides
 from . import utils
 
 # 全局搜索结果会话管理（用于分页和序号选择）
@@ -42,6 +43,8 @@ command_configs = [
     ('cal', '计算'),
     ('notes', '物量'),
     ('b30', 'b30'),
+    ('score', '成绩录入'),
+    ('override', '成绩覆盖'),
     ('bind', '绑定'),
     ('unbind', '解绑'),
     ('user', '用户'),
@@ -92,6 +95,13 @@ subcommand_alias_dict = {
     'notes': 'notes',
     '物量': 'notes',
     'b30': 'b30',
+    'score': 'score',
+    '成绩': 'score',
+    '录入': 'score',
+    '成绩录入': 'score',
+    'override': 'score',
+    '覆盖': 'score',
+    '成绩覆盖': 'score',
     'bind': 'bind',
     '绑定': 'bind',
     'unbind': 'unbind',
@@ -407,10 +417,25 @@ def _song_info_fallback_text(
             for difficulty_index, difficulty_name in enumerate(diff_names):
                 row = score_map.get((chart_set, difficulty_index))
                 if row:
-                    lines.append(
-                        f'{difficulty_name}：分数 {row.get("score", "未知")} / '
-                        f'Clear {row.get("clear", "未知")} / Rank {row.get("rank", "未知")}',
+                    score_display = (
+                        row.get('score')
+                        if row.get('score') is not None
+                        else '未录入'
                     )
+                    line = (
+                        f'{difficulty_name}：分数 {score_display} / '
+                        f'Clear {row.get("clear", "未知")} / Rank {row.get("rank", "未知")}'
+                    )
+                    if row.get('override'):
+                        line = (
+                            f'{line} / 录入单曲 Rating {float(row.get("singleRating", 0)):.2f}'
+                        )
+                        if row.get('scoreAccuracy') is not None:
+                            accuracy_prefix = '≈' if row.get('accuracyInferred') else ''
+                            line = f'{line} / {accuracy_prefix}准度 {float(row["scoreAccuracy"]):.2f}%'
+                        if row.get('overrideWarning'):
+                            line = f'{line} / 提示：{row["overrideWarning"]}'
+                    lines.append(line)
                 else:
                     lines.append(f'{difficulty_name}：未游玩')
     if notice:
@@ -525,6 +550,18 @@ def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = Non
             credential_hint = portal.credential_error_hint(cache_error, selected_region)
             if credential_hint:
                 notice = f'{notice} {credential_hint}'
+        score_rows, override_stats = score_overrides.apply_to_song_scores(
+            plugin_event,
+            song,
+            score_rows,
+            selected_region,
+        )
+        if override_stats['used'] or override_stats['removed']:
+            override_notice = (
+                f'已比较玩家录入 Single Rating：采用 {override_stats["used"]} 条覆盖，'
+                f'删除 {override_stats["removed"]} 条不高于官网计算结果的录入。'
+            )
+            notice = f'{notice} {override_notice}'.strip()
         if not score_rows:
             no_score_notice = '你没有这首曲子的分数。'
             notice = f'{no_score_notice} {notice}'.strip()
@@ -1389,6 +1426,8 @@ def handle_b30(plugin_event, argument: str) -> None:
         catalog = b30.build_chart_catalog()
         card_data = None
         exact_check_error = None
+        reconcile_rows = []
+        reconcile_score_field = 'score'
         try:
             me_data = portal.get_me(selected_region)
             is_current_account = str(me_data.get('nanoId', '')).casefold() == nano_id.casefold()
@@ -1398,6 +1437,11 @@ def handle_b30(plugin_event, argument: str) -> None:
                 if isinstance(exact_entries, list) and exact_entries:
                     try:
                         scores_data = portal.api_get('scores', region=selected_region)
+                        reconcile_rows = (
+                            scores_data.get('songs', [])
+                            if isinstance(scores_data, dict)
+                            else []
+                        )
                     except Exception as exception_object:
                         scores_data = None
                         exact_check_error = exception_object
@@ -1418,6 +1462,12 @@ def handle_b30(plugin_event, argument: str) -> None:
                 selected_region,
             )
             card_data = b30.build_inferred_card_data(compare_data, catalog, selected_region)
+            reconcile_rows = (
+                compare_data.get('songs', [])
+                if isinstance(compare_data, dict)
+                else []
+            )
+            reconcile_score_field = 'friendScore'
             if exact_check_error is not None:
                 _append_b30_notice(
                     card_data,
@@ -1428,6 +1478,20 @@ def handle_b30(plugin_event, argument: str) -> None:
                     card_data,
                     f'网络查询失败，当前使用最近缓存：{portal.format_error(cache_error)}',
                 )
+
+        reconciled_count = score_overrides.reconcile_official_scores(
+            plugin_event,
+            catalog,
+            selected_region,
+            reconcile_rows,
+            reconcile_score_field,
+        )
+        card_data = score_overrides.apply_to_card(plugin_event, card_data, catalog, selected_region)
+        if reconciled_count:
+            _append_b30_notice(
+                card_data,
+                f'已删除 {reconciled_count} 条不高于官网计算结果的玩家录入。',
+            )
 
         fallback_text = b30.build_fallback_text(card_data)
         if is_plain_text_mode(plugin_event):
@@ -1447,6 +1511,53 @@ def handle_b30(plugin_event, argument: str) -> None:
         if credential_hint:
             error_text = f'{error_text}\n{credential_hint}'
         reply_text(plugin_event, error_text)
+
+
+def handle_score(plugin_event, argument: str) -> None:
+    """成绩覆盖档案命令：list/add/delete，或直接附带图片触发 OCR。"""
+    text = utils.safe_str(argument).strip()
+    region, remaining = portal.split_region_argument(text, greedy=True)
+    selected_region = region or portal.get_bound_region(plugin_event) or 'global'
+    if region is None:
+        for alias, alias_region in score_overrides.REGION_ALIASES.items():
+            if re.search(rf'(?<!\S){re.escape(alias)}(?!\S)', remaining, re.IGNORECASE):
+                selected_region = alias_region
+                break
+    lower = remaining.casefold().strip()
+    if lower in {'list', 'ls', '查看', '查询', ''}:
+        reply_text(plugin_event, score_overrides.list_text(plugin_event, selected_region))
+        return
+    if lower.startswith(('delete ', 'del ', '删除 ')):
+        delete_argument = remaining.split(None, 1)[1] if len(remaining.split(None, 1)) > 1 else ''
+        has_delete_region = any(
+            re.search(rf'(?<!\S){re.escape(alias)}(?!\S)', delete_argument, re.IGNORECASE)
+            for alias in score_overrides.REGION_ALIASES
+        )
+        if not has_delete_region:
+            delete_argument = f'{delete_argument} {selected_region}'.strip()
+        reply_text(plugin_event, score_overrides.delete(plugin_event, delete_argument))
+        return
+
+    message_text = utils.get_message_text_from_event(plugin_event)
+    if score_overrides.extract_image_refs(message_text):
+        if not score_overrides.paddleocr_available():
+            reply_text(
+                plugin_event,
+                '截图 OCR 不可用：请按 LanotaPlugin/requirements.txt 安装 PaddleOCR 与 PaddlePaddle；'
+                '手动录入仍可正常使用。',
+            )
+            return
+        reply_text(plugin_event, '已收到 Portal/游戏结算成绩截图，正在识别哪些歌曲并校验分数，请稍等……')
+        added, messages = score_overrides.process_images(plugin_event, message_text, selected_region)
+        reply_text(plugin_event, f'截图录入完成：成功 {added} 条。\n' + '\n'.join(messages))
+        return
+    has_region_token = any(
+        re.search(rf'(?<!\S){re.escape(alias)}(?!\S)', remaining, re.IGNORECASE)
+        for alias in score_overrides.REGION_ALIASES
+    )
+    manual_argument = remaining if has_region_token else f'{remaining} {selected_region}'
+    success, message = score_overrides.add_manual(plugin_event, manual_argument)
+    reply_text(plugin_event, message if success else f'成绩录入失败：{message}')
 
 
 def handle_bind(plugin_event, argument: str) -> None:
@@ -1605,8 +1716,8 @@ def handle_china(plugin_event, argument: str) -> None:
                 image_message = utils.build_image_message(qr_path)
                 sent = bool(image_message) and utils.send_private_message(plugin_event, user_id, image_message) and sent
             if not sent:
-                raise RuntimeError('私聊发送授权信息失败，请私聊 Bot 使用 .la china login。')
-            reply_text(plugin_event, '国服 Portal 授权二维码已通过私聊发送。')
+                raise RuntimeError('私聊发送授权信息失败，请管理员重新授权。')
+            reply_text(plugin_event, '国服授权二维码已通过私聊发送。')
         else:
             utils.reply_message(plugin_event, instruction_text)
             if qr_path:
@@ -1901,6 +2012,35 @@ help_categories = {
             '/la friend cn',
         ],
     },
+    'score': {
+        'name': '成绩录入与覆盖',
+        'aliases': ['score', '成绩', '录入', '覆盖'],
+        'commands': [
+            '/la score <曲名> <难度> <单曲Rating> - 手动录入当前绑定区服成绩',
+            '/la score global <曲名> <难度> <单曲Rating> - 手动录入国际服成绩',
+            '/la score cn <曲名> <难度> <单曲Rating> - 手动录入国服成绩',
+            '/la score list - 查看当前绑定区服的录入成绩',
+            '/la score global list - 查看国际服录入成绩',
+            '/la score cn list - 查看国服录入成绩',
+            '/la score delete <序号> - 删除录入成绩',
+            '/la score delete all cn - 清空国服录入成绩',
+            '/la score delete all global - 清空国际服录入成绩',
+            '/la score + Portal/4.0+ 游戏结算截图 - 自动 OCR 识别，可一次发送多张图片',
+        ],
+        'priority': [
+            'Portal 图至少包含曲名、难度标签和底部“单曲 RATING”数值；支持长截图。',
+            '游戏结算图至少包含曲名、难度和底部七位分数；展开判定详情时会同时严格校验 H/T/F 与总物量。',
+            '只显示分数的 4.0+ 结算图会按曲目物量校验分数格式，通过后反推准度与 Single Rating。',
+            '录入值只在其 Single Rating 高于官网值或官网记录格式异常时覆盖；确认后会自动清理较低录入。',
+            '未写区服时优先使用当前绑定区服；只绑定国服时默认录入、查看和删除国服档案。',
+        ],
+        'examples': [
+            '/la score The Nightfall will be Conce... master 17.70',
+            '/la score cn Immaculate master 18.18',
+            '/la score list',
+            '/la score delete 1',
+        ],
+    },
     'stats': {
         'name': '其它功能',
         'aliases': ['other', '其它'],
@@ -2154,6 +2294,7 @@ command_handler_dict = {
     'cal': handle_cal,
     'notes': lambda event, arg: handle_notes(event),
     'b30': handle_b30,
+    'score': handle_score,
     'bind': handle_bind,
     'unbind': handle_unbind,
     'user': handle_user,

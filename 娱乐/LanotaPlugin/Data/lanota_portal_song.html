@@ -191,8 +191,16 @@
           if (!data.infoMode) {
             return `<article class="diff-card" style="--diff-color:${diffColors[index]}">${base}<div class="score-line" style="grid-template-columns:1fr"><div class="score-item"><b>NOTES</b><span>${esc(notes[key] || '—')}</span></div></div></article>`;
           }
-          const score = row.score == null ? '未游玩' : Number(row.score).toLocaleString('zh-CN');
-          return `<article class="diff-card" style="--diff-color:${diffColors[index]}">${base}<div class="score-line"><div class="score-item"><b>NOTES</b><span>${esc(notes[key] || '—')}</span></div><div class="score-item"><b>SCORE</b><span>${esc(score)}</span></div><div class="score-item"><b>CLEAR</b><span>${esc(row.clear ?? '—')}</span></div><div class="score-item"><b>RANK</b><span>${esc(row.rank ?? '—')}</span></div></div></article>`;
+          const score = row.score == null
+            ? (row.override ? '未录入' : '未游玩')
+            : Number(row.score).toLocaleString('zh-CN');
+          const overrideAccuracy = row.override && row.scoreAccuracy != null
+            ? `<div class="score-item"><b>${row.accuracyInferred ? '近似反推准度' : '分数准度'}</b><span>${Number(row.scoreAccuracy).toFixed(2)}%</span></div>`
+            : '';
+          const overrideFacts = row.override
+            ? `<div class="score-item"><b>录入单曲 RATING</b><span>${Number(row.singleRating).toFixed(2)}</span></div><div class="score-item"><b>RATING%</b><span>${row.ratingPercent == null ? '—' : `${Number(row.ratingPercent).toFixed(2)}%`}</span></div>${overrideAccuracy}`
+            : '';
+          return `<article class="diff-card" style="--diff-color:${diffColors[index]}">${base}<div class="score-line"><div class="score-item"><b>NOTES</b><span>${esc(notes[key] || '—')}</span></div><div class="score-item"><b>SCORE</b><span>${esc(score)}</span></div><div class="score-item"><b>CLEAR</b><span>${esc(row.clear ?? '—')}</span></div><div class="score-item"><b>RANK</b><span>${esc(row.rank ?? '—')}</span></div>${overrideFacts}</div></article>`;
         }).join('');
       };
 
