@@ -117,6 +117,7 @@ def normalize_game_item(item: Dict[str, Any]) -> Dict[str, Any]:
         'url': safe_text(item.get('url', default_empty_text), default_empty_text),
         'tags': [safe_text(tag) for tag in tags if safe_text(tag)],
         'engine': item.get('engine'),
+        'release_date': item.get('release_date'),
         'rating': item.get('rating'),
         'difficulty': item.get('difficulty'),
         'rating_count': item.get('rating_count'),
@@ -160,6 +161,12 @@ def format_engine_value(value: Any) -> str:
     return safe_text(value, '未知')
 
 
+def format_release_date(value: Any) -> str:
+    if value_is_empty(value):
+        return default_empty_text
+    return safe_text(value, default_empty_text)
+
+
 def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict[str, str]:
     tag_text = ', '.join(game_item.get('tags', [])) or default_empty_text
     return {
@@ -167,6 +174,7 @@ def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict
         'id': safe_text(game_item.get('id', default_empty_text), default_empty_text),
         'title': safe_text(game_item.get('title', default_empty_text), default_empty_text),
         'creator': safe_text(game_item.get('creator', default_empty_text), default_empty_text),
+        'release_date': format_release_date(game_item.get('release_date')),
         'rating': format_score_value(game_item.get('rating')),
         'difficulty': format_score_value(game_item.get('difficulty')),
         'rating_count': format_rating_count(game_item.get('rating_count')),
