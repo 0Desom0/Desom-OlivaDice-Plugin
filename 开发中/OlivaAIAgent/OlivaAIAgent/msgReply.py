@@ -1885,7 +1885,12 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
     if quote_msg_id not in [None, '', '-1', -1]:
         kwargs['quote_msg_id'] = str(quote_msg_id)
     try:
-        result = sender(**kwargs)
+        result = OlivaAIAgent.passiveReply.sendMarkdown(
+            plugin_event,
+            sender,
+            kwargs,
+            trace_id=trace_id,
+        )
     except Exception as e:
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,

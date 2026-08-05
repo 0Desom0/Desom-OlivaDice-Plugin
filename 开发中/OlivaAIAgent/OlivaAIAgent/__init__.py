@@ -14,6 +14,7 @@ from OlivaAIAgent import aiClient  # noqa: F401
 from OlivaAIAgent import vision  # noqa: F401
 from OlivaAIAgent import reminder  # noqa: F401
 from OlivaAIAgent import introspection  # noqa: F401
+from OlivaAIAgent import passiveReply  # noqa: F401
 from OlivaAIAgent import mcp  # noqa: F401
 from OlivaAIAgent import voice  # noqa: F401
 from OlivaAIAgent import tools  # noqa: F401

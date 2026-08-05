@@ -240,6 +240,11 @@ def snapshotEvent(plugin_event):
     '''冻结后台任务所需的事件上下文，避免后续插件分发改写当前插件信息。'''
     if plugin_event is None or getattr(plugin_event, _SNAPSHOT_FLAG, False):
         return plugin_event
+    passive_reply_installed = bool(getattr(
+        plugin_event,
+        '_oliva_ai_passive_reply_installed',
+        False,
+    ))
     try:
         snapshot = copy.copy(plugin_event)
     except Exception:
@@ -273,7 +278,10 @@ def snapshotEvent(plugin_event):
     setattr(snapshot, _SNAPSHOT_FLAG, True)
     if not callable(getattr(snapshot, 'reply', None)) or not callable(getattr(snapshot, 'send', None)):
         return snapshot
-    return prepareClone(snapshot)
+    snapshot = prepareClone(snapshot)
+    if passive_reply_installed:
+        snapshot = OlivaAIAgent.passiveReply.prepareClone(snapshot)
+    return snapshot
 
 
 def _toolCallValues(ctx, path, args, kwargs):
