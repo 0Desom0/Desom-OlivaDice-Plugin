@@ -22,12 +22,47 @@ class SongInfoTest(unittest.TestCase):
 
     def test_song_and_info_are_separate_commands(self) -> None:
         self.assertEqual(message.match_command('la song Frey'), ('song', 'Frey'))
-        self.assertEqual(message.match_command('la find Frey'), ('song', 'Frey'))
+        self.assertEqual(message.match_command('la find Frey'), ('help', ''))
         self.assertEqual(message.match_command('la info Frey'), ('info', 'Frey'))
         self.assertEqual(message.match_command('la info cn Frey'), ('info', 'cn Frey'))
         self.assertEqual(message.match_command('la infocnFrey'), ('info', 'cnFrey'))
         self.assertEqual(message.match_command('la bindcnNANO'), ('bind', 'cnNANO'))
         self.assertEqual(message.match_command('la friendcn'), ('friend', 'cn'))
+
+    def test_fuzzy_song_search_keeps_only_close_best_matches(self) -> None:
+        matched, match_type, total_count = message.function.find_song_by_search_term(
+            'apoptheosis',
+            message.function.load_song_data(),
+            {},
+            1000,
+        )
+        self.assertEqual(match_type, '打分制模糊搜索')
+        self.assertEqual(total_count, 1)
+        self.assertEqual(matched[0]['title'], 'Apotheosis (Lanota Edit)')
+
+    def test_alias_add_uses_exact_target_without_search_session(self) -> None:
+        event = object()
+        alias_data = {}
+        songs = [{
+            'id': 706,
+            'chapter': 'Event-110',
+            'official_songid': 'apotheosis_lanota_edit',
+            'title': 'Apotheosis (Lanota Edit)',
+        }]
+        with (
+            patch.object(message.utils, 'is_alias_group_allowed', return_value=True),
+            patch.object(message.function, 'load_alias_data', return_value=alias_data),
+            patch.object(message.function, 'load_song_data', return_value=songs),
+            patch.object(message.function, 'save_alias_data') as save_alias_data,
+            patch.object(message, 'save_search_session') as save_search_session,
+            patch.object(message, 'reply_text') as reply_text,
+        ):
+            message.handle_alias(event, 'add Apotheosis/Apotheosis(Lanota Edit)')
+        save_alias_data.assert_called_once_with({
+            'Apotheosis (Lanota Edit)': ['Apotheosis'],
+        })
+        save_search_session.assert_not_called()
+        self.assertIn('成功为[Apotheosis (Lanota Edit)]添加别名', reply_text.call_args.args[1])
 
     def test_region_argument_greedy_matching_is_opt_in(self) -> None:
         self.assertEqual(portal.split_region_argument('cnFrey'), (None, 'cnFrey'))
@@ -251,7 +286,13 @@ class SongInfoTest(unittest.TestCase):
             'id': 1,
             'title': 'Song',
             'official_songid': 'song_new',
-            'Legacy': {'official_songid': 'song'},
+            'notes': {'master': 1000},
+            'official_constant': {'master': 16.0},
+            'Legacy': {
+                'official_songid': 'song',
+                'MaxMaster': 1000,
+                'official_constant': {'master': 15.0},
+            },
         }
         compare_data = {
             '_portal_region': 'global',
@@ -284,6 +325,25 @@ class SongInfoTest(unittest.TestCase):
             message.reply_song_info(event, song)
         score_rows = reply_song_card.call_args.kwargs['score_rows']
         self.assertEqual({row['chartSet'] for row in score_rows}, {'current', 'legacy'})
+        self.assertTrue(all(row['scoreRatingValid'] for row in score_rows))
+        self.assertTrue(all(row['singleRating'] > 0 for row in score_rows))
+        self.assertTrue(all(row['ratingPercent'] > 0 for row in score_rows))
+        self.assertTrue(all(row['scoreAccuracy'] > 0 for row in score_rows))
+
+    def test_info_skips_rating_for_score_outside_4_0_integer_formula(self) -> None:
+        rows = message._add_calculated_info_ratings(
+            {
+                'notes': {'master': 1000},
+                'official_constant': {'master': 16.0},
+            },
+            [{
+                'chartSet': 'current',
+                'difficulty': 3,
+                'score': 900_001,
+            }],
+        )
+        self.assertFalse(rows[0]['scoreRatingValid'])
+        self.assertNotIn('scoreAccuracy', rows[0])
 
     def test_song_template_keeps_song_data_nested(self) -> None:
         html = portal._template_html(
@@ -300,6 +360,7 @@ class SongInfoTest(unittest.TestCase):
         self.assertIn('"song":{"title":"Frey"}', html)
         self.assertIn('"portalRegionName":"国服"', html)
         self.assertIn('GMZON LANOTA PORTAL', html)
+        self.assertIn('!row.override && row.scoreRatingValid', html)
 
 
 if __name__ == '__main__':

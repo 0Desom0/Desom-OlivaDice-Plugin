@@ -166,6 +166,16 @@ def _new_record(
     }
 
 
+def _matched_chart_summary(song: dict[str, Any], difficulty: int | None = None) -> str:
+    """格式化已匹配的曲目；难度已识别时一并报告。"""
+    title = str(song.get('title') or song.get('title_outside') or '未知歌曲').strip()
+    chapter = str(song.get('chapter') or '未知').strip()
+    details = [f'章节号 {chapter}']
+    if isinstance(difficulty, int) and 0 <= difficulty < len(DIFFICULTY_NAMES):
+        details.append(f'难度 {DIFFICULTY_NAMES[difficulty]}')
+    return f'已匹配：{title}（{"，".join(details)}）'
+
+
 def _rating_hundredths(value: Any) -> int | None:
     cleaned = _clean_single_rating(value)
     if cleaned is None:
@@ -253,25 +263,22 @@ def _validation_warning(record: dict[str, Any]) -> str:
 
 
 def _match_song(title: str, songs: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, float]:
-    query = re.sub(r'[^\w\u4e00-\u9fff]+', '', str(title).casefold())
-    if not query:
-        return None, 0.0
-    best_song = None
-    best_score = 0.0
     aliases = function.load_alias_data()
-    for song in songs:
-        candidates = [str(song.get('title') or '')]
-        candidates.extend(str(item) for item in aliases.get(str(song.get('title') or ''), []) if item)
-        for candidate in candidates:
-            clean = re.sub(r'[^\w\u4e00-\u9fff]+', '', candidate.casefold())
-            if not clean:
-                continue
-            ratio = difflib.SequenceMatcher(None, query, clean).ratio()
-            if query in clean or clean in query:
-                ratio = max(ratio, min(0.98, 0.55 + min(len(query), len(clean)) / max(len(query), len(clean)) * 0.4))
-            if ratio > best_score:
-                best_song, best_score = song, ratio
-    return (best_song, best_score) if best_score >= 0.42 else (None, best_score)
+    matched_songs, match_type, _total_count = function.find_song_by_search_term(
+        title,
+        songs,
+        aliases,
+        len(songs),
+    )
+    if not matched_songs:
+        return None, 0.0
+    best_song = matched_songs[0]
+    if match_type != '打分制模糊搜索':
+        return best_song, 1.0
+    candidates = [str(best_song.get('title') or '')]
+    candidates.extend(str(item) for item in aliases.get(str(best_song.get('title') or ''), []) if item)
+    best_score = min(function.calculate_search_score(title, candidate) for candidate in candidates)
+    return best_song, max(0.0, 1 - best_score / 1000)
 
 
 def resolve_song(title: str, songs: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any] | None, float]:
@@ -311,12 +318,16 @@ def add_manual(plugin_event, argument: str) -> tuple[bool, str]:
     if song is None:
         return False, f'没有匹配到曲名“{title}”，请提供更完整的曲名。'
     record = _new_record(song, difficulty, single_rating, region, source='manual')
+    match_summary = _matched_chart_summary(song, difficulty)
     total, chart_constant = _chart_values(song, difficulty)
     if total is None or chart_constant is None:
-        return False, '匹配到歌曲，但本地缺少该谱面的物量或官方定数，无法反推成绩。'
+        return False, f'{match_summary}\n本地缺少该谱面的物量或官方定数，无法反推成绩。'
     evaluation = _evaluate_record_rating(single_rating, None, total, chart_constant, 'manual')
     if evaluation is None:
-        return False, f'单曲 Rating {single_rating:.2f} 不可能由该谱面的 4.0+ 公式得到，请检查输入。'
+        return False, (
+            f'{match_summary}\n单曲 Rating {single_rating:.2f} '
+            '不可能由该谱面的 4.0+ 公式得到，请检查输入。'
+        )
     record.update(evaluation)
     record.update({'total': total, 'chart_constant': chart_constant})
     rows = load_overrides(plugin_event)
@@ -330,7 +341,7 @@ def add_manual(plugin_event, argument: str) -> tuple[bool, str]:
     ]
     rows.append(record)
     if not save_overrides(plugin_event, rows):
-        return False, '成绩已解析，但写入玩家档案失败。'
+        return False, f'{match_summary}\n成绩已解析，但写入玩家档案失败。'
     return True, (
         f'已录入：{record["title"]}\n'
         f'章节号：{record["chapter"]}\n'
@@ -721,9 +732,17 @@ def _parse_game_result_ocr(
     elif difficulty in note_totals:
         total = note_totals[difficulty]
     else:
-        return None, f'游戏结算图缺少与“{song.get("title", "未知歌曲")}”谱面相符的难度或物量，未录入。'
+        return None, (
+            f'{_matched_chart_summary(song, difficulty)}\n'
+            '游戏结算图缺少与该曲谱面相符的难度或物量，未录入。'
+        )
     if difficulty is None:
-        return None, '游戏结算图未能可靠确定难度，或该物量对应多个难度，未录入。'
+        return None, (
+            f'{_matched_chart_summary(song)}\n'
+            '游戏结算图未能可靠确定难度，或该物量对应多个难度，未录入。'
+        )
+
+    match_summary = _matched_chart_summary(song, difficulty)
 
     score_candidates = []
     for line in all_lines:
@@ -733,7 +752,7 @@ def _parse_game_result_ocr(
             if score_value is not None:
                 score_candidates.append(score_value)
     if not score_candidates:
-        return None, '游戏结算图缺少底部七位分数，未录入。'
+        return None, f'{match_summary}\n游戏结算图缺少底部七位分数，未录入。'
     screenshot_score = score_candidates[-1]
 
     judgement_lines = sections.get('judgements', full_lines)
@@ -745,12 +764,12 @@ def _parse_game_result_ocr(
 
     _total, chart_constant = _chart_values(song, difficulty)
     if chart_constant is None:
-        return None, '本地缺少该谱面的官方定数，无法校验结算分数，未录入。'
+        return None, f'{match_summary}\n本地缺少该谱面的官方定数，无法校验结算分数，未录入。'
     recognized_label_count = sum(index is not None for index in label_indexes.values())
     harmony = tune = fail = None
     if recognized_label_count:
         if recognized_label_count != 3:
-            return None, '游戏结算图的 Harmony/Tune/Fail 标签识别不完整，未录入。'
+            return None, f'{match_summary}\n游戏结算图的 Harmony/Tune/Fail 标签识别不完整，未录入。'
         first_label_index = min(int(index) for index in label_indexes.values() if index is not None)
         judgement_values = [
             value
@@ -758,12 +777,12 @@ def _parse_game_result_ocr(
             if (value := _ocr_plain_integer(line)) is not None
         ]
         if len(judgement_values) < 3:
-            return None, '游戏结算图未能完整识别 Harmony/Tune/Fail 三项数字，未录入。'
+            return None, f'{match_summary}\n游戏结算图未能完整识别 Harmony/Tune/Fail 三项数字，未录入。'
         triplet = _select_judgement_triplet(judgement_values, total)
         harmony, tune, fail = triplet or tuple(judgement_values[-3:])
         if harmony + tune + fail != total:
             return None, (
-                f'游戏结算图判定合计 {harmony + tune + fail} 与总物量 {total} 不一致，'
+                f'{match_summary}\n游戏结算图判定合计 {harmony + tune + fail} 与总物量 {total} 不一致，'
                 '可能存在 OCR 误识别，未录入。'
             )
         calculated = b30.calculate_judgement_rating(harmony, tune, fail, total, chart_constant)
@@ -772,11 +791,11 @@ def _parse_game_result_ocr(
         calculated = b30.calculate_score_rating(screenshot_score, total, chart_constant)
         validation_status = 'game_score_validated'
     if calculated is None:
-        return None, '截图分数无法按该谱面的 4.0+ 整数公式还原，未录入。'
+        return None, f'{match_summary}\n截图分数无法按该谱面的 4.0+ 整数公式还原，未录入。'
     calculated_score = int(calculated['score'])
     if calculated_score != screenshot_score:
         return None, (
-            f'游戏结算图分数校验失败：截图 {screenshot_score:07d}，'
+            f'{match_summary}\n游戏结算图分数校验失败：截图 {screenshot_score:07d}，'
             f'按 H/T/F 应为 {calculated_score:07d}；未录入。'
         )
 
@@ -858,19 +877,28 @@ def _parse_ocr(text: str, songs: list[dict[str, Any]], region: str) -> tuple[dic
                 break
     title_candidates = []
     for line in lines:
-        if re.search(r'(?i)lanota|portal|rank|score|rating|combo|notes|harmony|tune|fail|master|ultra|acoustic|whisper|\d+%|\d{3},\d{3}', line):
+        if re.fullmatch(r'(?i)lanota(?:\s+portal)?|portal', line):
             continue
-        if len(line) >= 2:
-            title_candidates.append(line)
+        if re.search(r'(?i)rank|score|rating|combo|notes|harmony|tune|fail|master|ultra|acoustic|whisper|\d+%|\d{3},\d{3}', line):
+            continue
+        if re.fullmatch(r'[\d\s,，.]+', line) or len(line) < 2:
+            continue
+        title_candidates.append(line)
     best = None
     best_conf = 0.0
     for candidate in title_candidates:
         song, confidence = _match_song(candidate, songs)
         if confidence > best_conf:
             best, best_conf = song, confidence
-    if best is None or difficulty is None or single_rating is None:
+    if best is None:
         return None, (
             'OCR 信息不足（需要曲名、难度和“单曲 RATING”数值；'
+            f'当前识别：{title_candidates[:2]}）'
+        )
+    match_summary = _matched_chart_summary(best, difficulty)
+    if difficulty is None or single_rating is None:
+        return None, (
+            f'{match_summary}\nOCR 信息不足（需要曲名、难度和“单曲 RATING”数值；'
             f'当前识别：{title_candidates[:2]}）'
         )
     record = _new_record(
@@ -884,10 +912,13 @@ def _parse_ocr(text: str, songs: list[dict[str, Any]], region: str) -> tuple[dic
     )
     total, chart_constant = _chart_values(best, difficulty)
     if total is None or chart_constant is None:
-        return None, 'OCR 已匹配歌曲，但本地缺少该谱面的物量或官方定数，无法校验录入。'
+        return None, f'{match_summary}\n本地缺少该谱面的物量或官方定数，无法校验录入。'
     evaluation = _evaluate_record_rating(single_rating, score, total, chart_constant, 'portal_ocr')
     if evaluation is None:
-        return None, f'OCR 的单曲 Rating {single_rating:.2f} 不可能由该谱面的 4.0+ 公式得到。'
+        return None, (
+            f'{match_summary}\nOCR 的单曲 Rating {single_rating:.2f} '
+            '不可能由该谱面的 4.0+ 公式得到。'
+        )
     record.update(evaluation)
     record.update({'total': total, 'chart_constant': chart_constant, 'title_match_confidence': best_conf})
     return record, ''

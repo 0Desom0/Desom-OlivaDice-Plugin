@@ -108,6 +108,44 @@ class ScoreOverrideTest(unittest.TestCase):
         self.assertEqual(single_rating, 18.18)
         self.assertEqual(region, 'china')
 
+    def test_manual_failure_reports_matched_song_and_chart(self) -> None:
+        song = {
+            'title': 'Apotheosis (Lanota Edit)',
+            'chapter': 'Event-110',
+            'official_songid': 'apotheosis_lanota_edit',
+            'notes': {'master': 1000},
+            'official_constant': {'master': 10.0},
+        }
+        with patch.object(score_overrides, 'resolve_song', return_value=(song, 0.95)):
+            success, result = score_overrides.add_manual(
+                SimpleNamespace(),
+                'apoptheosis master 17.70',
+            )
+        self.assertFalse(success)
+        self.assertIn('Apotheosis (Lanota Edit)', result)
+        self.assertIn('章节号 Event-110', result)
+        self.assertIn('难度 Master', result)
+        self.assertIn('不可能由该谱面的 4.0+ 公式得到', result)
+
+    def test_manual_typo_uses_the_same_best_match_as_song_search(self) -> None:
+        song, confidence = score_overrides.resolve_song('apoptheosis')
+        self.assertIsNotNone(song)
+        self.assertEqual(song['title'], 'Apotheosis (Lanota Edit)')
+        self.assertGreater(confidence, 0.9)
+
+    def test_manual_typo_records_apotheosis_rating(self) -> None:
+        with (
+            patch.object(score_overrides, 'load_overrides', return_value=[]),
+            patch.object(score_overrides, 'save_overrides', return_value=True),
+        ):
+            success, result = score_overrides.add_manual(
+                SimpleNamespace(),
+                'apoptheosis master 17.70',
+            )
+        self.assertTrue(success)
+        self.assertIn('已录入：Apotheosis (Lanota Edit)', result)
+        self.assertIn('章节号：Event-110', result)
+
     def test_storage_is_keyed_by_region_chapter_and_difficulty(self) -> None:
         memory = {'42': {}}
         event = SimpleNamespace()
@@ -296,7 +334,24 @@ class ScoreOverrideTest(unittest.TestCase):
         invalid_text = valid_text.replace('0999584', '0999583')
         record, error = score_overrides._parse_ocr(invalid_text, songs, 'global')
         self.assertIsNone(record)
+        self.assertIn('已匹配：MONONOKE（章节号 Inf-105，难度 Master）', error)
         self.assertIn('无法按该谱面的 4.0+ 整数公式还原', error)
+
+    def test_portal_ocr_failure_reports_matched_song_and_chart(self) -> None:
+        text = '\n'.join([
+            'Lanota',
+            'Apotheosis (Lanota Edit)',
+            'MASTER',
+            '单曲 RATING',
+            '25.00',
+        ])
+        record, error = score_overrides._parse_ocr(text, function.load_song_data(), 'global')
+        self.assertIsNone(record)
+        self.assertIn(
+            '已匹配：Apotheosis (Lanota Edit)（章节号 Event-110，难度 Master）',
+            error,
+        )
+        self.assertIn('不可能由该谱面的 4.0+ 公式得到', error)
 
     def test_expanded_game_result_rejects_score_mismatch(self) -> None:
         text = '''[[LANOTA_OCR_FULL]]
@@ -316,6 +371,7 @@ Fail
 534 / 2233'''
         record, error = score_overrides._parse_ocr(text, function.load_song_data(), 'global')
         self.assertIsNone(record)
+        self.assertIn('已匹配：Nemexis（章节号 8-5，难度 Master）', error)
         self.assertIn('按 H/T/F 应为 0993282', error)
 
 

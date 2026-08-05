@@ -31,7 +31,6 @@ command_configs = [
     ('alias', '别名'),
     ('song', '歌曲'),
     ('info', '查分'),
-    ('find', '查找'),
     ('artist', '曲师'),
     ('help', '帮助'),
     ('time', '时长'),
@@ -67,8 +66,6 @@ subcommand_alias_dict = {
     '别名': 'alias',
     'song': 'song',
     '歌曲': 'song',
-    'find': 'song',
-    '查找': 'song',
     'info': 'info',
     '查分': 'info',
     'artist': 'artist',
@@ -383,6 +380,53 @@ def reply_song_detail(plugin_event, header: str, song: dict[str, Any]) -> None:
         utils.reply_images_with_text(plugin_event, cover_paths, message_text)
 
 
+def _add_calculated_info_ratings(
+    song: dict[str, Any],
+    scores: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """仅为可按 4.0+ 整数公式还原的官网成绩补充 Rating 信息。"""
+    difficulty_names = ('whisper', 'acoustic', 'ultra', 'master')
+    result = []
+    legacy = song.get('Legacy', {})
+    for row in scores:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        item['scoreRatingValid'] = False
+        try:
+            difficulty = int(item.get('difficulty', -1))
+        except (TypeError, ValueError):
+            result.append(item)
+            continue
+        if not 0 <= difficulty < len(difficulty_names):
+            result.append(item)
+            continue
+
+        difficulty_key = difficulty_names[difficulty]
+        chart_set = str(item.get('chartSet', 'current')).casefold()
+        if chart_set == 'legacy' and isinstance(legacy, dict):
+            total = legacy.get(f'Max{difficulty_key.capitalize()}')
+            constants = legacy.get('official_constant', {})
+        elif chart_set == 'current':
+            notes = song.get('notes', {})
+            total = notes.get(difficulty_key) if isinstance(notes, dict) else None
+            constants = song.get('official_constant', {})
+        else:
+            result.append(item)
+            continue
+        chart_constant = constants.get(difficulty_key) if isinstance(constants, dict) else None
+        calculated = b30.calculate_score_rating(item.get('score'), total, chart_constant)
+        if calculated is not None:
+            item.update({
+                'scoreAccuracy': calculated['scoreAccuracy'],
+                'singleRating': calculated['singleRating'],
+                'ratingPercent': calculated['ratingPercent'],
+                'scoreRatingValid': True,
+            })
+        result.append(item)
+    return result
+
+
 def _song_info_fallback_text(
     song: dict[str, Any],
     *,
@@ -430,11 +474,19 @@ def _song_info_fallback_text(
                         line = (
                             f'{line} / 录入单曲 Rating {float(row.get("singleRating", 0)):.2f}'
                         )
+                        if row.get('ratingPercent') is not None:
+                            line = f'{line} / Rating% {float(row["ratingPercent"]):.2f}%'
                         if row.get('scoreAccuracy') is not None:
                             accuracy_prefix = '≈' if row.get('accuracyInferred') else ''
                             line = f'{line} / {accuracy_prefix}准度 {float(row["scoreAccuracy"]):.2f}%'
                         if row.get('overrideWarning'):
                             line = f'{line} / 提示：{row["overrideWarning"]}'
+                    elif row.get('scoreRatingValid'):
+                        line = (
+                            f'{line} / 单曲 Rating {float(row["singleRating"]):.2f}'
+                            f' / Rating% {float(row["ratingPercent"]):.2f}%'
+                            f' / 准度 {float(row["scoreAccuracy"]):.2f}%'
+                        )
                     lines.append(line)
                 else:
                     lines.append(f'{difficulty_name}：未游玩')
@@ -544,6 +596,7 @@ def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = Non
                     chart_set='legacy',
                 )
             )
+        score_rows = _add_calculated_info_ratings(song, score_rows)
         notice = ''
         if cache_error is not None:
             notice = f'网络查询失败，当前显示最近缓存：{portal.format_error(cache_error)}'
@@ -1016,9 +1069,43 @@ def handle_random(plugin_event, argument: str) -> None:
     reply_song_detail(plugin_event, f'{title}:', selected)
 
 
+def _find_alias_target(search_term: str, songs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """别名写操作只接受唯一标识或完整原名，不启动模糊搜索。"""
+    source = str(search_term or '').strip()
+    source_casefold = source.casefold()
+    direct_matches = []
+    for song in songs:
+        legacy = song.get('Legacy', {})
+        identifiers = {
+            str(song.get('chapter', '')).strip().casefold(),
+            str(song.get('id', '')).strip().casefold(),
+            str(song.get('official_songid', '')).strip().casefold(),
+            str(song.get('title', '')).strip().casefold(),
+        }
+        if isinstance(legacy, dict):
+            identifiers.add(str(legacy.get('official_songid', '')).strip().casefold())
+        identifiers.discard('')
+        if source_casefold in identifiers:
+            direct_matches.append(song)
+    if direct_matches:
+        return direct_matches
+
+    normalized_source = re.sub(r'[^\w\u4e00-\u9fff]+', '', source_casefold)
+    if not normalized_source:
+        return []
+    return [
+        song for song in songs
+        if re.sub(r'[^\w\u4e00-\u9fff]+', '', str(song.get('title', '')).casefold()) == normalized_source
+    ]
+
+
 def handle_alias(plugin_event, argument: str) -> None:
     if not argument.strip():
-        reply_text(plugin_event, '用法：\n/la alias add <别名>/<章节号或原名>\n/la alias del <别名>\n/la alias show <章节号/ID/别名/曲名>')
+        reply_text(
+            plugin_event,
+            '用法：\n/la alias add <别名>/<章节号、ID或完整原名>'
+            '\n/la alias del <别名>\n/la alias show <章节号、ID、别名或曲名>',
+        )
         return
     action, remaining = parse_action(argument, ['show', 'add', 'del'])
     action = action.lower()
@@ -1031,20 +1118,19 @@ def handle_alias(plugin_event, argument: str) -> None:
     all_titles = {str(song.get('title', '')).lower() for song in song_data}
     if action == 'add':
         if '/' not in remaining:
-            reply_text(plugin_event, '格式错误，请使用 <别名>/<章节号或原名> 格式。')
+            reply_text(plugin_event, '格式错误，请使用 <别名>/<章节号、ID或完整原名> 格式。')
             return
         alias, search_term = [item.strip() for item in remaining.split('/', 1)]
-        matched_songs, _match_type, total_count = function.find_song_by_search_term(search_term, song_data, alias_data)
+        matched_songs = _find_alias_target(search_term, song_data)
         if not matched_songs:
-            reply_text(plugin_event, f'没有找到章节号、ID或原名为[{search_term}]的乐曲。')
+            reply_text(
+                plugin_event,
+                f'没有找到章节号、ID或完整原名为[{search_term}]的唯一乐曲。'
+                '请先使用 /la song <搜索词> 查到准确标识。',
+            )
             return
-        if total_count > 1:
-            # 多个结果使用分页展示
-            save_search_session(plugin_event, matched_songs, '别名添加查询')
-            formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
-            header = f'找到多个匹配的乐曲({total_count}个)，请输入序号选择，或输入“结束”退出：\n'
-            message = header + formatted_results
-            reply_text(plugin_event, message, max_chars=config.search_image_max_chars)
+        if len(matched_songs) > 1:
+            reply_text(plugin_event, '该标识对应多首歌曲，无法唯一确定；请改用歌曲 ID 或官方 songId。')
             return
         std_name = str(matched_songs[0].get('title', ''))
         if alias.lower() in all_titles:
@@ -1090,12 +1176,14 @@ def handle_alias(plugin_event, argument: str) -> None:
                 reply_text(plugin_event, f'乐曲[{std_name}]的别名({len(aliases)}个):\n' + '\n'.join(f'{i + 1}. {a}' for i, a in enumerate(aliases)))
             return
         
-        # 多个结果使用分页展示
-        save_search_session(plugin_event, matched_songs, '别名查询')
-        formatted_results, total_pages, page_index = function.format_search_results_with_pagination(matched_songs, 0, config.result_page_size)
-        header = f'找到多个匹配的乐曲({total_count}个)，请输入序号查看别名，或输入“结束”退出：\n'
-        message = header + formatted_results
-        reply_text(plugin_event, message, max_chars=config.search_image_max_chars)
+        reply_text(
+            plugin_event,
+            render_song_list(
+                f'匹配到多首歌曲({total_count}首)，请使用更精确的章节号、ID、别名或完整原名：',
+                matched_songs,
+            ),
+            max_chars=config.search_image_max_chars,
+        )
         return
     reply_text(plugin_event, '无效操作，只能使用 add/del/show。')
 
@@ -1150,11 +1238,6 @@ def handle_song(plugin_event, argument: str) -> None:
         reply_text(plugin_event, '用法：/la song <搜索词>（只显示歌曲信息）')
         return
     _search_songs(plugin_event, raw_arg, 'song')
-
-
-def handle_find(plugin_event, argument: str) -> None:
-    """兼容旧命令：.la find 等同于 .la song。"""
-    handle_song(plugin_event, argument)
 
 
 def handle_info(plugin_event, argument: str) -> None:
@@ -1899,9 +1982,9 @@ help_categories = {
         'name': '别名管理',
         'aliases': ['alias', '别名'],
         'commands': [
-            '/la alias add <别名>/<搜索词> - 添加别名',
+            '/la alias add <别名>/<章节号、ID或完整原名> - 添加别名',
             '/la alias del <别名> - 删除别名',
-            '/la alias show <搜索词> - 查看乐曲别名',
+            '/la alias show <章节号、ID、别名或曲名> - 查看乐曲别名',
         ],
         'examples': [
             '/la alias show Frey',
@@ -1910,13 +1993,12 @@ help_categories = {
     },
     'search': {
         'name': '歌曲信息与单曲查分',
-        'aliases': ['song', 'info', '查找', 'find'],
+        'aliases': ['song', 'info'],
         'commands': [
             '/la song <搜索词> - 只查看歌曲信息',
             '/la info <搜索词> - 查看绑定玩家的该曲成绩（双区绑定时默认国际服）',
             '/la info cn <搜索词> - 查看国服绑定玩家的该曲成绩',
             '/la info global <搜索词> - 查看国际服绑定玩家的该曲成绩',
-            '/la find <搜索词> - .la song 的兼容写法',
         ],
         'priority': [
             '1. 完全匹配章节号',
@@ -2279,7 +2361,6 @@ command_handler_dict = {
     'alias': handle_alias,
     'song': handle_song,
     'info': handle_info,
-    'find': handle_find,
     'artist': handle_artist,
     'help': handle_help,
     'time': lambda event, arg: handle_time(event),

@@ -2,6 +2,7 @@
 """Lanota 曲库业务逻辑与图片渲染。"""
 
 import datetime
+import difflib
 import math
 import random
 import re
@@ -332,59 +333,31 @@ def get_songs_by_level(song_data: list[dict[str, Any]], level: str) -> list[dict
 
 
 def calculate_search_score(search_term: str, target_str: str) -> int:
-    """
-    使用LCS（最长公共子序列）和编辑距离的组合算法计算搜索分数。
-    分数越低越相似。参考OlivaDiceCore的实现。
-    """
-    search_term = str(search_term).lower().strip()
-    target_str = str(target_str).lower().strip()
-    
-    if not search_term or not target_str:
-        return 10001  # 完全不匹配
-    
-    # 如果在目标字符串中直接找到，降低分数
-    find_flag = 0 if target_str.find(search_term) != -1 else 1
-    
-    # 确保search_term是较短的字符串
-    if len(search_term) > len(target_str):
-        search_term, target_str = target_str, search_term
-    
-    search_len = len(search_term)
-    target_len = len(target_str)
-    
-    # LCS（最长公共子序列）
-    dp_lcs = [[0] * (search_len + 1) for _ in range(target_len + 1)]
-    for i in range(1, target_len + 1):
-        for j in range(1, search_len + 1):
-            if target_str[i - 1] == search_term[j - 1]:
-                dp_lcs[i][j] = dp_lcs[i - 1][j - 1] + 1
-            else:
-                dp_lcs[i][j] = max(dp_lcs[i - 1][j], dp_lcs[i][j - 1])
-    lcs_length = dp_lcs[target_len][search_len]
-    
-    # 编辑距离（Levenshtein Distance）
-    dp_dist = [[0] * (search_len + 1) for _ in range(target_len + 1)]
-    for i in range(search_len + 1):
-        dp_dist[0][i] = i
-    for i in range(target_len + 1):
-        dp_dist[i][0] = i
-    
-    for i in range(1, target_len + 1):
-        for j in range(1, search_len + 1):
-            if target_str[i - 1] == search_term[j - 1]:
-                dp_dist[i][j] = dp_dist[i - 1][j - 1]
-            else:
-                dp_dist[i][j] = min(dp_dist[i - 1][j - 1], dp_dist[i - 1][j], dp_dist[i][j - 1]) + 1
-    edit_dist = dp_dist[target_len][search_len]
-    
-    # 综合计算得分
-    score = find_flag * (target_len * (search_len - lcs_length) + edit_dist + 1)
-    score = int(int((score * score) / search_len) / target_len) if search_len > 0 and target_len > 0 else 10000
-    
-    if score >= search_len * target_len:
-        score += 1000
-    
-    return score
+    """计算规范化模糊匹配分数；0 最相似，1000 最不相似。"""
+
+    def normalize(value: str) -> str:
+        return re.sub(r'[^\w\u4e00-\u9fff]+', '', str(value).casefold())
+
+    query = normalize(search_term)
+    target_text = str(target_str).strip()
+    target_variants = [normalize(target_text)]
+    main_title = re.split(r'[（(\[]', target_text, maxsplit=1)[0]
+    normalized_main_title = normalize(main_title)
+    if normalized_main_title and normalized_main_title not in target_variants:
+        target_variants.append(normalized_main_title)
+    if not query or not any(target_variants):
+        return 10001
+
+    best_ratio = 0.0
+    for target in target_variants:
+        ratio = difflib.SequenceMatcher(None, query, target).ratio()
+        shorter_length = min(len(query), len(target))
+        containment_ratio = shorter_length / max(len(query), len(target))
+        is_meaningful_containment = query in target or (target in query and containment_ratio >= 0.7)
+        if shorter_length >= 3 and is_meaningful_containment:
+            ratio = max(ratio, 0.75 + min(0.25, containment_ratio * 0.25))
+        best_ratio = max(best_ratio, ratio)
+    return round((1 - best_ratio) * 1000)
 
 
 def find_song_by_search_term(
@@ -451,12 +424,13 @@ def find_song_by_search_term(
                     best_score = alias_score
                     search_source = f'别名({alias})'
             
-            # 如果分数在可接受范围内（分数越低越好，阈值为1000）
-            if best_score < 1000:
+            if best_score <= 450:
                 scored_songs.append((best_score, song, search_source))
         
-        # 按分数排序
         scored_songs.sort(key=lambda x: x[0])
+        if scored_songs:
+            score_limit = min(450, scored_songs[0][0] + 150)
+            scored_songs = [item for item in scored_songs if item[0] <= score_limit]
         matched_songs = [song for _, song, _ in scored_songs]
         match_type = '打分制模糊搜索' if matched_songs else None
 
@@ -486,10 +460,13 @@ def find_artist_by_search_term(search_term: str, song_data: list[dict[str, Any]]
         scored_artists = []
         for artist in artists:
             score = calculate_search_score(search_term, artist)
-            if score < 1000:
+            if score <= 450:
                 scored_artists.append((score, artist))
         
         scored_artists.sort(key=lambda x: x[0])
+        if scored_artists:
+            score_limit = min(450, scored_artists[0][0] + 150)
+            scored_artists = [item for item in scored_artists if item[0] <= score_limit]
         matched = [artist for _, artist in scored_artists]
         match_type = '曲师打分制模糊匹配' if matched else None
     

@@ -200,7 +200,11 @@
           const overrideFacts = row.override
             ? `<div class="score-item"><b>录入单曲 RATING</b><span>${Number(row.singleRating).toFixed(2)}</span></div><div class="score-item"><b>RATING%</b><span>${row.ratingPercent == null ? '—' : `${Number(row.ratingPercent).toFixed(2)}%`}</span></div>${overrideAccuracy}`
             : '';
-          return `<article class="diff-card" style="--diff-color:${diffColors[index]}">${base}<div class="score-line"><div class="score-item"><b>NOTES</b><span>${esc(notes[key] || '—')}</span></div><div class="score-item"><b>SCORE</b><span>${esc(score)}</span></div><div class="score-item"><b>CLEAR</b><span>${esc(row.clear ?? '—')}</span></div><div class="score-item"><b>RANK</b><span>${esc(row.rank ?? '—')}</span></div>${overrideFacts}</div></article>`;
+          const calculatedFacts = !row.override && row.scoreRatingValid
+            ? `<div class="score-item"><b>单曲 RATING</b><span>${Number(row.singleRating).toFixed(2)}</span></div><div class="score-item"><b>RATING%</b><span>${Number(row.ratingPercent).toFixed(2)}%</span></div><div class="score-item"><b>分数准度</b><span>${Number(row.scoreAccuracy).toFixed(2)}%</span></div>`
+            : '';
+          const ratingFacts = row.override ? overrideFacts : calculatedFacts;
+          return `<article class="diff-card" style="--diff-color:${diffColors[index]}">${base}<div class="score-line"><div class="score-item"><b>NOTES</b><span>${esc(notes[key] || '—')}</span></div><div class="score-item"><b>SCORE</b><span>${esc(score)}</span></div><div class="score-item"><b>CLEAR</b><span>${esc(row.clear ?? '—')}</span></div><div class="score-item"><b>RANK</b><span>${esc(row.rank ?? '—')}</span></div>${ratingFacts}</div></article>`;
         }).join('');
       };
 
