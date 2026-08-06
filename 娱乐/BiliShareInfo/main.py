@@ -24,6 +24,44 @@ except Exception:
     HAS_OLIVA_DICE_CORE = False
 
 
+# 插件标识与数据目录
+gProc = None
+gPluginName = 'BiliShareInfo'
+
+PLUGIN_NAMESPACE = 'BiliShareInfo'
+DATA_ROOT = os.path.join('plugin', 'data', PLUGIN_NAMESPACE)
+LEGACY_DATA_ROOT = os.path.join('data', PLUGIN_NAMESPACE)
+
+# 默认配置
+DEFAULT_CONFIG = {
+    'global_enable': True,
+    'default_group_enable': False,
+    'single_forward_enable': False,
+    'multi_forward_enable': True,
+    'parse_debug_enable': False,
+    'preview_ocr_enable': True,
+    'configured_master_list': [],
+}
+
+DEFAULT_GROUP_CONFIG = {
+    'groups': {},
+}
+
+# 运行期状态
+DATA_LOCK = threading.RLock()
+gRecentKeyTime = {}
+gParseDebugContext = ContextVar('BiliShareInfo_parse_debug', default=False)
+gPreviewOcrLock = threading.RLock()
+gPreviewOcrEngine = None
+gPreviewOcrUnavailable = False
+
+# 命令与解析常量
+COMMAND_PREFIXES = ('.', '/', '。')
+HTTP_TIMEOUT = 8
+RECENT_TTL_SECONDS = 30
+PARSE_LOG_LEVEL = 2
+MIN_TITLE_SEARCH_SIGNAL_LENGTH = 3
+PREVIEW_OCR_MAX_BYTES = 4 * 1024 * 1024
 
 REPLY_SEGMENT_PATTERN = re.compile(
     r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]',
@@ -106,6 +144,86 @@ def parse_command_message(plugin_event, message):
     return remaining
 
 
+def prepare_current_message(plugin_event, message: str) -> tuple[str, bool]:
+    has_reference = has_message_reference(plugin_event, message)
+    if not has_reference:
+        return message, False
+    return strip_leading_reply_context(message), True
+
+
+def has_message_reference(plugin_event, message: str) -> bool:
+    if has_leading_reply_segment(message):
+        return True
+
+    try:
+        event_extend = getattr(plugin_event.data, 'extend', {})
+    except Exception:
+        event_extend = {}
+    if isinstance(event_extend, dict):
+        if event_extend.get('qq_reference_message_id') or event_extend.get('qq_ref_msg_idx'):
+            return True
+        qq_event_data = event_extend.get('qq_event_data')
+        if isinstance(qq_event_data, dict):
+            message_reference = qq_event_data.get('message_reference')
+            if isinstance(message_reference, dict) and message_reference.get('message_id'):
+                return True
+
+    try:
+        message_sdk = getattr(plugin_event.data, 'message_sdk', None)
+    except Exception:
+        message_sdk = None
+    return message_object_has_leading_reply(message_sdk)
+
+
+def has_leading_reply_segment(message: str) -> bool:
+    remaining = safe_str(message).lstrip()
+    while remaining:
+        reply_match = REPLY_SEGMENT_PATTERN.match(remaining)
+        if reply_match:
+            return True
+        at_match = AT_SEGMENT_PATTERN.match(remaining)
+        if not at_match:
+            return False
+        remaining = remaining[at_match.end():].lstrip()
+    return False
+
+
+def strip_leading_reply_context(message: str) -> str:
+    original_message = safe_str(message)
+    remaining = original_message.lstrip()
+    found_reply = False
+    while remaining:
+        reply_match = REPLY_SEGMENT_PATTERN.match(remaining)
+        if reply_match:
+            found_reply = True
+            remaining = remaining[reply_match.end():].lstrip()
+            continue
+        at_match = AT_SEGMENT_PATTERN.match(remaining)
+        if not at_match:
+            break
+        remaining = remaining[at_match.end():].lstrip()
+    return remaining if found_reply else original_message
+
+
+def message_object_has_leading_reply(message_object: Any) -> bool:
+    if message_object is None:
+        return False
+    for attribute_name in ['data', 'data_raw']:
+        message_segments = getattr(message_object, attribute_name, None)
+        if not isinstance(message_segments, list):
+            continue
+        for message_segment in message_segments:
+            if isinstance(message_segment, dict):
+                segment_type = safe_str(message_segment.get('type')).casefold()
+            else:
+                segment_type = safe_str(getattr(message_segment, 'type', '')).casefold()
+            if segment_type == 'reply':
+                return True
+            if segment_type != 'at':
+                break
+    return False
+
+
 def reply_message(plugin_event, message):
     final_message = _safe_text(message)
     try:
@@ -116,44 +234,6 @@ def reply_message(plugin_event, message):
     except Exception:
         pass
     return plugin_event.reply(final_message)
-
-
-gProc = None
-gPluginName = 'BiliShareInfo'
-
-PLUGIN_NAMESPACE = 'BiliShareInfo'
-DATA_ROOT = os.path.join('plugin', 'data', PLUGIN_NAMESPACE)
-LEGACY_DATA_ROOT = os.path.join('data', PLUGIN_NAMESPACE)
-
-DEFAULT_CONFIG = {
-    'global_enable': True,
-    'default_group_enable': False,
-    'single_forward_enable': False,
-    'multi_forward_enable': True,
-    'parse_debug_enable': False,
-    'preview_ocr_enable': True,
-    'configured_master_list': [],
-}
-
-DEFAULT_GROUP_CONFIG = {
-    'groups': {},
-}
-
-DATA_LOCK = threading.RLock()
-gRecentKeyTime = {}
-
-COMMAND_PREFIXES = ('.', '/', '。')
-HTTP_TIMEOUT = 8
-RECENT_TTL_SECONDS = 30
-PARSE_LOG_LEVEL = 2
-MIN_TITLE_SEARCH_SIGNAL_LENGTH = 3
-PREVIEW_OCR_MAX_BYTES = 4 * 1024 * 1024
-
-# 解析日志按当前消息上下文隔离，避免多 Bot/多线程处理时串用开关。
-gParseDebugContext = ContextVar('BiliShareInfo_parse_debug', default=False)
-gPreviewOcrLock = threading.RLock()
-gPreviewOcrEngine = None
-gPreviewOcrUnavailable = False
 
 
 class Event:
@@ -190,7 +270,12 @@ def handle_message(plugin_event, is_group: bool) -> None:
         if not group_enabled:
             return
 
-        is_candidate = is_parse_candidate_message(plugin_event, message)
+        current_message, has_reference = prepare_current_message(plugin_event, message)
+        is_candidate = is_parse_candidate_message(
+            plugin_event,
+            current_message,
+            include_event_cards=not has_reference,
+        )
         if not is_candidate:
             return
 
@@ -199,11 +284,18 @@ def handle_message(plugin_event, is_group: bool) -> None:
             f'开始处理候选消息 group={is_group} '
             f'group_key={get_group_key(plugin_event)} '
             f'platform={safe_str(getattr(plugin_event, "platform", {}))} '
-            f'message={shorten_log_text(message, 240)}'
+            f'has_reference={has_reference} '
+            f'message={shorten_log_text(current_message, 240)}'
         )
         parse_log(f'群解析开关 enabled={group_enabled}')
+        if has_reference:
+            parse_log('当前消息带引用，仅解析引用后的文本，跳过extend/message_sdk卡片')
 
-        video_ref_list = extract_video_refs_from_event(plugin_event, message)
+        video_ref_list = extract_video_refs_from_event(
+            plugin_event,
+            current_message,
+            include_event_cards=not has_reference,
+        )
         parse_log(f'消息引用提取完成 count={len(video_ref_list)} refs={format_video_ref_list(video_ref_list)}')
         if not video_ref_list:
             return
@@ -897,12 +989,20 @@ def is_probable_bili_card(card_data: dict[str, Any]) -> bool:
     )
 
 
-def extract_video_refs_from_event(plugin_event, message: str) -> list[dict[str, str]]:
-    qq_ark_card_list = [
-        card_data
-        for card_data in extract_qq_ark_cards(plugin_event)
-        if is_probable_bili_card(card_data)
-    ]
+def extract_video_refs_from_event(
+    plugin_event,
+    message: str,
+    include_event_cards: bool = True,
+) -> list[dict[str, str]]:
+    qq_ark_card_list = []
+    if include_event_cards:
+        qq_ark_card_list = [
+            card_data
+            for card_data in extract_qq_ark_cards(plugin_event)
+            if is_probable_bili_card(card_data)
+        ]
+    else:
+        parse_log('消息带引用，跳过QQ ARK extend/message_sdk卡片提取')
     use_qq_ark_card = bool(qq_ark_card_list)
     parse_log(
         f'卡片来源选择 source={"qq_ark" if use_qq_ark_card else "op_json"} '
@@ -1027,7 +1127,11 @@ def add_card_payload(payload: Any, card_data_list: list[dict[str, Any]]) -> None
     add_card_payload(parsed_payload, card_data_list)
 
 
-def is_parse_candidate_message(plugin_event, message: str) -> bool:
+def is_parse_candidate_message(
+    plugin_event,
+    message: str,
+    include_event_cards: bool = True,
+) -> bool:
     """仅对可能包含 B 站引用的消息开启解析诊断日志。"""
     if extract_video_refs_from_text(message) or extract_urls(message):
         return True
@@ -1041,9 +1145,10 @@ def is_parse_candidate_message(plugin_event, message: str) -> bool:
     ):
         return True
 
-    for card_data in extract_qq_ark_cards(plugin_event):
-        if is_probable_bili_card(card_data):
-            return True
+    if include_event_cards:
+        for card_data in extract_qq_ark_cards(plugin_event):
+            if is_probable_bili_card(card_data):
+                return True
     return False
 
 
