@@ -1,6 +1,8 @@
+import difflib
 import html
 import json
 import os
+import random
 import re
 import shutil
 import threading
@@ -8,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextvars import ContextVar
 from typing import Any
 
 import BiliShareInfo  # noqa: F401
@@ -18,7 +21,7 @@ try:
     HAS_OLIVA_DICE_CORE = True
 except Exception:
     OlivaDiceCore = None
-HAS_OLIVA_DICE_CORE = False
+    HAS_OLIVA_DICE_CORE = False
 
 
 
@@ -127,6 +130,8 @@ DEFAULT_CONFIG = {
     'default_group_enable': False,
     'single_forward_enable': False,
     'multi_forward_enable': True,
+    'parse_debug_enable': False,
+    'preview_ocr_enable': True,
     'configured_master_list': [],
 }
 
@@ -140,6 +145,15 @@ gRecentKeyTime = {}
 COMMAND_PREFIXES = ('.', '/', '。')
 HTTP_TIMEOUT = 8
 RECENT_TTL_SECONDS = 30
+PARSE_LOG_LEVEL = 2
+MIN_TITLE_SEARCH_SIGNAL_LENGTH = 3
+PREVIEW_OCR_MAX_BYTES = 4 * 1024 * 1024
+
+# 解析日志按当前消息上下文隔离，避免多 Bot/多线程处理时串用开关。
+gParseDebugContext = ContextVar('BiliShareInfo_parse_debug', default=False)
+gPreviewOcrLock = threading.RLock()
+gPreviewOcrEngine = None
+gPreviewOcrUnavailable = False
 
 
 class Event:
@@ -164,6 +178,7 @@ class Event:
 
 
 def handle_message(plugin_event, is_group: bool) -> None:
+    debug_token = None
     try:
         message = safe_str(plugin_event.data.message)
         command_message = parse_command_message(plugin_event, message)
@@ -171,10 +186,25 @@ def handle_message(plugin_event, is_group: bool) -> None:
             return
         if not is_group:
             return
-        if not is_group_enabled(plugin_event):
+        group_enabled = is_group_enabled(plugin_event)
+        if not group_enabled:
             return
 
+        is_candidate = is_parse_candidate_message(plugin_event, message)
+        if not is_candidate:
+            return
+
+        debug_token = gParseDebugContext.set(is_parse_debug_enabled(plugin_event))
+        parse_log(
+            f'开始处理候选消息 group={is_group} '
+            f'group_key={get_group_key(plugin_event)} '
+            f'platform={safe_str(getattr(plugin_event, "platform", {}))} '
+            f'message={shorten_log_text(message, 240)}'
+        )
+        parse_log(f'群解析开关 enabled={group_enabled}')
+
         video_ref_list = extract_video_refs_from_event(plugin_event, message)
+        parse_log(f'消息引用提取完成 count={len(video_ref_list)} refs={format_video_ref_list(video_ref_list)}')
         if not video_ref_list:
             return
 
@@ -183,9 +213,11 @@ def handle_message(plugin_event, is_group: bool) -> None:
         for video_ref in video_ref_list:
             dedupe_key = build_dedupe_key(plugin_event, video_ref)
             if is_recent_duplicate(dedupe_key):
+                parse_log(f'跳过近期重复引用 ref={format_video_ref(video_ref)}')
                 continue
             video_info = fetch_video_info(video_ref)
             if not video_info:
+                parse_log(f'视频信息获取失败 ref={format_video_ref(video_ref)}')
                 continue
             video_info_list.append(video_info)
             sent_dedupe_key_list.append(dedupe_key)
@@ -194,10 +226,17 @@ def handle_message(plugin_event, is_group: bool) -> None:
             return
 
         send_video_info_list(plugin_event, video_info_list)
+        parse_log(f'视频信息发送完成 count={len(video_info_list)}')
         for dedupe_key in sent_dedupe_key_list:
             mark_recent_key(dedupe_key)
-    except Exception:
-        return
+    except Exception as exception_object:
+        parse_log(
+            f'处理消息异常 error={type(exception_object).__name__}: '
+            f'{shorten_log_text(exception_object, 240)}'
+        )
+    finally:
+        if debug_token is not None:
+            gParseDebugContext.reset(debug_token)
 
 
 def bili_log(message_text: str, level: int = 2) -> None:
@@ -214,7 +253,9 @@ def bili_log(message_text: str, level: int = 2) -> None:
 
 
 def parse_log(message_text: str) -> None:
-    return
+    if not gParseDebugContext.get():
+        return
+    bili_log(message_text, PARSE_LOG_LEVEL)
 
 
 def log_resolved_video_refs(video_ref_list: list[dict[str, str]]) -> None:
@@ -253,6 +294,42 @@ def handle_command(plugin_event, message: str, is_group: bool) -> bool:
 
         set_global_enable(plugin_event, command_action == 'on')
         reply_message(plugin_event, f'B站解析全局开关已{"开启" if command_action == "on" else "关闭"}。')
+        plugin_event.set_block()
+        return True
+
+    if command_scope == 'parse_debug':
+        if command_action not in ['on', 'off']:
+            reply_message(plugin_event, '用法：.bili debug on/off')
+            plugin_event.set_block()
+            return True
+        if not has_global_switch_permission(plugin_event):
+            reply_message(plugin_event, '权限不足：只有骰主可以切换解析调试日志。')
+            plugin_event.set_block()
+            return True
+
+        set_parse_debug_enable(plugin_event, command_action == 'on')
+        reply_message(
+            plugin_event,
+            f'解析调试日志已{"开启" if command_action == "on" else "关闭"}。',
+        )
+        plugin_event.set_block()
+        return True
+
+    if command_scope == 'preview_ocr':
+        if command_action not in ['on', 'off']:
+            reply_message(plugin_event, '用法：.bili ocr on/off')
+            plugin_event.set_block()
+            return True
+        if not has_global_switch_permission(plugin_event):
+            reply_message(plugin_event, '权限不足：只有骰主可以切换预览图OCR匹配。')
+            plugin_event.set_block()
+            return True
+
+        set_preview_ocr_enable(plugin_event, command_action == 'on')
+        reply_message(
+            plugin_event,
+            f'预览图OCR匹配已{"开启" if command_action == "on" else "关闭"}。',
+        )
         plugin_event.set_block()
         return True
 
@@ -323,6 +400,12 @@ def parse_bili_command(message: str) -> dict[str, str] | None:
             return {'scope': 'help', 'action': ''}
         if compact_tail in ['on', 'off']:
             return {'scope': 'group', 'action': compact_tail}
+        if compact_tail in ['debugon', 'debugoff', 'parsedebugon', 'parsedebugoff']:
+            action = compact_tail.removeprefix('parsedebug').removeprefix('debug')
+            return {'scope': 'parse_debug', 'action': action}
+        if compact_tail in ['ocron', 'ocroff', 'previewocron', 'previewocroff']:
+            action = compact_tail.removeprefix('previewocr').removeprefix('ocr')
+            return {'scope': 'preview_ocr', 'action': action}
         if compact_tail in ['globalon', 'globaloff']:
             return {'scope': 'global', 'action': compact_tail.removeprefix('global')}
         if compact_tail in ['defaulton', 'defaultoff']:
@@ -367,6 +450,8 @@ def build_help_message(plugin_event, is_group: bool) -> str:
             '本群默认开关：.bili default on/off（仅骰主）',
             '单链接合并转发：.bili singleforward on/off（仅骰主）',
             '多链接合并转发：.bili multiforward on/off（仅骰主）',
+            '解析调试日志：.bili debug on/off（仅骰主）',
+            '预览图OCR匹配：.bili ocr on/off（仅骰主，可选依赖）',
             '帮助：.bili help',
             '未单独设置的群会使用本群默认开关。',
             '开启后会自动解析群内的B站小程序/链接分享并回复视频信息。',
@@ -452,6 +537,20 @@ def set_global_enable(plugin_event, enable: bool) -> None:
     save_bot_config(bot_hash, bot_config)
 
 
+def set_parse_debug_enable(plugin_event, enable: bool) -> None:
+    bot_hash = get_config_bot_hash_from_event(plugin_event)
+    bot_config = load_bot_config(bot_hash)
+    bot_config['parse_debug_enable'] = bool(enable)
+    save_bot_config(bot_hash, bot_config)
+
+
+def set_preview_ocr_enable(plugin_event, enable: bool) -> None:
+    bot_hash = get_config_bot_hash_from_event(plugin_event)
+    bot_config = load_bot_config(bot_hash)
+    bot_config['preview_ocr_enable'] = bool(enable)
+    save_bot_config(bot_hash, bot_config)
+
+
 def set_default_group_enable(plugin_event, enable: bool) -> None:
     bot_hash = get_config_bot_hash_from_event(plugin_event)
     bot_config = load_bot_config(bot_hash)
@@ -497,6 +596,24 @@ def is_group_enabled(plugin_event) -> bool:
             bot_config.get('default_group_enable', False),
         )
     )
+
+
+def is_parse_debug_enabled(plugin_event) -> bool:
+    try:
+        bot_hash = get_config_bot_hash_from_event(plugin_event)
+        bot_config = load_bot_config(bot_hash)
+        return bool(bot_config.get('parse_debug_enable', False))
+    except Exception:
+        return False
+
+
+def is_preview_ocr_enabled(plugin_event) -> bool:
+    try:
+        bot_hash = get_config_bot_hash_from_event(plugin_event)
+        bot_config = load_bot_config(bot_hash)
+        return bool(bot_config.get('preview_ocr_enable', True))
+    except Exception:
+        return True
 
 
 def get_group_key(plugin_event) -> str:
@@ -568,6 +685,8 @@ def normalize_config_data(config_data: Any) -> dict[str, Any]:
     normalized_config['default_group_enable'] = bool(config_data.get('default_group_enable', False))
     normalized_config['single_forward_enable'] = bool(config_data.get('single_forward_enable', False))
     normalized_config['multi_forward_enable'] = bool(config_data.get('multi_forward_enable', True))
+    normalized_config['parse_debug_enable'] = bool(config_data.get('parse_debug_enable', False))
+    normalized_config['preview_ocr_enable'] = bool(config_data.get('preview_ocr_enable', True))
     normalized_config['configured_master_list'] = normalize_id_list(
         config_data.get('configured_master_list', [])
     )
@@ -692,27 +811,47 @@ def is_group_admin(plugin_event) -> bool:
 
 
 def extract_json_card(message: str) -> dict[str, Any] | None:
+    found_marker = False
     for marker in ['[OP:json', '[CQ:json']:
         start_index = message.find(marker)
         if start_index < 0:
             continue
+        found_marker = True
+        parse_log(f'发现JSON卡片标记 marker={marker} offset={start_index}')
 
         data_index = message.find('data=', start_index)
         if data_index < 0:
+            parse_log(f'JSON卡片缺少data参数 marker={marker}')
             continue
 
         brace_index = message.find('{', data_index)
         if brace_index < 0:
+            parse_log(f'JSON卡片data中未找到对象 marker={marker}')
             continue
 
         json_text = extract_balanced_json(message, brace_index)
         if not json_text:
+            parse_log(f'JSON卡片对象括号不完整 marker={marker} brace_offset={brace_index}')
             continue
 
         try:
-            return json.loads(html.unescape(json_text))
-        except Exception:
-            continue
+            card_data = json.loads(html.unescape(json_text))
+            if isinstance(card_data, dict):
+                parse_log(
+                    f'JSON卡片解析成功 keys={format_log_list(list(card_data.keys()), 12)} '
+                    f'json_len={len(json_text)}'
+                )
+                return card_data
+            parse_log(f'JSON卡片解析结果不是对象 type={type(card_data).__name__}')
+        except Exception as exception_object:
+            parse_log(
+                f'JSON卡片解析失败 error={type(exception_object).__name__}: '
+                f'{shorten_log_text(exception_object, 180)} json_len={len(json_text)}'
+            )
+    if not found_marker:
+        parse_log('消息中未发现OP/CQ JSON卡片标记')
+    else:
+        parse_log('消息中的JSON卡片标记均未成功解析')
     return None
 
 
@@ -759,7 +898,23 @@ def is_probable_bili_card(card_data: dict[str, Any]) -> bool:
 
 
 def extract_video_refs_from_event(plugin_event, message: str) -> list[dict[str, str]]:
-    video_ref_list = extract_video_refs_from_message(message)
+    qq_ark_card_list = [
+        card_data
+        for card_data in extract_qq_ark_cards(plugin_event)
+        if is_probable_bili_card(card_data)
+    ]
+    use_qq_ark_card = bool(qq_ark_card_list)
+    parse_log(
+        f'卡片来源选择 source={"qq_ark" if use_qq_ark_card else "op_json"} '
+        f'qq_ark_count={len(qq_ark_card_list)}'
+    )
+
+    video_ref_list = extract_video_refs_from_message(
+        message,
+        include_json_card=not use_qq_ark_card,
+        preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
+    )
+    parse_log(f'消息文本解析初始refs={format_video_ref_list(video_ref_list)}')
     seen_key_set = {
         video_key
         for video_ref in video_ref_list
@@ -767,13 +922,15 @@ def extract_video_refs_from_event(plugin_event, message: str) -> list[dict[str, 
     }
     url_ref_cache = {}
 
-    for card_index, card_data in enumerate(extract_qq_ark_cards(plugin_event), start=1):
+    parse_log(f'QQ ARK卡片提取数量={len(qq_ark_card_list)}')
+    for card_index, card_data in enumerate(qq_ark_card_list, start=1):
         add_video_refs_from_card(
             card_data,
             video_ref_list,
             seen_key_set,
             url_ref_cache,
             f'QQ官机ARK卡片#{card_index}',
+            preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
         )
 
     log_resolved_video_refs(video_ref_list)
@@ -783,10 +940,17 @@ def extract_video_refs_from_event(plugin_event, message: str) -> list[dict[str, 
 def extract_qq_ark_cards(plugin_event) -> list[dict[str, Any]]:
     try:
         event_extend = getattr(plugin_event.data, 'extend', {})
-    except Exception:
+    except Exception as exception_object:
+        parse_log(
+            f'读取事件extend失败 error={type(exception_object).__name__}: '
+            f'{shorten_log_text(exception_object, 180)}'
+        )
         return []
     if not isinstance(event_extend, dict):
+        parse_log(f'事件extend不是字典 type={type(event_extend).__name__}')
         return []
+
+    parse_log(f'事件extend keys={format_log_list(list(event_extend.keys()), 20)}')
 
     card_data_list = []
     add_unique_card_data(card_data_list, event_extend.get('qq_ark_data'))
@@ -797,6 +961,14 @@ def extract_qq_ark_cards(plugin_event) -> list[dict[str, Any]]:
         collect_ark_cards_from_message_elements(qq_event_data.get('msg_elements'), card_data_list)
 
     collect_ark_cards_from_message_elements(event_extend.get('qq_msg_elements'), card_data_list)
+    collect_ark_cards_from_message_object(
+        getattr(plugin_event.data, 'message_sdk', None),
+        card_data_list,
+    )
+    parse_log(
+        f'QQ ARK卡片收集完成 count={len(card_data_list)} '
+        f'card_keys={format_log_list([list(card_data.keys()) for card_data in card_data_list], 8)}'
+    )
     return card_data_list
 
 
@@ -815,11 +987,79 @@ def add_unique_card_data(card_data_list: list[dict[str, Any]], card_data: Any) -
         card_data_list.append(card_data)
 
 
-def extract_video_refs_from_message(message: str) -> list[dict[str, str]]:
+def collect_ark_cards_from_message_object(
+    message_object: Any,
+    card_data_list: list[dict[str, Any]],
+) -> None:
+    """兼容部分适配器只把 JSON 卡片保留在 message_sdk.data 的情况。"""
+    if message_object is None:
+        return
+    for attribute_name in ['data', 'data_raw']:
+        message_segments = getattr(message_object, attribute_name, None)
+        if not isinstance(message_segments, list):
+            continue
+        for message_segment in message_segments:
+            if isinstance(message_segment, dict):
+                add_unique_card_data(card_data_list, message_segment.get('ark_data'))
+                add_card_payload(message_segment.get('data'), card_data_list)
+                continue
+            segment_type = safe_str(getattr(message_segment, 'type', '')).casefold()
+            if segment_type in ['json', 'ark', 'light_app']:
+                add_card_payload(getattr(message_segment, 'data', None), card_data_list)
+
+
+def add_card_payload(payload: Any, card_data_list: list[dict[str, Any]]) -> None:
+    if isinstance(payload, dict):
+        if set(payload).issubset({'data', 'resid'}) and 'data' in payload:
+            add_card_payload(payload.get('data'), card_data_list)
+            return
+        add_unique_card_data(card_data_list, payload)
+        nested_payload = payload.get('data')
+        if isinstance(nested_payload, (dict, str)):
+            add_card_payload(nested_payload, card_data_list)
+        return
+    if not isinstance(payload, str) or not payload.strip():
+        return
+    try:
+        parsed_payload = json.loads(html.unescape(payload))
+    except Exception:
+        return
+    add_card_payload(parsed_payload, card_data_list)
+
+
+def is_parse_candidate_message(plugin_event, message: str) -> bool:
+    """仅对可能包含 B 站引用的消息开启解析诊断日志。"""
+    if extract_video_refs_from_text(message) or extract_urls(message):
+        return True
+
+    lowered_message = safe_str(message).lower()
+    if '[op:json' in lowered_message or '[cq:json' in lowered_message:
+        return True
+    if '卡片消息' in message and any(
+        keyword in lowered_message
+        for keyword in ['bilibili', 'b23.tv', 'bili2233.cn', '哔哩哔哩', 'bili']
+    ):
+        return True
+
+    for card_data in extract_qq_ark_cards(plugin_event):
+        if is_probable_bili_card(card_data):
+            return True
+    return False
+
+
+def extract_video_refs_from_message(
+    message: str,
+    include_json_card: bool = True,
+    preview_ocr_enable: bool = True,
+) -> list[dict[str, str]]:
     video_ref_list = []
     seen_key_set = set()
     url_ref_cache = {}
     has_escaped_slash = '\\/' in message
+    parse_log(
+        f'开始解析消息文本 length={len(message)} escaped_slash={has_escaped_slash} '
+        f'text={shorten_log_text(message, 240)}'
+    )
 
     text_video_ref_list = extract_video_refs_from_text(message)
     if text_video_ref_list:
@@ -838,10 +1078,13 @@ def extract_video_refs_from_message(message: str) -> list[dict[str, str]]:
         parse_log(f'原始消息URL解析 url={shorten_log_text(url, 180)} ref={format_video_ref(video_ref)}')
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
+    if not include_json_card:
+        parse_log('已选择QQ ARK卡片来源，跳过消息内OP/CQ JSON卡片解析')
+        return video_ref_list
+
     card_data = extract_json_card(message)
     if not card_data:
-        if message_url_list or text_video_ref_list:
-            parse_log(f'未解析到JSON卡片，当前refs={format_video_ref_list(video_ref_list)}')
+        parse_log(f'未解析到消息内JSON卡片，当前refs={format_video_ref_list(video_ref_list)}')
         return video_ref_list
 
     add_video_refs_from_card(
@@ -850,6 +1093,7 @@ def extract_video_refs_from_message(message: str) -> list[dict[str, str]]:
         seen_key_set,
         url_ref_cache,
         'JSON卡片',
+        preview_ocr_enable=preview_ocr_enable,
     )
     return video_ref_list
 
@@ -860,6 +1104,7 @@ def add_video_refs_from_card(
     seen_key_set: set[str],
     url_ref_cache: dict[str, dict[str, str] | None],
     card_label: str,
+    preview_ocr_enable: bool = True,
 ) -> None:
     is_bili_card = is_probable_bili_card(card_data)
     parse_log(
@@ -877,12 +1122,24 @@ def add_video_refs_from_card(
     for video_ref in card_video_ref_list:
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
-    if not card_video_ref_list:
+    if not card_video_ref_list and not video_ref_list:
         title_hint = get_title_hint(card_data)
+        preview_video_ref = search_video_by_preview_metadata(
+            card_data,
+            title_hint,
+            preview_ocr_enable=preview_ocr_enable,
+        )
+        if preview_video_ref:
+            parse_log(f'{card_label} 预览图元数据匹配结果 ref={format_video_ref(preview_video_ref)}')
+            add_video_ref(video_ref_list, seen_key_set, preview_video_ref)
+            return
+
         parse_log(f'{card_label} 未解析到显式视频引用，进入标题搜索 keyword={shorten_log_text(title_hint, 120)}')
         video_ref = search_video_by_keyword(title_hint)
         parse_log(f'{card_label} 标题搜索结果 ref={format_video_ref(video_ref)}')
         add_video_ref(video_ref_list, seen_key_set, video_ref)
+    elif not card_video_ref_list:
+        parse_log(f'{card_label} 消息中已有视频引用，跳过卡片标题搜索')
 
 
 def find_video_refs(
@@ -892,15 +1149,29 @@ def find_video_refs(
     video_ref_list = []
     seen_key_set = set()
     string_list = collect_strings(card_data)
-    for text in string_list:
-        for video_ref in extract_video_refs_from_text(text):
+    parse_log(f'卡片字符串字段数量={len(string_list)}')
+    for field_index, text in enumerate(string_list, start=1):
+        text_ref_list = extract_video_refs_from_text(text)
+        text_url_list = extract_urls(text)
+        if text_ref_list or text_url_list:
+            parse_log(
+                f'卡片字段#{field_index} text={shorten_log_text(text, 240)} '
+                f'text_refs={format_video_ref_list(text_ref_list)} '
+                f'urls={format_log_list(text_url_list, 6)}'
+            )
+        for video_ref in text_ref_list:
             add_video_ref(video_ref_list, seen_key_set, video_ref)
 
     for text in string_list:
         url_list = extract_urls(text)
         for url in url_list:
             video_ref = resolve_video_ref_from_url_cached(url, url_ref_cache)
+            parse_log(
+                f'卡片URL解析 url={shorten_log_text(url, 180)} '
+                f'ref={format_video_ref(video_ref)}'
+            )
             add_video_ref(video_ref_list, seen_key_set, video_ref)
+    parse_log(f'卡片字段解析汇总 refs={format_video_ref_list(video_ref_list)}')
     return video_ref_list
 
 
@@ -925,11 +1196,17 @@ def extract_video_refs_from_text(text: str) -> list[dict[str, str]]:
     video_ref_list = []
     seen_key_set = set()
 
-    for bvid_match in re.finditer(r'(BV[0-9A-Za-z]{10})', unescaped_text):
-        add_video_ref(video_ref_list, seen_key_set, {'bvid': bvid_match.group(1)})
+    text_candidates = [unescaped_text]
+    decoded_text = urllib.parse.unquote(unescaped_text)
+    if decoded_text != unescaped_text:
+        text_candidates.append(decoded_text)
 
-    for aid_match in re.finditer(r'(?:^|[^A-Za-z0-9])(?:av|aid=)(\d+)', unescaped_text, re.IGNORECASE):
-        add_video_ref(video_ref_list, seen_key_set, {'aid': aid_match.group(1)})
+    for text_candidate in text_candidates:
+        for bvid_match in re.finditer(r'(BV[0-9A-Za-z]{10})', text_candidate):
+            add_video_ref(video_ref_list, seen_key_set, {'bvid': bvid_match.group(1)})
+
+        for aid_match in re.finditer(r'(?:^|[^A-Za-z0-9])(?:av|aid=)(\d+)', text_candidate, re.IGNORECASE):
+            add_video_ref(video_ref_list, seen_key_set, {'aid': aid_match.group(1)})
 
     return video_ref_list
 
@@ -986,7 +1263,7 @@ def shorten_log_text(text: Any, limit: int = 300) -> str:
 
 
 def extract_urls(text: str) -> list[str]:
-    clean_text = html.unescape(safe_str(text)).replace('\\/', '/')
+    clean_text = urllib.parse.unquote(html.unescape(safe_str(text))).replace('\\/', '/')
     url_pattern = (
         r'https?://(?:www\.|m\.)?bilibili\.com/[^\s"\'<>]+|'
         r'https?://b23\.tv/[^\s"\'<>]+|'
@@ -1009,11 +1286,15 @@ def extract_urls(text: str) -> list[str]:
 
 
 def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
+    parse_log(f'开始解析URL url={shorten_log_text(url, 180)}')
     direct_ref = extract_video_ref_from_text(url)
     if direct_ref:
+        parse_log(f'URL中直接命中视频引用 ref={format_video_ref(direct_ref)}')
         return direct_ref
 
-    for request_url in build_resolve_url_candidates(url):
+    request_url_list = build_resolve_url_candidates(url)
+    parse_log(f'URL解析候选 count={len(request_url_list)} urls={format_log_list(request_url_list, 5)}')
+    for request_url in request_url_list:
         try:
             response_url, response_text = http_get_text(request_url, allow_response_body=True)
         except urllib.error.HTTPError as exception_object:
@@ -1084,7 +1365,13 @@ def resolve_video_ref_from_url_cached(
     if url_ref_cache is None:
         return resolve_video_ref_from_url(url)
     if url not in url_ref_cache:
+        parse_log(f'URL缓存未命中 url={shorten_log_text(url, 180)}')
         url_ref_cache[url] = resolve_video_ref_from_url(url)
+    else:
+        parse_log(
+            f'URL缓存命中 url={shorten_log_text(url, 180)} '
+            f'ref={format_video_ref(url_ref_cache[url])}'
+        )
     return url_ref_cache[url]
 
 
@@ -1111,24 +1398,481 @@ def build_resolve_url_candidates(url: str) -> list[str]:
     return result
 
 
+def search_video_by_preview_metadata(
+    card_data: dict[str, Any],
+    title_hint: str,
+    preview_ocr_enable: bool = True,
+) -> dict[str, str] | None:
+    """从 QQ 卡片预览图提取 UP 主和统计值，再在该 UP 的投稿中定位视频。"""
+    if not preview_ocr_enable:
+        parse_log('预览图OCR匹配已关闭，跳过预览图增强搜索')
+        return None
+
+    preview_url_list = extract_preview_image_urls(card_data)
+    if not preview_url_list:
+        parse_log('卡片未找到可用预览图URL，跳过预览图增强搜索')
+        return None
+
+    for preview_url in preview_url_list[:2]:
+        parse_log(f'开始预览图OCR url={shorten_log_text(preview_url, 180)}')
+        preview_text = recognize_preview_image(preview_url)
+        if not preview_text:
+            continue
+        preview_metadata = parse_preview_ocr_metadata(preview_text)
+        parse_log(
+            f'预览图OCR结果 owner={shorten_log_text(preview_metadata.get("owner", ""), 80)} '
+            f'stats={format_preview_stat_log(preview_metadata)} '
+            f'text={shorten_log_text(" | ".join(preview_text), 240)}'
+        )
+        owner_name = preview_metadata.get('owner', '')
+        if not owner_name:
+            parse_log('预览图OCR未识别到UP主')
+            continue
+
+        owner_mid = search_bili_user_mid(owner_name)
+        if not owner_mid:
+            parse_log(f'UP主搜索未命中 owner={shorten_log_text(owner_name, 80)}')
+            continue
+
+        video_ref = search_video_by_owner_metadata(
+            owner_mid,
+            owner_name,
+            title_hint,
+            preview_metadata,
+        )
+        if video_ref:
+            return video_ref
+    return None
+
+
+def extract_preview_image_urls(card_data: dict[str, Any]) -> list[str]:
+    result = []
+
+    def visit(value: Any, key_name: str = '') -> None:
+        if isinstance(value, dict):
+            for key, nested_value in value.items():
+                visit(nested_value, safe_str(key).casefold())
+            return
+        if isinstance(value, list):
+            for nested_value in value:
+                visit(nested_value, key_name)
+            return
+        if not isinstance(value, str) or not value.strip():
+            return
+
+        for url in re.findall(r'https?://[^\s"\'<>]+', value):
+            clean_url = url.rstrip('，。,.;；)）]】')
+            host = urllib.parse.urlsplit(clean_url).netloc.casefold()
+            is_preview_key = key_name in {'preview', 'preview_url', 'previewurl'}
+            is_qq_preview = host.endswith('ugcimg.cn') or host.endswith('ugcimg.qq.com')
+            if (is_preview_key or is_qq_preview) and clean_url not in result:
+                result.append(clean_url)
+
+    visit(card_data)
+    return result
+
+
+def recognize_preview_image(preview_url: str) -> list[str]:
+    try:
+        image_bytes = http_get_binary(preview_url, PREVIEW_OCR_MAX_BYTES)
+        ocr_engine = get_preview_ocr_engine()
+        if ocr_engine is None:
+            return []
+        image_object = decode_preview_image(image_bytes)
+        if image_object is None:
+            parse_log('预览图OCR图片解码失败')
+            return []
+
+        with gPreviewOcrLock:
+            ocr_result = ocr_engine(image_object)
+            if isinstance(ocr_result, tuple):
+                ocr_result = ocr_result[0]
+        return extract_ocr_texts(ocr_result)
+    except Exception as exception_object:
+        parse_log(
+            f'预览图OCR失败 error={type(exception_object).__name__}: '
+            f'{shorten_log_text(exception_object, 180)}'
+        )
+        return []
+
+
+def get_preview_ocr_engine():
+    global gPreviewOcrEngine, gPreviewOcrUnavailable
+    with gPreviewOcrLock:
+        if gPreviewOcrEngine is not None:
+            return gPreviewOcrEngine
+        if gPreviewOcrUnavailable:
+            return None
+
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+
+            gPreviewOcrEngine = RapidOCR()
+            parse_log('预览图OCR后端=rapidocr_onnxruntime')
+            return gPreviewOcrEngine
+        except Exception as rapid_exception:
+            gPreviewOcrUnavailable = True
+            parse_log(
+                f'RapidOCR不可用，将回退标题搜索 error={type(rapid_exception).__name__}: '
+                f'{shorten_log_text(rapid_exception, 180)}'
+            )
+            return None
+
+
+def decode_preview_image(image_bytes: bytes):
+    try:
+        import cv2
+        import numpy
+
+        image_array = numpy.frombuffer(image_bytes, dtype=numpy.uint8)
+        return cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
+def extract_ocr_texts(value: Any) -> list[str]:
+    text_list = []
+    if value is None:
+        return text_list
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, dict):
+        for key in ['rec_texts', 'text', 'texts', 'rec_text']:
+            if key in value:
+                text_list.extend(extract_ocr_texts(value[key]))
+        if not text_list:
+            for nested_value in value.values():
+                text_list.extend(extract_ocr_texts(nested_value))
+        return unique_text_list(text_list)
+    if isinstance(value, (list, tuple)):
+        if len(value) >= 2 and isinstance(value[1], str):
+            return [value[1].strip()] if value[1].strip() else []
+        for nested_value in value:
+            text_list.extend(extract_ocr_texts(nested_value))
+        return unique_text_list(text_list)
+
+    json_method = getattr(value, 'json', None)
+    if callable(json_method):
+        try:
+            return extract_ocr_texts(json_method())
+        except Exception:
+            return []
+    if isinstance(json_method, (dict, list, tuple)):
+        return extract_ocr_texts(json_method)
+    if isinstance(json_method, str):
+        try:
+            return extract_ocr_texts(json.loads(json_method))
+        except Exception:
+            return []
+    return []
+
+
+def unique_text_list(text_list: list[str]) -> list[str]:
+    result = []
+    for text in text_list:
+        clean_text = re.sub(r'\s+', ' ', safe_str(text)).strip()
+        if clean_text and clean_text not in result:
+            result.append(clean_text)
+    return result
+
+
+def parse_preview_ocr_metadata(text_list: list[str]) -> dict[str, Any]:
+    lines = unique_text_list(text_list)
+    owner = ''
+    for index, line in enumerate(lines):
+        if 'UP主' not in line and 'UP' not in line.upper():
+            continue
+        prefix = re.split(r'UP主|UP', line, maxsplit=1, flags=re.IGNORECASE)[0]
+        prefix = re.sub(r'[|｜:：\-\s]+$', '', prefix).strip()
+        if is_valid_ocr_owner(prefix):
+            owner = prefix
+            break
+        if index > 0 and is_valid_ocr_owner(lines[index - 1]):
+            owner = lines[index - 1]
+            break
+
+    joined_text = ' '.join(lines)
+    stat_patterns = {
+        'view': r'([\d]+(?:[.,][\d]+)?\s*[万亿]?)\s*播(?:放|放量)',
+        'danmaku': r'([\d]+(?:[.,][\d]+)?\s*[万亿]?)\s*弹幕',
+        'like': r'([\d]+(?:[.,][\d]+)?\s*[万亿]?)\s*点(?:赞|赞数)',
+    }
+    metadata = {'owner': owner}
+    for stat_name, pattern in stat_patterns.items():
+        matched = re.search(pattern, joined_text, re.IGNORECASE)
+        if matched:
+            parsed_value = parse_count_text(matched.group(1))
+            if parsed_value is not None:
+                metadata[stat_name] = parsed_value
+    return metadata
+
+
+def is_valid_ocr_owner(owner: str) -> bool:
+    owner = safe_str(owner).strip()
+    if len(owner) < 2 or len(owner) > 40:
+        return False
+    return not bool(re.fullmatch(r'[\d\W_]+', owner, re.UNICODE))
+
+
+def parse_count_text(value: Any) -> int | None:
+    matched = re.search(r'([\d]+(?:[.,][\d]+)?)\s*([万亿]?)', safe_str(value))
+    if not matched:
+        return None
+    try:
+        number = float(matched.group(1).replace(',', ''))
+        unit = matched.group(2)
+        if unit == '亿':
+            number *= 100000000
+        elif unit == '万':
+            number *= 10000
+        return round(number)
+    except Exception:
+        return None
+
+
+def format_preview_stat_log(metadata: dict[str, Any]) -> str:
+    return ','.join(
+        f'{name}={metadata[name]}'
+        for name in ['view', 'danmaku', 'like']
+        if metadata.get(name) is not None
+    ) or 'none'
+
+
+def search_bili_user_mid(owner_name: str) -> str | None:
+    try:
+        api_url = 'https://api.bilibili.com/x/web-interface/search/all/v2?' + urllib.parse.urlencode(
+            {'keyword': owner_name, 'page': 1, 'pagesize': 20}
+        )
+        response_data = json.loads(http_get_json_text(api_url, referer='https://search.bilibili.com/'))
+        if response_data.get('code') != 0:
+            parse_log(f'UP主搜索返回非零code={response_data.get("code")}')
+            return None
+        candidates = []
+        for bucket in response_data.get('data', {}).get('result', []):
+            if not isinstance(bucket, dict) or bucket.get('result_type') != 'bili_user':
+                continue
+            for item in bucket.get('data', []):
+                if isinstance(item, dict) and item.get('mid'):
+                    candidates.append(item)
+        if not candidates:
+            return None
+        exact_candidates = [
+            item for item in candidates
+            if safe_str(item.get('uname', '')).casefold() == safe_str(owner_name).casefold()
+        ]
+        selected = exact_candidates[0] if exact_candidates else candidates[0]
+        owner_mid = safe_str(selected.get('mid', '')).strip()
+        parse_log(
+            f'UP主搜索命中 owner={shorten_log_text(owner_name, 80)} '
+            f'mid={owner_mid} exact={bool(exact_candidates)}'
+        )
+        return owner_mid or None
+    except Exception as exception_object:
+        parse_log(
+            f'UP主搜索失败 owner={shorten_log_text(owner_name, 80)} '
+            f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 180)}'
+        )
+        return None
+
+
+def search_video_by_owner_metadata(
+    owner_mid: str,
+    owner_name: str,
+    title_hint: str,
+    preview_metadata: dict[str, Any],
+) -> dict[str, str] | None:
+    candidate_list = []
+    for page in range(1, 4):
+        page_candidates = fetch_owner_search_candidates(owner_name, page)
+        owner_candidates = [
+            candidate for candidate in page_candidates
+            if safe_str(candidate.get('author', '')).casefold() == safe_str(owner_name).casefold()
+        ]
+        candidate_list.extend(owner_candidates)
+        if any(
+            normalize_exact_search_match_text(clean_search_result_title(candidate.get('title', '')))
+            == normalize_exact_search_match_text(title_hint)
+            for candidate in owner_candidates
+        ):
+            break
+
+    if not candidate_list:
+        candidate_list = fetch_owner_archive_candidates(owner_mid, title_hint, 'pubdate', 1)
+    if not candidate_list and not title_hint:
+        candidate_list = fetch_owner_archive_candidates(owner_mid, '', 'click', 1)
+    if not candidate_list:
+        parse_log(f'UP主投稿列表为空 mid={owner_mid}')
+        return None
+
+    scored_candidates = []
+    exact_candidates = []
+    for rank, candidate in enumerate(candidate_list, start=1):
+        score, is_exact = score_owner_archive_candidate(title_hint, preview_metadata, candidate, rank)
+        scored_candidates.append((score, candidate))
+        if is_exact:
+            exact_candidates.append(candidate)
+        parse_log(
+            f'UP主投稿候选 mid={owner_mid} rank={rank} bvid={safe_str(candidate.get("bvid", ""))} '
+            f'score={score} title={shorten_log_text(candidate.get("title", ""), 120)} '
+            f'play={safe_str(candidate.get("play", ""))} danmaku={safe_str(candidate.get("video_review", ""))}'
+        )
+
+    if exact_candidates:
+        selected = random.choice(exact_candidates)
+        parse_log(
+            f'UP主投稿完整标题匹配随机选择 count={len(exact_candidates)} '
+            f'bvid={safe_str(selected.get("bvid", ""))}'
+        )
+        return build_video_ref_from_archive_candidate(selected)
+
+    scored_candidates.sort(key=lambda item: item[0], reverse=True)
+    if not scored_candidates:
+        return None
+    selected = scored_candidates[0][1]
+    parse_log(
+        f'UP主投稿统计/标题模糊命中 bvid={safe_str(selected.get("bvid", ""))} '
+        f'score={scored_candidates[0][0]}'
+    )
+    return build_video_ref_from_archive_candidate(selected)
+
+
+def fetch_owner_search_candidates(owner_name: str, page: int) -> list[dict[str, Any]]:
+    api_url = 'https://api.bilibili.com/x/web-interface/search/all/v2?' + urllib.parse.urlencode(
+        {'keyword': owner_name, 'page': page, 'pagesize': 20}
+    )
+    try:
+        response_data = json.loads(http_get_json_text(api_url, referer='https://search.bilibili.com/'))
+        response_code = response_data.get('code')
+        if response_code != 0:
+            parse_log(f'UP主视频搜索返回非零code={response_code} page={page}')
+            return []
+        video_list = extract_video_search_results(response_data)
+        parse_log(
+            f'UP主视频搜索完成 owner={shorten_log_text(owner_name, 80)} '
+            f'page={page} count={len(video_list)}'
+        )
+        return video_list
+    except Exception as exception_object:
+        parse_log(
+            f'UP主视频搜索失败 owner={shorten_log_text(owner_name, 80)} page={page} '
+            f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 180)}'
+        )
+        return []
+
+
+def fetch_owner_archive_candidates(
+    owner_mid: str,
+    title_hint: str,
+    order: str,
+    page: int,
+) -> list[dict[str, Any]]:
+    params = {
+        'mid': owner_mid,
+        'pn': page,
+        'ps': 30,
+        'order': order,
+        'tid': 0,
+        'jsonp': 'json',
+    }
+    if title_hint:
+        params['keyword'] = clean_search_keyword(title_hint)
+    api_url = 'https://api.bilibili.com/x/space/arc/search?' + urllib.parse.urlencode(params)
+    try:
+        response_data = json.loads(http_get_json_text(api_url, referer=f'https://space.bilibili.com/{owner_mid}'))
+        response_code = response_data.get('code')
+        parse_log(
+            f'UP主投稿API响应 mid={owner_mid} page={page} order={order} '
+            f'code={response_code} body_len={len(json.dumps(response_data, ensure_ascii=False))}'
+        )
+        if response_code != 0:
+            return []
+        video_list = response_data.get('data', {}).get('list', {}).get('vlist', [])
+        return video_list if isinstance(video_list, list) else []
+    except Exception as exception_object:
+        parse_log(
+            f'UP主投稿API请求失败 mid={owner_mid} page={page} '
+            f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 180)}'
+        )
+        return []
+
+
+def score_owner_archive_candidate(
+    title_hint: str,
+    preview_metadata: dict[str, Any],
+    candidate: dict[str, Any],
+    rank: int,
+) -> tuple[int, bool]:
+    candidate_title = clean_search_result_title(safe_str(candidate.get('title', '')))
+    exact_title = normalize_exact_search_match_text(title_hint)
+    is_exact = bool(exact_title and exact_title == normalize_exact_search_match_text(candidate_title))
+    title_score = score_search_result_title(title_hint, candidate_title) if title_hint else 0
+    score = title_score + max(0, 120 - rank * 4)
+    if is_exact:
+        score += 100000
+    for stat_name, candidate_key in [('view', 'play'), ('danmaku', 'video_review'), ('like', 'like')]:
+        expected = preview_metadata.get(stat_name)
+        actual = parse_count_text(candidate.get(candidate_key))
+        if expected is None or actual is None:
+            continue
+        difference_ratio = abs(actual - expected) / max(expected, actual, 1)
+        score += max(0, 3000 - round(difference_ratio * 3000))
+    return score, is_exact
+
+
+def build_video_ref_from_archive_candidate(candidate: dict[str, Any]) -> dict[str, str] | None:
+    bvid = safe_str(candidate.get('bvid', '')).strip()
+    if re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid):
+        return {'bvid': bvid}
+    aid = safe_str(candidate.get('aid', '')).strip()
+    if aid.isdigit():
+        return {'aid': aid}
+    return None
+
+
 def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
     keyword = clean_search_keyword(keyword)
     if not keyword:
+        parse_log('标题搜索跳过：关键词为空')
         return None
 
+    normalized_keyword = normalize_search_match_text(keyword)
+    parse_log(
+        f'开始标题搜索 keyword={shorten_log_text(keyword, 120)} '
+        f'normalized={normalized_keyword} length={len(normalized_keyword)}'
+    )
+
     search_url_list = [
-        'https://api.bilibili.com/x/web-interface/search/all/v2?'
-        + urllib.parse.urlencode({'keyword': keyword}),
         'https://api.bilibili.com/x/web-interface/search/type?'
-        + urllib.parse.urlencode({'search_type': 'video', 'keyword': keyword}),
+        + urllib.parse.urlencode(
+            {
+                'search_type': 'video',
+                'keyword': keyword,
+                'page': 1,
+                'pagesize': 20,
+                'order': 'totalrank',
+            }
+        ),
+        'https://api.bilibili.com/x/web-interface/search/all/v2?'
+        + urllib.parse.urlencode({'keyword': keyword, 'page': 1, 'pagesize': 20}),
     ]
-    for api_url in search_url_list:
+    best_match = None
+    best_match_key = None
+    exact_match_list = []
+    exact_bvid_set = set()
+    for api_index, api_url in enumerate(search_url_list, start=1):
         try:
             response_text = http_get_json_text(api_url, referer='https://search.bilibili.com/')
             response_data = json.loads(response_text)
-            if response_data.get('code') != 0:
+            response_code = response_data.get('code')
+            parse_log(
+                f'标题搜索API响应 code={response_code} body_len={len(response_text)} '
+                f'url={shorten_log_text(api_url, 180)}'
+            )
+            if response_code != 0:
+                parse_log(f'标题搜索API返回非零code={response_code}')
                 continue
             result_list = extract_video_search_results(response_data)
+            parse_log(f'标题搜索结果数量={len(result_list)}')
         except Exception as exception_object:
             parse_log(
                 f'标题搜索请求失败 url={shorten_log_text(api_url, 180)} '
@@ -1136,18 +1880,55 @@ def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
             )
             continue
 
-        for item in result_list[:10]:
+        for result_rank, item in enumerate(result_list[:20], start=1):
             if not isinstance(item, dict):
                 continue
             bvid = safe_str(item.get('bvid', ''))
             title = clean_search_result_title(safe_str(item.get('title', '')))
-            if re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid) and is_search_result_title_match(keyword, title):
-                return {'bvid': bvid}
-            if bvid:
+            if not re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid):
+                continue
+
+            candidate_score, score_detail, is_exact_match = score_search_result_candidate(
+                keyword,
+                title,
+                result_rank,
+            )
+            # 分数相同取 API 排名靠前者；即使分数为 0 也保留候选，保证卡片不会静默丢失。
+            candidate_key = (candidate_score, -api_index, -result_rank)
+            parse_log(
+                f'标题搜索候选 api={api_index} rank={result_rank} bvid={bvid} '
+                f'score={candidate_score} '
+                f'detail={score_detail} title={shorten_log_text(title, 120)}'
+            )
+            if best_match_key is None or candidate_key > best_match_key:
+                best_match = (bvid, title)
+                best_match_key = candidate_key
+            if is_exact_match:
                 parse_log(
-                    f'标题搜索候选不匹配 bvid={bvid} title={shorten_log_text(title, 120)} '
-                    f'keyword={shorten_log_text(keyword, 120)}'
+                    f'标题搜索完整匹配候选 bvid={bvid} api={api_index} rank={result_rank} '
+                    f'title={shorten_log_text(title, 120)}'
                 )
+                if bvid not in exact_bvid_set:
+                    exact_bvid_set.add(bvid)
+                    exact_match_list.append((bvid, title))
+
+    if exact_match_list:
+        bvid, title = random.choice(exact_match_list)
+        parse_log(
+            f'标题搜索完整匹配随机选择 count={len(exact_match_list)} '
+            f'candidates={format_log_list([item[0] for item in exact_match_list], 20)} '
+            f'bvid={bvid} title={shorten_log_text(title, 120)}'
+        )
+        return {'bvid': bvid}
+
+    if best_match is not None:
+        bvid, title = best_match
+        parse_log(
+            f'标题搜索模糊命中 bvid={bvid} score={best_match_key[0]} '
+            f'title={shorten_log_text(title, 120)}'
+        )
+        return {'bvid': bvid}
+    parse_log('标题搜索未命中视频')
     return None
 
 
@@ -1171,18 +1952,132 @@ def clean_search_result_title(title: str) -> str:
 
 
 def is_search_result_title_match(keyword: str, title: str) -> bool:
+    return score_search_result_title(keyword, title) > 0
+
+
+def score_search_result_title(keyword: str, title: str) -> int:
+    """计算标题语义相似度；返回值越大越相关，允许短关键词参与比较。"""
+    exact_keyword = normalize_exact_search_match_text(keyword)
+    exact_title = normalize_exact_search_match_text(title)
+    is_exact_match = bool(exact_keyword and exact_keyword == exact_title)
+    exact_sequence_ratio = difflib.SequenceMatcher(
+        None,
+        exact_keyword.casefold(),
+        exact_title.casefold(),
+    ).ratio()
     normalized_keyword = normalize_search_match_text(keyword)
     normalized_title = normalize_search_match_text(title)
     if not normalized_keyword or not normalized_title:
-        return False
-    return normalized_keyword in normalized_title or normalized_title in normalized_keyword
+        return round(exact_sequence_ratio * 320) + (100000 if is_exact_match else 0)
+
+    query_length = len(normalized_keyword)
+    title_length = len(normalized_title)
+    normalized_sequence_ratio = difflib.SequenceMatcher(
+        None,
+        normalized_keyword,
+        normalized_title,
+    ).ratio()
+    common_char_count = sum(
+        min(normalized_keyword.count(char), normalized_title.count(char))
+        for char in set(normalized_keyword)
+    )
+    character_coverage = common_char_count / query_length
+    length_fit = min(query_length, title_length) / max(query_length, title_length)
+    ordered_coverage = calculate_ordered_character_coverage(normalized_keyword, normalized_title)
+
+    score = round(
+        exact_sequence_ratio * 320
+        + normalized_sequence_ratio * 180
+        + min(1.0, character_coverage) * 260
+        + ordered_coverage * 220
+        + length_fit * 100
+    )
+    if is_exact_match:
+        score += 100000
+    elif exact_title.casefold().startswith(exact_keyword.casefold()):
+        score += 2200
+    elif exact_keyword.casefold() in exact_title.casefold():
+        score += 1500
+    elif normalized_keyword == normalized_title:
+        score += 900
+    elif normalized_title.startswith(normalized_keyword):
+        score += 600
+    elif normalized_keyword in normalized_title:
+        score += 350
+
+    # 单字/双字标题通常是泛关键词，轻微偏向更短、更贴近查询词的标题。
+    if query_length <= MIN_TITLE_SEARCH_SIGNAL_LENGTH - 1 and character_coverage > 0:
+        score += max(0, 260 - max(0, title_length - query_length) * 12)
+    return score
+
+
+def score_search_result_candidate(
+    keyword: str,
+    title: str,
+    result_rank: int,
+) -> tuple[int, str, bool]:
+    """合并标题相似度和搜索排名，返回总分及可读的 debug 明细。"""
+    title_score = score_search_result_title(keyword, title)
+    exact_keyword = normalize_exact_search_match_text(keyword)
+    exact_title = normalize_exact_search_match_text(title)
+    is_exact_match = bool(exact_keyword and exact_keyword == exact_title)
+    normalized_keyword = normalize_search_match_text(keyword)
+    normalized_title = normalize_search_match_text(title)
+    rank_bonus = max(0, 240 - max(0, result_rank - 1) * 12)
+    if normalized_keyword and normalized_title:
+        sequence_score = round(
+            difflib.SequenceMatcher(None, normalized_keyword, normalized_title).ratio() * 100
+        )
+        ordered_score = round(
+            calculate_ordered_character_coverage(normalized_keyword, normalized_title) * 100
+        )
+    else:
+        sequence_score = 0
+        ordered_score = 0
+    is_short_keyword = len(normalized_keyword) < MIN_TITLE_SEARCH_SIGNAL_LENGTH
+    contains_keyword = bool(normalized_keyword and normalized_keyword in normalized_title)
+    if is_short_keyword and not is_exact_match:
+        # 单字/双字无法可靠区分具体视频，尊重 B 站排序，避免长标题相似度反超前排结果。
+        short_match_bonus = 2400 if contains_keyword else 0
+        total_score = rank_bonus * 4 + short_match_bonus
+        detail = (
+            f'exact=0,mode=short_rank,contains={int(contains_keyword)},title={title_score},'
+            f'rank={rank_bonus},seq={sequence_score},order={ordered_score}'
+        )
+    else:
+        total_score = title_score + rank_bonus
+        detail = (
+            f'exact={int(is_exact_match)},title={title_score},rank={rank_bonus},'
+            f'seq={sequence_score},order={ordered_score}'
+        )
+    return total_score, detail, is_exact_match
+
+
+def calculate_ordered_character_coverage(query: str, target: str) -> float:
+    """计算查询字符按顺序出现在标题中的覆盖率，适合中文短标题。"""
+    if not query or not target:
+        return 0.0
+    target_index = 0
+    matched_count = 0
+    for query_char in query:
+        matched_index = target.find(query_char, target_index)
+        if matched_index < 0:
+            continue
+        matched_count += 1
+        target_index = matched_index + 1
+    return matched_count / len(query)
 
 
 def normalize_search_match_text(text: str) -> str:
-    text = safe_str(text).lower()
+    text = safe_str(text).casefold()
     text = re.sub(r'<[^>]+>', '', text)
     text = html.unescape(text)
-    return re.sub(r'[\s\W_]+', '', text, flags=re.UNICODE)
+    return re.sub(r'\s+', '', text)
+
+
+def normalize_exact_search_match_text(text: str) -> str:
+    """仅处理 HTML 实体和首尾空白，完整保留标题中的符号。"""
+    return html.unescape(safe_str(text)).strip()
 
 
 def fetch_video_info(video_ref: dict[str, str]) -> dict[str, Any] | None:
@@ -1192,18 +2087,38 @@ def fetch_video_info(video_ref: dict[str, str]) -> dict[str, Any] | None:
         elif video_ref.get('aid'):
             query = urllib.parse.urlencode({'aid': video_ref['aid']})
         else:
+            parse_log(f'获取视频信息跳过：引用格式无效 ref={safe_str(video_ref)}')
             return None
 
         api_url = f'https://api.bilibili.com/x/web-interface/view?{query}'
+        parse_log(f'开始获取视频信息 ref={format_video_ref(video_ref)} url={api_url}')
         response_text = http_get_json_text(api_url, referer='https://www.bilibili.com/')
+        parse_log(f'视频信息API响应 body_len={len(response_text)}')
         response_data = json.loads(response_text)
-        if response_data.get('code') != 0:
+        if not isinstance(response_data, dict):
+            parse_log(f'视频信息API响应不是对象 type={type(response_data).__name__}')
+            return None
+        response_code = response_data.get('code')
+        if response_code != 0:
+            parse_log(
+                f'视频信息API返回非零code={response_code} '
+                f'message={shorten_log_text(response_data.get("message", ""), 180)}'
+            )
             return None
         data = response_data.get('data', {})
         if not isinstance(data, dict):
+            parse_log(f'视频信息API data不是对象 type={type(data).__name__}')
             return None
+        parse_log(
+            f'视频信息API解析成功 bvid={safe_str(data.get("bvid", ""))} '
+            f'title={shorten_log_text(data.get("title", ""), 120)}'
+        )
         return data
-    except Exception:
+    except Exception as exception_object:
+        parse_log(
+            f'获取视频信息异常 ref={format_video_ref(video_ref)} '
+            f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 200)}'
+        )
         return None
 
 
@@ -1217,6 +2132,15 @@ def http_get_text(url: str, allow_response_body: bool = False) -> tuple[str, str
         charset = response.headers.get_content_charset() or 'utf-8'
         response_text = content.decode(charset, errors='ignore')
         return response_url, response_text
+
+
+def http_get_binary(url: str, max_bytes: int) -> bytes:
+    request = urllib.request.Request(url, headers=get_http_headers())
+    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+        content = response.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise ValueError(f'响应图片过大：{len(content)} bytes')
+        return content
 
 
 def http_get_json_text(url: str, referer: str = 'https://www.bilibili.com/') -> str:
@@ -1234,9 +2158,11 @@ def get_http_headers() -> dict[str, str]:
             'AppleWebKit/537.36 (KHTML, like Gecko) '
             'Chrome/126.0.0.0 Safari/537.36'
         ),
-        'Accept': 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'zh-CN,zh;q=0.9',
         'Accept-Encoding': 'identity',
+        # 搜索接口对缺少 Origin 的非浏览器请求更容易返回 412。
+        'Origin': 'https://www.bilibili.com',
         'Referer': 'https://www.bilibili.com/',
     }
 
@@ -1297,14 +2223,20 @@ def format_video_text(video_info: dict[str, Any]) -> str:
 
 
 def send_video_info_list(plugin_event, video_info_list: list[dict[str, Any]]) -> None:
+    parse_log(
+        f'准备发送视频信息 count={len(video_info_list)} '
+        f'platform={safe_str(getattr(plugin_event, "platform", {}))}'
+    )
     if len(video_info_list) == 1:
         if (
             is_qq_platform(plugin_event)
             and is_single_forward_enabled(plugin_event)
             and send_group_forward(plugin_event, video_info_list)
         ):
+            parse_log('单视频采用合并转发发送')
             return
         reply_message(plugin_event, format_video_reply(video_info_list[0]))
+        parse_log('单视频采用普通回复发送')
         return
 
     if (
@@ -1312,10 +2244,12 @@ def send_video_info_list(plugin_event, video_info_list: list[dict[str, Any]]) ->
         and is_multi_forward_enabled(plugin_event)
         and send_group_forward(plugin_event, video_info_list)
     ):
+        parse_log('多视频采用合并转发发送')
         return
 
     for video_info in video_info_list:
         reply_message(plugin_event, format_video_reply(video_info))
+    parse_log('多视频采用逐条普通回复发送')
 
 
 def is_single_forward_enabled(plugin_event) -> bool:
@@ -1340,6 +2274,7 @@ def send_group_forward(plugin_event, video_info_list: list[dict[str, Any]]) -> b
     try:
         message_node_list = []
         bot_id = get_bot_id(plugin_event)
+        parse_log(f'构造合并转发节点 count={len(video_info_list)} bot_id={bot_id}')
         for video_info in video_info_list:
             message_node_list.append(
                 {
@@ -1353,10 +2288,15 @@ def send_group_forward(plugin_event, video_info_list: list[dict[str, Any]]) -> b
             )
 
         result = plugin_event.send_group_forward_msg(plugin_event.data.group_id, message_node_list)
+        parse_log(f'合并转发接口返回 result={shorten_log_text(result, 300)}')
         if isinstance(result, dict) and result.get('active') is False:
             return False
         return True
-    except Exception:
+    except Exception as exception_object:
+        parse_log(
+            f'合并转发发送异常 error={type(exception_object).__name__}: '
+            f'{shorten_log_text(exception_object, 200)}'
+        )
         return False
 
 
@@ -1404,6 +2344,7 @@ def format_count(value: Any) -> str:
 
 def get_title_hint(card_data: dict[str, Any]) -> str:
     for key_path in [
+        ['meta', 'detail_1', 'title'],
         ['meta', 'detail_1', 'desc'],
         ['fields', 'title'],
         ['fields', 'desc'],
@@ -1420,11 +2361,7 @@ def get_title_hint(card_data: dict[str, Any]) -> str:
 def clean_search_keyword(keyword: str) -> str:
     keyword = safe_str(keyword)
     keyword = re.sub(r'^\s*\[QQ小程序\]\s*', '', keyword)
-    keyword = re.sub(r'<[^>]+>', '', keyword)
-    keyword = keyword.strip()
-    if len(keyword) > 80:
-        keyword = keyword[:80]
-    return keyword
+    return keyword.strip()
 
 
 def get_nested_value(data: dict[str, Any], key_path: list[str]) -> Any:

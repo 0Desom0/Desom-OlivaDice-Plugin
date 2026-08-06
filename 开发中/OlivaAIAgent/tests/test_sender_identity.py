@@ -152,6 +152,20 @@ class SenderIdentityTest(unittest.TestCase):
         self.assertIn('"quoted_message_resolved":false', prompt)
         self.assertIn('自然简短说明看不到这条回复，再根据当前文字继续聊天', prompt)
 
+    def test_ambient_prompt_does_not_discuss_quote_visibility(self):
+        with mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False):
+            prompt = OlivaAIAgent.conf.senderIdentityPrompt(
+                FakeEvent(),
+                [],
+                None,
+                reference_message_index='REFIDX_MISSING',
+                quote_visibility_notice=False,
+            )
+        self.assertNotIn('自然简短说明看不到这条回复', prompt)
+        self.assertIn('不要主动讨论是否看见或读取引用消息', prompt)
+        self.assertIn('有可用引用正文就自然结合', prompt)
+        self.assertIn('没有可用正文就忽略引用状态', prompt)
+
     def test_exposes_received_and_sent_ids_without_confusing_event_id(self):
         context = OlivaAIAgent.ambient.messageIdContext([
             {

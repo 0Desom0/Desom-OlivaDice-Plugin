@@ -878,6 +878,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             parsed.get('quote'),
             reference_message_id=parsed.get('reference_message_id'),
             reference_message_index=parsed.get('ref_msg_idx'),
+            quote_visibility_notice=bool(force),
         ),
     })
     conf.traceLog(
