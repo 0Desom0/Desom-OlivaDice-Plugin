@@ -13,6 +13,9 @@ default_custom_message_dict = {
 .iw id 游戏ID
 按游戏 ID 精确查询 I Wanna。
 
+.iw download 游戏ID
+检查 API 文件大小后下载并发送到当前会话，支持 OlivOS 文件上传接口（包括 OneBot V11、QQGuild）。
+
 .iw random [个数] [--tag=标签]
 .iw rand [个数] [--tag=标签]
 随机查询 I Wanna。个数默认 1，最多 10；标签可省略且至多一个。
@@ -24,12 +27,29 @@ default_custom_message_dict = {
 .iwbot merge on/off
 开启或关闭多个 rand 结果的合并转发（仅骰主/配置主人可用）。
 
+.iwglobal concurrency 数量
+设置同时下载的最大并发数，范围 1-100（仅骰主/配置主人可用）。
+.iwbot concurrency 数量
+同样可以设置全局下载并发数（仅骰主/配置主人可用）。
+
 .iw help
 查看本帮助。''',
     'reply_help_hint': '可使用 {prefix}iw help 查看 I Wanna 查询帮助。',
     'reply_empty_query': '请输入要查询的 I Wanna 名称或 ID。',
     'reply_not_found': '没有查询到符合条件的 I Wanna。',
     'reply_api_error': '查询失败：{error}',
+    'reply_global_usage': '用法：.iwglobal status/on/off/debug on/debug off 或 .iwglobal concurrency [1-100]。',
+    'reply_global_usage_concurrency': '用法：.iwglobal concurrency [1-100]。',
+    'reply_download_id_invalid': '下载用法：.iw download [数字ID]。',
+    'reply_download_url_missing': '该 I Wanna 没有可用的下载链接，已取消下载。',
+    'reply_download_size_unknown': 'API 没有返回有效的文件大小，无法安全下载。',
+    'reply_download_too_large': '该文件大小为 {file_size}，必须严格小于 200 MB，已取消下载。',
+    'reply_download_started': '开始下载：[{id}] {title}（{file_size}）。',
+    'reply_download_uploading': '下载完成，正在上传：{file_name}。',
+    'reply_download_complete': '上传完成：{file_name}。',
+    'reply_download_complete_cleanup_failed': '上传完成：{file_name}。但本地临时文件清理失败，请联系管理员检查日志。',
+    'reply_download_queued': '当前下载数已达上限，已加入队列（排队序号 {queue_position}）。',
+    'reply_download_failed': '下载或上传失败：{error}',
     'reply_search_result_prefix': '查询到了以下 I Wanna',
     'reply_random_result_prefix': '随机到了以下 I Wanna',
     'reply_game_metadata': '''· ID：{id}
@@ -62,7 +82,7 @@ default_custom_message_dict = {
     'reply_first_page': '当前是首页。',
     'reply_last_page': '当前是末尾页。',
     'reply_permission_denied': '权限不足：只有 OlivaDiceCore 骰主或本插件配置骰主可以执行该操作。',
-    'reply_global_status': '全局启用：{global_enable}，调试模式：{global_debug}。',
+    'reply_global_status': '全局启用：{global_enable}，调试模式：{global_debug}，最大下载并发：{download_concurrency}。',
     'reply_bot_status': '当前 Bot：{bot_id}，Bot 开关：{bot_enable}，合并转发：{merge_forward}。',
 }
 
@@ -79,6 +99,18 @@ custom_message_note_dict = {
     'reply_empty_query': '【空查询】用户没有输入名称或 ID 时回复。',
     'reply_not_found': '【无结果】API 成功但没有结果时回复。',
     'reply_api_error': '【查询失败】API 或网络异常时回复。可用变量：{error}',
+    'reply_global_usage': '【iwglobal 总用法】可用变量：{prefix}',
+    'reply_global_usage_concurrency': '【下载并发设置用法】范围 1-100。',
+    'reply_download_id_invalid': '【下载 ID 格式错误】要求严格数字 ID。',
+    'reply_download_url_missing': '【下载链接缺失】API 未返回 http/https 下载链接。',
+    'reply_download_size_unknown': '【文件大小缺失】API 未返回可验证的字节数。',
+    'reply_download_too_large': '【文件过大】可用变量：{file_size}；限制为严格小于 200 MB。',
+    'reply_download_started': '【开始下载】可用变量：{id} {title} {file_size}。',
+    'reply_download_uploading': '【下载完成并开始上传】可用变量：{id} {title} {file_name} {file_size}。',
+    'reply_download_complete': '【上传完成】可用变量：{file_name}。',
+    'reply_download_complete_cleanup_failed': '【上传完成但清理失败】可用变量：{file_name}。',
+    'reply_download_queued': '【下载排队】可用变量：{queue_position}。',
+    'reply_download_failed': '【下载/上传失败】可用变量：{error}。',
     'reply_search_result_prefix': '【search/id 结果前缀】用于搜索或 ID 查询命中单个游戏时的前缀。',
     'reply_random_result_prefix': '【random/rand 结果前缀】用于随机游戏详情前缀。',
     'reply_game_metadata': '【游戏元数据】可用变量：{id} {title} {creator} {release_date} {rating} {difficulty} {rating_count} {tags} {engine} {url} {file_size}',
@@ -102,7 +134,7 @@ custom_message_note_dict = {
     'reply_first_page': '【上一页到头】已经位于首页时回复。',
     'reply_last_page': '【下一页到头】已经位于末尾页时回复。',
     'reply_permission_denied': '【权限不足】管理命令权限不足时回复。',
-    'reply_global_status': '【全局状态】可用变量：{global_enable} {global_debug}',
+    'reply_global_status': '【全局状态】可用变量：{global_enable} {global_debug} {download_concurrency}',
     'reply_bot_status': '【Bot 状态】可用变量：{bot_id} {bot_enable} {merge_forward}',
 }
 

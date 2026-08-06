@@ -1,5 +1,6 @@
 # -*- encoding: utf-8 -*-
 
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -43,6 +44,17 @@ class FakeEvent:
 
 
 class MarkdownMentionFallbackTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.old_data_path = OlivaAIAgent.conf.dataPath
+        OlivaAIAgent.conf.dataPath = self.temp_dir.name
+        OlivaAIAgent.memberDirectory._initialized_path = None
+
+    def tearDown(self):
+        OlivaAIAgent.conf.dataPath = self.old_data_path
+        OlivaAIAgent.memberDirectory._initialized_path = None
+        self.temp_dir.cleanup()
+
     def test_converts_op_and_cq_at_segments_with_sdk_format(self):
         op_content = OlivaAIAgent.msgReply._qqGuildMarkdownMentionContent(
             '[OP:reply,id=quoted-1][OP:at,id=user-2] 你好',
@@ -106,9 +118,14 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
             event.markdown_calls[0]['markdown'],
         )
 
-    def test_literal_other_user_mention_is_not_guessed(self):
+    def test_literal_other_user_mention_uses_local_member_directory(self):
         event = FakeEvent()
+        other = FakeEvent()
+        other.data.user_id = 'user-2'
+        other.data.sender = {'nickname': '另一个群友', 'name': '另一个群友'}
+        OlivaAIAgent.memberDirectory.recordIncoming(other)
         with (
+            mock.patch.object(OlivaAIAgent.coreLogger, 'recordToolCall'),
             mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
             mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
         ):
@@ -118,8 +135,22 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
                 safety_check=False,
             )
 
+        self.assertEqual([], event.replies)
+        self.assertEqual(
+            {'content': '<qqbot-at-user id="user-2" /> 你好'},
+            event.markdown_calls[0]['markdown'],
+        )
+
+    def test_unknown_literal_mention_remains_plain_text(self):
+        event = FakeEvent()
+        with (
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(event, '@未知群友 你好', safety_check=False)
+
         self.assertEqual([], event.markdown_calls)
-        self.assertEqual(['@另一个群友 你好'], event.replies)
+        self.assertEqual(['@未知群友 你好'], event.replies)
 
     def test_markdown_failure_falls_back_to_normal_reply(self):
         event = FakeEvent(markdown_result={'active': False, 'data': {'error': 'denied'}})
@@ -142,13 +173,17 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
 
     def test_non_qqguildv2_keeps_normal_reply_path(self):
         event = FakeEvent(sdk='onebot')
+        other = FakeEvent(sdk='onebot')
+        other.data.user_id = 'user-2'
+        other.data.sender = {'nickname': '另一个群友', 'name': '另一个群友'}
+        OlivaAIAgent.memberDirectory.recordIncoming(other)
         with (
             mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
             mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
         ):
             OlivaAIAgent.msgReply._safeReply(
                 event,
-                '[OP:at,id=user-2] 你好',
+                '@另一个群友 你好',
                 safety_check=False,
             )
 

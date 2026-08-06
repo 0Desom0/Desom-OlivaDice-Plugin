@@ -23,6 +23,13 @@ api_timeout_seconds = 12
 result_page_size = 10
 selection_timeout_seconds = 300
 
+download_size_limit_bytes = 200 * 1024 * 1024
+download_chunk_size_bytes = 1024 * 1024
+download_concurrency_default = 5
+download_concurrency_min = 1
+download_concurrency_max = 100
+download_temp_folder_name = 'downloads'
+
 gui_window_title = 'IWannaSearch 设置面板'
 gui_global_tab_title = '全局配置'
 gui_bot_tab_title = 'Bot 配置'
@@ -34,6 +41,7 @@ default_global_config = {
     'api_timeout_seconds': api_timeout_seconds,
     'result_page_size': result_page_size,
     'selection_timeout_seconds': selection_timeout_seconds,
+    'max_download_concurrency': download_concurrency_default,
 }
 
 default_bot_config = {

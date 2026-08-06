@@ -91,6 +91,11 @@ class Event(object):
             OlivaAIAgent.conf.log(Proc, 2, '消息标识注册表: SQLite 就绪（插件内实现，不修改 OlivOS）')
         except Exception as e:
             OlivaAIAgent.conf.log(Proc, 3, '消息标识注册表初始化失败: %s' % e)
+        try:
+            OlivaAIAgent.memberDirectory.initialize()
+            OlivaAIAgent.conf.log(Proc, 2, '群成员目录: SQLite 就绪（昵称反查兜底）')
+        except Exception as e:
+            OlivaAIAgent.conf.log(Proc, 3, '群成员目录初始化失败: %s' % e)
 
         def _load_skills():
             try:

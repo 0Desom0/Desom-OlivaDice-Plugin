@@ -196,7 +196,7 @@ def updateProfiles(bot_hash, updates):
                 and isinstance(v, str)
                 and not OlivaAIAgent.contentSafety.blocked(v, bot_hash=bot_hash)
             ):
-                prof[k] = v
+                prof[k] = v.strip()[:100]
 
 
 def setGroupSummary(bot_hash, group_id, summary):
@@ -340,7 +340,9 @@ def buildMemoryTask(
     if record_profiles:
         parts.append(
             '## 用户侧写 → u 键\n'
-            '- 对出现的每个用户做心理侧写，键用 user_id，值≤32字且带名称，可据语言推断性别')
+            '- 对出现的每个用户做个人印象，键用 user_id，值不超过100字且带名称\n'
+            '- 参考已有个人印象并融合本批新信息，输出更新后的完整印象；没有新依据时保留原信息\n'
+            '- 新旧信息冲突时以更明确、更新的聊天证据为准，不要机械拼接重复描述')
     if record_summary:
         parts.append(
             '## 群滚动摘要 → g 键\n'
@@ -379,10 +381,17 @@ def runMemoryExtraction(
             record_profiles=record_profiles,
         )
         summary = getGroupSummary(bot_hash, group_id) if record_summary else GROUP_SUMMARY_DEFAULT
+        existing_profiles = relevantProfiles(bot_hash, history) if record_profiles else {}
         chat = OlivaAIAgent.ambient.formatHistoryForModel(history)
         messages = [
             {'role': 'system', 'content': sys_prompt},
-            {'role': 'user', 'content': '前情提要：%s\n\n聊天记录：\n%s\n\n现在提炼，只输出 JSON。' % (summary, chat)},
+            {
+                'role': 'user',
+                'content': (
+                    '前情提要：%s\n\n已有个人印象：%s\n\n聊天记录：\n%s\n\n'
+                    '现在融合旧印象与新信息后提炼，只输出 JSON。'
+                ) % (summary, json.dumps(existing_profiles, ensure_ascii=False), chat),
+            },
         ]
         bc = OlivaAIAgent.aiClient.getAuxiliaryBackendConf(max_tokens=1200, temperature=0.2)
         res = OlivaAIAgent.aiClient.chat(messages, tools=None, backend_conf=bc,

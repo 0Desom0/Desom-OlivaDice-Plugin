@@ -190,6 +190,7 @@ class QuoteContextTest(unittest.TestCase):
                     },
                 )
                 with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                        mock.patch.object(OlivaAIAgent.memberDirectory, 'recordIncoming') as member_record, \
                         mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage') as quote_log, \
                         mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
                         mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
@@ -205,6 +206,7 @@ class QuoteContextTest(unittest.TestCase):
                     OlivaAIAgent.msgReply._onGroupMessage(event, None)
 
                 self.assertEqual(group_usable, quote_log.called)
+                self.assertEqual(group_usable, member_record.called)
 
     def test_qqguildv2_sub_self_open_id_is_treated_as_bot_mention(self):
         event = FakeEvent('[CQ:at,qq=bot-member-openid] 机器人在吗')

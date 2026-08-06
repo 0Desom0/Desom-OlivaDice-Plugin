@@ -19,6 +19,7 @@ from tkinter import scrolledtext
 from tkinter import ttk
 
 from . import config
+from . import function
 from . import message_custom
 from . import utils
 
@@ -45,6 +46,7 @@ class TemplatePluginGui(object):
         self.bot_selector_var = None
         self.global_enable_var = None
         self.global_debug_var = None
+        self.download_concurrency_var = None
         self.bot_enable_var = None
         self.bot_info_var = None
         self.linked_hint_var = None
@@ -60,7 +62,7 @@ class TemplatePluginGui(object):
 
     def calculate_window_geometry(self) -> str:
         """统一窗口尺寸。"""
-        return '760x460'
+        return '760x520'
 
     def build_bot_selector_mapping(self) -> None:
         """生成 Bot 选择下拉框映射。"""
@@ -182,6 +184,7 @@ class TemplatePluginGui(object):
         self.bot_selector_var = tkinter.StringVar(value='')
         self.global_enable_var = tkinter.StringVar(value='True')
         self.global_debug_var = tkinter.StringVar(value='False')
+        self.download_concurrency_var = tkinter.StringVar(value=str(config.download_concurrency_default))
         self.bot_enable_var = tkinter.StringVar(value='True')
         self.bot_info_var = tkinter.StringVar(value='当前未检测到 Bot')
         self.linked_hint_var = tkinter.StringVar(value='')
@@ -256,8 +259,23 @@ class TemplatePluginGui(object):
         self.create_labeled_combobox(self.frame_global, 0, '全局启用', self.global_enable_var)
         self.create_labeled_combobox(self.frame_global, 2, '全局调试模式', self.global_debug_var)
 
+        concurrency_label = tkinter.Label(
+            self.frame_global,
+            text='最大下载并发数（1-100）',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 11, 'bold'),
+            anchor='w',
+        )
+        concurrency_label.grid(row=4, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
+        tkinter.Entry(
+            self.frame_global,
+            textvariable=self.download_concurrency_var,
+            width=18,
+        ).grid(row=5, column=0, sticky='w', padx=(20, 20), pady=(4, 0))
+
         button_frame = tkinter.Frame(self.frame_global, bg=dict_color_context['color_001'])
-        button_frame.grid(row=4, column=0, sticky='nsew', padx=(20, 20), pady=(40, 0))
+        button_frame.grid(row=6, column=0, sticky='nsew', padx=(20, 20), pady=(28, 0))
         self.create_native_button(button_frame, '保存全局设置', self.save_global_config_from_form, width=16).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
@@ -279,7 +297,7 @@ class TemplatePluginGui(object):
             fg=dict_color_context['color_004'],
             font=('等线', 10),
         )
-        hint_label.grid(row=5, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
+        hint_label.grid(row=7, column=0, sticky='nsew', padx=(20, 20), pady=(14, 0))
 
     def init_frame_bot(self) -> None:
         """Bot 配置页。"""
@@ -663,6 +681,13 @@ class TemplatePluginGui(object):
         global_config = utils.load_global_config()
         self.global_enable_var.set(str(bool(global_config.get('global_enable_switch', True))))
         self.global_debug_var.set(str(bool(global_config.get('global_debug_mode_switch', False))))
+        self.download_concurrency_var.set(
+            str(
+                function.normalize_download_concurrency(
+                    global_config.get('max_download_concurrency', config.download_concurrency_default),
+                )
+            )
+        )
 
     def refresh_bot_view(self) -> None:
         """刷新 Bot 配置页。"""
@@ -701,7 +726,17 @@ class TemplatePluginGui(object):
         global_config = utils.load_global_config()
         global_config['global_enable_switch'] = self.str_to_bool(self.global_enable_var.get())
         global_config['global_debug_mode_switch'] = self.str_to_bool(self.global_debug_var.get())
+        concurrency_text = utils.safe_str(self.download_concurrency_var.get()).strip()
+        if not concurrency_text.isdigit():
+            messagebox.showwarning('提示', '最大下载并发数必须是 1-100 的整数。')
+            return
+        concurrency_value = int(concurrency_text)
+        if not config.download_concurrency_min <= concurrency_value <= config.download_concurrency_max:
+            messagebox.showwarning('提示', '最大下载并发数必须是 1-100 的整数。')
+            return
+        global_config['max_download_concurrency'] = concurrency_value
         utils.save_global_config(global_config)
+        function.set_download_concurrency(concurrency_value)
         messagebox.showinfo('提示', '全局设置已保存。')
         self.refresh_global_view()
 
@@ -733,7 +768,7 @@ class TemplatePluginGui(object):
         self.root = self.create_root_window()
         self.root.title(config.gui_window_title)
         self.root.geometry(self.calculate_window_geometry())
-        self.root.minsize(720, 430)
+        self.root.minsize(720, 490)
         self.root.resizable(width=True, height=True)
         self.root.configure(bg=dict_color_context['color_001'])
         self.init_string_vars()

@@ -995,12 +995,28 @@ def _replyWash(reply_list, plugin_event=None):
 
 
 def _sendResultMessageIds(result):
-    if not isinstance(result, dict):
-        return []
-    data = result.get('data') if isinstance(result.get('data'), dict) else {}
-    ids = list(data.get('message_ids') or [])
-    if data.get('message_id') not in [None, '', '-1', -1]:
-        ids.insert(0, data['message_id'])
+    '''递归提取 OlivOS/SDK 合并结果里的全部真实消息 ID。'''
+    ids = []
+    visited = set()
+
+    def collect(value):
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if not isinstance(value, dict) or id(value) in visited:
+            return
+        visited.add(id(value))
+        data = value.get('data') if isinstance(value.get('data'), dict) else value
+        if isinstance(data, dict) and data.get('message_id') not in [None, '', '-1', -1]:
+            ids.append(data['message_id'])
+        message_ids = data.get('message_ids') if isinstance(data, dict) else None
+        if isinstance(message_ids, list):
+            ids.extend(message_ids)
+        for key in ('data', 'response', 'results', 'passive_fallback', 'passive_fallbacks'):
+            collect(value.get(key))
+
+    collect(result)
     return list(dict.fromkeys(str(item) for item in ids if item not in [None, '', '-1', -1]))
 
 
@@ -1061,6 +1077,7 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
                 continue
             i = OlivaAIAgent.contentSafety.refusal()
             safety_refused = True
+        i = OlivaAIAgent.memberDirectory.normalizeLiteralMentions(plugin_event, i)
         delay = sum(0.2 + (random.random() * 2 - 1) * 0.15 for _ in range(len(str(i))))
         if first:
             first = False

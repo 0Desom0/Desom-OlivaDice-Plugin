@@ -603,6 +603,9 @@ def _t_olivos_discover(ctx, args):
     danger=True,
 )
 def _t_olivos_call(ctx, args):
+    # 标记为 AI 运行时工具直发，公共记录器据此把消息写入潜行历史。
+    if isinstance(ctx, dict):
+        ctx['_record_tool_outgoing_history'] = True
     result = OlivaAIAgent.introspection.invoke(
         ctx,
         path=str(args.get('path', '')),

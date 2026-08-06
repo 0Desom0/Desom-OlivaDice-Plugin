@@ -1,6 +1,7 @@
 # -*- encoding: utf-8 -*-
 
 import copy
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -29,9 +30,17 @@ class FakeEvent:
 class CoreLoggerTest(unittest.TestCase):
     def setUp(self):
         self.old_conf = OlivaAIAgent.conf.gConf
+        self.old_data_path = OlivaAIAgent.conf.dataPath
         OlivaAIAgent.conf.gConf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+        self.temp_dir = tempfile.TemporaryDirectory()
+        OlivaAIAgent.conf.dataPath = self.temp_dir.name
+        OlivaAIAgent.identifiers._initialized_path = None
+        OlivaAIAgent.ambient._history.clear()
         self.calls = []
-        hook = lambda *args: self.calls.append(args)
+
+        def hook(*args):
+            self.calls.append(args)
+
         self.core = types.SimpleNamespace(
             crossHook=types.SimpleNamespace(dictHookFunc={'msgHook': hook}),
             msgCustom=types.SimpleNamespace(dictStrCustomDict={
@@ -44,6 +53,10 @@ class CoreLoggerTest(unittest.TestCase):
     def tearDown(self):
         self.core_patch.stop()
         OlivaAIAgent.conf.gConf = self.old_conf
+        OlivaAIAgent.conf.dataPath = self.old_data_path
+        OlivaAIAgent.identifiers._initialized_path = None
+        OlivaAIAgent.ambient._history.clear()
+        self.temp_dir.cleanup()
 
     def test_event_reply_and_send_are_recorded_through_core_hook(self):
         event = FakeEvent()
@@ -120,6 +133,70 @@ class CoreLoggerTest(unittest.TestCase):
         self.assertEqual(1, len(self.calls))
         self.assertEqual('send_group', self.calls[0][1])
         self.assertEqual('# 标题\n正文', self.calls[0][4])
+
+    def test_tool_sent_message_id_is_persisted_for_future_quote_lookup(self):
+        event = FakeEvent()
+        event.platform = {'platform': 'qqGuild', 'sdk': 'qqGuildv2_link'}
+        event.plugin_info = {'func_type': 'group_message'}
+        ctx = {
+            'plugin_event': event,
+            'func_type': 'group_message',
+            'platform': 'qqGuild',
+            'group_id': '20000',
+            '_record_tool_outgoing_history': True,
+        }
+        result = OlivaAIAgent.coreLogger.recordToolCall(
+            ctx,
+            'inde.create_markdown_message',
+            [],
+            {
+                'chat_type': 'qq_group',
+                'chat_id': '20000',
+                'markdown': {'content': 'AI 发出的正文'},
+                'quote_msg_id': 'incoming-quote',
+            },
+            {
+                'active': True,
+                'data': {
+                    'message_id': 'ai-message-1',
+                    'results': [{
+                        'active': True,
+                        'data': {'ext_info': {'ref_idx': 'REFIDX_AI_1'}},
+                    }],
+                },
+            },
+        )
+
+        self.assertTrue(result)
+        saved = OlivaAIAgent.identifiers.getByMessageId(event, 'ai-message-1')
+        self.assertEqual('AI 发出的正文', saved['content'])
+        self.assertEqual('incoming-quote', saved['reference_message_id'])
+        self.assertEqual('REFIDX_AI_1', saved['message_index'])
+        history = OlivaAIAgent.ambient.getHistory('qqGuild', '20000')
+        self.assertEqual('ai-message-1', history[-1]['message_id'])
+        self.assertEqual(['ai-message-1'], history[-1]['message_ids'])
+        self.assertEqual('REFIDX_AI_1', history[-1]['msg_idx'])
+
+    def test_event_reply_tool_call_is_persisted_without_duplicate_logger_hook(self):
+        event = FakeEvent()
+        ctx = {
+            'plugin_event': event,
+            'func_type': 'group_message',
+            'platform': 'qq',
+            'group_id': '20000',
+        }
+        recorded = OlivaAIAgent.coreLogger.recordToolCall(
+            ctx,
+            'event.reply',
+            [],
+            {'message': '直接回复正文'},
+            {'active': True, 'data': {'message_id': 'event-reply-1'}},
+        )
+
+        self.assertFalse(recorded)
+        saved = OlivaAIAgent.identifiers.getByMessageId(event, 'event-reply-1')
+        self.assertEqual('直接回复正文', saved['content'])
+        self.assertEqual([], self.calls)
 
     def test_positional_markdown_tool_call_does_not_log_chat_type_as_content(self):
         event = FakeEvent()

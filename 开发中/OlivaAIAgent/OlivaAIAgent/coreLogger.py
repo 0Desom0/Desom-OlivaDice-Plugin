@@ -350,19 +350,84 @@ def _toolCallTargets(ctx, plugin_event, values):
     return 'send_group', [host_id, chat_id, None]
 
 
+def _toolResultMessageIds(result):
+    '''递归提取工具发送结果中的真实消息 ID，兼容 SDK 合并/嵌套响应。'''
+    try:
+        return OlivaAIAgent.ambient._sendResultMessageIds(result)
+    except Exception:
+        return []
+
+
+def _toolResultMessageIndexes(result):
+    try:
+        return OlivaAIAgent.ambient._sendResultMessageIndexes(result)
+    except Exception:
+        return []
+
+
+def _toolReferenceId(values):
+    if not isinstance(values, dict):
+        return None
+    for key in ('quote_msg_id', 'reference_message_id', 'reply_msg_id'):
+        value = values.get(key)
+        if value not in [None, '', '-1', -1]:
+            return str(value)
+    reference = values.get('message_reference')
+    if isinstance(reference, dict) and reference.get('message_id') not in [None, '', '-1', -1]:
+        return str(reference['message_id'])
+    return None
+
+
+def _recordToolOutgoing(ctx, plugin_event, values, message, result):
+    '''把 AI 通过运行时接口直接发送的消息写入插件注册表和潜行历史。'''
+    message_ids = _toolResultMessageIds(result)
+    message_indexes = _toolResultMessageIndexes(result)
+    if not message_ids and not message_indexes:
+        return
+    reference_id = _toolReferenceId(values)
+    OlivaAIAgent.identifiers.recordOutgoing(
+        plugin_event,
+        message,
+        message_ids,
+        reference_message_id=reference_id,
+        message_indexes=message_indexes,
+    )
+    try:
+        func_type, targets = _toolCallTargets(ctx, plugin_event, values)
+        if (
+            not ctx.get('_record_tool_outgoing_history')
+            or func_type != 'send_group'
+            or str(targets[1]) != str(getattr(plugin_event.data, 'group_id', ''))
+        ):
+            return
+        OlivaAIAgent.ambient.addSelfReply(
+            plugin_event.platform.get('platform', ''),
+            plugin_event.data.group_id,
+            str(message),
+            message_ids=message_ids,
+            message_indexes=message_indexes,
+        )
+    except Exception:
+        pass
+
+
 def recordToolCall(ctx, path, args, kwargs, result):
     '''记录绕过 Event.send/reply 的运行时消息接口，主要覆盖 Markdown。'''
     if not isinstance(result, dict) or not result.get('active'):
         return False
     path_low = str(path).lower()
-    if path_low in ('event.reply', 'event.send'):
-        return False
     values = _toolCallValues(ctx, path, args, kwargs)
     message = _toolCallMessage(values, args)
-    if message in [None, ''] or not any(word in path_low for word in ('message', 'markdown', 'send')):
+    if message in [None, ''] or (
+        path_low not in ('event.reply', 'event.send')
+        and not any(word in path_low for word in ('message', 'markdown', 'send'))
+    ):
         return False
     plugin_event = ctx.get('plugin_event') if isinstance(ctx, dict) else None
     if plugin_event is None:
+        return False
+    _recordToolOutgoing(ctx, plugin_event, values, message, result)
+    if path_low in ('event.reply', 'event.send'):
         return False
     func_type, targets = _toolCallTargets(ctx, plugin_event, values)
     return record(plugin_event, message, func_type=func_type, targets=targets)

@@ -140,6 +140,22 @@ class SenderIdentityTest(unittest.TestCase):
             OlivaAIAgent.ambient._sendResultMessageIndexes(result),
         )
 
+    def test_extracts_all_nested_qqguildv2_message_ids(self):
+        result = {
+            'active': True,
+            'data': {
+                'message_id': 'sent-1',
+                'results': [{
+                    'active': True,
+                    'data': {'message_ids': ['sent-2', 'sent-3']},
+                }],
+            },
+        }
+        self.assertEqual(
+            ['sent-1', 'sent-2', 'sent-3'],
+            OlivaAIAgent.ambient._sendResultMessageIds(result),
+        )
+
     def test_unresolved_quote_prompt_continues_with_current_text(self):
         with mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False):
             prompt = OlivaAIAgent.conf.senderIdentityPrompt(

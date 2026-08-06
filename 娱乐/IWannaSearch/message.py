@@ -2,6 +2,7 @@
 """IWannaSearch 消息解析与回复。"""
 
 import datetime
+import json
 import math
 import os
 import re
@@ -10,7 +11,6 @@ from typing import Any, Dict, List
 
 from . import config
 from . import function
-from . import message_custom
 from . import utils
 
 
@@ -22,11 +22,13 @@ random_tag_pattern = re.compile(r'--tag=(.*)')
 
 def handle_init(plugin_event, Proc) -> None:
     utils.ensure_runtime_storage_by_event(plugin_event, Proc)
+    function.set_download_concurrency(get_api_runtime_config()['download_concurrency'])
     utils.info_log(Proc, 'IWannaSearch init 完成。')
 
 
 def handle_init_after(plugin_event, Proc) -> None:
     utils.ensure_runtime_storage_by_event(plugin_event, Proc)
+    function.set_download_concurrency(get_api_runtime_config()['download_concurrency'])
     utils.debug_log(Proc, 'IWannaSearch init_after 已执行。', plugin_event=plugin_event)
 
 
@@ -66,6 +68,13 @@ def build_runtime_value_dict(plugin_event, command_argument: str = '', extra_val
             'global_debug': 'ON' if global_config.get('global_debug_mode_switch', False) else 'OFF',
             'bot_enable': 'ON' if bot_config.get('bot_enable_switch', True) else 'OFF',
             'merge_forward': 'ON' if bot_config.get('merge_forward_enabled', True) else 'OFF',
+            'download_concurrency': get_int_config(
+                global_config,
+                'max_download_concurrency',
+                config.download_concurrency_default,
+                config.download_concurrency_min,
+                config.download_concurrency_max,
+            ),
             'configured_masters': ', '.join(configured_master_list) or '无',
             'function_module_note': function.function_module_note,
         },
@@ -130,11 +139,35 @@ def handle_iwglobal(plugin_event, command_argument: str) -> None:
         else:
             utils.reply_message(plugin_event, '用法：.iwglobal debug on 或 .iwglobal debug off')
             return
+    elif action_name in [
+        'concurrency',
+        'download',
+        'download-concurrency',
+        'download_concurrency',
+        'max-download-concurrency',
+        '并发',
+        '下载并发',
+    ]:
+        if not number_pattern.fullmatch(action_argument.strip()):
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_global_usage_concurrency'),
+            )
+            return
+        requested_concurrency = int(action_argument.strip())
+        if not config.download_concurrency_min <= requested_concurrency <= config.download_concurrency_max:
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(plugin_event, 'reply_global_usage_concurrency'),
+            )
+            return
+        global_config['max_download_concurrency'] = requested_concurrency
     else:
-        utils.reply_message(plugin_event, '用法：.iwglobal status/on/off/debug on/debug off')
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_global_usage'))
         return
 
     utils.save_global_config(global_config)
+    function.set_download_concurrency(global_config.get('max_download_concurrency', config.download_concurrency_default))
     utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_global_status'))
 
 
@@ -172,6 +205,9 @@ def handle_iwbot(plugin_event, command_argument: str) -> None:
             utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_bot_status'))
             return
         utils.reply_message(plugin_event, '用法：.iwbot merge on/off')
+        return
+    if action_name in ['concurrency', 'download', 'download-concurrency', 'download_concurrency', '并发', '下载并发']:
+        handle_iwglobal(plugin_event, f'concurrency {action_argument}'.strip())
         return
     if action_name == 'master':
         master_action, master_argument = parse_secondary_action(action_argument)
@@ -215,6 +251,13 @@ def get_api_runtime_config() -> Dict[str, Any]:
             config.selection_timeout_seconds,
             30,
             3600,
+        ),
+        'download_concurrency': get_int_config(
+            global_config,
+            'max_download_concurrency',
+            config.download_concurrency_default,
+            config.download_concurrency_min,
+            config.download_concurrency_max,
         ),
     }
 
@@ -433,6 +476,276 @@ def handle_iw_id(plugin_event, query_text: str) -> None:
     runtime_config = get_api_runtime_config()
     payload = function.search_by_id(game_id, runtime_config['base_url'], runtime_config['timeout_seconds'])
     reply_search_payload(plugin_event, payload)
+
+
+def reply_download_message(plugin_event, message_key: str, extra_value_dict=None) -> None:
+    """发送下载流程状态，不引用原始命令，避免后台消息引用过期。"""
+    utils.reply_message(
+        plugin_event,
+        render_custom_message(plugin_event, message_key, extra_value_dict=extra_value_dict),
+        quote_reply=False,
+    )
+
+
+def get_download_error_message(plugin_event, validation_result: Dict[str, Any]) -> str:
+    """把下载预检结果映射到可自定义的回复词。"""
+    error_key_map = {
+        'url_missing': 'reply_download_url_missing',
+        'size_unknown': 'reply_download_size_unknown',
+        'too_large': 'reply_download_too_large',
+        'invalid_item': 'reply_download_failed',
+    }
+    message_key = error_key_map.get(validation_result.get('error_key'), 'reply_download_failed')
+    extra_value_dict = {
+        'error': validation_result.get('error', '下载信息无效。'),
+        'file_size': function.format_file_size(validation_result.get('file_size')),
+    }
+    return render_custom_message(plugin_event, message_key, extra_value_dict=extra_value_dict)
+
+
+def parse_upload_response(send_result: Any) -> Dict[str, Any]:
+    """解析 OlivOS 文件上传接口的同步返回值。"""
+    if send_result is None:
+        raise function.DownloadError('协议端没有返回文件上传结果。')
+    if send_result is True:
+        return {'active': True, 'status': 'ok', 'retcode': 0}
+    if send_result is False:
+        raise function.DownloadError('协议端拒绝了文件上传请求。')
+
+    if isinstance(send_result, dict):
+        response_data = send_result
+    else:
+        status_code = getattr(send_result, 'status_code', None)
+        if isinstance(status_code, int) and status_code >= 400:
+            raise function.DownloadError(f'协议端返回 HTTP {status_code}。')
+
+        response_data = None
+        json_method = getattr(send_result, 'json', None)
+        if callable(json_method):
+            try:
+                response_data = json_method()
+            except Exception:
+                response_data = None
+        if not isinstance(response_data, dict):
+            response_text = utils.safe_str(getattr(send_result, 'text', '')).strip()
+            if response_text:
+                try:
+                    response_data = json.loads(response_text)
+                except Exception as exception_object:
+                    raise function.DownloadError('协议端返回了无法解析的上传结果。') from exception_object
+
+    if not isinstance(response_data, dict):
+        raise function.DownloadError('协议端返回了无效的文件上传结果。')
+
+    if 'active' in response_data:
+        if response_data.get('active') is not True:
+            raise function.DownloadError('协议端返回文件上传失败。')
+        return response_data
+
+    retcode = response_data.get('retcode')
+    if retcode is not None:
+        try:
+            if int(retcode) != 0:
+                raise function.DownloadError(f'协议端返回错误码 {retcode}。')
+        except (TypeError, ValueError) as exception_object:
+            raise function.DownloadError(f'协议端返回无效错误码 {retcode}。') from exception_object
+
+    status = utils.safe_str(response_data.get('status', '')).strip().lower()
+    if status and status not in {'ok', 'success', 'succeeded'}:
+        raise function.DownloadError(f'协议端返回上传状态 {status}。')
+    if retcode is None and not status:
+        raise function.DownloadError('协议端没有返回可确认的上传状态。')
+    return response_data
+
+
+def _target_id_for_upload(value: Any) -> Any:
+    """把事件目标 ID 转成文件上传接口可接受的 ID。"""
+    target_id = utils.safe_str(value).strip()
+    if not target_id:
+        raise function.DownloadError('无法确定文件上传目标。')
+    try:
+        return int(target_id)
+    except ValueError:
+        return target_id
+
+
+def send_download_file(plugin_event, local_file_path: str, file_name: str) -> Any:
+    """通过 OlivOS 文件上传接口发送，并要求适配器返回明确成功结果。"""
+    normalized_file_path = os.path.abspath(local_file_path)
+    if not os.path.isfile(normalized_file_path):
+        raise function.DownloadError('待上传的本地文件不存在。')
+    group_id = utils.get_group_id_from_event(plugin_event)
+    sender_id = utils.get_sender_id_from_event(plugin_event)
+    if group_id:
+        upload_method = getattr(plugin_event, 'upload_group_file', None)
+        upload_args = (_target_id_for_upload(group_id), normalized_file_path, file_name)
+    else:
+        upload_method = getattr(plugin_event, 'upload_private_file', None)
+        upload_args = (_target_id_for_upload(sender_id), normalized_file_path, file_name)
+    if not callable(upload_method):
+        raise function.DownloadError('当前 OlivOS 版本太旧，暂不支持文件上传。')
+
+    try:
+        send_result = upload_method(*upload_args)
+    except Exception as exception_object:
+        raise function.DownloadError(f'协议端文件上传失败：{utils.safe_str(exception_object)}') from exception_object
+    return parse_upload_response(send_result)
+
+
+def run_download_task(
+    plugin_event,
+    Proc,
+    game_item: Dict[str, Any],
+    download_info: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+) -> None:
+    """执行单个下载、上传和临时文件清理任务。"""
+    local_file_path = ''
+    file_name = utils.safe_str(download_info.get('file_name', 'iwanna.zip'))
+    upload_succeeded = False
+    cleanup_error = ''
+
+    try:
+        reply_download_message(
+            plugin_event,
+            'reply_download_started',
+            extra_value_dict={
+                'id': game_item.get('id', ''),
+                'title': game_item.get('title', ''),
+                'file_size': function.format_file_size(download_info.get('file_size')),
+            },
+        )
+
+        storage_dir = utils.get_storage_dir(utils.get_bot_hash_from_event(plugin_event, use_linked=True))
+        download_dir = utils.ensure_folder(os.path.join(storage_dir, config.download_temp_folder_name))
+        download_result = function.download_game_file(
+            download_info,
+            download_dir,
+            max(runtime_config.get('timeout_seconds', config.api_timeout_seconds), 30),
+            config.download_size_limit_bytes,
+        )
+        local_file_path = utils.safe_str(download_result.get('path', ''))
+        file_name = utils.safe_str(download_result.get('file_name', file_name)) or file_name
+
+        reply_download_message(
+            plugin_event,
+            'reply_download_uploading',
+            extra_value_dict={
+                'id': game_item.get('id', ''),
+                'title': game_item.get('title', ''),
+                'file_name': file_name,
+                'file_size': function.format_file_size(download_result.get('file_size')),
+            },
+        )
+
+        send_download_file(plugin_event, local_file_path, file_name)
+        upload_succeeded = True
+    except function.DownloadError as exception_object:
+        reply_download_message(
+            plugin_event,
+            'reply_download_failed',
+            extra_value_dict={'error': utils.safe_str(exception_object)},
+        )
+    except Exception as exception_object:
+        utils.error_log(
+            Proc,
+            f'I Wanna 下载任务失败：{type(exception_object).__name__}: {utils.safe_str(exception_object)}',
+        )
+        reply_download_message(
+            plugin_event,
+            'reply_download_failed',
+            extra_value_dict={'error': f'{type(exception_object).__name__}: {utils.safe_str(exception_object)}'},
+        )
+    finally:
+        if local_file_path:
+            try:
+                if os.path.exists(local_file_path):
+                    os.remove(local_file_path)
+            except Exception as exception_object:
+                cleanup_error = utils.safe_str(exception_object)
+                utils.error_log(Proc, f'I Wanna 临时文件删除失败：{local_file_path}：{cleanup_error}')
+
+    if upload_succeeded:
+        if cleanup_error:
+            reply_download_message(
+                plugin_event,
+                'reply_download_complete_cleanup_failed',
+                extra_value_dict={'file_name': file_name},
+            )
+        else:
+            reply_download_message(
+                plugin_event,
+                'reply_download_complete',
+                extra_value_dict={'file_name': file_name},
+            )
+
+
+def handle_iw_download(plugin_event, query_text: str, Proc=None) -> None:
+    """按游戏 ID 预检文件大小后，排队下载并发送到当前会话。"""
+    game_id = utils.safe_str(query_text).strip()
+    if not number_pattern.fullmatch(game_id):
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_download_id_invalid'))
+        return
+
+    runtime_config = get_api_runtime_config()
+    payload = function.search_by_id(game_id, runtime_config['base_url'], runtime_config['timeout_seconds'])
+    if not payload.get('ok', False):
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_api_error', extra_value_dict=payload))
+        return
+
+    results = payload.get('results', [])
+    if not results:
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_not_found'))
+        return
+
+    matching_items = [
+        item for item in results if utils.safe_str(item.get('id', '')).strip() == game_id
+    ]
+    if matching_items:
+        game_item = matching_items[0]
+    elif len(results) == 1:
+        # 某些旧 API 会把 ID 转成数字或丢失 id 字段，单结果时仍可安全使用它。
+        game_item = results[0]
+    else:
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_not_found'))
+        return
+    validation_result = function.validate_download_item(game_item, config.download_size_limit_bytes)
+    if not validation_result.get('ok', False):
+        utils.reply_message(plugin_event, get_download_error_message(plugin_event, validation_result))
+        return
+
+    function.set_download_concurrency(runtime_config['download_concurrency'])
+    try:
+        submit_result = function.download_task_manager.submit(
+            lambda: run_download_task(
+                plugin_event,
+                Proc,
+                game_item,
+                validation_result,
+                runtime_config,
+            ),
+        )
+    except Exception as exception_object:
+        utils.error_log(Proc, f'I Wanna 下载任务排队失败：{type(exception_object).__name__}: {utils.safe_str(exception_object)}')
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_download_failed',
+                extra_value_dict={'error': '下载队列暂不可用。'},
+            ),
+        )
+        return
+
+    if not submit_result.get('started', False):
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_download_queued',
+                extra_value_dict={'queue_position': submit_result.get('queue_position', 1)},
+            ),
+        )
 
 
 def handle_iw_search(plugin_event, query_text: str) -> None:
@@ -660,7 +973,7 @@ def handle_selection_input(plugin_event, input_text: str) -> bool:
     return True
 
 
-def parse_iw_command(plugin_event, remaining_text: str) -> None:
+def parse_iw_command(plugin_event, remaining_text: str, Proc=None) -> None:
     command_info = utils.parse_command(
         remaining_text,
         prefix_list=[],
@@ -693,6 +1006,16 @@ def parse_iw_command(plugin_event, remaining_text: str) -> None:
     )
     if random_info['is_command']:
         handle_iw_random(plugin_event, random_info['command_argument'])
+        return
+
+    download_info = utils.parse_command(
+        command_argument,
+        prefix_list=[],
+        allow_no_prefix=True,
+        command_name='download',
+    )
+    if download_info['is_command']:
+        handle_iw_download(plugin_event, download_info['command_argument'], Proc=Proc)
         return
 
     id_info = utils.parse_command(
@@ -772,5 +1095,5 @@ def handle_message(plugin_event, Proc) -> None:
         command_name='iw',
     )
     if iw_info['is_command']:
-        parse_iw_command(plugin_event, remaining_after_prefix)
+        parse_iw_command(plugin_event, remaining_after_prefix, Proc=Proc)
         return

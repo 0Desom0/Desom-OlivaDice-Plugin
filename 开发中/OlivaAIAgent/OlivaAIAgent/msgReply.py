@@ -621,6 +621,7 @@ def _onGroupMessage(plugin_event, Proc):
     is_master = OlivaAIAgent.conf.isMaster(plugin_event)
     group_usable = _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=False)
     if group_usable:
+        OlivaAIAgent.memberDirectory.recordIncoming(plugin_event)
         _logQuotedMessage(Proc, parsed)
     # 去重：同一条消息若被重复投递(或未来路径重叠)，只处理一次
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
@@ -1791,26 +1792,8 @@ _QQBOT_AT_TAG_PATTERN = re.compile(
 
 
 def _normalizeQqGuildSenderMention(plugin_event, text):
-    '''把回复开头的字面 @当前发送者昵称 换成可由 SDK 处理的 OP at 段。'''
-    raw = str(text or '')
-    data = getattr(plugin_event, 'data', None)
-    user_id = str(getattr(data, 'user_id', '') or '').strip()
-    sender = getattr(data, 'sender', None)
-    if not user_id or not isinstance(sender, dict):
-        return raw
-    names = []
-    for key in ('nickname', 'name', 'card'):
-        name = str(sender.get(key) or '').strip()
-        if name and name not in names:
-            names.append(name)
-    for name in sorted(names, key=len, reverse=True):
-        pattern = re.compile(
-            r'^(\s*(?:\[(?:OP|CQ):reply\b[^\]]*\]\s*)?)[@＠]%s(?!\w)' % re.escape(name),
-            re.I,
-        )
-        if pattern.search(raw):
-            return pattern.sub(lambda match: match.group(1) + '[OP:at,id=%s]' % user_id, raw, count=1)
-    return raw
+    '''兼容旧调用名：归一化当前群中所有可唯一反查的字面 @昵称。'''
+    return OlivaAIAgent.memberDirectory.normalizeLiteralMentions(plugin_event, text)
 
 
 def _qqGuildMarkdownMentionContent(text):
@@ -1939,6 +1922,7 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
                 source=source,
             )
             text = OlivaAIAgent.contentSafety.refusal()
+    text = OlivaAIAgent.memberDirectory.normalizeLiteralMentions(plugin_event, text)
     trace_id = parsed.get('trace_id') if isinstance(parsed, dict) else None
     if re.search(r'\[发图片[:：]', text):
         try:
