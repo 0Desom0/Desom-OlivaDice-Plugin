@@ -2169,6 +2169,13 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 new_msgs.append(tool_msg)
             tool_rounds += 1
         sent_ids = []
+        simulated_text = OlivaAIAgent.voice.simulatedVoiceText(final_text)
+        if simulated_text is not None and not OlivaAIAgent.voice.hasSentVoice(ctx):
+            voice_result = OlivaAIAgent.voice.sendSimulatedVoice(ctx, final_text)
+            if isinstance(voice_result, dict) and voice_result.get('active'):
+                final_text = ''
+            else:
+                final_text = simulated_text
         if final_text.strip() != '' and OlivaAIAgent.voice.hasSentVoice(ctx):
             conf.traceLog(Proc, 'voice.reply.text_suppressed', trace_id, messages=1)
         elif final_text.strip() != '':

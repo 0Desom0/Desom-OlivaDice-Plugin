@@ -46,6 +46,10 @@ _VOICE_DEDUPE_CTX_KEY = '_oliva_ai_voice_texts'
 _VOICE_SENT_CTX_KEY = '_oliva_ai_voice_sent'
 _VOICE_CACHE_HARD_LIMIT = 10
 _voiceDedupeLock = threading.Lock()
+_SIMULATED_VOICE_PATTERNS = (
+    re.compile(r'^\s*\[语音消息\]\s*(?P<text>.+?)\s*$', re.S),
+    re.compile(r'^\s*\[语音[:：](?P<text>.+?)\]\s*$', re.S),
+)
 
 
 def _voiceTextKey(text):
@@ -77,6 +81,35 @@ def hasSentVoice(ctx):
 def _markVoiceSent(ctx):
     if isinstance(ctx, dict):
         ctx[_VOICE_SENT_CTX_KEY] = True
+
+
+def simulatedVoiceText(text):
+    '''提取模型用普通文字模拟的整条语音；普通正文中的媒体说明不处理。'''
+    value = str(text or '')
+    for pattern in _SIMULATED_VOICE_PATTERNS:
+        matched = pattern.fullmatch(value)
+        if matched is not None:
+            content = str(matched.group('text') or '').strip()
+            return content or None
+    return None
+
+
+def sendSimulatedVoice(ctx, text):
+    '''把模型误写成文字标记的语音兜底转换为真实语音。'''
+    content = simulatedVoiceText(text)
+    if content is None or not getStatus()['ready']:
+        return None
+    OlivaAIAgent.conf.traceLog(
+        ctx.get('Proc'),
+        'voice.marker.converted',
+        ctx.get('trace_id'),
+        text_chars=len(content),
+    )
+    return sendVoice(
+        ctx,
+        content,
+        instructions='自然、贴合当前语气地说出这句话，保持正常语速和清晰停顿。',
+    )
 
 
 def outputDir():
@@ -413,7 +446,7 @@ def sendVoice(ctx, text, instructions=''):
             _markVoiceSent(ctx)
             OlivaAIAgent.identifiers.recordOutgoing(
                 plugin_event,
-                '[语音消息:%s]' % str(text)[:200],
+                '[语音:%s]' % str(text)[:200],
                 message_ids,
                 message_indexes=message_indexes,
             )
@@ -422,9 +455,10 @@ def sendVoice(ctx, text, instructions=''):
                     OlivaAIAgent.ambient.addSelfReply(
                         ctx.get('platform', ''),
                         ctx['group_id'],
-                        '[语音消息] %s' % str(text).strip(),
+                        str(text).strip(),
                         message_ids=message_ids,
                         message_indexes=message_indexes,
+                        message_type='voice',
                     )
             except Exception:
                 pass

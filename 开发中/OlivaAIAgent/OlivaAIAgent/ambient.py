@@ -205,7 +205,14 @@ def addToHistory(
     _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=trace_id)
 
 
-def addSelfReply(platform, group_id, text, message_ids=None, message_indexes=None):
+def addSelfReply(
+    platform,
+    group_id,
+    text,
+    message_ids=None,
+    message_indexes=None,
+    message_type=None,
+):
     '''把自己的回复以 assistant 身份记入历史（nickname=None 标记自己）。'''
     key = _hkey(platform, group_id)
     q = _getQueue(key)
@@ -225,6 +232,8 @@ def addSelfReply(platform, group_id, text, message_ids=None, message_indexes=Non
             'nickname': None,
             'message': clean,
         }
+        if message_type not in [None, '']:
+            entry['message_type'] = str(message_type)
         if ids:
             entry['message_id'] = ids[0]
             entry['message_ids'] = ids
@@ -269,7 +278,9 @@ def buildContextMessages(system_content, history, patch=None):
     messages = [{'role': 'system', 'content': system_content}]
     for e in history:
         if e.get('nickname') is None:
-            messages.append({'role': 'assistant', 'content': str(e.get('message', ''))})
+            content = str(e.get('message', ''))
+            legacy_voice = OlivaAIAgent.voice.simulatedVoiceText(content)
+            messages.append({'role': 'assistant', 'content': legacy_voice or content})
         else:
             entry = {
                 'time': e.get('time', ''),
@@ -997,6 +1008,22 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         return
 
     reply_list = _replyWash(reply_list, plugin_event=plugin_event)
+    converted_voice = False
+    cleaned_reply_list = []
+    for reply_text in reply_list:
+        simulated_text = OlivaAIAgent.voice.simulatedVoiceText(reply_text)
+        if simulated_text is None:
+            cleaned_reply_list.append(reply_text)
+            continue
+        voice_result = OlivaAIAgent.voice.sendSimulatedVoice(runtime_tool_ctx, reply_text)
+        if isinstance(voice_result, dict) and voice_result.get('active'):
+            converted_voice = True
+        else:
+            cleaned_reply_list.append(simulated_text)
+    if converted_voice:
+        _logConversationDecision(Proc, trace_id, '回复', '文字语音标记已转换为真实语音')
+        return
+    reply_list = cleaned_reply_list
     reply_list = OlivaAIAgent.vision.repairVisionDenial(reply_list, history)
     if not reply_list:
         _logConversationDecision(Proc, trace_id, '跳过', '回复清洗后没有可发送内容')
