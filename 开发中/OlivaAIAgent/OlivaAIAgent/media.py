@@ -25,11 +25,37 @@ import OlivaAIAgent
 OP_AUDIO_PATTERN = re.compile(r'\[(?:CQ|OP):record,[^\]]+\]', re.IGNORECASE)
 OP_VIDEO_PATTERN = re.compile(r'\[(?:CQ|OP):video,[^\]]+\]', re.IGNORECASE)
 OP_FILE_PATTERN = re.compile(r'\[(?:CQ|OP):file,[^\]]+\]', re.IGNORECASE)
+OP_MEDIA_PATTERN = re.compile(r'\[(?:CQ|OP):(?:record|video|file),[^\]]+\]', re.IGNORECASE)
 AUDIO_PLACEHOLDER_PATTERN = re.compile(r'\[\[OLIVA_AUDIO_([0-9]+)\]\]')
 VIDEO_PLACEHOLDER_PATTERN = re.compile(r'\[\[OLIVA_VIDEO_([0-9]+)\]\]')
-VIDEO_FILE_EXTENSIONS = frozenset({
-    '3gp', 'avi', 'flv', 'm2ts', 'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 'mts', 'ts', 'webm', 'wmv',
-})
+VIDEO_FILE_EXTENSIONS = frozenset(
+    {
+        extension.lstrip('.').lower()
+        for extension, mime in mimetypes.types_map.items()
+        if str(mime).lower().startswith('video/')
+    }
+    | {
+        # 标准库在不同系统上的 MIME 表不一致，这里补齐常见封装、码流、分片和专业摄像格式。
+        '264', '265', '3g2', '3gp', '3gp2', '3gpp', '3gpp2', 'amv', 'asf', 'asx', 'avi', 'avm2',
+        'bik', 'bik2', 'braw', 'bsf', 'cam', 'cine', 'dav', 'divx', 'drc', 'dv', 'dvr-ms', 'evo',
+        'f4v', 'fli', 'flv', 'gvi', 'h264', 'h265', 'hevc', 'ismv', 'ivf', 'm1v', 'm2p', 'm2t',
+        'm2ts', 'm2v', 'm4s', 'm4v', 'mj2', 'mjpeg', 'mjpg', 'mk3d', 'mkv', 'mod', 'mov', 'mp2v',
+        'mp4', 'mp4v', 'mpe', 'mpeg', 'mpg', 'mpv', 'mts', 'mxf', 'nsv', 'nut', 'ogm', 'ogv',
+        'qt', 'r3d', 'rm', 'rmvb', 'roq', 'svi', 'swf', 'tod', 'tp', 'trp', 'ts', 'vob', 'vro',
+        'webm', 'wm', 'wmv', 'wtv', 'xvid', 'y4m',
+    }
+)
+AUDIO_FILE_EXTENSIONS = frozenset(
+    {
+        extension.lstrip('.').lower()
+        for extension, mime in mimetypes.types_map.items()
+        if str(mime).lower().startswith('audio/')
+    }
+    | {
+        '3ga', 'aac', 'ac3', 'aif', 'aifc', 'aiff', 'amr', 'ape', 'caf', 'dts', 'flac', 'm4a', 'm4b',
+        'm4r', 'mka', 'mp2', 'mp3', 'oga', 'ogg', 'opus', 'ra', 'ram', 'wav', 'weba', 'wma',
+    }
+)
 _result_cache = {}
 _CACHE_TTL = 900
 _MAX_CACHE = 256
@@ -70,15 +96,18 @@ def isEnabled(kind):
     return bool(child.get('enable', False)) if isinstance(child, dict) else False
 
 
-def _hasVideoExtension(value):
+def _hasExtension(value, extensions):
     text = unquote(str(value or '')).strip().lower()
     if not text:
         return False
-    # QQ 文件下载地址常把真实文件名放在 fname 查询参数里，不能只看 URL path。
-    for match in re.finditer(r'\.([a-z0-9]{2,8})(?=$|[?#&,/\\\]])', text):
-        if match.group(1) in VIDEO_FILE_EXTENSIONS:
+    for match in re.finditer(r'\.([a-z0-9][a-z0-9_-]{0,15})(?=$|[?#&,/\\\]])', text):
+        if match.group(1) in extensions:
             return True
     return False
+
+
+def _hasVideoExtension(value):
+    return _hasExtension(value, VIDEO_FILE_EXTENSIONS)
 
 
 def isVideoFileData(value):
@@ -88,11 +117,88 @@ def isVideoFileData(value):
         if any(str(item or '').lower().startswith('video/') for item in values):
             return True
         return any(_hasVideoExtension(item) for item in values)
-    return _hasVideoExtension(value)
+    text = str(value or '')
+    if re.search(r'(?:content[_-]?type|mime)\s*=\s*video/', text, re.I):
+        return True
+    return _hasVideoExtension(text)
+
+
+def isAudioFileData(value):
+    '''按文件名、URL、路径或 MIME 判断 file 消息是否实际为音频。'''
+    if isinstance(value, dict):
+        values = [value.get(key) for key in ('name', 'file_name', 'url', 'file', 'path', 'content_type', 'mime')]
+        if any(str(item or '').lower().startswith('audio/') for item in values):
+            return True
+        return any(_hasExtension(item, AUDIO_FILE_EXTENSIONS) for item in values)
+    text = str(value or '')
+    if re.search(r'(?:content[_-]?type|mime)\s*=\s*audio/', text, re.I):
+        return True
+    return _hasExtension(text, AUDIO_FILE_EXTENSIONS)
+
+
+def fileMediaKind(value):
+    '''返回 file 消息的媒体类型；视频优先，普通文件返回空字符串。'''
+    if isVideoFileData(value):
+        return 'video'
+    if isAudioFileData(value):
+        return 'audio'
+    return ''
 
 
 def hasVideoFileTag(message):
     return any(isVideoFileData(match.group(0)) for match in OP_FILE_PATTERN.finditer(str(message or '')))
+
+
+def hasAudioFileTag(message):
+    return any(isAudioFileData(match.group(0)) for match in OP_FILE_PATTERN.finditer(str(message or '')))
+
+
+def qqGuildAudioAttachments(plugin_event, extend=None):
+    '''读取 qqGuildv2_link 的 audio 附件官方转写和 WAV 地址；其他 SDK 始终返回空。'''
+    try:
+        sdk = str(plugin_event.platform.get('sdk', '')).lower()
+        if sdk != 'qqguildv2_link':
+            return []
+        if not isinstance(extend, dict):
+            extend = plugin_event.data.extend if isinstance(plugin_event.data.extend, dict) else {}
+        attachments = extend.get('qq_attachments')
+        if not isinstance(attachments, list):
+            return []
+        result = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            content_type = str(attachment.get('content_type') or '').lower()
+            # QQ 文件附件不提供官方 ASR；即使后缀是音频，也只能走普通 file 识别流程。
+            if not (content_type == 'audio' or content_type.startswith('audio/')):
+                continue
+            if attachment.get('voice_wav_url') in [None, ''] and attachment.get('asr_refer_text') in [None, '']:
+                continue
+            source_url = str(attachment.get('url') or '').strip()
+            if source_url.startswith('//'):
+                source_url = 'https:' + source_url
+            elif source_url and not source_url.startswith(('http://', 'https://', 'data:', 'file://')):
+                source_url = 'https://' + source_url.lstrip('/')
+            wav_url = str(attachment.get('voice_wav_url') or '').strip()
+            if wav_url.startswith('//'):
+                wav_url = 'https:' + wav_url
+            elif wav_url and not wav_url.startswith(('http://', 'https://', 'data:', 'file://')):
+                wav_url = 'https://' + wav_url.lstrip('/')
+            audio_format = ''
+            for match in re.finditer(r'\.([a-z0-9][a-z0-9_-]{0,15})(?=$|[?#&,/\\\]])', unquote(wav_url).lower()):
+                extension = match.group(1)
+                if extension in AUDIO_FILE_EXTENSIONS:
+                    audio_format = {'oga': 'opus', 'ogg': 'opus'}.get(extension, extension)
+                    break
+            result.append({
+                'source_url': source_url,
+                'wav_url': wav_url,
+                'asr_text': str(attachment.get('asr_refer_text') or '').strip(),
+                'format': audio_format or ('wav' if wav_url else ''),
+            })
+        return result[:4]
+    except Exception:
+        return []
 
 
 def _mainEnabled(kind):
@@ -215,6 +321,15 @@ def _refLabel(ref):
     return os.path.basename(text.replace('\\', '/'))[:80] or 'local'
 
 
+def _traceUrl(ref):
+    '''日志中显示可定位的媒体 URL，但去掉 QQ CDN 的签名查询参数。'''
+    text = str(ref or '').strip()
+    if text.startswith(('http://', 'https://')):
+        parts = urlsplit(text)
+        return '%s://%s%s' % (parts.scheme, parts.netloc, unquote(parts.path))
+    return text[:180]
+
+
 def _readBytes(ref, max_bytes, trace_id, kind):
     value = str(ref or '').strip()
     if value.startswith('data:'):
@@ -270,6 +385,36 @@ def _readBytes(ref, max_bytes, trace_id, kind):
         return None, '', '%s: %s' % (type(exc).__name__, exc)
 
 
+def _sniffContentType(kind, content):
+    '''在 CDN 没有返回 MIME 时按文件头识别 QQ 音视频容器。'''
+    if not content:
+        return ''
+    data = bytes(content[:64])
+    if kind == 'audio':
+        if data.startswith(b'OggS'):
+            return 'audio/ogg'
+        if data.startswith(b'fLaC'):
+            return 'audio/flac'
+        if data.startswith(b'RIFF') and data[8:12] == b'WAVE':
+            return 'audio/wav'
+        if data.startswith(b'FORM') and data[8:12] in (b'AIFF', b'AIFC'):
+            return 'audio/aiff'
+        if data.startswith(b'#!AMR'):
+            return 'audio/amr'
+        if data.startswith(b'ID3') or data[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'):
+            return 'audio/mpeg'
+    elif kind == 'video':
+        if len(data) >= 12 and data[4:8] == b'ftyp':
+            return 'video/mp4'
+        if data.startswith(b'\x1aE\xdf\xa3'):
+            return 'video/webm'
+        if data.startswith(b'RIFF') and data[8:12] == b'AVI ':
+            return 'video/avi'
+        if data.startswith(b'FLV'):
+            return 'video/x-flv'
+    return ''
+
+
 def _dataUrl(kind, ref, mode, trace_id, max_bytes=None):
     if mode not in ('base64', 'data', 'data_url'):
         if not str(ref).startswith(('http://', 'https://', 'data:')):
@@ -296,6 +441,8 @@ def _dataUrl(kind, ref, mode, trace_id, max_bytes=None):
         )
         return None, ''
     if not content_type or not content_type.startswith(('audio/', 'video/')):
+        content_type = _sniffContentType(kind, content) or content_type
+    if not content_type or not content_type.startswith(('audio/', 'video/')):
         guessed = mimetypes.guess_type(_refLabel(ref))[0]
         content_type = guessed or ('audio/mpeg' if kind == 'audio' else 'video/mp4')
     return 'data:%s;base64,%s' % (content_type.split(';')[0], base64.b64encode(content).decode('ascii')), content_type
@@ -317,7 +464,14 @@ def _formatFromMime(content_type, ref):
     if mime in known_formats:
         return known_formats[mime]
     ext = mimetypes.guess_extension(mime) or Path(_refLabel(ref)).suffix.lower()
-    return ext.lstrip('.') or ('mp3' if mime.startswith('audio/') else 'mp4')
+    if not ext:
+        ref_text = unquote(str(ref or '')).lower()
+        for match in re.finditer(r'\.([a-z0-9][a-z0-9_-]{0,15})(?=$|[?#&,/\\\]])', ref_text):
+            if match.group(1) in AUDIO_FILE_EXTENSIONS:
+                ext = '.' + match.group(1)
+                break
+    # 当前函数只用于音频请求；无 MIME/后缀时不得误回退成视频格式。
+    return ext.lstrip('.') or 'mp3'
 
 
 def _extractModelText(data):
@@ -328,6 +482,49 @@ def _extractModelText(data):
         return str(content or '').strip()
     except Exception:
         return ''
+
+
+def _extractStreamText(response):
+    '''读取 OpenAI-compatible SSE 文本；非流式或测试响应自动回退 JSON。'''
+    lines = getattr(response, 'iter_lines', None)
+    if not callable(lines):
+        try:
+            return _extractModelText(response.json())
+        except Exception:
+            return ''
+    chunks = []
+    try:
+        for line in lines(decode_unicode=True):
+            if isinstance(line, bytes):
+                line = line.decode('utf-8', errors='replace')
+            text = str(line or '').strip()
+            if not text.startswith('data:'):
+                continue
+            payload = text[5:].strip()
+            if not payload or payload == '[DONE]':
+                continue
+            try:
+                data = json.loads(payload)
+            except Exception:
+                continue
+            choices = data.get('choices') if isinstance(data, dict) else None
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = choices[0] if isinstance(choices[0], dict) else {}
+            delta = choice.get('delta') if isinstance(choice.get('delta'), dict) else {}
+            value = delta.get('content')
+            if value in [None, '']:
+                message = choice.get('message') if isinstance(choice.get('message'), dict) else {}
+                value = message.get('content')
+            if isinstance(value, list):
+                value = ''.join(
+                    str(item.get('text', '')) for item in value if isinstance(item, dict)
+                )
+            if value not in [None, '']:
+                chunks.append(str(value))
+    except Exception:
+        return ''.join(chunks)
+    return ''.join(chunks)
 
 
 def _parseResult(kind, text):
@@ -365,7 +562,7 @@ def _extractDashscopeAudioText(data):
     return ''
 
 
-def _callDashscopeAudio(ref, cfg, trace_id):
+def _callDashscopeAudio(ref, cfg, trace_id, format_hint=None):
     '''调用 Qwen-Audio-3.0-ASR-Flash 的百炼原生同步接口。'''
     started = time.perf_counter()
     mode = str(cfg.get('mode', 'base64')).lower()
@@ -392,7 +589,7 @@ def _callDashscopeAudio(ref, cfg, trace_id):
         content.append({'type': 'input_text', 'text': prompt})
     # 原生接口要求完整 Data URL；不能像 OpenAI input_audio 一样剥掉头部。
     content.append({'type': 'input_audio', 'input_audio': {'data': prepared}})
-    audio_format = str(cfg.get('format') or _formatFromMime(content_type, ref)).strip().lower()
+    audio_format = str(cfg.get('format') or format_hint or _formatFromMime(content_type, ref)).strip().lower()
     try:
         sample_rate = int(cfg.get('sample_rate', 16000))
     except (TypeError, ValueError):
@@ -476,9 +673,9 @@ def _callDashscopeAudio(ref, cfg, trace_id):
         return None
 
 
-def _callIndependent(kind, ref, cfg, trace_id):
+def _callIndependent(kind, ref, cfg, trace_id, format_hint=None):
     if kind == 'audio' and _audioProvider(cfg) == 'dashscope_asr':
-        return _callDashscopeAudio(ref, cfg, trace_id)
+        return _callDashscopeAudio(ref, cfg, trace_id, format_hint=format_hint)
     started = time.perf_counter()
     mode = str(cfg.get('mode', 'base64' if kind == 'audio' else 'url')).lower()
     prepared, content_type = _dataUrl(kind, ref, mode, trace_id)
@@ -495,7 +692,10 @@ def _callIndependent(kind, ref, cfg, trace_id):
             audio_data = prepared
         media_part = {
             'type': 'input_audio',
-            'input_audio': {'data': audio_data, 'format': _formatFromMime(content_type, ref)},
+            'input_audio': {
+                'data': audio_data,
+                'format': str(cfg.get('format') or format_hint or _formatFromMime(content_type, ref)),
+            },
         }
         prompt = cfg.get('prompt') or '请准确转写这段语音，只输出 JSON：{"text":"转写内容"}。不要补写没有听到的内容。'
     else:
@@ -504,6 +704,7 @@ def _callIndependent(kind, ref, cfg, trace_id):
     url = str(cfg.get('api_url', '')).rstrip('/')
     if not url.endswith('/chat/completions'):
         url += '/chat/completions'
+    is_omni = 'omni' in str(cfg.get('model', '')).lower()
     payload = {
         'model': cfg.get('model', ''),
         'messages': [
@@ -512,9 +713,14 @@ def _callIndependent(kind, ref, cfg, trace_id):
         ],
         'temperature': 0,
         'max_tokens': int(cfg.get('max_tokens', 1200)),
-        'stream': False,
+        'stream': is_omni,
         'response_format': {'type': 'json_object'},
     }
+    # Qwen Omni 要求流式请求；文本提示已要求 JSON，不再发送可能不兼容的 response_format。
+    if is_omni:
+        payload.pop('response_format', None)
+        payload['modalities'] = ['text']
+        payload['stream_options'] = {'include_usage': True}
     headers = {'Content-Type': 'application/json'}
     if cfg.get('api_key'):
         headers['Authorization'] = 'Bearer ' + str(cfg['api_key'])
@@ -538,6 +744,7 @@ def _callIndependent(kind, ref, cfg, trace_id):
             headers=headers,
             json=payload,
             timeout=int(cfg.get('timeout_sec', 120)),
+            stream=is_omni,
         )
         if response.status_code != 200:
             OlivaAIAgent.conf.traceLog(
@@ -550,7 +757,8 @@ def _callIndependent(kind, ref, cfg, trace_id):
                 error=str(response.text)[:300],
             )
             return None
-        result = _parseResult(kind, _extractModelText(response.json()))
+        model_text = _extractStreamText(response) if is_omni else _extractModelText(response.json())
+        result = _parseResult(kind, model_text)
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
             'media.%s.result' % kind,
@@ -572,14 +780,14 @@ def _callIndependent(kind, ref, cfg, trace_id):
         return None
 
 
-def _recognize(kind, ref, trace_id=None):
+def _recognize(kind, ref, trace_id=None, format_hint=None):
     cached = _cacheGet(kind, ref)
     if cached:
         return cached
     cfg = _independentConf(kind)
     if not cfg.get('api_url') or not cfg.get('api_key') or not cfg.get('model'):
         return factFormat(kind, '未识别成功')
-    result = _callIndependent(kind, ref, cfg, trace_id)
+    result = _callIndependent(kind, ref, cfg, trace_id, format_hint=format_hint)
     fact = factFormat(kind, result or '未识别成功')
     if result:
         _cachePut(kind, ref, fact)
@@ -599,6 +807,17 @@ def _replace(text, pattern, facts, kind):
     return output
 
 
+def _replaceAvailable(text, pattern, facts):
+    '''只替换已有事实的位置，供无需联网的 QQ 官方转写提前落地。'''
+    def repl(match):
+        index = int(match.group(1))
+        if index < len(facts) and facts[index]:
+            return facts[index]
+        return match.group(0)
+
+    return pattern.sub(repl, str(text))
+
+
 def translateIncoming(message, parsed, allow_network=True, trace_id=None):
     '''把当前消息的音频/视频段转为事实；主模型路由时保留媒体列表。'''
     if not isinstance(parsed, dict):
@@ -607,20 +826,24 @@ def translateIncoming(message, parsed, allow_network=True, trace_id=None):
     audio_index = 0
     video_index = 0
 
-    def replace_audio_tag(_match):
-        nonlocal audio_index
-        placeholder = audioPlaceholder(audio_index)
-        audio_index += 1
-        return placeholder
+    def replace_media_tag(match):
+        nonlocal audio_index, video_index
+        tag = match.group(0)
+        tag_type_match = re.match(r'\[(?:CQ|OP):([^,\]]+),', tag, re.I)
+        tag_type = tag_type_match.group(1).lower() if tag_type_match else ''
+        kind = 'audio' if tag_type == 'record' else 'video' if tag_type == 'video' else fileMediaKind(tag)
+        if kind == 'video':
+            placeholder = videoPlaceholder(video_index)
+            video_index += 1
+            return placeholder
+        if kind == 'audio':
+            placeholder = audioPlaceholder(audio_index)
+            audio_index += 1
+            return placeholder
+        return tag
 
-    def replace_video_tag(_match):
-        nonlocal video_index
-        placeholder = videoPlaceholder(video_index)
-        video_index += 1
-        return placeholder
-
-    result = OP_AUDIO_PATTERN.sub(replace_audio_tag, result)
-    result = OP_VIDEO_PATTERN.sub(replace_video_tag, result)
+    # raw 文本可能被其他媒体处理重新带入；在识别层再次原位清除媒体标签，保留普通 file。
+    result = OP_MEDIA_PATTERN.sub(replace_media_tag, result)
     for kind, key, pattern in (
         ('audio', 'audio_urls', AUDIO_PLACEHOLDER_PATTERN),
         ('video', 'video_urls', VIDEO_PLACEHOLDER_PATTERN),
@@ -632,23 +855,73 @@ def translateIncoming(message, parsed, allow_network=True, trace_id=None):
             continue
         if not refs:
             continue
+        facts = [None] * len(refs)
+        format_hints = [''] * len(refs)
+        if kind == 'audio':
+            configured_hints = list(parsed.get('audio_format_hints') or [])[:len(refs)]
+            format_hints[:len(configured_hints)] = configured_hints
+            official_texts = list(parsed.get('audio_official_texts') or [])[:len(refs)]
+            use_official = bool(
+                parsed.get('qqguild_v2')
+                and _independentConf('audio').get('use_qqguild_official_asr', True)
+            )
+            if parsed.get('qqguild_v2'):
+                for index, ref in enumerate(refs):
+                    official_text = str(official_texts[index] or '').strip() \
+                        if index < len(official_texts) else ''
+                    adopted = use_official and bool(official_text)
+                    OlivaAIAgent.conf.traceLog(
+                        OlivaAIAgent.conf.gProc,
+                        'media.audio.qqguild_official',
+                        trace_id,
+                        result='采用' if adopted else '回退',
+                        audio_url=_traceUrl(ref),
+                        official_text=official_text,
+                        format=format_hints[index] if index < len(format_hints) else '',
+                        text_chars=len(official_text),
+                    )
+                    if adopted:
+                        facts[index] = factFormat('audio', official_text)
+        unresolved = [index for index, fact in enumerate(facts) if fact is None]
+        if not unresolved:
+            result = _replace(result, pattern, facts, kind)
+            parsed[key] = []
+            if kind == 'audio':
+                parsed['audio_format_hints'] = []
+                parsed['audio_official_texts'] = []
+            continue
         route = _route(kind)
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
             'media.%s.route' % kind,
             trace_id,
-            count=len(refs),
+            count=len(unresolved),
             route=route,
             model=(OlivaAIAgent.aiClient.getBackendConf() if route == 'main' else _independentConf(kind)).get('model', ''),
         )
         if route == 'main':
-            result = _replace(result, pattern, [('[语音]' if kind == 'audio' else '[视频]')] * len(refs), kind)
+            for index in unresolved:
+                facts[index] = '[语音]' if kind == 'audio' else '[视频]'
+            result = _replace(result, pattern, facts, kind)
+            parsed[key] = [refs[index] for index in unresolved]
+            if kind == 'audio':
+                parsed['audio_format_hints'] = [format_hints[index] for index in unresolved]
+                parsed['audio_official_texts'] = [''] * len(unresolved)
             continue
         if not allow_network:
+            result = _replaceAvailable(result, pattern, facts)
             continue
-        facts = [_recognize(kind, ref, trace_id=trace_id) for ref in refs]
+        for index in unresolved:
+            hint = format_hints[index] if kind == 'audio' else ''
+            if hint:
+                facts[index] = _recognize(kind, refs[index], trace_id=trace_id, format_hint=hint)
+            else:
+                facts[index] = _recognize(kind, refs[index], trace_id=trace_id)
         result = _replace(result, pattern, facts, kind)
         parsed[key] = []
+        if kind == 'audio':
+            parsed['audio_format_hints'] = []
+            parsed['audio_official_texts'] = []
     return result
 
 

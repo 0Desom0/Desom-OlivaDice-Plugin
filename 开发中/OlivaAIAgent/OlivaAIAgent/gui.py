@@ -234,6 +234,7 @@ PATH_LABELS = {
     ('forward', 'video'): '识别节点内视频',
     ('media', 'use_main'): '媒体模型路由',
     ('media', 'audio', 'enable'): '启用入站语音识别',
+    ('media', 'audio', 'use_qqguild_official_asr'): '优先使用 QQ 官方语音转写',
     ('media', 'audio', 'provider'): '独立语音接口协议',
     ('media', 'audio', 'mode'): '独立语音传输模式',
     ('media', 'audio', 'format'): '音频格式（留空自动检测）',

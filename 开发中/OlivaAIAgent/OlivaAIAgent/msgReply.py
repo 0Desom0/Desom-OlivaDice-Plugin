@@ -121,7 +121,8 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
                     text_parts.append('[视频]')
                 continue
             if str(getattr(para, 'type', '') or '').lower() == 'file':
-                if OlivaAIAgent.media.isVideoFileData(para.data):
+                file_kind = OlivaAIAgent.media.fileMediaKind(para.data)
+                if file_kind == 'video':
                     video_count += 1
                     ref = para.data.get('url') or para.data.get('file') or para.data.get('path') or ''
                     if not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False):
@@ -129,6 +130,14 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
                         video_urls.append(str(ref))
                     else:
                         text_parts.append('[视频]')
+                elif file_kind == 'audio':
+                    audio_count += 1
+                    ref = para.data.get('url') or para.data.get('file') or para.data.get('path') or ''
+                    if not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False):
+                        text_parts.append(OlivaAIAgent.media.audioPlaceholder(len(audio_urls)))
+                        audio_urls.append(str(ref))
+                    else:
+                        text_parts.append('[语音]')
                 else:
                     text_parts.append('[文件:%s]' % str(para.data.get('name') or '文件')[:120])
                 continue
@@ -186,9 +195,16 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
         clean = OlivaAIAgent.media.OP_AUDIO_PATTERN.sub(_quoted_audio, clean)
         clean = OlivaAIAgent.media.OP_VIDEO_PATTERN.sub(_quoted_video, clean)
         def _quoted_file(match):
-            nonlocal video_count
+            nonlocal audio_count, video_count
             tag = match.group(0)
-            if not OlivaAIAgent.media.isVideoFileData(tag):
+            file_kind = OlivaAIAgent.media.fileMediaKind(tag)
+            if file_kind == 'audio':
+                audio_count += 1
+                if forward_media and not OlivaAIAgent.conf.get('forward', 'audio', default=False):
+                    return '[语音]'
+                audio_urls.append(OlivaAIAgent.media.tagRef(tag))
+                return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+            if file_kind != 'video':
                 return '[文件]'
             video_count += 1
             if forward_media and not OlivaAIAgent.conf.get('forward', 'video', default=False):
@@ -215,9 +231,16 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
         text_parts = [clean]
     text = ' '.join(part.strip() for part in text_parts if str(part).strip()).strip()
     def _inline_quoted_file(match):
-        nonlocal video_count
+        nonlocal audio_count, video_count
         tag = match.group(0)
-        if not OlivaAIAgent.media.isVideoFileData(tag):
+        file_kind = OlivaAIAgent.media.fileMediaKind(tag)
+        if file_kind == 'audio':
+            audio_count += 1
+            if forward_media and not OlivaAIAgent.conf.get('forward', 'audio', default=False):
+                return '[语音]'
+            audio_urls.append(OlivaAIAgent.media.tagRef(tag))
+            return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+        if file_kind != 'video':
             return '[文件]'
         video_count += 1
         if forward_media and not OlivaAIAgent.conf.get('forward', 'video', default=False):
@@ -549,6 +572,7 @@ def parseMessage(plugin_event):
     at_list = []
     images = []
     audio_urls = []
+    record_audio_indexes = []
     video_urls = []
     image_count = 0
     audio_count = 0
@@ -576,6 +600,7 @@ def parseMessage(plugin_event):
                 audio_count += 1
                 ref = para.data.get('url') or para.data.get('file') or ''
                 text_parts.append(OlivaAIAgent.media.audioPlaceholder(len(audio_urls)))
+                record_audio_indexes.append(len(audio_urls))
                 audio_urls.append(str(ref))
             elif isinstance(para, OlivOS.messageAPI.PARA.video):
                 video_count += 1
@@ -583,11 +608,17 @@ def parseMessage(plugin_event):
                 text_parts.append(OlivaAIAgent.media.videoPlaceholder(len(video_urls)))
                 video_urls.append(str(ref))
             elif str(getattr(para, 'type', '') or '').lower() == 'file':
-                if OlivaAIAgent.media.isVideoFileData(para.data):
+                file_kind = OlivaAIAgent.media.fileMediaKind(para.data)
+                if file_kind == 'video':
                     video_count += 1
                     ref = para.data.get('url') or para.data.get('file') or para.data.get('path') or ''
                     text_parts.append(OlivaAIAgent.media.videoPlaceholder(len(video_urls)))
                     video_urls.append(str(ref))
+                elif file_kind == 'audio':
+                    audio_count += 1
+                    ref = para.data.get('url') or para.data.get('file') or para.data.get('path') or ''
+                    text_parts.append(OlivaAIAgent.media.audioPlaceholder(len(audio_urls)))
+                    audio_urls.append(str(ref))
                 else:
                     text_parts.append(para.OP() if mode == 'olivos_string' else para.CQ())
             elif isinstance(para, OlivOS.messageAPI.PARA.reply):
@@ -622,6 +653,7 @@ def parseMessage(plugin_event):
         def _audio_fallback(match):
             nonlocal audio_count
             audio_count += 1
+            record_audio_indexes.append(len(audio_urls))
             audio_urls.append(OlivaAIAgent.media.tagRef(match.group(0)))
             return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
         def _video_fallback(match):
@@ -632,9 +664,14 @@ def parseMessage(plugin_event):
         fallback = OlivaAIAgent.media.OP_AUDIO_PATTERN.sub(_audio_fallback, fallback)
         fallback = OlivaAIAgent.media.OP_VIDEO_PATTERN.sub(_video_fallback, fallback)
         def _file_fallback(match):
-            nonlocal video_count
+            nonlocal audio_count, video_count
             tag = match.group(0)
-            if not OlivaAIAgent.media.isVideoFileData(tag):
+            file_kind = OlivaAIAgent.media.fileMediaKind(tag)
+            if file_kind == 'audio':
+                audio_count += 1
+                audio_urls.append(OlivaAIAgent.media.tagRef(tag))
+                return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+            if file_kind != 'video':
                 return '[文件]'
             video_count += 1
             video_urls.append(OlivaAIAgent.media.tagRef(tag))
@@ -659,9 +696,14 @@ def parseMessage(plugin_event):
             reply_id = match.group(1)
     text = ' '.join([t for t in text_parts if t.strip() != '']).strip()
     def _inline_file(match):
-        nonlocal video_count
+        nonlocal audio_count, video_count
         tag = match.group(0)
-        if not OlivaAIAgent.media.isVideoFileData(tag):
+        file_kind = OlivaAIAgent.media.fileMediaKind(tag)
+        if file_kind == 'audio':
+            audio_count += 1
+            audio_urls.append(OlivaAIAgent.media.tagRef(tag))
+            return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+        if file_kind != 'video':
             return '[文件]'
         video_count += 1
         video_urls.append(OlivaAIAgent.media.tagRef(tag))
@@ -674,6 +716,39 @@ def parseMessage(plugin_event):
             extend = plugin_event.data.extend
     except Exception:
         extend = {}
+    audio_refs = []
+    original_audio_indexes = {}
+    for original_index, audio_ref in enumerate(audio_urls):
+        if audio_ref in audio_refs:
+            deduped_index = audio_refs.index(audio_ref)
+        elif len(audio_refs) < 4:
+            deduped_index = len(audio_refs)
+            audio_refs.append(audio_ref)
+        else:
+            continue
+        original_audio_indexes[original_index] = deduped_index
+    record_indexes = list(dict.fromkeys(
+        original_audio_indexes[index]
+        for index in record_audio_indexes
+        if index in original_audio_indexes
+    ))
+    audio_official_texts = [''] * len(audio_refs)
+    audio_format_hints = [''] * len(audio_refs)
+    qqguild_audio = OlivaAIAgent.media.qqGuildAudioAttachments(plugin_event, extend)
+    for audio_attachment_index, audio_meta in enumerate(qqguild_audio):
+        wav_url = str(audio_meta.get('wav_url') or '')
+        audio_index = record_indexes[audio_attachment_index] \
+            if audio_attachment_index < len(record_indexes) else None
+        if audio_index is None:
+            continue
+        if wav_url:
+            audio_refs[audio_index] = wav_url
+        audio_official_texts[audio_index] = str(audio_meta.get('asr_text') or '')
+        audio_format_hints[audio_index] = str(audio_meta.get('format') or '')
+    try:
+        qqguild_v2 = str(plugin_event.platform.get('sdk', '')).lower() == 'qqguildv2_link'
+    except Exception:
+        qqguild_v2 = False
     message_id = None
     try:
         mid = plugin_event.data.message_id
@@ -706,7 +781,10 @@ def parseMessage(plugin_event):
         'at_list': at_list,
         'at_me': _isAtCurrentBot(plugin_event, at_list, extend),
         'images': images,
-        'audio_urls': list(dict.fromkeys(audio_urls))[:4],
+        'audio_urls': audio_refs,
+        'audio_official_texts': audio_official_texts,
+        'audio_format_hints': audio_format_hints,
+        'qqguild_v2': qqguild_v2,
         'video_urls': list(dict.fromkeys(video_urls))[:4],
         'image_count': image_count,
         'audio_count': audio_count,

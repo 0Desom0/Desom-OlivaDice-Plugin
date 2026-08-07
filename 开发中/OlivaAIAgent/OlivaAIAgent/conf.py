@@ -324,6 +324,9 @@ DEFAULT_CONF = {
         'audio': {
             '_说明': '语音转写：auto 会按模型/地址选择协议；qwen-audio-3.0-asr-flash 使用百炼原生 ASR，其余默认 OpenAI-compatible',
             'enable': False,
+            'use_qqguild_official_asr': True,
+            '_use_qqguild_official_asr说明': '仅 qqGuildv2_link 生效：优先使用事件附件的 asr_refer_text；'
+                                               '关闭或结果为空时，改用 voice_wav_url 调用正常识别流程',
             'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
             'api_key': '',
             'model': 'qwen3-asr-flash',
@@ -1461,6 +1464,7 @@ _TRACE_STAGE_ZH = {
     'media.audio.download': '音频下载',
     'media.video.download': '视频下载',
     'media.audio.request': '语音识别请求',
+    'media.audio.qqguild_official': 'QQ官方语音转写',
     'media.video.request': '视频识别请求',
     'media.audio.result': '语音识别结果',
     'media.video.result': '视频识别结果',
@@ -1489,6 +1493,7 @@ _VISIBLE_VISION_TRACE_STAGES = {
 
 _TRACE_FIELD_ZH = {
     'active': '有效',
+    'audio_url': '音频URL',
     'allow_network': '允许联网',
     'arg_keys': '参数名',
     'attempt': '尝试回复',
@@ -1535,6 +1540,7 @@ _TRACE_FIELD_ZH = {
     'videos': '视频数',
     'forwards': '合并转发数',
     'forward_id': '合并转发ID',
+    'format': '格式',
     'forward_nodes': '转发节点数',
     'nodes': '节点数',
     'depth': '嵌套深度',
@@ -1555,6 +1561,7 @@ _TRACE_FIELD_ZH = {
     'name': '名称',
     'ok': '成功',
     'output_tokens': '输出Token',
+    'official_text': '官方转写',
     'path': '路径',
     'ready': '已就绪',
     'reason': '原因',

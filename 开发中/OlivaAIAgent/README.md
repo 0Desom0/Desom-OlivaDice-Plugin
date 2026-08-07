@@ -178,11 +178,13 @@ GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `t
 
 ## 入站语音与视频理解（v2.23）
 
-- 支持 OlivOS 的 `[OP:record,...]` / `[OP:video,...]`（并兼容 CQ 格式），优先读取消息段的 `url`，再回退 `file`。QQ 把视频作为 `[OP:file,...]` 上报时，会按 `name`、URL 查询参数或路径中的 `.mp4` 等常见视频后缀自动归入视频识别。
+- 支持 OlivOS 的 `[OP:record,...]` / `[OP:video,...]`（并兼容 CQ 格式），这两类消息不检查后缀，优先读取 `url`，再回退 `file`。QQ 把媒体作为 `[OP:file,...]` 上报时，音频结合 `audio/*` MIME 和 `.ogg/.opus/.mp3/.wav/.m4a/.flac` 等后缀判断，视频结合 `video/*` MIME、`name`、URL 查询参数和路径后缀判断；视频覆盖标准库已知类型，并补充 MP4、MKV、MOV、WebM、AVI、FLV、RMVB、M2TS、MXF、HEVC 等常见封装与码流格式。
 - 入站语音和视频分别由 `media.audio.enable`、`media.video.enable` 控制，GUI 中也是两个独立开关。旧的 `media.enable` 已废弃，加载时会删除且不会读取或继承其值。
 - `media.use_main:"auto"` 会分别检查当前 OpenAI-compatible 主后端的 `audio:true` / `video:true`。声明支持时把媒体作为当前用户消息的一部分直接交给主模型；不支持时自动调用 `media.audio` / `media.video` 中的独立模型。
 - 独立识别会把结果原位写成 `[语音:转写内容]` 或 `[视频:内容摘要]`，再进入潜行历史、引用上下文和正式回复模型。失败时只留下“未识别成功”，不会把签名 URL 或 Base64 写进模型历史。
-- 音频默认下载并以 `input_audio` Base64 发送，视频默认使用 `video_url`，可按接口要求把 `mode` 改成 `base64`。媒体大小受 `media.max_bytes` 限制，慢请求默认移到后台线程。
+- 音频默认下载并以 `input_audio` Base64 发送，视频默认使用 `video_url`，可按接口要求把 `mode` 改成 `base64`。QQ 音频没有扩展名或 CDN MIME 缺失时会按 Ogg/WAV/MP3 等文件头自动判断；使用 Qwen Omni 时建议 `mode=base64` 且 `format` 留空。媒体大小受 `media.max_bytes` 限制，慢请求默认移到后台线程。
+- `qqGuildv2_link` 的 `qq_attachments` 中，只有 `content_type=audio` 且带 `asr_refer_text` 或 `voice_wav_url` 的附件会进入 QQ 官方语音特判；官方转写开关默认开启，直接采用官方文本，不按 URL 匹配普通文件。官方结果为空或关闭开关时改用 `voice_wav_url`，格式跟随 URL 后缀，没有后缀默认 `wav`。普通 `[OP:file]` 即使是音频后缀也不使用官方转写。
+- `qwen3.5-omni-flash` / 其他 Qwen Omni 兼容模式要求流式请求；插件会自动使用 `stream=true`、收集 SSE 文本，并省略可能不兼容的 `response_format`。普通 OpenAI-compatible 音频模型仍使用非流式 JSON 请求。
 - 独立语音的 `provider` 支持 `auto`、`openai_compatible` 和 `dashscope_asr`。`qwen-audio-3.0-asr-flash` 使用百炼原生同步接口：`https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`；`auto` 会按模型名或接口地址自动选择。原生接口保留完整 Data URL，并解析 `output.text` / `output.output.sentence.text`。
 - 原生 ASR 的 `format` 必须与实际音频一致；Base64 模式留空可根据 MIME 自动判断，URL 模式没有文件扩展名时会回退为 `mp3`，应手动填写实际格式。QQ 常见 `audio/ogg` 会按 `opus` 发送；官方示例中的 `wav` 不能直接套用到所有 QQ 语音。
 - `debug_log:true` 时会记录媒体下载、识别请求和识别结果；日志只包含文件短名、模型、耗时、状态和摘要长度，不记录完整 CDN URL、API Key 或媒体数据。

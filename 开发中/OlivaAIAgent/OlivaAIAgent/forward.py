@@ -141,10 +141,17 @@ def _paraText(para, plugin_event, state, trace_id, depth, stack, budget):
             budget,
         )
     if str(getattr(para, 'type', '') or '').lower() == 'file':
-        if OlivaAIAgent.media.isVideoFileData(para.data):
+        file_kind = OlivaAIAgent.media.fileMediaKind(para.data)
+        if file_kind == 'video':
             return _mediaPlaceholder(
                 state,
                 'video',
+                para.data.get('url') or para.data.get('file') or para.data.get('path'),
+            )
+        if file_kind == 'audio':
+            return _mediaPlaceholder(
+                state,
+                'audio',
                 para.data.get('url') or para.data.get('file') or para.data.get('path'),
             )
         name = para.data.get('name') or '文件'
@@ -206,10 +213,17 @@ def _dictText(segment, plugin_event, state, trace_id, depth, stack, budget):
             return '[引用上文:%s]' % (content or '未能读取')
         return '[引用消息]'
     if segment_type == 'file':
-        if OlivaAIAgent.media.isVideoFileData(data):
+        file_kind = OlivaAIAgent.media.fileMediaKind(data)
+        if file_kind == 'video':
             return _mediaPlaceholder(
                 state,
                 'video',
+                _first(data, 'url', 'temp_url', 'file', 'path', 'resource_id'),
+            )
+        if file_kind == 'audio':
+            return _mediaPlaceholder(
+                state,
+                'audio',
                 _first(data, 'url', 'temp_url', 'file', 'path', 'resource_id'),
             )
         return '[文件:%s]' % str(_first(data, 'name', 'file_name') or '文件')[:120]
