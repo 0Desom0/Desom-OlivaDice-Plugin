@@ -10,7 +10,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from contextvars import ContextVar
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar, copy_context
 from typing import Any
 
 import BiliShareInfo  # noqa: F401
@@ -62,6 +63,8 @@ RECENT_TTL_SECONDS = 30
 PARSE_LOG_LEVEL = 2
 MIN_TITLE_SEARCH_SIGNAL_LENGTH = 3
 PREVIEW_OCR_MAX_BYTES = 4 * 1024 * 1024
+CARD_SEARCH_WORKERS = 2
+CARD_SEARCH_CANDIDATE_LIMIT = 20
 
 REPLY_SEGMENT_PATTERN = re.compile(
     r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]',
@@ -1229,19 +1232,16 @@ def add_video_refs_from_card(
 
     if not card_video_ref_list and not video_ref_list:
         title_hint = get_title_hint(card_data)
-        preview_video_ref = search_video_by_preview_metadata(
+        parse_log(
+            f'{card_label} 未解析到显式视频引用，进入OCR/标题并行搜索 '
+            f'keyword={shorten_log_text(title_hint, 120)}'
+        )
+        video_ref = search_video_by_card_comparison(
             card_data,
             title_hint,
             preview_ocr_enable=preview_ocr_enable,
         )
-        if preview_video_ref:
-            parse_log(f'{card_label} 预览图元数据匹配结果 ref={format_video_ref(preview_video_ref)}')
-            add_video_ref(video_ref_list, seen_key_set, preview_video_ref)
-            return
-
-        parse_log(f'{card_label} 未解析到显式视频引用，进入标题搜索 keyword={shorten_log_text(title_hint, 120)}')
-        video_ref = search_video_by_keyword(title_hint)
-        parse_log(f'{card_label} 标题搜索结果 ref={format_video_ref(video_ref)}')
+        parse_log(f'{card_label} OCR/标题对比结果 ref={format_video_ref(video_ref)}')
         add_video_ref(video_ref_list, seen_key_set, video_ref)
     elif not card_video_ref_list:
         parse_log(f'{card_label} 消息中已有视频引用，跳过卡片标题搜索')
@@ -1503,11 +1503,319 @@ def build_resolve_url_candidates(url: str) -> list[str]:
     return result
 
 
+def search_video_by_card_comparison(
+    card_data: dict[str, Any],
+    title_hint: str,
+    preview_ocr_enable: bool = True,
+) -> dict[str, str] | None:
+    """并行获取 OCR 元数据与标题候选，再逐条交叉评分。"""
+    parse_log(
+        f'开始OCR/标题并行搜索 keyword={shorten_log_text(title_hint, 120)} '
+        f'ocr_enabled={preview_ocr_enable}'
+    )
+    with ThreadPoolExecutor(
+        max_workers=CARD_SEARCH_WORKERS,
+        thread_name_prefix='BiliShareInfoSearch',
+    ) as executor:
+        ocr_future = executor.submit(
+            copy_context().run,
+            search_video_by_preview_metadata_candidate,
+            card_data,
+            title_hint,
+            preview_ocr_enable,
+        )
+        title_future = executor.submit(
+            copy_context().run,
+            search_video_candidates_by_keyword,
+            title_hint,
+            CARD_SEARCH_CANDIDATE_LIMIT,
+        )
+        ocr_result = get_card_search_future_result(ocr_future, 'OCR')
+        title_candidate_list = get_card_search_future_result(title_future, '标题候选')
+        if not isinstance(title_candidate_list, list):
+            title_candidate_list = []
+
+        ocr_video_ref = None
+        preview_metadata = {}
+        if isinstance(ocr_result, dict):
+            ocr_video_ref = ocr_result.get('video_ref')
+            metadata_value = ocr_result.get('preview_metadata')
+            if isinstance(metadata_value, dict):
+                preview_metadata = metadata_value
+
+        parse_log(
+            f'OCR/标题并行搜索完成 ocr_ref={format_video_ref(ocr_video_ref)} '
+            f'title_candidates={len(title_candidate_list)} '
+            f'ocr_owner={shorten_log_text(preview_metadata.get("owner", ""), 80)} '
+            f'ocr_stats={format_preview_stat_log(preview_metadata)}'
+        )
+
+        owner_name = safe_str(preview_metadata.get('owner', '')).strip()
+        if owner_name and not has_exact_title_candidate(title_hint, title_candidate_list):
+            owner_keyword = f'{title_hint} {owner_name}'
+            parse_log(
+                f'标题候选无完整匹配，补充UP主联合搜索 keyword='
+                f'{shorten_log_text(owner_keyword, 160)}'
+            )
+            owner_candidate_list = search_video_candidates_by_keyword(
+                owner_keyword,
+                CARD_SEARCH_CANDIDATE_LIMIT,
+            )
+            title_candidate_list.extend(owner_candidate_list)
+
+        ocr_key = get_video_ref_key(ocr_video_ref or {})
+        candidate_key_set = {
+            get_video_ref_key(build_video_ref_from_archive_candidate(candidate) or {})
+            for candidate in title_candidate_list
+        }
+        if ocr_key and ocr_key not in candidate_key_set:
+            ocr_info_future = executor.submit(
+                copy_context().run,
+                fetch_video_info,
+                ocr_video_ref,
+            )
+            ocr_video_info = get_card_search_future_result(ocr_info_future, 'OCR候选详情')
+            ocr_candidate = build_search_candidate_from_video_info(
+                ocr_video_ref,
+                ocr_video_info,
+                'ocr_owner',
+            )
+            if ocr_candidate:
+                title_candidate_list.append(ocr_candidate)
+
+    return choose_card_search_result(
+        title_hint,
+        preview_metadata,
+        title_candidate_list,
+    )
+
+
+def get_card_search_future_result(future, label: str):
+    try:
+        return future.result()
+    except Exception as exception_object:
+        parse_log(
+            f'{label}异步任务失败 error={type(exception_object).__name__}: '
+            f'{shorten_log_text(exception_object, 180)}'
+        )
+        return None
+
+
+def choose_card_search_result(
+    title_hint: str,
+    preview_metadata: dict[str, Any],
+    candidate_list: list[dict[str, Any]],
+) -> dict[str, str] | None:
+    candidate_list = merge_search_candidates(candidate_list)
+    scored_candidate_list = []
+    exact_candidate_list = []
+    for candidate in candidate_list:
+        video_ref = build_video_ref_from_archive_candidate(candidate)
+        if not video_ref:
+            continue
+        score, score_detail, is_exact = score_card_search_comparison_candidate(
+            title_hint,
+            preview_metadata,
+            candidate,
+        )
+        result_rank = int(candidate.get('_search_rank', CARD_SEARCH_CANDIDATE_LIMIT + 1))
+        scored_candidate_list.append((score, -result_rank, video_ref, candidate, score_detail))
+        if is_exact:
+            exact_candidate_list.append((video_ref, candidate))
+
+    scored_candidate_list.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    compared_candidate_list = scored_candidate_list[:CARD_SEARCH_CANDIDATE_LIMIT]
+    compared_key_set = {
+        get_video_ref_key(item[2])
+        for item in compared_candidate_list
+    }
+    exact_candidate_list = [
+        item for item in exact_candidate_list
+        if get_video_ref_key(item[0]) in compared_key_set
+    ]
+    parse_log(
+        f'卡片候选逐条对比 count={len(compared_candidate_list)} '
+        f'total_unique={len(scored_candidate_list)}'
+    )
+    for candidate_index, (score, _, video_ref, candidate, score_detail) in enumerate(
+        compared_candidate_list,
+        start=1,
+    ):
+        parse_log(
+            f'卡片候选#{candidate_index} source={safe_str(candidate.get("_search_source", "title"))} '
+            f'ref={format_video_ref(video_ref)} '
+            f'author={shorten_log_text(candidate.get("author", ""), 80)} '
+            f'play={safe_str(candidate.get("play", ""))} '
+            f'danmaku={safe_str(candidate.get("video_review", ""))} '
+            f'like={safe_str(candidate.get("like", ""))} '
+            f'score={score} detail={score_detail}'
+        )
+
+    if exact_candidate_list:
+        selected_ref, selected_candidate = random.choice(exact_candidate_list)
+        parse_log(
+            f'卡片完整标题匹配随机选择 count={len(exact_candidate_list)} '
+            f'source={safe_str(selected_candidate.get("_search_source", "title"))} '
+            f'ref={format_video_ref(selected_ref)}'
+        )
+        return selected_ref
+
+    if not compared_candidate_list:
+        parse_log('卡片候选逐条对比无可用结果')
+        return None
+    selected_score, _, selected_ref, selected_candidate, _ = compared_candidate_list[0]
+    parse_log(
+        f'卡片候选评分选择 source={safe_str(selected_candidate.get("_search_source", "title"))} '
+        f'ref={format_video_ref(selected_ref)} score={selected_score}'
+    )
+    return selected_ref
+
+
+def score_card_search_comparison_candidate(
+    title_hint: str,
+    preview_metadata: dict[str, Any],
+    candidate: dict[str, Any],
+) -> tuple[int, str, bool]:
+    candidate_title = clean_search_result_title(candidate.get('title', ''))
+    exact_title = normalize_exact_search_match_text(title_hint)
+    is_exact = bool(
+        exact_title
+        and exact_title == normalize_exact_search_match_text(candidate_title)
+    )
+    title_score = score_search_result_title(title_hint, candidate_title)
+    metadata_score, metadata_detail = score_preview_metadata_for_search_candidate(
+        preview_metadata,
+        candidate,
+    )
+    result_rank = int(candidate.get('_search_rank', CARD_SEARCH_CANDIDATE_LIMIT + 1))
+    rank_score = max(0, 210 - result_rank * 10)
+    total_score = title_score * 30 + metadata_score + rank_score
+    return (
+        total_score,
+        f'exact={int(is_exact)},title={title_score}x30,rank={rank_score},'
+        f'{metadata_detail},'
+        f'candidate_title={shorten_log_text(candidate_title, 120)}',
+        is_exact,
+    )
+
+
+def score_preview_metadata_for_search_candidate(
+    preview_metadata: dict[str, Any],
+    candidate: dict[str, Any],
+) -> tuple[int, str]:
+    score = 0
+    detail_list = []
+    expected_owner = safe_str(preview_metadata.get('owner', '')).strip()
+    actual_owner = safe_str(candidate.get('author', '')).strip()
+    if expected_owner and actual_owner:
+        owner_ratio = difflib.SequenceMatcher(
+            None,
+            expected_owner.casefold(),
+            actual_owner.casefold(),
+        ).ratio()
+        if expected_owner.casefold() == actual_owner.casefold():
+            owner_score = 6000
+        elif owner_ratio >= 0.75:
+            owner_score = round(owner_ratio * 3000)
+        else:
+            owner_score = 0
+        score += owner_score
+        detail_list.append(f'owner={owner_score}/{owner_ratio:.2f}')
+
+    for stat_name, candidate_key in [('view', 'play'), ('danmaku', 'video_review'), ('like', 'like')]:
+        expected_value = parse_count_text(preview_metadata.get(stat_name))
+        actual_value = parse_count_text(candidate.get(candidate_key))
+        if expected_value is None or actual_value is None:
+            continue
+        difference_ratio = abs(actual_value - expected_value) / max(expected_value, actual_value, 1)
+        stat_score = max(0, 2500 - round(difference_ratio * 2500))
+        score += stat_score
+        detail_list.append(f'{stat_name}={stat_score}/{difference_ratio:.2f}')
+    return score, ';'.join(detail_list) or 'metadata=none'
+
+
+def has_exact_title_candidate(title_hint: str, candidate_list: list[dict[str, Any]]) -> bool:
+    exact_title = normalize_exact_search_match_text(title_hint)
+    return bool(exact_title) and any(
+        exact_title
+        == normalize_exact_search_match_text(clean_search_result_title(candidate.get('title', '')))
+        for candidate in candidate_list
+    )
+
+
+def merge_search_candidates(candidate_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidate_by_key = {}
+    for candidate in candidate_list:
+        if not isinstance(candidate, dict):
+            continue
+        video_ref = build_video_ref_from_archive_candidate(candidate)
+        video_key = get_video_ref_key(video_ref or {})
+        if not video_key:
+            continue
+        existing_candidate = candidate_by_key.get(video_key)
+        if existing_candidate is None:
+            candidate_by_key[video_key] = dict(candidate)
+            continue
+        for field_name, field_value in candidate.items():
+            if existing_candidate.get(field_name) in ['', None] and field_value not in ['', None]:
+                existing_candidate[field_name] = field_value
+        existing_source = safe_str(existing_candidate.get('_search_source', ''))
+        new_source = safe_str(candidate.get('_search_source', ''))
+        if new_source and new_source not in existing_source.split('+'):
+            existing_candidate['_search_source'] = '+'.join(
+                value for value in [existing_source, new_source] if value
+            )
+        existing_candidate['_search_rank'] = min(
+            int(existing_candidate.get('_search_rank', CARD_SEARCH_CANDIDATE_LIMIT + 1)),
+            int(candidate.get('_search_rank', CARD_SEARCH_CANDIDATE_LIMIT + 1)),
+        )
+    return list(candidate_by_key.values())
+
+
+def build_search_candidate_from_video_info(
+    video_ref: dict[str, str],
+    video_info: dict[str, Any] | None,
+    source: str,
+) -> dict[str, Any] | None:
+    if not isinstance(video_info, dict):
+        return None
+    candidate = dict(video_ref)
+    candidate['title'] = safe_str(video_info.get('title', ''))
+    owner_data = video_info.get('owner', {})
+    if isinstance(owner_data, dict):
+        candidate['author'] = safe_str(owner_data.get('name', ''))
+        candidate['mid'] = owner_data.get('mid')
+    stat_data = video_info.get('stat', {})
+    if isinstance(stat_data, dict):
+        candidate['play'] = stat_data.get('view')
+        candidate['video_review'] = stat_data.get('danmaku')
+        candidate['like'] = stat_data.get('like')
+    candidate['_search_source'] = source
+    candidate['_search_rank'] = CARD_SEARCH_CANDIDATE_LIMIT + 1
+    return candidate
+
+
 def search_video_by_preview_metadata(
     card_data: dict[str, Any],
     title_hint: str,
     preview_ocr_enable: bool = True,
 ) -> dict[str, str] | None:
+    search_result = search_video_by_preview_metadata_candidate(
+        card_data,
+        title_hint,
+        preview_ocr_enable,
+    )
+    if isinstance(search_result, dict):
+        video_ref = search_result.get('video_ref')
+        return video_ref if isinstance(video_ref, dict) else None
+    return None
+
+
+def search_video_by_preview_metadata_candidate(
+    card_data: dict[str, Any],
+    title_hint: str,
+    preview_ocr_enable: bool = True,
+) -> dict[str, Any] | None:
     """从 QQ 卡片预览图提取 UP 主和统计值，再在该 UP 的投稿中定位视频。"""
     if not preview_ocr_enable:
         parse_log('预览图OCR匹配已关闭，跳过预览图增强搜索')
@@ -1518,6 +1826,8 @@ def search_video_by_preview_metadata(
         parse_log('卡片未找到可用预览图URL，跳过预览图增强搜索')
         return None
 
+    best_metadata_result = None
+    best_metadata_signal_count = -1
     for preview_url in preview_url_list[:2]:
         parse_log(f'开始预览图OCR url={shorten_log_text(preview_url, 180)}')
         preview_text = recognize_preview_image(preview_url)
@@ -1529,6 +1839,16 @@ def search_video_by_preview_metadata(
             f'stats={format_preview_stat_log(preview_metadata)} '
             f'text={shorten_log_text(" | ".join(preview_text), 240)}'
         )
+        metadata_signal_count = sum(
+            value not in ['', None]
+            for value in preview_metadata.values()
+        )
+        if metadata_signal_count > best_metadata_signal_count:
+            best_metadata_signal_count = metadata_signal_count
+            best_metadata_result = {
+                'video_ref': None,
+                'preview_metadata': preview_metadata,
+            }
         owner_name = preview_metadata.get('owner', '')
         if not owner_name:
             parse_log('预览图OCR未识别到UP主')
@@ -1546,8 +1866,11 @@ def search_video_by_preview_metadata(
             preview_metadata,
         )
         if video_ref:
-            return video_ref
-    return None
+            return {
+                'video_ref': video_ref,
+                'preview_metadata': preview_metadata,
+            }
+    return best_metadata_result
 
 
 def extract_preview_image_urls(card_data: dict[str, Any]) -> list[str]:
@@ -1935,10 +2258,46 @@ def build_video_ref_from_archive_candidate(candidate: dict[str, Any]) -> dict[st
 
 
 def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
+    candidate_list = search_video_candidates_by_keyword(
+        keyword,
+        CARD_SEARCH_CANDIDATE_LIMIT,
+    )
+    if not candidate_list:
+        parse_log('标题搜索未命中视频')
+        return None
+
+    exact_candidate_list = [
+        candidate for candidate in candidate_list
+        if bool(candidate.get('_search_exact'))
+    ]
+    if exact_candidate_list:
+        selected = random.choice(exact_candidate_list)
+        video_ref = build_video_ref_from_archive_candidate(selected)
+        parse_log(
+            f'标题搜索完整匹配随机选择 count={len(exact_candidate_list)} '
+            f'ref={format_video_ref(video_ref)} '
+            f'title={shorten_log_text(selected.get("title", ""), 120)}'
+        )
+        return video_ref
+
+    selected = candidate_list[0]
+    video_ref = build_video_ref_from_archive_candidate(selected)
+    parse_log(
+        f'标题搜索模糊命中 ref={format_video_ref(video_ref)} '
+        f'score={safe_str(selected.get("_search_score", 0))} '
+        f'title={shorten_log_text(selected.get("title", ""), 120)}'
+    )
+    return video_ref
+
+
+def search_video_candidates_by_keyword(
+    keyword: str,
+    limit: int = CARD_SEARCH_CANDIDATE_LIMIT,
+) -> list[dict[str, Any]]:
     keyword = clean_search_keyword(keyword)
     if not keyword:
-        parse_log('标题搜索跳过：关键词为空')
-        return None
+        parse_log('标题候选搜索跳过：关键词为空')
+        return []
 
     normalized_keyword = normalize_search_match_text(keyword)
     parse_log(
@@ -1960,10 +2319,7 @@ def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
         'https://api.bilibili.com/x/web-interface/search/all/v2?'
         + urllib.parse.urlencode({'keyword': keyword, 'page': 1, 'pagesize': 20}),
     ]
-    best_match = None
-    best_match_key = None
-    exact_match_list = []
-    exact_bvid_set = set()
+    raw_candidate_list = []
     for api_index, api_url in enumerate(search_url_list, start=1):
         try:
             response_text = http_get_json_text(api_url, referer='https://search.bilibili.com/')
@@ -1998,43 +2354,41 @@ def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
                 title,
                 result_rank,
             )
-            # 分数相同取 API 排名靠前者；即使分数为 0 也保留候选，保证卡片不会静默丢失。
-            candidate_key = (candidate_score, -api_index, -result_rank)
+            candidate = dict(item)
+            candidate['title'] = title
+            candidate['_search_source'] = f'title_api_{api_index}'
+            candidate['_search_api'] = api_index
+            candidate['_search_rank'] = result_rank
+            candidate['_search_score'] = candidate_score
+            candidate['_search_detail'] = score_detail
+            candidate['_search_exact'] = is_exact_match
+            raw_candidate_list.append(candidate)
             parse_log(
                 f'标题搜索候选 api={api_index} rank={result_rank} bvid={bvid} '
                 f'score={candidate_score} '
                 f'detail={score_detail} title={shorten_log_text(title, 120)}'
             )
-            if best_match_key is None or candidate_key > best_match_key:
-                best_match = (bvid, title)
-                best_match_key = candidate_key
             if is_exact_match:
                 parse_log(
                     f'标题搜索完整匹配候选 bvid={bvid} api={api_index} rank={result_rank} '
                     f'title={shorten_log_text(title, 120)}'
                 )
-                if bvid not in exact_bvid_set:
-                    exact_bvid_set.add(bvid)
-                    exact_match_list.append((bvid, title))
 
-    if exact_match_list:
-        bvid, title = random.choice(exact_match_list)
-        parse_log(
-            f'标题搜索完整匹配随机选择 count={len(exact_match_list)} '
-            f'candidates={format_log_list([item[0] for item in exact_match_list], 20)} '
-            f'bvid={bvid} title={shorten_log_text(title, 120)}'
-        )
-        return {'bvid': bvid}
-
-    if best_match is not None:
-        bvid, title = best_match
-        parse_log(
-            f'标题搜索模糊命中 bvid={bvid} score={best_match_key[0]} '
-            f'title={shorten_log_text(title, 120)}'
-        )
-        return {'bvid': bvid}
-    parse_log('标题搜索未命中视频')
-    return None
+    raw_candidate_list.sort(
+        key=lambda candidate: (
+            bool(candidate.get('_search_exact')),
+            int(candidate.get('_search_score', 0)),
+            -int(candidate.get('_search_api', 0)),
+            -int(candidate.get('_search_rank', CARD_SEARCH_CANDIDATE_LIMIT + 1)),
+        ),
+        reverse=True,
+    )
+    candidate_list = merge_search_candidates(raw_candidate_list)[:max(1, limit)]
+    parse_log(
+        f'标题搜索候选池完成 raw={len(raw_candidate_list)} '
+        f'unique_selected={len(candidate_list)} limit={limit}'
+    )
+    return candidate_list
 
 
 def extract_video_search_results(response_data: dict[str, Any]) -> list[dict[str, Any]]:
