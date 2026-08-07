@@ -13,6 +13,8 @@ from OlivaAIAgent import knowledge  # noqa: F401
 from OlivaAIAgent import skills  # noqa: F401
 from OlivaAIAgent import aiClient  # noqa: F401
 from OlivaAIAgent import vision  # noqa: F401
+from OlivaAIAgent import media  # noqa: F401
+from OlivaAIAgent import forward  # noqa: F401
 from OlivaAIAgent import reminder  # noqa: F401
 from OlivaAIAgent import introspection  # noqa: F401
 from OlivaAIAgent import passiveReply  # noqa: F401

@@ -66,12 +66,19 @@ def _messagePayloadText(payload):
     return str(payload)
 
 
-def _parseQuotedPayload(payload):
-    '''提取引用正文与图片，避免把 reply 消息段本身交给模型。'''
+def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media=False):
+    '''提取引用正文与媒体，合并转发会继续调用 get_forward_msg 展开。'''
     raw = _messagePayloadText(payload)
     text_parts = []
     images = []
+    audio_urls = []
+    video_urls = []
     image_count = 0
+    audio_count = 0
+    video_count = 0
+    forward_count = 0
+    forward_nodes = 0
+    forward_failed = 0
     try:
         mode = 'olivos_string' if '[OP:' in raw else 'old_string'
         msg_obj = OlivOS.messageAPI.Message_templet(mode, raw)
@@ -86,11 +93,68 @@ def _parseQuotedPayload(payload):
             if isinstance(para, OlivOS.messageAPI.PARA.image):
                 image_count += 1
                 url = para.data.get('url') or para.data.get('file') or ''
-                if str(url).startswith(('http://', 'https://')):
+                media_enabled = not forward_media or OlivaAIAgent.conf.get(
+                    'forward', 'image', default=False,
+                )
+                if media_enabled and str(url).startswith(('http://', 'https://')):
                     text_parts.append(OlivaAIAgent.vision.imagePlaceholder(len(images)))
                     images.append(str(url))
                 else:
                     text_parts.append('[图片]')
+                continue
+            if isinstance(para, OlivOS.messageAPI.PARA.record):
+                audio_count += 1
+                ref = para.data.get('url') or para.data.get('file') or ''
+                if not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False):
+                    text_parts.append(OlivaAIAgent.media.audioPlaceholder(len(audio_urls)))
+                    audio_urls.append(str(ref))
+                else:
+                    text_parts.append('[语音]')
+                continue
+            if isinstance(para, OlivOS.messageAPI.PARA.video):
+                video_count += 1
+                ref = para.data.get('url') or para.data.get('file') or ''
+                if not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False):
+                    text_parts.append(OlivaAIAgent.media.videoPlaceholder(len(video_urls)))
+                    video_urls.append(str(ref))
+                else:
+                    text_parts.append('[视频]')
+                continue
+            if str(getattr(para, 'type', '') or '').lower() == 'file':
+                if OlivaAIAgent.media.isVideoFileData(para.data):
+                    video_count += 1
+                    ref = para.data.get('url') or para.data.get('file') or para.data.get('path') or ''
+                    if not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False):
+                        text_parts.append(OlivaAIAgent.media.videoPlaceholder(len(video_urls)))
+                        video_urls.append(str(ref))
+                    else:
+                        text_parts.append('[视频]')
+                else:
+                    text_parts.append('[文件:%s]' % str(para.data.get('name') or '文件')[:120])
+                continue
+            if isinstance(para, OlivOS.messageAPI.PARA.forward):
+                if plugin_event is None:
+                    text_parts.append('[合并转发:未能读取]')
+                    forward_count += 1
+                    forward_failed += 1
+                    continue
+                expanded = OlivaAIAgent.forward.expand(
+                    plugin_event,
+                    para.data.get('id'),
+                    trace_id=trace_id,
+                )
+                text_parts.append(OlivaAIAgent.forward.mergeInto(
+                    expanded,
+                    images,
+                    audio_urls,
+                    video_urls,
+                ))
+                image_count += int(expanded.get('image_count') or 0)
+                audio_count += int(expanded.get('audio_count') or 0)
+                video_count += int(expanded.get('video_count') or 0)
+                forward_count += int(expanded.get('forward_count') or 0)
+                forward_nodes += int(expanded.get('node_count') or 0)
+                forward_failed += int(expanded.get('failed_count') or 0)
                 continue
             if isinstance(para, OlivOS.messageAPI.PARA.text):
                 text_parts.append(str(para.data.get('text', '')))
@@ -105,17 +169,79 @@ def _parseQuotedPayload(payload):
     except Exception:
         clean = re.sub(r'\[(?:CQ|OP):reply[^\]]*\]', ' ', raw, flags=re.I)
         clean = re.sub(r'\[(?:CQ|OP):image[^\]]*\]', ' [图片] ', clean, flags=re.I)
+        def _quoted_audio(match):
+            nonlocal audio_count
+            audio_count += 1
+            if forward_media and not OlivaAIAgent.conf.get('forward', 'audio', default=False):
+                return '[语音]'
+            audio_urls.append(OlivaAIAgent.media.tagRef(match.group(0)))
+            return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+        def _quoted_video(match):
+            nonlocal video_count
+            video_count += 1
+            if forward_media and not OlivaAIAgent.conf.get('forward', 'video', default=False):
+                return ' [视频]'
+            video_urls.append(OlivaAIAgent.media.tagRef(match.group(0)))
+            return ' ' + OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+        clean = OlivaAIAgent.media.OP_AUDIO_PATTERN.sub(_quoted_audio, clean)
+        clean = OlivaAIAgent.media.OP_VIDEO_PATTERN.sub(_quoted_video, clean)
+        def _quoted_file(match):
+            nonlocal video_count
+            tag = match.group(0)
+            if not OlivaAIAgent.media.isVideoFileData(tag):
+                return '[文件]'
+            video_count += 1
+            if forward_media and not OlivaAIAgent.conf.get('forward', 'video', default=False):
+                return '[视频]'
+            video_urls.append(OlivaAIAgent.media.tagRef(tag))
+            return OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+        clean = OlivaAIAgent.media.OP_FILE_PATTERN.sub(_quoted_file, clean)
+        def _quoted_forward(match):
+            nonlocal image_count, audio_count, video_count
+            nonlocal forward_count, forward_nodes, forward_failed
+            if plugin_event is None:
+                forward_count += 1
+                forward_failed += 1
+                return '[合并转发:未能读取]'
+            expanded = OlivaAIAgent.forward.expand(plugin_event, match.group(1), trace_id=trace_id)
+            image_count += int(expanded.get('image_count') or 0)
+            audio_count += int(expanded.get('audio_count') or 0)
+            video_count += int(expanded.get('video_count') or 0)
+            forward_count += int(expanded.get('forward_count') or 0)
+            forward_nodes += int(expanded.get('node_count') or 0)
+            forward_failed += int(expanded.get('failed_count') or 0)
+            return OlivaAIAgent.forward.mergeInto(expanded, images, audio_urls, video_urls)
+        clean = OlivaAIAgent.forward.FORWARD_TAG_PATTERN.sub(_quoted_forward, clean)
         text_parts = [clean]
     text = ' '.join(part.strip() for part in text_parts if str(part).strip()).strip()
+    def _inline_quoted_file(match):
+        nonlocal video_count
+        tag = match.group(0)
+        if not OlivaAIAgent.media.isVideoFileData(tag):
+            return '[文件]'
+        video_count += 1
+        if forward_media and not OlivaAIAgent.conf.get('forward', 'video', default=False):
+            return '[视频]'
+        video_urls.append(OlivaAIAgent.media.tagRef(tag))
+        return OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+    text = OlivaAIAgent.media.OP_FILE_PATTERN.sub(_inline_quoted_file, text)
+    text_limit = 12000 if forward_count else 4000
     return {
-        'text': text[:4000],
+        'text': text[:text_limit],
         'images': list(dict.fromkeys(images))[:4],
+        'audio_urls': list(dict.fromkeys(audio_urls))[:4],
+        'video_urls': list(dict.fromkeys(video_urls))[:4],
         'image_count': image_count,
+        'audio_count': audio_count,
+        'video_count': video_count,
+        'forward_count': forward_count,
+        'forward_nodes': forward_nodes,
+        'forward_failed': forward_failed,
         'raw': raw,
     }
 
 
-def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None):
+def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None, trace_id=None):
     '''优先从已写盘的潜行历史取引用，未命中再走 OlivOS 标准 get_msg。'''
     if reply_id in [None, '', '-1', -1] and reply_index in [None, '', '-1', -1]:
         return None
@@ -139,17 +265,30 @@ def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None):
                 ]
                 if not id_matched and not index_matched:
                     continue
-                return {
+                stored_text = str(entry.get('message', ''))
+                stored_limit = 20000 if '[合并转发:' in stored_text else 4000
+                parsed_stored = None
+                if OlivaAIAgent.forward.FORWARD_TAG_PATTERN.search(stored_text):
+                    parsed_stored = _parseQuotedPayload(
+                        stored_text,
+                        plugin_event=plugin_event,
+                        trace_id=trace_id,
+                    )
+                result = {
                     'message_id': reply_id,
                     'message_index': reply_index,
                     'sender_id': entry.get('user_id'),
                     'sender_name': entry.get('nickname'),
-                    'text': str(entry.get('message', ''))[:4000],
+                    'text': stored_text[:stored_limit],
                     'images': [],
                     'image_count': 0,
                     'from_self': entry.get('user_id') is None and entry.get('nickname') is None,
                     'source': '潜行历史',
                 }
+                if isinstance(parsed_stored, dict):
+                    result.update(parsed_stored)
+                    result['source'] = '潜行历史'
+                return result
     except Exception:
         pass
 
@@ -163,17 +302,32 @@ def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None):
         ):
             registered = OlivaAIAgent.identifiers.getByMessageIndex(plugin_event, reply_index)
         if isinstance(registered, dict) and str(registered.get('content') or '').strip():
-            return {
+            registered_content = str(registered.get('content') or '')
+            registered_limit = 20000 if '[合并转发:' in registered_content else 4000
+            parsed_registered = None
+            if OlivaAIAgent.forward.FORWARD_TAG_PATTERN.search(registered_content):
+                parsed_registered = _parseQuotedPayload(
+                    registered_content,
+                    plugin_event=plugin_event,
+                    trace_id=trace_id,
+                )
+            result = {
                 'message_id': registered.get('message_id') or reply_id,
                 'message_index': registered.get('message_index') or reply_index,
                 'sender_id': registered.get('sender_id'),
                 'sender_name': registered.get('sender_name'),
-                'text': str(registered.get('content') or '')[:4000],
+                'text': registered_content[:registered_limit],
                 'images': [],
                 'image_count': 0,
                 'from_self': registered.get('direction') == 'outgoing',
                 'source': '插件消息注册表',
             }
+            if '[合并转发:' in registered_content:
+                result['forward_count'] = 1
+            if isinstance(parsed_registered, dict):
+                result.update(parsed_registered)
+                result['source'] = '插件消息注册表'
+            return result
     except Exception:
         pass
 
@@ -187,7 +341,25 @@ def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None):
         payload = data.get('message')
         if payload in [None, '']:
             payload = data.get('raw_message')
-        parsed = _parseQuotedPayload(payload)
+        parsed = _parseQuotedPayload(payload, plugin_event=plugin_event, trace_id=trace_id)
+        raw_payload = data.get('raw_message')
+        if (
+            int(parsed.get('forward_failed') or 0) > 0
+            and raw_payload not in [None, '']
+            and _messagePayloadText(raw_payload) != _messagePayloadText(payload)
+        ):
+            raw_parsed = _parseQuotedPayload(
+                raw_payload,
+                plugin_event=plugin_event,
+                trace_id=trace_id,
+                forward_media=True,
+            )
+            if str(raw_parsed.get('text') or '').strip() \
+                    and '[合并转发:未能读取]' not in raw_parsed.get('text', ''):
+                raw_parsed['forward_count'] = int(parsed.get('forward_count') or 0)
+                raw_parsed['forward_failed'] = int(parsed.get('forward_failed') or 0)
+                parsed = raw_parsed
+                parsed['source'] = 'OlivOS消息接口(raw_message兜底)'
         sender = data.get('sender') if isinstance(data.get('sender'), dict) else {}
         sender_id = sender.get('user_id') or sender.get('id')
         parsed.update({
@@ -196,7 +368,7 @@ def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None):
             'sender_id': sender_id,
             'sender_name': sender.get('nickname') or sender.get('name'),
             'from_self': str(sender_id) in _currentBotIds(plugin_event),
-            'source': 'OlivOS消息接口',
+            'source': parsed.get('source') or 'OlivOS消息接口',
         })
         if parsed['text'] or parsed['image_count'] > 0:
             return parsed
@@ -205,7 +377,7 @@ def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None):
     return None
 
 
-def attachQuotedContext(parsed, current_text, image_facts=None):
+def attachQuotedContext(parsed, current_text, image_facts=None, media_facts=None):
     '''把引用正文与当前文字合成同一条本轮用户消息。'''
     quote = parsed.get('quote') if isinstance(parsed, dict) else None
     current = str(current_text).strip()
@@ -226,8 +398,19 @@ def attachQuotedContext(parsed, current_text, image_facts=None):
     if facts:
         if not had_image_placeholders:
             quote_parts.extend(facts)
-    elif int(quote.get('image_count') or 0) > 0:
+    elif int(quote.get('image_count') or 0) > 0 \
+            and not re.search(r'\[图片(?:[:：][^\]]*)?\]', quote_text):
         quote_parts.append('[图片%d张]' % int(quote.get('image_count') or 0))
+    quote_media = [str(item).strip() for item in (media_facts or []) if str(item).strip()]
+    if quote_media:
+        quote_parts.extend(quote_media)
+    elif int(quote.get('audio_count') or 0) > 0 or int(quote.get('video_count') or 0) > 0:
+        if int(quote.get('audio_count') or 0) > 0 \
+                and not re.search(r'\[语音(?:[:：][^\]]*)?\]', quote_text):
+            quote_parts.append('[语音%d条]' % int(quote.get('audio_count') or 0))
+        if int(quote.get('video_count') or 0) > 0 \
+                and not re.search(r'\[视频(?:[:：][^\]]*)?\]', quote_text):
+            quote_parts.append('[视频%d条]' % int(quote.get('video_count') or 0))
     quoted_content = ' '.join(part for part in quote_parts if part).strip() or '未能读取'
     return ('[引用上文:%s] %s' % (quoted_content, current)).strip()
 
@@ -260,6 +443,20 @@ def prepareQuotedImages(parsed, cache_scope, bot_hash, trace_id=None):
     return facts
 
 
+def prepareQuotedMedia(parsed, trace_id=None):
+    '''在引用正文可用时识别其中的音频/视频，失败只保留媒体占位信息。'''
+    try:
+        return OlivaAIAgent.media.prepareQuotedMedia(parsed, trace_id=trace_id)
+    except Exception as exc:
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'media.quote.failed',
+            trace_id,
+            error='%s: %s' % (type(exc).__name__, exc),
+        )
+        return []
+
+
 def _logQuotedMessage(Proc, parsed):
     reply_id = parsed.get('reference_message_id')
     reply_index = parsed.get('ref_msg_idx')
@@ -279,6 +476,8 @@ def _logQuotedMessage(Proc, parsed):
         Proc,
         'message.quote.resolved',
         parsed.get('trace_id'),
+        forwards=int(quote.get('forward_count') or 0),
+        forward_nodes=int(quote.get('forward_nodes') or 0),
         images=int(quote.get('image_count') or 0),
         message_id=reply_id,
         message_index=reply_index,
@@ -345,9 +544,18 @@ def _isReplyToCurrentBot(plugin_event, reference_message_id, quote, reference_in
 
 def parseMessage(plugin_event):
     '''解析 OP/CQ 消息 → 纯文本 / at列表 / 图片URL列表 / 是否at了机器人。'''
+    trace_id = '%012x' % (time.time_ns() & 0xffffffffffff)
     raw = str(plugin_event.data.message)
     at_list = []
     images = []
+    audio_urls = []
+    video_urls = []
+    image_count = 0
+    audio_count = 0
+    video_count = 0
+    forward_count = 0
+    forward_nodes = 0
+    forward_failed = 0
     reply_id = None
     text_parts = []
     try:
@@ -357,14 +565,51 @@ def parseMessage(plugin_event):
             if isinstance(para, OlivOS.messageAPI.PARA.at):
                 at_list.append(str(para.data.get('id', '')))
             elif isinstance(para, OlivOS.messageAPI.PARA.image):
+                image_count += 1
                 url = para.data.get('url') or para.data.get('file') or ''
                 if str(url).startswith(('http://', 'https://')):
                     text_parts.append(OlivaAIAgent.vision.imagePlaceholder(len(images)))
                     images.append(str(url))
                 else:
                     text_parts.append('[图片]')
+            elif isinstance(para, OlivOS.messageAPI.PARA.record):
+                audio_count += 1
+                ref = para.data.get('url') or para.data.get('file') or ''
+                text_parts.append(OlivaAIAgent.media.audioPlaceholder(len(audio_urls)))
+                audio_urls.append(str(ref))
+            elif isinstance(para, OlivOS.messageAPI.PARA.video):
+                video_count += 1
+                ref = para.data.get('url') or para.data.get('file') or ''
+                text_parts.append(OlivaAIAgent.media.videoPlaceholder(len(video_urls)))
+                video_urls.append(str(ref))
+            elif str(getattr(para, 'type', '') or '').lower() == 'file':
+                if OlivaAIAgent.media.isVideoFileData(para.data):
+                    video_count += 1
+                    ref = para.data.get('url') or para.data.get('file') or para.data.get('path') or ''
+                    text_parts.append(OlivaAIAgent.media.videoPlaceholder(len(video_urls)))
+                    video_urls.append(str(ref))
+                else:
+                    text_parts.append(para.OP() if mode == 'olivos_string' else para.CQ())
             elif isinstance(para, OlivOS.messageAPI.PARA.reply):
                 reply_id = para.data.get('id')
+            elif isinstance(para, OlivOS.messageAPI.PARA.forward):
+                expanded = OlivaAIAgent.forward.expand(
+                    plugin_event,
+                    para.data.get('id'),
+                    trace_id=trace_id,
+                )
+                text_parts.append(OlivaAIAgent.forward.mergeInto(
+                    expanded,
+                    images,
+                    audio_urls,
+                    video_urls,
+                ))
+                image_count += int(expanded.get('image_count') or 0)
+                audio_count += int(expanded.get('audio_count') or 0)
+                video_count += int(expanded.get('video_count') or 0)
+                forward_count += int(expanded.get('forward_count') or 0)
+                forward_nodes += int(expanded.get('node_count') or 0)
+                forward_failed += int(expanded.get('failed_count') or 0)
             elif isinstance(para, OlivOS.messageAPI.PARA.text):
                 text_parts.append(str(para.data.get('text', '')))
             else:
@@ -373,12 +618,55 @@ def parseMessage(plugin_event):
                 except Exception:
                     pass
     except Exception:
-        text_parts = [re.sub(r'\[(?:CQ|OP):[^\]]*\]', ' ', raw, flags=re.I)]
+        fallback = raw
+        def _audio_fallback(match):
+            nonlocal audio_count
+            audio_count += 1
+            audio_urls.append(OlivaAIAgent.media.tagRef(match.group(0)))
+            return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+        def _video_fallback(match):
+            nonlocal video_count
+            video_count += 1
+            video_urls.append(OlivaAIAgent.media.tagRef(match.group(0)))
+            return OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+        fallback = OlivaAIAgent.media.OP_AUDIO_PATTERN.sub(_audio_fallback, fallback)
+        fallback = OlivaAIAgent.media.OP_VIDEO_PATTERN.sub(_video_fallback, fallback)
+        def _file_fallback(match):
+            nonlocal video_count
+            tag = match.group(0)
+            if not OlivaAIAgent.media.isVideoFileData(tag):
+                return '[文件]'
+            video_count += 1
+            video_urls.append(OlivaAIAgent.media.tagRef(tag))
+            return OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+        fallback = OlivaAIAgent.media.OP_FILE_PATTERN.sub(_file_fallback, fallback)
+        def _forward_fallback(match):
+            nonlocal image_count, audio_count, video_count
+            nonlocal forward_count, forward_nodes, forward_failed
+            expanded = OlivaAIAgent.forward.expand(plugin_event, match.group(1), trace_id=trace_id)
+            image_count += int(expanded.get('image_count') or 0)
+            audio_count += int(expanded.get('audio_count') or 0)
+            video_count += int(expanded.get('video_count') or 0)
+            forward_count += int(expanded.get('forward_count') or 0)
+            forward_nodes += int(expanded.get('node_count') or 0)
+            forward_failed += int(expanded.get('failed_count') or 0)
+            return OlivaAIAgent.forward.mergeInto(expanded, images, audio_urls, video_urls)
+        fallback = OlivaAIAgent.forward.FORWARD_TAG_PATTERN.sub(_forward_fallback, fallback)
+        text_parts = [re.sub(r'\[(?:CQ|OP):[^\]]*\]', ' ', fallback, flags=re.I)]
     if reply_id in [None, '', '-1', -1]:
         match = re.search(r'\[(?:CQ|OP):reply,[^\]]*\bid=([^,\]]+)', raw, re.I)
         if match:
             reply_id = match.group(1)
     text = ' '.join([t for t in text_parts if t.strip() != '']).strip()
+    def _inline_file(match):
+        nonlocal video_count
+        tag = match.group(0)
+        if not OlivaAIAgent.media.isVideoFileData(tag):
+            return '[文件]'
+        video_count += 1
+        video_urls.append(OlivaAIAgent.media.tagRef(tag))
+        return OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+    text = OlivaAIAgent.media.OP_FILE_PATTERN.sub(_inline_file, text)
     text = re.sub(r'\[(?:CQ|OP):reply[^\]]*\]', ' ', text, flags=re.I).strip()
     extend = {}
     try:
@@ -406,13 +694,26 @@ def parseMessage(plugin_event):
         current_message_id=message_id,
         reference_index=ref_msg_idx,
     )
-    quote = _resolveQuotedMessage(plugin_event, reference_message_id, reply_index=ref_msg_idx)
+    quote = _resolveQuotedMessage(
+        plugin_event,
+        reference_message_id,
+        reply_index=ref_msg_idx,
+        trace_id=trace_id,
+    )
     return {
-        'trace_id': '%012x' % (time.time_ns() & 0xffffffffffff),
+        'trace_id': trace_id,
         'text': text,
         'at_list': at_list,
         'at_me': _isAtCurrentBot(plugin_event, at_list, extend),
         'images': images,
+        'audio_urls': list(dict.fromkeys(audio_urls))[:4],
+        'video_urls': list(dict.fromkeys(video_urls))[:4],
+        'image_count': image_count,
+        'audio_count': audio_count,
+        'video_count': video_count,
+        'forward_count': forward_count,
+        'forward_nodes': forward_nodes,
+        'forward_failed': forward_failed,
         'reply_id': reference_message_id,
         'reference_message_id': reference_message_id,
         'reply_to_me': _isReplyToCurrentBot(
@@ -774,11 +1075,15 @@ def _onPrivateMessage(plugin_event, Proc):
         'message.private.received',
         trace_id,
         images=len(parsed.get('images') or []),
+        audios=len(parsed.get('audio_urls') or []),
+        forwards=int(parsed.get('forward_count') or 0),
+        forward_nodes=int(parsed.get('forward_nodes') or 0),
         event_id=parsed.get('event_id'),
         message_id=parsed.get('message_id'),
         model=plugin_event.platform.get('model', ''),
         sdk=plugin_event.platform.get('sdk', ''),
         text_chars=len(parsed.get('text', '')),
+        videos=len(parsed.get('video_urls') or []),
         user_id=plugin_event.data.user_id,
     )
     _logQuotedMessage(Proc, parsed)
@@ -1422,7 +1727,8 @@ def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
     raw = str(parsed.get('raw', ''))
     has_visual = bool(images or quoted_images) or '[OP:image' in raw or '[CQ:image' in raw or ':mface,' in raw
     if not has_visual:
-        return attachQuotedContext(parsed, user_text), []
+        media_facts = prepareQuotedMedia(parsed, trace_id=trace_id)
+        return attachQuotedContext(parsed, user_text, media_facts=media_facts), []
 
     status = OlivaAIAgent.vision.getVisionStatus()
     OlivaAIAgent.conf.traceLog(
@@ -1438,7 +1744,8 @@ def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
     if not status.get('ready'):
         # 视觉子系统未就绪时保留原图；主后端若声明 vision=true 仍可直接接收。
         plain_text = OlivaAIAgent.vision.placeImageFacts(user_text, [])
-        return attachQuotedContext(parsed, plain_text), images
+        media_facts = prepareQuotedMedia(parsed, trace_id=trace_id)
+        return attachQuotedContext(parsed, plain_text, media_facts=media_facts), images
 
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     cache_scope = ctx.get('group_id') or ('private:%s' % ctx.get('user_id'))
@@ -1469,7 +1776,13 @@ def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
     facts = list(dict.fromkeys(str(item) for item in facts if str(item).strip()))
     result_text = OlivaAIAgent.vision.placeImageFacts(user_text, facts)
     quote_facts = prepareQuotedImages(parsed, cache_scope, bot_hash, trace_id=trace_id)
-    result_text = attachQuotedContext(parsed, result_text, image_facts=quote_facts)
+    media_facts = prepareQuotedMedia(parsed, trace_id=trace_id)
+    result_text = attachQuotedContext(
+        parsed,
+        result_text,
+        image_facts=quote_facts,
+        media_facts=media_facts,
+    )
     OlivaAIAgent.conf.traceLog(
         ctx.get('Proc'),
         'agent.vision.ready',
@@ -1478,6 +1791,34 @@ def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
     )
     # 已转成事实摘要，不再把签名 URL 重复交给主模型。
     return result_text, []
+
+
+def _prepareAgentMedia(plugin_event, ctx, user_text, parsed):
+    '''准备 Agent 当前消息的音频/视频；主模型路由返回可直接发送的输入。'''
+    audio_urls = list(parsed.get('audio_urls') or [])[:4]
+    video_urls = list(parsed.get('video_urls') or [])[:4]
+    raw = str(parsed.get('raw', ''))
+    if not audio_urls and not video_urls and '[OP:record' not in raw and '[CQ:record' not in raw \
+            and '[OP:video' not in raw and '[CQ:video' not in raw \
+            and not OlivaAIAgent.media.hasVideoFileTag(raw):
+        return user_text, [], []
+    try:
+        user_text = OlivaAIAgent.media.translateIncoming(
+            user_text,
+            parsed,
+            allow_network=True,
+            trace_id=parsed.get('trace_id'),
+        )
+        audios, videos = OlivaAIAgent.media.prepareMainInputs(parsed, trace_id=parsed.get('trace_id'))
+        return user_text, audios, videos
+    except Exception as exc:
+        OlivaAIAgent.conf.traceLog(
+            ctx.get('Proc'),
+            'media.agent.failed',
+            parsed.get('trace_id'),
+            error='%s: %s' % (type(exc).__name__, exc),
+        )
+        return user_text, [], []
 
 
 def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
@@ -1533,6 +1874,12 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
             'ref_msg_idx': parsed.get('ref_msg_idx'),
         }
         user_text, agent_images = _prepareAgentVision(plugin_event, ctx, user_text, parsed)
+        user_text, agent_audios, agent_videos = _prepareAgentMedia(
+            plugin_event,
+            ctx,
+            user_text,
+            parsed,
+        )
         source = OlivaAIAgent.contentSafety.match(user_text, bot_hash=bot_hash)
         if source is not None:
             conf.traceLog(
@@ -1594,6 +1941,10 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 user_msg[field] = parsed[field]
         if agent_images:
             user_msg['images'] = agent_images
+        if agent_audios:
+            user_msg['audios'] = agent_audios
+        if agent_videos:
+            user_msg['videos'] = agent_videos
         messages = [{'role': 'system', 'content': sys_prompt}] + main_history
         if volatile:
             messages.append({'role': 'user', 'content': '【动态上下文】\n' + volatile})

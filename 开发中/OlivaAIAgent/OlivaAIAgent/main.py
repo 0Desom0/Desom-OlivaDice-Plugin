@@ -41,6 +41,24 @@ class Event(object):
         except Exception as e:
             OlivaAIAgent.conf.log(Proc, 3, '视觉配置检查失败: %s' % e)
         try:
+            media_status = OlivaAIAgent.media.getStatus()
+            audio_status = media_status['audio']
+            video_status = media_status['video']
+            OlivaAIAgent.conf.log(
+                Proc,
+                2 if not media_status['enabled'] or media_status['ready'] else 3,
+                '媒体识别：语音=%s/%s/%s | 视频=%s/%s/%s' % (
+                    '就绪' if audio_status['ready'] else ('未就绪' if audio_status['enabled'] else '关闭'),
+                    audio_status['route'],
+                    audio_status['model'] or '-',
+                    '就绪' if video_status['ready'] else ('未就绪' if video_status['enabled'] else '关闭'),
+                    video_status['route'],
+                    video_status['model'] or '-',
+                ),
+            )
+        except Exception as e:
+            OlivaAIAgent.conf.log(Proc, 3, '媒体识别配置检查失败: %s' % e)
+        try:
             OlivaAIAgent.voice._cleanOldFiles()
             voice_status = OlivaAIAgent.voice.getStatus()
             OlivaAIAgent.conf.log(

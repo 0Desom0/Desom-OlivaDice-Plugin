@@ -115,6 +115,8 @@ def readableMessage(plugin_event, message, hint=None):
                 parts.append('[图片：%s]' % _imageDescription(plugin_event, ref))
             elif isinstance(para, OlivOS.messageAPI.PARA.record):
                 parts.append('[语音:语音消息]')
+            elif isinstance(para, OlivOS.messageAPI.PARA.video):
+                parts.append('[视频:视频消息]')
             else:
                 try:
                     parts.append(para.get_string_by_key('OP'))
@@ -136,6 +138,7 @@ def readableMessage(plugin_event, message, hint=None):
         flags=re.I,
     )
     raw = re.sub(r'\[(?:CQ|OP):record[^\]]*\]', '[语音:语音消息]', raw, flags=re.I)
+    raw = re.sub(r'\[(?:CQ|OP):video[^\]]*\]', '[视频:视频消息]', raw, flags=re.I)
     return raw.strip()
 
 

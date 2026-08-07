@@ -25,6 +25,8 @@ SECTION_ORDER = [
     'memory',
     'semantic_memory',
     'vision',
+    'media',
+    'forward',
     'voice',
     'search',
     'mcp',
@@ -52,6 +54,8 @@ SECTION_LABELS = {
     'memory': '上下文与群记忆',
     'semantic_memory': '长期事实与向量',
     'vision': '图片视觉',
+    'media': '入站语音与视频',
+    'forward': '合并转发',
     'voice': '语音模型',
     'search': '联网搜索',
     'mcp': 'MCP 服务',
@@ -78,6 +82,9 @@ FIELD_LABELS = {
     'temperature': '温度',
     'max_tokens': '最大输出 Token',
     'vision': '主模型支持视觉',
+    'audio': '主模型支持音频',
+    'video': '主模型支持视频',
+    'image': '识别转发内图片',
     'timeout_sec': '请求超时（秒）',
     'thinking': '思考模式',
     'type': '类型',
@@ -147,6 +154,9 @@ FIELD_LABELS = {
     'queue_size': '识图队列上限',
     'persist_cache_max': '识图持久缓存数',
     'sync_ocr': '同步识图',
+    'sync_media': '同步媒体识别',
+    'main_mode': '主模型传输模式',
+    'max_bytes': '媒体大小上限（字节）',
     'enabled': '启用',
     'tavily_api_url': 'Tavily 地址',
     'tavily_api_key': 'Tavily API Key',
@@ -204,6 +214,7 @@ FIELD_LABELS = {
     'retention_days': '消息索引保留天数',
     'max_records': '消息索引最大记录数',
     'content_max_chars': '单条正文保存上限',
+    'storage_max_chars': '转发正文本地保存上限',
     'connect_on_start': '启动时连接',
     'protocol_version': 'MCP 协议版本',
     'refresh_interval_sec': '工具目录刷新间隔（秒）',
@@ -214,11 +225,23 @@ FIELD_LABELS = {
     'optimize_instructions': '优化 AI 动态语音表现指令',
     'response_format': '兼容接口音频格式',
     'speed': '兼容接口语速',
-    'max_bytes': '音频大小上限（字节）',
     'max_files': '本地语音缓存数（最多10）',
 }
 
 PATH_LABELS = {
+    ('forward', 'image'): '识别节点内图片',
+    ('forward', 'audio'): '识别节点内语音',
+    ('forward', 'video'): '识别节点内视频',
+    ('media', 'use_main'): '媒体模型路由',
+    ('media', 'audio', 'enable'): '启用入站语音识别',
+    ('media', 'audio', 'provider'): '独立语音接口协议',
+    ('media', 'audio', 'mode'): '独立语音传输模式',
+    ('media', 'audio', 'format'): '音频格式（留空自动检测）',
+    ('media', 'audio', 'sample_rate'): '采样率（Hz）',
+    ('media', 'video', 'mode'): '独立视频传输模式',
+    ('media', 'video', 'enable'): '启用入站视频识别',
+    ('media', 'audio', 'main_mode'): '主模型语音传输模式',
+    ('media', 'video', 'main_mode'): '主模型视频传输模式',
     ('voice', 'max_chars'): '单条语音文本字数上限',
     ('voice', 'model'): '语音模型名称',
     ('voice', 'api_url'): '语音接口地址',
@@ -232,6 +255,12 @@ ENUM_VALUES = {
     ('permissions', 'admin_tools_min_role'): ('everyone', 'group_admin', 'master'),
     ('vision', 'use_main'): ('auto', 'true', 'false'),
     ('vision', 'mode'): ('base64', 'url'),
+    ('media', 'use_main'): ('auto', 'true', 'false'),
+    ('media', 'audio', 'provider'): ('auto', 'openai_compatible', 'dashscope_asr'),
+    ('media', 'audio', 'mode'): ('base64', 'url'),
+    ('media', 'audio', 'main_mode'): ('base64', 'url'),
+    ('media', 'video', 'mode'): ('base64', 'url'),
+    ('media', 'video', 'main_mode'): ('base64', 'url'),
     ('voice', 'provider'): ('dashscope_multimodal', 'openai_compatible'),
     ('voice', 'response_format'): ('mp3', 'wav', 'opus', 'ogg', 'aac', 'flac', 'pcm'),
     ('skills', 'translate_from'): ('auto', 'zh', 'en', 'ja', 'ko'),
@@ -954,6 +983,7 @@ class ConfigWindow:
         backend = str(OlivaAIAgent.conf.get('backend', default='openai'))
         semantic = OlivaAIAgent.semantic.getStatus()
         vision = OlivaAIAgent.vision.getVisionStatus()
+        media = OlivaAIAgent.media.getStatus()
         voice = OlivaAIAgent.voice.getStatus()
         mcp = OlivaAIAgent.mcp.getStatus()
         lexicon = OlivaAIAgent.lexiconUpdater.getStatus()
@@ -971,6 +1001,20 @@ class ConfigWindow:
                 '启用' if vision.get('enabled') else '关闭',
                 vision.get('route', '-'),
                 vision.get('model') or '-',
+            ),
+            '入站语音: {} / {} / {}'.format(
+                '就绪' if media['audio'].get('ready') else (
+                    '未就绪' if media['audio'].get('enabled') else '关闭'
+                ),
+                media['audio'].get('route', '-'),
+                media['audio'].get('model') or '-',
+            ),
+            '入站视频: {} / {} / {}'.format(
+                '就绪' if media['video'].get('ready') else (
+                    '未就绪' if media['video'].get('enabled') else '关闭'
+                ),
+                media['video'].get('route', '-'),
+                media['video'].get('model') or '-',
             ),
             '语音模型: {} / {} / {}'.format(
                 '就绪' if voice.get('ready') else ('已启用但未就绪' if voice.get('enabled') else '关闭'),

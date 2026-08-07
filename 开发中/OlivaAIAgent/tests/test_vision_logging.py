@@ -367,6 +367,20 @@ class VisionLoggingTest(unittest.TestCase):
         self.assertEqual('OlivaAIAgent-Vision', thread_factory.call_args.kwargs['name'])
         thread.start.assert_called_once()
 
+    def test_forward_image_also_defers_group_vision_to_worker(self):
+        parsed = {
+            'trace_id': 'trace-forward-image',
+            'raw': '[OP:forward,id=forward-1]',
+            'images': ['https://example.invalid/forward-image.jpg'],
+            'text': '[合并转发:\n用户: [[OLIVA_IMAGE_0]]\n]',
+        }
+        thread = mock.Mock()
+        with mock.patch.object(OlivaAIAgent.ambient.threading, 'Thread', return_value=thread) as thread_factory:
+            OlivaAIAgent.ambient.process(FakeEvent(), self.proc, parsed, 'bot-1', force=True, tools=True)
+        thread_factory.assert_called_once()
+        self.assertEqual('OlivaAIAgent-Vision', thread_factory.call_args.kwargs['name'])
+        thread.start.assert_called_once()
+
     def test_trace_log_redacts_sensitive_fields(self):
         OlivaAIAgent.conf.traceLog(
             self.proc,

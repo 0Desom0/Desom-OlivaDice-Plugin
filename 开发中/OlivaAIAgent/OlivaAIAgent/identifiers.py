@@ -150,15 +150,24 @@ def record(
     sender_id=None,
     sender_name=None,
     content=None,
+    content_max_chars=None,
 ):
     '''登记一条收发消息；至少有一种平台标识时才写入。'''
     identifiers = [message_id, message_index, reference_message_id, reference_index, event_id]
     if all(item in [None, '', '-1', -1] for item in identifiers):
         return
     context = eventContext(plugin_event)
-    max_chars = max(128, int(OlivaAIAgent.conf.get(
-        'message_registry', 'content_max_chars', default=4096,
-    )))
+    try:
+        max_chars = max(128, int(OlivaAIAgent.conf.get(
+            'message_registry', 'content_max_chars', default=4096,
+        )))
+    except (TypeError, ValueError):
+        max_chars = 4096
+    if content_max_chars is not None:
+        try:
+            max_chars = max(max_chars, max(128, int(content_max_chars)))
+        except (TypeError, ValueError):
+            pass
     content = str(content or '')[:max_chars]
     now = time.time()
     values = {
@@ -215,6 +224,11 @@ def recordIncoming(plugin_event, parsed):
     sender = getattr(getattr(plugin_event, 'data', None), 'sender', {})
     sender = sender if isinstance(sender, dict) else {}
     bot_hash = eventContext(plugin_event)['bot_hash']
+    forward_storage_limit = None
+    if int(parsed.get('forward_count') or 0) > 0:
+        forward_storage_limit = OlivaAIAgent.conf.get(
+            'forward', 'storage_max_chars', default=20000,
+        )
     record(
         plugin_event,
         'incoming',
@@ -226,6 +240,7 @@ def recordIncoming(plugin_event, parsed):
         sender_id=getattr(getattr(plugin_event, 'data', None), 'user_id', None),
         sender_name=sender.get('nickname') or sender.get('name'),
         content=OlivaAIAgent.contentSafety.hiddenForMemory(parsed.get('text'), bot_hash=bot_hash),
+        content_max_chars=forward_storage_limit,
     )
 
 

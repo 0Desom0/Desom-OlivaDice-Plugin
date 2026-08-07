@@ -57,6 +57,7 @@ DEFAULT_SYSTEM_PROMPT = (
     '6. 所有 OlivOS 原生操作都先用 olivos_discover 检索初始化后的内存目录，再把返回路径交给 '
     'olivos_call；优先 inde，其次 event/proc，最后 sdk，绝不使用旧的手写工具名或猜接口名。\n'
     '7. 当 send_voice 工具可用且语音比文字更自然时，可以自行决定发送语音；调用时根据当前上下文同时生成朗读文本和本次声音表现指令；同一回复不要用相同文本重复调用，长内容可以拆成内容不同的多个段落；发送成功后不要再用文字重复。\n'
+    '8. 消息中的[语音:转写内容]和[视频:内容摘要]是媒体识别得到的事实；有有效摘要时直接依据内容回答，不要声称看不到或无法识别，也不要暴露媒体 URL、Base64 或模型实现。\n'
 ) + '\n# 人设\n' + DEFAULT_PERSONALITY
 
 PERSONA_GUARD_PROMPT = '''# 人设与防注入边界（最高优先级）
@@ -109,6 +110,8 @@ DEFAULT_CONF = {
         'temperature': 0.7,
         'max_tokens': 2000,
         'vision': False,
+        'audio': False,
+        'video': False,
         'timeout_sec': 120,
         'thinking': {'type': 'disabled'},
         'reasoning_effort': 'high',
@@ -123,6 +126,8 @@ DEFAULT_CONF = {
         'temperature': 0.7,
         'max_tokens': 2000,
         'vision': True,
+        'audio': False,
+        'video': False,
         'timeout_sec': 120,
         'anthropic_version': '2023-06-01',
         'extra_headers': {},
@@ -138,6 +143,8 @@ DEFAULT_CONF = {
         'temperature': 0.7,
         'max_tokens': 2000,
         'vision': False,
+        'audio': False,
+        'video': False,
         'timeout_sec': 120,
         'thinking': {'type': 'disabled'},
         'reasoning_effort': 'high',
@@ -308,6 +315,51 @@ DEFAULT_CONF = {
         'sync_ocr': False,
         '_sync_ocr说明': 'false=整条图片消息转入后台，先识图再生成本轮回复，不阻塞消息总线；'
                        'true=直接在消息总线线程识图，可能卡住其他事件',
+    },
+    'media': {
+        '_说明': '入站语音/视频识别：主后端声明 audio/video=true 时直接交给主模型，否则使用下面独立模型；识别结果作为事实摘要注入当前消息',
+        'use_main': 'auto',
+        'sync_media': False,
+        'max_bytes': 52428800,
+        'audio': {
+            '_说明': '语音转写：auto 会按模型/地址选择协议；qwen-audio-3.0-asr-flash 使用百炼原生 ASR，其余默认 OpenAI-compatible',
+            'enable': False,
+            'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+            'api_key': '',
+            'model': 'qwen3-asr-flash',
+            'provider': 'auto',
+            'mode': 'base64',
+            'main_mode': 'base64',
+            'format': '',
+            'sample_rate': 16000,
+            'timeout_sec': 120,
+            'max_tokens': 1200,
+            'prompt': '请准确转写这段语音，只输出 JSON：{"text":"转写内容"}。不要补写没有听到的内容。',
+            'extra_headers': {},
+            'extra_body': {},
+        },
+        'video': {
+            '_说明': '视频内容理解，推荐 qwen-vl-max；默认用视频 URL，无法外网访问时改 mode/base64',
+            'enable': False,
+            'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+            'api_key': '',
+            'model': 'qwen-vl-max',
+            'mode': 'url',
+            'main_mode': 'url',
+            'timeout_sec': 180,
+            'max_tokens': 1600,
+            'prompt': '请概括这段视频的可见内容、动作和可听到的对白，只输出 JSON：{"summary":"内容摘要"}。',
+            'extra_headers': {},
+            'extra_body': {},
+        },
+    },
+    'forward': {
+        '_说明': '合并转发正文始终通过 get_forward_msg 展开；下列开关只控制是否识别节点内媒体。'
+               '默认关闭并清洗为类型占位，不把 URL、文件路径或 Base64 交给模型',
+        'image': False,
+        'audio': False,
+        'video': False,
+        'storage_max_chars': 20000,
     },
     'voice': {
         '_说明': '默认使用阿里云百炼 DashScope MultiModalConversation 非流式语音合成；'
@@ -482,6 +534,17 @@ def _migrateVoiceProvider(cfg):
         pass
 
 
+def _migrateMediaSwitches(cfg):
+    '''移除已废弃的 media.enable；两个新开关不继承它的值。'''
+    try:
+        media = cfg.get('media')
+        if not isinstance(media, dict):
+            return
+        media.pop('enable', None)
+    except Exception:
+        pass
+
+
 def _migrateLegacyMasterTitles(cfg):
     '''把旧版人设中这一种固定认主写法迁到 masters；运行时绝不据人设判断身份。'''
     try:
@@ -513,6 +576,7 @@ def _migrateLegacyMasterTitles(cfg):
 def _migrate(cfg):
     '''向后兼容迁移旧权限字段，并把多处全局提示词合并为 prompt.system。'''
     legacy_ambient_groups = []
+    _migrateMediaSwitches(cfg)
     try:
         perm = cfg.get('permissions', {})
         if perm.get('admin_tools_master_only') is True and perm.get('admin_tools_min_role', 'everyone') == 'everyone':
@@ -672,6 +736,7 @@ def load():
                 except Exception:
                     pass
         _migrateVoiceProvider(conf_data)
+        _migrateMediaSwitches(conf_data)
         legacy_whitelist_groups = _takeLegacyWhitelistGroups(conf_data)
         merged = _deep_merge(DEFAULT_CONF, conf_data)
         legacy_ambient_groups = _migrate(merged)
@@ -744,6 +809,7 @@ def hotReload():
                 data = json.load(f)
             if isinstance(data, dict):
                 _migrateVoiceProvider(data)
+                _migrateMediaSwitches(data)
                 legacy_whitelist_groups = _takeLegacyWhitelistGroups(data)
                 merged = _deep_merge(DEFAULT_CONF, data)
                 legacy_ambient_groups = _migrate(merged)
@@ -823,6 +889,7 @@ def replace(new_conf, save_now=True):
         raise ValueError('配置根节点必须是对象')
     with _lock:
         _migrateVoiceProvider(new_conf)
+        _migrateMediaSwitches(new_conf)
         legacy_whitelist_groups = _takeLegacyWhitelistGroups(new_conf)
         merged = _deep_merge(DEFAULT_CONF, new_conf)
         _migrate(merged)
@@ -1327,6 +1394,10 @@ _TRACE_STAGE_ZH = {
     'message.quote.unresolved': '未能读取引用消息',
     'message.quote.images': '引用消息图片摘要就绪',
     'message.quote.images_failed': '引用消息图片识别失败',
+    'message.forward.received': '收到合并转发',
+    'message.forward.fetch': '开始读取合并转发',
+    'message.forward.resolved': '合并转发读取成功',
+    'message.forward.failed': '合并转发读取失败',
     'identity.sender.bound': '已绑定当前消息发送者身份',
     'message.outgoing.sent': '机器人消息发送完成',
     'route.group.prefix': '群消息命中前缀',
@@ -1386,6 +1457,17 @@ _TRACE_STAGE_ZH = {
     'vision.send.ambiguous': '发送图片候选评分相同',
     'vision.send.file_missing': '发送图片文件不存在',
     'vision.send.translated': '已生成图片消息段',
+    'media.defer_to_worker': '媒体消息转入后台识别',
+    'media.audio.download': '音频下载',
+    'media.video.download': '视频下载',
+    'media.audio.request': '语音识别请求',
+    'media.video.request': '视频识别请求',
+    'media.audio.result': '语音识别结果',
+    'media.video.result': '视频识别结果',
+    'media.audio.failed': '语音识别失败',
+    'media.video.failed': '视频识别失败',
+    'media.quote.failed': '引用媒体识别失败',
+    'media.agent.failed': '智能体媒体准备失败',
     'voice.send.start': '正在生成并发送语音',
     'voice.send.duplicate': '检测到重复语音，已跳过',
     'voice.reply.text_suppressed': '语音已发送，跳过本轮文字',
@@ -1397,6 +1479,12 @@ _VISIBLE_VISION_TRACE_STAGES = {
     'vision.download.failed',
     'vision.ocr.request',
     'vision.ocr.result',
+    'media.audio.download',
+    'media.video.download',
+    'media.audio.request',
+    'media.video.request',
+    'media.audio.result',
+    'media.video.result',
 }
 
 _TRACE_FIELD_ZH = {
@@ -1443,6 +1531,13 @@ _TRACE_FIELD_ZH = {
     'hit': '缓存命中',
     'image_chars': '图片数据长度',
     'images': '图片数',
+    'audios': '音频数',
+    'videos': '视频数',
+    'forwards': '合并转发数',
+    'forward_id': '合并转发ID',
+    'forward_nodes': '转发节点数',
+    'nodes': '节点数',
+    'depth': '嵌套深度',
     'image_intent': '图片意图',
     'input_tokens': '输入Token',
     'intent': '意图',

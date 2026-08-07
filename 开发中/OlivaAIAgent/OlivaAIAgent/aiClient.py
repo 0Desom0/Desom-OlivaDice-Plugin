@@ -3,10 +3,10 @@
 OlivaAIAgent AI 后端客户端
 - 支持 openai 兼容 (chat completions) / anthropic (messages) / custom (自选 wire 格式)
 - 支持流式(SSE)与非流式
-- 支持视觉输入 (图片 URL)
+- 支持视觉、音频和视频输入
 - 统一内部消息格式:
     {'role':'system','content':str}
-    {'role':'user','content':str,'images':[url,...]}
+    {'role':'user','content':str,'images':[url,...],'audios':[data_url,...],'videos':[url,...]}
     {'role':'assistant','content':str|None,'tool_calls':[{'id','name','arguments'}]}   # arguments 为 JSON 字符串
     {'role':'tool','tool_call_id':str,'name':str,'content':str}
 返回统一结果:
@@ -145,9 +145,12 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
     started = time.perf_counter()
     request_id = 'ai-%08x' % (time.time_ns() & 0xffffffff)
     image_count = sum(len(message.get('images') or []) for message in messages if isinstance(message, dict))
+    audio_count = sum(len(message.get('audios') or []) for message in messages if isinstance(message, dict))
+    video_count = sum(len(message.get('videos') or []) for message in messages if isinstance(message, dict))
     log_id = trace_id or request_id
     request_fields = {
         'backend': bc.get('_name', 'override'),
+        'audios': audio_count,
         'images': image_count,
         'messages': len(messages),
         'model': bc.get('model', ''),
@@ -156,6 +159,9 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
         'stream': bool(bc.get('stream', False)) and not force_no_stream,
         'tools': len(tools or []),
         'vision': bool(bc.get('vision', False)),
+        'audio': bool(bc.get('audio', False)),
+        'video': bool(bc.get('video', False)),
+        'videos': video_count,
         'wire': bc.get('wire', ''),
     }
     first_system = next(
@@ -261,16 +267,45 @@ def _normalizeUsage(usage):
 
 # ---------------- OpenAI 兼容 ----------------
 
-def _to_openai_messages(messages, vision):
+def _audioPart(value):
+    '''把 data URL 转成 Qwen/OpenAI-compatible input_audio；远程地址保留 audio_url 兼容形式。'''
+    ref = str(value or '')
+    if ref.startswith('data:') and ',' in ref:
+        header, data = ref.split(',', 1)
+        mime = header[5:].split(';', 1)[0].lower()
+        formats = {
+            'audio/aac': 'aac',
+            'audio/flac': 'flac',
+            'audio/mpeg': 'mp3',
+            'audio/mp3': 'mp3',
+            'audio/ogg': 'ogg',
+            'audio/opus': 'opus',
+            'audio/wav': 'wav',
+            'audio/x-wav': 'wav',
+        }
+        return {'type': 'input_audio', 'input_audio': {'data': data, 'format': formats.get(mime, 'mp3')}}
+    return {'type': 'audio_url', 'audio_url': {'url': ref}}
+
+
+def _to_openai_messages(messages, vision, audio=False, video=False):
     res = []
     for m in messages:
         role = m.get('role')
         if role == 'user':
             images = m.get('images') or []
-            if vision and len(images) > 0:
+            audios = m.get('audios') or []
+            videos = m.get('videos') or []
+            if (vision and images) or (audio and audios) or (video and videos):
                 content = [{'type': 'text', 'text': m.get('content', '')}]
-                for url in images[:4]:
-                    content.append({'type': 'image_url', 'image_url': {'url': url}})
+                if vision:
+                    for url in images[:4]:
+                        content.append({'type': 'image_url', 'image_url': {'url': url}})
+                if audio:
+                    for value in audios[:4]:
+                        content.append(_audioPart(value))
+                if video:
+                    for url in videos[:4]:
+                        content.append({'type': 'video_url', 'video_url': {'url': url}})
                 res.append({'role': 'user', 'content': content})
             else:
                 res.append({'role': 'user', 'content': m.get('content', '')})
@@ -322,7 +357,12 @@ def _chat_openai(bc, messages, tools, force_no_stream, opts=None):
     opts = opts or {}
     payload = {
         'model': bc.get('model', ''),
-        'messages': _to_openai_messages(messages, bool(bc.get('vision', False))),
+        'messages': _to_openai_messages(
+            messages,
+            bool(bc.get('vision', False)),
+            bool(bc.get('audio', False)),
+            bool(bc.get('video', False)),
+        ),
         'temperature': bc.get('temperature', 0.7),
         'max_tokens': bc.get('max_tokens', 2000),
     }
@@ -629,7 +669,7 @@ def _parse_anthropic_stream(resp):
 
 # ---------------- OpenAI Responses API (/v1/responses) ----------------
 
-def _to_responses_input(messages, vision):
+def _to_responses_input(messages, vision, audio=False, video=False):
     '''内部统一消息 → Responses API 的 (instructions, input[])。
     - system → instructions(顶层)
     - user → {role:user, content:[input_text(+input_image)]}
@@ -643,10 +683,21 @@ def _to_responses_input(messages, vision):
             instructions.append(str(m.get('content', '')))
         elif role == 'user':
             images = m.get('images') or []
-            if vision and images:
+            audios = m.get('audios') or []
+            videos = m.get('videos') or []
+            if (vision and images) or (audio and audios) or (video and videos):
                 content = [{'type': 'input_text', 'text': str(m.get('content', ''))}]
-                for url in images[:4]:
-                    content.append({'type': 'input_image', 'image_url': url, 'detail': 'auto'})
+                if vision:
+                    for url in images[:4]:
+                        content.append({'type': 'input_image', 'image_url': url, 'detail': 'auto'})
+                if audio:
+                    for value in audios[:4]:
+                        part = _audioPart(value)
+                        if part.get('type') == 'input_audio':
+                            content.append(part)
+                if video:
+                    for url in videos[:4]:
+                        content.append({'type': 'input_video', 'video_url': url})
                 inp.append({'role': 'user', 'content': content})
             else:
                 inp.append({'role': 'user', 'content': str(m.get('content', ''))})
@@ -666,7 +717,12 @@ def _to_responses_input(messages, vision):
 
 def _chat_responses(bc, messages, tools, force_no_stream, opts=None):
     opts = opts or {}
-    instructions, inp = _to_responses_input(messages, bool(bc.get('vision', False)))
+    instructions, inp = _to_responses_input(
+        messages,
+        bool(bc.get('vision', False)),
+        bool(bc.get('audio', False)),
+        bool(bc.get('video', False)),
+    )
     payload = {
         'model': bc.get('model', ''),
         'input': inp,

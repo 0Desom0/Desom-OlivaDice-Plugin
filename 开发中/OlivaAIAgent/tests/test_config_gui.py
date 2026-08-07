@@ -28,6 +28,17 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertTrue(default_conf['memory']['long_term_default'])
         self.assertIn('mcp', default_conf)
         self.assertIn('voice', default_conf)
+        self.assertNotIn('enable', default_conf['media'])
+        self.assertFalse(default_conf['media']['audio']['enable'])
+        self.assertFalse(default_conf['media']['video']['enable'])
+        self.assertEqual(
+            {'_说明', 'image', 'audio', 'video', 'storage_max_chars'},
+            set(default_conf['forward']),
+        )
+        self.assertFalse(default_conf['forward']['image'])
+        self.assertFalse(default_conf['forward']['audio'])
+        self.assertFalse(default_conf['forward']['video'])
+        self.assertEqual(20000, default_conf['forward']['storage_max_chars'])
         self.assertEqual('dashscope_multimodal', default_conf['voice']['provider'])
         self.assertEqual('qwen3-tts-instruct-flash', default_conf['voice']['model'])
         self.assertEqual('Chinese', default_conf['voice']['language_type'])
@@ -85,6 +96,16 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual('openai_compatible', config['voice']['provider'])
         self.assertNotIn('instructions', config['voice'])
         self.assertEqual(10, config['voice']['max_files'])
+
+    def test_legacy_media_switch_is_removed_and_not_inherited(self):
+        config = {'media': {'enable': True}}
+
+        OlivaAIAgent.conf._migrateMediaSwitches(config)
+        merged = OlivaAIAgent.conf._deep_merge(OlivaAIAgent.conf.DEFAULT_CONF, config)
+
+        self.assertNotIn('enable', merged['media'])
+        self.assertFalse(merged['media']['audio']['enable'])
+        self.assertFalse(merged['media']['video']['enable'])
 
     def test_legacy_persona_master_ids_move_to_internal_titles(self):
         config = {
@@ -242,6 +263,16 @@ class ConfigGuiSchemaTest(unittest.TestCase):
     def test_mcp_and_voice_have_visible_gui_sections(self):
         self.assertIn('mcp', OlivaAIAgent.gui.SECTION_ORDER)
         self.assertIn('voice', OlivaAIAgent.gui.SECTION_ORDER)
+        self.assertIn('forward', OlivaAIAgent.gui.SECTION_ORDER)
+        self.assertEqual('合并转发', OlivaAIAgent.gui.SECTION_LABELS['forward'])
+        self.assertEqual(
+            '启用入站语音识别',
+            OlivaAIAgent.gui.PATH_LABELS[('media', 'audio', 'enable')],
+        )
+        self.assertEqual(
+            '启用入站视频识别',
+            OlivaAIAgent.gui.PATH_LABELS[('media', 'video', 'enable')],
+        )
         self.assertEqual(
             ('dashscope_multimodal', 'openai_compatible'),
             OlivaAIAgent.gui.ENUM_VALUES[('voice', 'provider')],

@@ -1,4 +1,4 @@
-# OlivaAIAgent v2.20.13 — AI 全能群聊插件（OlivOS / 青果）
+# OlivaAIAgent v2.23.0 — AI 全能群聊插件（OlivOS / 青果）
 
 一个插件，两种形态，且都比市面同类更强：
 
@@ -22,6 +22,7 @@
 | 后台记忆提炼线程 | ✅ | 同 |
 | Codex 技能库（SKILL.md，BM25 检索） | ✅ | **BM25 缺失自动降级纯 Python** |
 | 视觉识图（OCR→摘要，图片缓存） | ✅ | 可复用主后端或独立视觉模型 |
+| 入站语音/视频理解（转写与摘要） | ✅ | 主模型明确支持时直读，否则自动走独立模型 |
 | 表情包主动发送（[发图片:] 模糊解析） | ✅ | 同 |
 | 视觉否认纠偏 | ✅ | 同 |
 | 概率/关键词/@触发、忽略前缀 | ✅ | 同 |
@@ -175,6 +176,40 @@ GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `t
 - `debug_log:true` 时，OlivOS Logger 会输出带同一“编号”的中文关键流程日志：前置判断、模型及 token 用量、命中的技能/知识资料、工具调用、本轮回复或跳过决定均可串联查看；普通群消息接收及“未开启潜行”不再逐条刷屏。API Key、token、Authorization、Base64/data URL 会自动遮蔽，长字段会截断。
 - 图片识别日志精简为“图片下载”“图片识别请求”“图片识别结果”三类；缓存查询、路由选择、后台转交、摘要转换和缓存落盘不再逐步刷屏。失败结果仍保留状态码和简短错误。
 
+## 入站语音与视频理解（v2.23）
+
+- 支持 OlivOS 的 `[OP:record,...]` / `[OP:video,...]`（并兼容 CQ 格式），优先读取消息段的 `url`，再回退 `file`。QQ 把视频作为 `[OP:file,...]` 上报时，会按 `name`、URL 查询参数或路径中的 `.mp4` 等常见视频后缀自动归入视频识别。
+- 入站语音和视频分别由 `media.audio.enable`、`media.video.enable` 控制，GUI 中也是两个独立开关。旧的 `media.enable` 已废弃，加载时会删除且不会读取或继承其值。
+- `media.use_main:"auto"` 会分别检查当前 OpenAI-compatible 主后端的 `audio:true` / `video:true`。声明支持时把媒体作为当前用户消息的一部分直接交给主模型；不支持时自动调用 `media.audio` / `media.video` 中的独立模型。
+- 独立识别会把结果原位写成 `[语音:转写内容]` 或 `[视频:内容摘要]`，再进入潜行历史、引用上下文和正式回复模型。失败时只留下“未识别成功”，不会把签名 URL 或 Base64 写进模型历史。
+- 音频默认下载并以 `input_audio` Base64 发送，视频默认使用 `video_url`，可按接口要求把 `mode` 改成 `base64`。媒体大小受 `media.max_bytes` 限制，慢请求默认移到后台线程。
+- 独立语音的 `provider` 支持 `auto`、`openai_compatible` 和 `dashscope_asr`。`qwen-audio-3.0-asr-flash` 使用百炼原生同步接口：`https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`；`auto` 会按模型名或接口地址自动选择。原生接口保留完整 Data URL，并解析 `output.text` / `output.output.sentence.text`。
+- 原生 ASR 的 `format` 必须与实际音频一致；Base64 模式留空可根据 MIME 自动判断，URL 模式没有文件扩展名时会回退为 `mp3`，应手动填写实际格式。QQ 常见 `audio/ogg` 会按 `opus` 发送；官方示例中的 `wav` 不能直接套用到所有 QQ 语音。
+- `debug_log:true` 时会记录媒体下载、识别请求和识别结果；日志只包含文件短名、模型、耗时、状态和摘要长度，不记录完整 CDN URL、API Key 或媒体数据。
+
+使用 `qwen-audio-3.0-asr-flash` 时，独立语音配置示例：
+
+```json
+"audio": {
+  "enable": true,
+  "api_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+  "api_key": "",
+  "model": "qwen-audio-3.0-asr-flash",
+  "provider": "auto",
+  "mode": "base64"
+}
+```
+
+该模型的单文件上限为 10 MB（Base64 模式会按编码膨胀预留空间），适合 5 分钟以内音频。主模型全模态路由仍由 `media.use_main` 和主后端的 `audio/video` 能力开关控制，不受独立 ASR 协议影响。
+
+## 合并转发与引用展开（v2.22）
+
+- 收到 `[OP:forward,id=...]` 时会调用 `plugin_event.get_forward_msg()`，按发送者和节点顺序整理为模型可读文本；兼容 OneBot V11、Milky 与 QQ Guild V2 的节点结构及嵌套转发。
+- 引用合并转发时按 `reply -> get_msg -> forward -> get_forward_msg` 两阶段读取；只在转发接口失败时使用 `raw_message` 保留文本兜底。
+- 展开后的转发正文与普通消息一样持久化到 `message_registry.sqlite3`，默认最多保存 20000 字（`forward.storage_max_chars`）。后续引用优先读本地展开文本，不再重复请求平台。
+- GUI 新增“合并转发”分类，分别控制节点内图片、语音、视频是否识别。三项默认关闭：只保留 `[图片]` / `[语音]` / `[视频]` 占位，清洗 URL、本地路径与 Base64；开启后复用普通消息的媒体识别流程。
+- `debug_log:true` 时记录转发收到、读取开始、成功/失败、节点数与摘要字符数，不输出节点媒体资源。
+
 ## 主模型 Token 优化
 
 - 每条消息可并行启动多个窄职责辅助判断：参与判断只判 `NEXT/SKIP`，图片判断只给图片建议，工具路由只选工具；显式 Agent 无需参与判断，只并行图片与工具任务。
@@ -281,7 +316,8 @@ OlivOS 托盘菜单选择“打开设置面板”，即可在一个窗口完成�
     "api_url": "https://api.deepseek.com/v1/chat/completions",
     "api_key": "sk-xxx", "model": "deepseek-v4-flash",  // 或 deepseek-v4-pro；旧名 deepseek-chat/reasoner 已弃用
     "thinking": {"type": "disabled"},   // 改 {"type":"enabled"} 开思考(= 旧 reasoner)
-    "reasoning_effort": "high"          // high / max
+    "reasoning_effort": "high",         // high / max
+    "vision": false, "audio": false, "video": false // 主模型确实支持对应输入时才开启
   },
   "anthropic": { "api_url": "...", "api_key": "", "model": "claude-sonnet-4-20250514" },
 
@@ -341,6 +377,23 @@ OlivOS 托盘菜单选择“打开设置面板”，即可在一个窗口完成�
     "enable": false, "use_main": "auto",   // auto=主模型支持视觉就用主模型，否则用下面独立 OCR 模型
     "api_url": "https://api.siliconflow.cn/v1/chat/completions",
     "api_key": "", "model": "Pro/moonshotai/Kimi-K2-Instruct", "mode": "base64"
+  },
+  "media": {                         // 入站语音/视频识别
+    "use_main": "auto", "sync_media": false,
+    "max_bytes": 52428800,
+    "audio": {
+      "enable": false,
+      "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "api_key": "", "model": "qwen3-asr-flash", "provider": "auto", "mode": "base64"
+    },
+    "video": {
+      "enable": false,
+      "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "api_key": "", "model": "qwen-vl-max", "mode": "url"
+    }
+  },
+  "forward": {                       // 合并转发媒体；正文始终展开
+    "image": false, "audio": false, "video": false, "storage_max_chars": 20000
   },
   "skills": { "enable": true, "max_matches": 2 },   // SKILL.md 放 data/OlivaAIAgent/skills/
   "knowledge": { "cache_max": 0 }                   // 静态知识放 data/OlivaAIAgent/Knowledge/*.json

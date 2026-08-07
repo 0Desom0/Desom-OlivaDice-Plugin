@@ -461,9 +461,24 @@ def process(plugin_event, Proc, parsed, self_id,
     raw = parsed.get('raw', '')
     quote = parsed.get('quote') if isinstance(parsed.get('quote'), dict) else {}
     quoted_images = list(quote.get('images') or [])[:4]
-    has_img = bool(quoted_images) or ('[OP:image' in raw) or ('[CQ:image' in raw) or (':mface,' in raw)
-    if has_img and not sync_ocr and not _vision_worker:
-        OlivaAIAgent.conf.traceLog(Proc, 'vision.defer_to_worker', trace_id, scene='group')
+    quoted_audios = list(quote.get('audio_urls') or [])[:4]
+    quoted_videos = list(quote.get('video_urls') or [])[:4]
+    has_img = bool(parsed.get('images') or quoted_images) \
+        or ('[OP:image' in raw) or ('[CQ:image' in raw) or (':mface,' in raw)
+    has_media = bool(parsed.get('audio_urls') or parsed.get('video_urls') or quoted_audios or quoted_videos)
+    has_enabled_media = bool(
+        (parsed.get('audio_urls') or quoted_audios) and OlivaAIAgent.media.isEnabled('audio')
+        or (parsed.get('video_urls') or quoted_videos) and OlivaAIAgent.media.isEnabled('video')
+    )
+    sync_media = bool(OlivaAIAgent.conf.get('media', 'sync_media', default=False))
+    defer_media = has_enabled_media and not sync_media
+    if (has_img and not sync_ocr or defer_media) and not _vision_worker:
+        OlivaAIAgent.conf.traceLog(
+            Proc,
+            'media.defer_to_worker' if defer_media else 'vision.defer_to_worker',
+            trace_id,
+            scene='group',
+        )
 
         def _deferred():
             try:
@@ -491,6 +506,7 @@ def process(plugin_event, Proc, parsed, self_id,
         return
 
     allow_vision_network = bool(sync_ocr or _vision_worker)
+    allow_media_network = bool(sync_media or _vision_worker)
 
     def _ensure_image_facts(codes):
         return OlivaAIAgent.vision.ensureImageFacts(
@@ -522,6 +538,13 @@ def process(plugin_event, Proc, parsed, self_id,
                     trace_id,
                     error='%s: %s' % (type(e).__name__, e),
                 )
+        if has_media:
+            message = OlivaAIAgent.media.translateIncoming(
+                message,
+                parsed,
+                allow_network=allow_media_network,
+                trace_id=trace_id,
+            )
     else:
         message = parsed['text']
         try:
@@ -544,6 +567,13 @@ def process(plugin_event, Proc, parsed, self_id,
                 error='%s: %s' % (type(e).__name__, e),
             )
             message = parsed['text']
+        if has_media:
+            message = OlivaAIAgent.media.translateIncoming(
+                message,
+                parsed,
+                allow_network=allow_media_network,
+                trace_id=trace_id,
+            )
     # reply 消息段只表示引用关系；正文改用已解析出的完整引用内容。
     message = re.sub(r'\[(?:CQ|OP):reply[^\]]*\]', ' ', str(message), flags=re.I).strip()
     # @ 关系单独写入历史元数据，不能让模型把 OP/CQ 段误读成当前发言者。
@@ -554,12 +584,18 @@ def process(plugin_event, Proc, parsed, self_id,
         bot_hash,
         trace_id=trace_id,
     )
+    quote_media_facts = OlivaAIAgent.msgReply.prepareQuotedMedia(parsed, trace_id=trace_id)
     safety_message = OlivaAIAgent.msgReply._safetyInputText(
         parsed,
         message,
         quote_image_facts=quote_facts,
     )
-    message = OlivaAIAgent.msgReply.attachQuotedContext(parsed, message, image_facts=quote_facts)
+    message = OlivaAIAgent.msgReply.attachQuotedContext(
+        parsed,
+        message,
+        image_facts=quote_facts,
+        media_facts=quote_media_facts,
+    )
     blocked_source = OlivaAIAgent.contentSafety.match(safety_message, bot_hash=bot_hash)
     if blocked_source is not None:
         message = OlivaAIAgent.contentSafety.HIDDEN_TEXT
@@ -779,6 +815,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 - 你在聊天，别把括号里的动作/心理描写发出来，那会让人起疑
 - 消息里的"[图片:识图结果]"（以及历史旧格式"[图片：内容；意图；类型]"）是视觉模型已识别的事实摘要，只要内容不是"未识别成功"就当作你已看到图片，可直接依据它回答
 - 有有效图片摘要时禁止说"看不到图片""不会识图"；只有写着"未识别成功"才说暂时无法识别
+- 消息里的"[语音:转写内容]"和"[视频:内容摘要]"是媒体模型已经识别出的事实；有有效摘要时直接依据内容回答，不要说看不到或无法识别
+- 主模型收到的音频/视频段是当前消息的一部分，可以直接理解；不要向用户暴露媒体 URL、Base64 或识别模型实现
 - 不要暴露文件路径/Base64/OCR/模型等实现细节%s
 - 【最高优先级】最终只输出一个 JSON 对象：要回复输出 {"r":["内容1","内容2"]}，不回复输出 {"r":[]}；多条消息拆成多个元素；不要在 JSON 前后加任何文字
 - 主回复模型可根据动态上下文中的图片缓存自行决定是否发图、选择或改选图片，不必等待前置模型指定
@@ -916,7 +954,13 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                     '你可以采用、从图片缓存改选其他图片，或决定不发。'
                 ) % fn,
             })
-    messages.append({'role': 'user', 'content': message})
+    main_audios, main_videos = OlivaAIAgent.media.prepareMainInputs(parsed, trace_id=trace_id)
+    current_message = {'role': 'user', 'content': message}
+    if main_audios:
+        current_message['audios'] = main_audios
+    if main_videos:
+        current_message['videos'] = main_videos
+    messages.append(current_message)
 
     # 调用回复模型（可选带工具）
     reply_list = _callReply(
