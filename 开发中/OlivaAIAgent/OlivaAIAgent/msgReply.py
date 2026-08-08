@@ -996,11 +996,13 @@ def _onGroupMessage(plugin_event, Proc):
         return
     parsed = parseMessage(plugin_event)
     trace_id = parsed['trace_id']
-    OlivaAIAgent.identifiers.recordIncoming(plugin_event, parsed)
     is_master = OlivaAIAgent.conf.isMaster(plugin_event)
     group_usable = _checkGroupUsable(plugin_event, platform, group_id, is_master, reply_on_fail=False)
+    # 成员目录只保存身份与昵称别名，所有收到消息的群都持续积累。
+    OlivaAIAgent.memberDirectory.recordIncoming(plugin_event)
     if group_usable:
-        OlivaAIAgent.memberDirectory.recordIncoming(plugin_event)
+        # 群关闭/不在白名单时不新增消息正文和引用记录。
+        OlivaAIAgent.identifiers.recordIncoming(plugin_event, parsed)
         _logQuotedMessage(Proc, parsed)
     # 去重：同一条消息若被重复投递(或未来路径重叠)，只处理一次
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'

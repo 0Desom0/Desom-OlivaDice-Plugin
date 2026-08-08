@@ -176,7 +176,7 @@ class QuoteContextTest(unittest.TestCase):
             parsed = OlivaAIAgent.msgReply.parseMessage(event)
         self.assertTrue(parsed['at_me'])
 
-    def test_group_quote_log_only_runs_when_group_is_usable(self):
+    def test_group_content_registry_requires_usable_group_but_member_directory_does_not(self):
         for group_usable in [False, True]:
             with self.subTest(group_usable=group_usable):
                 event = FakeEvent(
@@ -189,7 +189,7 @@ class QuoteContextTest(unittest.TestCase):
                         },
                     },
                 )
-                with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+                with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming') as message_record, \
                         mock.patch.object(OlivaAIAgent.memberDirectory, 'recordIncoming') as member_record, \
                         mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage') as quote_log, \
                         mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
@@ -206,7 +206,8 @@ class QuoteContextTest(unittest.TestCase):
                     OlivaAIAgent.msgReply._onGroupMessage(event, None)
 
                 self.assertEqual(group_usable, quote_log.called)
-                self.assertEqual(group_usable, member_record.called)
+                self.assertTrue(member_record.called)
+                self.assertEqual(group_usable, message_record.called)
 
     def test_qqguildv2_sub_self_open_id_is_treated_as_bot_mention(self):
         event = FakeEvent('[CQ:at,qq=bot-member-openid] 机器人在吗')
