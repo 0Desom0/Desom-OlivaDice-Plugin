@@ -1,4 +1,5 @@
 import difflib
+import hashlib
 import html
 import json
 import os
@@ -55,6 +56,8 @@ gParseDebugContext = ContextVar('BiliShareInfo_parse_debug', default=False)
 gPreviewOcrLock = threading.RLock()
 gPreviewOcrEngine = None
 gPreviewOcrUnavailable = False
+gWbiMixinKey = None
+gWbiMixinKeyTime = 0.0
 
 # 命令与解析常量
 COMMAND_PREFIXES = ('.', '/', '。')
@@ -65,6 +68,14 @@ MIN_TITLE_SEARCH_SIGNAL_LENGTH = 3
 PREVIEW_OCR_MAX_BYTES = 4 * 1024 * 1024
 CARD_SEARCH_WORKERS = 2
 CARD_SEARCH_CANDIDATE_LIMIT = 20
+OWNER_EXACT_DETAIL_LIMIT = 8
+WBI_KEY_CACHE_TTL_SECONDS = 3600
+WBI_MIXIN_KEY_TABLE = (
+    46, 47, 18, 2, 53, 8, 23, 32,
+    15, 50, 10, 31, 58, 3, 45, 35,
+    27, 43, 5, 49, 33, 9, 42, 19,
+    29, 28, 37, 1, 4, 51, 17, 25,
+)
 
 REPLY_SEGMENT_PATTERN = re.compile(
     r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]',
@@ -72,6 +83,10 @@ REPLY_SEGMENT_PATTERN = re.compile(
 )
 AT_SEGMENT_PATTERN = re.compile(
     r'^\[(?:OP|CQ):at,(?P<params>[^\]]*)\]',
+    re.IGNORECASE,
+)
+AV_REFERENCE_PATTERN = re.compile(
+    r'(?<![A-Za-z0-9_-])(?:av|aid\s*=\s*)(\d+)(?![A-Za-z0-9])',
     re.IGNORECASE,
 )
 
@@ -1310,7 +1325,7 @@ def extract_video_refs_from_text(text: str) -> list[dict[str, str]]:
         for bvid_match in re.finditer(r'(BV[0-9A-Za-z]{10})', text_candidate):
             add_video_ref(video_ref_list, seen_key_set, {'bvid': bvid_match.group(1)})
 
-        for aid_match in re.finditer(r'(?:^|[^A-Za-z0-9])(?:av|aid=)(\d+)', text_candidate, re.IGNORECASE):
+        for aid_match in AV_REFERENCE_PATTERN.finditer(text_candidate):
             add_video_ref(video_ref_list, seen_key_set, {'aid': aid_match.group(1)})
 
     return video_ref_list
@@ -1550,11 +1565,29 @@ def search_video_by_card_comparison(
             f'ocr_stats={format_preview_stat_log(preview_metadata)}'
         )
 
-        owner_name = safe_str(preview_metadata.get('owner', '')).strip()
-        if owner_name and not has_exact_title_candidate(title_hint, title_candidate_list):
-            owner_keyword = f'{title_hint} {owner_name}'
+        compact_keyword = build_compact_search_keyword(title_hint)
+        if (
+            compact_keyword
+            and compact_keyword != clean_search_keyword(title_hint)
+            and not has_exact_title_candidate(title_hint, title_candidate_list)
+        ):
             parse_log(
-                f'标题候选无完整匹配，补充UP主联合搜索 keyword='
+                f'完整标题搜索未命中，补充紧凑关键词搜索 keyword='
+                f'{shorten_log_text(compact_keyword, 160)}'
+            )
+            compact_candidate_list = search_video_candidates_by_keyword(
+                compact_keyword,
+                CARD_SEARCH_CANDIDATE_LIMIT,
+            )
+            title_candidate_list.extend(compact_candidate_list)
+
+        owner_name = safe_str(preview_metadata.get('owner', '')).strip()
+        # 已有同名候选时仍然补查 OCR 识别出的 UP 主；否则会把“同名但非同一视频”
+        # 的全站搜索结果误当成最终结果，失去按投稿数据核验的机会。
+        if owner_name and not ocr_video_ref:
+            owner_keyword = f'{compact_keyword or title_hint} {owner_name}'
+            parse_log(
+                f'补充UP主联合搜索 keyword='
                 f'{shorten_log_text(owner_keyword, 160)}'
             )
             owner_candidate_list = search_video_candidates_by_keyword(
@@ -1652,12 +1685,39 @@ def choose_card_search_result(
         )
 
     if exact_candidate_list:
-        selected_ref, selected_candidate = random.choice(exact_candidate_list)
-        parse_log(
-            f'卡片完整标题匹配随机选择 count={len(exact_candidate_list)} '
-            f'source={safe_str(selected_candidate.get("_search_source", "title"))} '
-            f'ref={format_video_ref(selected_ref)}'
-        )
+        if has_preview_metadata_signal(preview_metadata):
+            metadata_candidate_list = []
+            for video_ref, candidate in exact_candidate_list:
+                metadata_score, metadata_detail = score_preview_metadata_for_search_candidate(
+                    preview_metadata,
+                    candidate,
+                )
+                metadata_candidate_list.append(
+                    (metadata_score, video_ref, candidate, metadata_detail)
+                )
+                parse_log(
+                    f'卡片同名候选OCR核验 ref={format_video_ref(video_ref)} '
+                    f'score={metadata_score} detail={metadata_detail}'
+                )
+            best_metadata_score = max(item[0] for item in metadata_candidate_list)
+            best_metadata_candidates = [
+                item for item in metadata_candidate_list
+                if item[0] == best_metadata_score
+            ]
+            _, selected_ref, selected_candidate, _ = random.choice(best_metadata_candidates)
+            parse_log(
+                f'卡片完整标题匹配按OCR元数据选择 count={len(exact_candidate_list)} '
+                f'tied={len(best_metadata_candidates)} '
+                f'source={safe_str(selected_candidate.get("_search_source", "title"))} '
+                f'ref={format_video_ref(selected_ref)} score={best_metadata_score}'
+            )
+        else:
+            selected_ref, selected_candidate = random.choice(exact_candidate_list)
+            parse_log(
+                f'卡片完整标题匹配随机选择 count={len(exact_candidate_list)} '
+                f'source={safe_str(selected_candidate.get("_search_source", "title"))} '
+                f'ref={format_video_ref(selected_ref)}'
+            )
         return selected_ref
 
     if not compared_candidate_list:
@@ -1714,11 +1774,11 @@ def score_preview_metadata_for_search_candidate(
             actual_owner.casefold(),
         ).ratio()
         if expected_owner.casefold() == actual_owner.casefold():
-            owner_score = 6000
+            owner_score = 30000
         elif owner_ratio >= 0.75:
-            owner_score = round(owner_ratio * 3000)
+            owner_score = round(owner_ratio * 15000)
         else:
-            owner_score = 0
+            owner_score = -8000
         score += owner_score
         detail_list.append(f'owner={owner_score}/{owner_ratio:.2f}')
 
@@ -1728,10 +1788,19 @@ def score_preview_metadata_for_search_candidate(
         if expected_value is None or actual_value is None:
             continue
         difference_ratio = abs(actual_value - expected_value) / max(expected_value, actual_value, 1)
-        stat_score = max(0, 2500 - round(difference_ratio * 2500))
+        stat_score = max(0, 5000 - round(difference_ratio * 5000))
         score += stat_score
         detail_list.append(f'{stat_name}={stat_score}/{difference_ratio:.2f}')
     return score, ';'.join(detail_list) or 'metadata=none'
+
+
+def has_preview_metadata_signal(preview_metadata: dict[str, Any]) -> bool:
+    if safe_str(preview_metadata.get('owner', '')).strip():
+        return True
+    return any(
+        parse_count_text(preview_metadata.get(stat_name)) is not None
+        for stat_name in ['view', 'danmaku', 'like']
+    )
 
 
 def has_exact_title_candidate(title_hint: str, candidate_list: list[dict[str, Any]]) -> bool:
@@ -2067,40 +2136,91 @@ def format_preview_stat_log(metadata: dict[str, Any]) -> str:
 
 
 def search_bili_user_mid(owner_name: str) -> str | None:
-    try:
-        api_url = 'https://api.bilibili.com/x/web-interface/search/all/v2?' + urllib.parse.urlencode(
-            {'keyword': owner_name, 'page': 1, 'pagesize': 20}
-        )
-        response_data = json.loads(http_get_json_text(api_url, referer='https://search.bilibili.com/'))
-        if response_data.get('code') != 0:
-            parse_log(f'UP主搜索返回非零code={response_data.get("code")}')
-            return None
-        candidates = []
-        for bucket in response_data.get('data', {}).get('result', []):
-            if not isinstance(bucket, dict) or bucket.get('result_type') != 'bili_user':
+    search_url_list = [
+        'https://api.bilibili.com/x/web-interface/search/type?'
+        + urllib.parse.urlencode(
+            {
+                'search_type': 'bili_user',
+                'keyword': owner_name,
+                'page': 1,
+                'page_size': 20,
+            }
+        ),
+        'https://api.bilibili.com/x/web-interface/search/all/v2?'
+        + urllib.parse.urlencode({'keyword': owner_name, 'page': 1, 'pagesize': 20}),
+    ]
+    fallback_candidates = []
+    for api_index, api_url in enumerate(search_url_list, start=1):
+        try:
+            response_data = json.loads(
+                http_get_json_text(api_url, referer='https://search.bilibili.com/')
+            )
+            response_code = response_data.get('code')
+            if response_code != 0:
+                parse_log(f'UP主搜索API#{api_index}返回非零code={response_code}')
                 continue
-            for item in bucket.get('data', []):
-                if isinstance(item, dict) and item.get('mid'):
-                    candidates.append(item)
-        if not candidates:
-            return None
-        exact_candidates = [
-            item for item in candidates
-            if safe_str(item.get('uname', '')).casefold() == safe_str(owner_name).casefold()
-        ]
-        selected = exact_candidates[0] if exact_candidates else candidates[0]
+            candidates = extract_bili_user_search_results(response_data)
+            if not candidates:
+                parse_log(f'UP主搜索API#{api_index}无候选')
+                continue
+            fallback_candidates.extend(candidates)
+            exact_candidates = [
+                item for item in candidates
+                if safe_str(item.get('uname', '')).casefold() == safe_str(owner_name).casefold()
+            ]
+            if exact_candidates:
+                owner_mid = safe_str(exact_candidates[0].get('mid', '')).strip()
+                parse_log(
+                    f'UP主搜索命中 api={api_index} owner={shorten_log_text(owner_name, 80)} '
+                    f'mid={owner_mid} exact=True'
+                )
+                return owner_mid or None
+        except Exception as exception_object:
+            parse_log(
+                f'UP主搜索API#{api_index}失败 owner={shorten_log_text(owner_name, 80)} '
+                f'error={type(exception_object).__name__}: '
+                f'{shorten_log_text(exception_object, 180)}'
+            )
+    fuzzy_candidate_list = []
+    for candidate in fallback_candidates:
+        candidate_name = safe_str(candidate.get('uname', '')).strip()
+        name_ratio = difflib.SequenceMatcher(
+            None,
+            safe_str(owner_name).casefold(),
+            candidate_name.casefold(),
+        ).ratio()
+        fuzzy_candidate_list.append((name_ratio, candidate))
+    fuzzy_candidate_list.sort(key=lambda item: item[0], reverse=True)
+    if fuzzy_candidate_list and fuzzy_candidate_list[0][0] >= 0.75:
+        best_ratio, selected = fuzzy_candidate_list[0]
         owner_mid = safe_str(selected.get('mid', '')).strip()
         parse_log(
-            f'UP主搜索命中 owner={shorten_log_text(owner_name, 80)} '
-            f'mid={owner_mid} exact={bool(exact_candidates)}'
+            f'UP主搜索模糊命中 owner={shorten_log_text(owner_name, 80)} '
+            f'candidate={shorten_log_text(selected.get("uname", ""), 80)} '
+            f'mid={owner_mid} ratio={best_ratio:.2f}'
         )
         return owner_mid or None
-    except Exception as exception_object:
-        parse_log(
-            f'UP主搜索失败 owner={shorten_log_text(owner_name, 80)} '
-            f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 180)}'
-        )
-        return None
+    parse_log(f'UP主搜索无可靠候选 owner={shorten_log_text(owner_name, 80)}')
+    return None
+
+
+def extract_bili_user_search_results(response_data: dict[str, Any]) -> list[dict[str, Any]]:
+    result_data = response_data.get('data', {}).get('result', [])
+    if not isinstance(result_data, list):
+        return []
+    if result_data and all(isinstance(item, dict) and item.get('mid') for item in result_data):
+        return result_data
+
+    for bucket in result_data:
+        if not isinstance(bucket, dict) or bucket.get('result_type') != 'bili_user':
+            continue
+        user_result_list = bucket.get('data', [])
+        if isinstance(user_result_list, list):
+            return [
+                item for item in user_result_list
+                if isinstance(item, dict) and item.get('mid')
+            ]
+    return []
 
 
 def search_video_by_owner_metadata(
@@ -2111,26 +2231,42 @@ def search_video_by_owner_metadata(
 ) -> dict[str, str] | None:
     candidate_list = []
     for page in range(1, 4):
-        page_candidates = fetch_owner_search_candidates(owner_name, page)
-        owner_candidates = [
-            candidate for candidate in page_candidates
-            if safe_str(candidate.get('author', '')).casefold() == safe_str(owner_name).casefold()
-        ]
-        candidate_list.extend(owner_candidates)
+        page_candidates = fetch_owner_archive_candidates(
+            owner_mid,
+            title_hint,
+            'pubdate',
+            page,
+        )
+        candidate_list.extend(page_candidates)
+        if not page_candidates:
+            break
         if any(
             normalize_exact_search_match_text(clean_search_result_title(candidate.get('title', '')))
             == normalize_exact_search_match_text(title_hint)
-            for candidate in owner_candidates
+            for candidate in page_candidates
         ):
             break
 
-    if not candidate_list:
-        candidate_list = fetch_owner_archive_candidates(owner_mid, title_hint, 'pubdate', 1)
+    if not has_exact_title_candidate(title_hint, candidate_list):
+        for page in range(1, 4):
+            page_candidates = fetch_owner_search_candidates(owner_name, page)
+            owner_candidates = [
+                candidate for candidate in page_candidates
+                if safe_str(candidate.get('author', '')).casefold()
+                == safe_str(owner_name).casefold()
+            ]
+            candidate_list.extend(owner_candidates)
+            if has_exact_title_candidate(title_hint, owner_candidates):
+                break
+
     if not candidate_list and not title_hint:
         candidate_list = fetch_owner_archive_candidates(owner_mid, '', 'click', 1)
     if not candidate_list:
         parse_log(f'UP主投稿列表为空 mid={owner_mid}')
         return None
+
+    candidate_list = merge_search_candidates(candidate_list)
+    enrich_exact_owner_archive_candidates(title_hint, candidate_list)
 
     scored_candidates = []
     exact_candidates = []
@@ -2138,18 +2274,26 @@ def search_video_by_owner_metadata(
         score, is_exact = score_owner_archive_candidate(title_hint, preview_metadata, candidate, rank)
         scored_candidates.append((score, candidate))
         if is_exact:
-            exact_candidates.append(candidate)
+            exact_candidates.append((score, candidate))
         parse_log(
             f'UP主投稿候选 mid={owner_mid} rank={rank} bvid={safe_str(candidate.get("bvid", ""))} '
             f'score={score} title={shorten_log_text(candidate.get("title", ""), 120)} '
-            f'play={safe_str(candidate.get("play", ""))} danmaku={safe_str(candidate.get("video_review", ""))}'
+            f'play={safe_str(candidate.get("play", ""))} '
+            f'danmaku={safe_str(candidate.get("video_review", ""))} '
+            f'like={safe_str(candidate.get("like", ""))}'
         )
 
     if exact_candidates:
-        selected = random.choice(exact_candidates)
+        best_exact_score = max(item[0] for item in exact_candidates)
+        best_exact_candidates = [
+            item for item in exact_candidates
+            if item[0] == best_exact_score
+        ]
+        _, selected = random.choice(best_exact_candidates)
         parse_log(
-            f'UP主投稿完整标题匹配随机选择 count={len(exact_candidates)} '
-            f'bvid={safe_str(selected.get("bvid", ""))}'
+            f'UP主投稿完整标题按OCR统计选择 count={len(exact_candidates)} '
+            f'tied={len(best_exact_candidates)} bvid={safe_str(selected.get("bvid", ""))} '
+            f'score={best_exact_score}'
         )
         return build_video_ref_from_archive_candidate(selected)
 
@@ -2162,6 +2306,54 @@ def search_video_by_owner_metadata(
         f'score={scored_candidates[0][0]}'
     )
     return build_video_ref_from_archive_candidate(selected)
+
+
+def enrich_exact_owner_archive_candidates(
+    title_hint: str,
+    candidate_list: list[dict[str, Any]],
+) -> None:
+    exact_title = normalize_exact_search_match_text(title_hint)
+    exact_candidate_list = [
+        candidate for candidate in candidate_list
+        if exact_title
+        and exact_title
+        == normalize_exact_search_match_text(
+            clean_search_result_title(candidate.get('title', ''))
+        )
+    ][:OWNER_EXACT_DETAIL_LIMIT]
+    if not exact_candidate_list:
+        return
+
+    with ThreadPoolExecutor(
+        max_workers=min(4, len(exact_candidate_list)),
+        thread_name_prefix='BiliShareInfoOwnerDetail',
+    ) as executor:
+        future_list = []
+        for candidate in exact_candidate_list:
+            video_ref = build_video_ref_from_archive_candidate(candidate)
+            if not video_ref:
+                continue
+            future_list.append(
+                (
+                    candidate,
+                    executor.submit(copy_context().run, fetch_video_info, video_ref),
+                )
+            )
+        for candidate, detail_future in future_list:
+            video_ref = build_video_ref_from_archive_candidate(candidate)
+            video_info = get_card_search_future_result(detail_future, 'UP主同名投稿详情')
+            detailed_candidate = build_search_candidate_from_video_info(
+                video_ref or {},
+                video_info,
+                'owner_detail',
+            )
+            if not detailed_candidate:
+                continue
+            existing_source = safe_str(candidate.get('_search_source', 'owner_archive'))
+            existing_rank = candidate.get('_search_rank', CARD_SEARCH_CANDIDATE_LIMIT + 1)
+            candidate.update(detailed_candidate)
+            candidate['_search_source'] = f'{existing_source}+owner_detail'
+            candidate['_search_rank'] = existing_rank
 
 
 def fetch_owner_search_candidates(owner_name: str, page: int) -> list[dict[str, Any]]:
@@ -2188,12 +2380,145 @@ def fetch_owner_search_candidates(owner_name: str, page: int) -> list[dict[str, 
         return []
 
 
+def fetch_owner_keyword_archive_candidates(
+    owner_mid: str,
+    title_hint: str,
+    order: str,
+    page: int,
+) -> list[dict[str, Any]]:
+    api_url = 'https://api.bilibili.com/x/series/recArchivesByKeywords?' + urllib.parse.urlencode(
+        {
+            'mid': owner_mid,
+            'keywords': clean_search_keyword(title_hint),
+            'ps': 20,
+            'pn': page,
+            'orderby': 'views' if order == 'click' else order,
+        }
+    )
+    try:
+        response_data = json.loads(
+            http_get_json_text(
+                api_url,
+                referer=f'https://space.bilibili.com/{owner_mid}',
+                # 该公开接口带 Origin 时容易被 B 站网关误判为风控请求。
+                include_origin=False,
+            )
+        )
+        response_code = response_data.get('code')
+        archive_list = response_data.get('data', {}).get('archives', [])
+        if not isinstance(archive_list, list):
+            archive_list = []
+        parse_log(
+            f'UP主关键词投稿API响应 mid={owner_mid} page={page} order={order} '
+            f'code={response_code} count={len(archive_list)}'
+        )
+        if response_code != 0:
+            return []
+
+        result = []
+        for result_rank, archive in enumerate(archive_list, start=1):
+            if not isinstance(archive, dict):
+                continue
+            candidate = dict(archive)
+            stat_data = archive.get('stat', {})
+            if isinstance(stat_data, dict):
+                candidate['play'] = stat_data.get('view')
+                candidate['video_review'] = stat_data.get('danmaku')
+                candidate['like'] = stat_data.get('like')
+            candidate['_search_source'] = 'owner_keyword_api'
+            candidate['_search_rank'] = (page - 1) * 20 + result_rank
+            result.append(candidate)
+        return result
+    except Exception as exception_object:
+        parse_log(
+            f'UP主关键词投稿API请求失败 mid={owner_mid} page={page} '
+            f'error={type(exception_object).__name__}: '
+            f'{shorten_log_text(exception_object, 180)}'
+        )
+        return []
+
+
+def get_wbi_mixin_key() -> str | None:
+    global gWbiMixinKey, gWbiMixinKeyTime
+    with DATA_LOCK:
+        if (
+            gWbiMixinKey
+            and time.time() - gWbiMixinKeyTime < WBI_KEY_CACHE_TTL_SECONDS
+        ):
+            return gWbiMixinKey
+
+    try:
+        response_data = json.loads(
+            http_get_json_text(
+                'https://api.bilibili.com/x/web-interface/nav',
+                referer='https://www.bilibili.com/',
+            )
+        )
+        wbi_image_data = response_data.get('data', {}).get('wbi_img', {})
+        if not isinstance(wbi_image_data, dict):
+            parse_log(f'WBI密钥接口未返回密钥 code={response_data.get("code")}')
+            return None
+        image_key = extract_wbi_image_key(wbi_image_data.get('img_url'))
+        sub_key = extract_wbi_image_key(wbi_image_data.get('sub_url'))
+        original_key = image_key + sub_key
+        if len(original_key) <= max(WBI_MIXIN_KEY_TABLE):
+            parse_log('WBI密钥接口缺少有效img/sub密钥')
+            return None
+        mixin_key = ''.join(original_key[index] for index in WBI_MIXIN_KEY_TABLE)[:32]
+        with DATA_LOCK:
+            gWbiMixinKey = mixin_key
+            gWbiMixinKeyTime = time.time()
+        parse_log('WBI密钥获取成功')
+        return mixin_key
+    except Exception as exception_object:
+        parse_log(
+            f'WBI密钥获取失败 error={type(exception_object).__name__}: '
+            f'{shorten_log_text(exception_object, 180)}'
+        )
+        return None
+
+
+def extract_wbi_image_key(image_url: Any) -> str:
+    image_path = urllib.parse.urlsplit(safe_str(image_url)).path
+    return os.path.splitext(os.path.basename(image_path))[0]
+
+
+def build_wbi_signed_url(api_path: str, params: dict[str, Any]) -> str | None:
+    mixin_key = get_wbi_mixin_key()
+    if not mixin_key:
+        return None
+
+    signed_params = dict(params)
+    signed_params['wts'] = int(time.time())
+    query_parts = []
+    for key in sorted(signed_params):
+        value = re.sub(r"[!'()*]", '', safe_str(signed_params[key]))
+        query_parts.append(
+            f'{urllib.parse.quote(safe_str(key), safe="")}='
+            f'{urllib.parse.quote(value, safe="")}'
+        )
+    query_text = '&'.join(query_parts)
+    w_rid = hashlib.md5(
+        f'{query_text}{mixin_key}'.encode('utf-8')
+    ).hexdigest()
+    return f'https://api.bilibili.com{api_path}?{query_text}&w_rid={w_rid}'
+
+
 def fetch_owner_archive_candidates(
     owner_mid: str,
     title_hint: str,
     order: str,
     page: int,
 ) -> list[dict[str, Any]]:
+    keyword_archive_list = fetch_owner_keyword_archive_candidates(
+        owner_mid,
+        title_hint,
+        order,
+        page,
+    )
+    if keyword_archive_list:
+        return keyword_archive_list
+
     params = {
         'mid': owner_mid,
         'pn': page,
@@ -2201,27 +2526,52 @@ def fetch_owner_archive_candidates(
         'order': order,
         'tid': 0,
         'jsonp': 'json',
+        'platform': 'web',
+        'web_location': 1550101,
     }
     if title_hint:
         params['keyword'] = clean_search_keyword(title_hint)
-    api_url = 'https://api.bilibili.com/x/space/arc/search?' + urllib.parse.urlencode(params)
-    try:
-        response_data = json.loads(http_get_json_text(api_url, referer=f'https://space.bilibili.com/{owner_mid}'))
-        response_code = response_data.get('code')
-        parse_log(
-            f'UP主投稿API响应 mid={owner_mid} page={page} order={order} '
-            f'code={response_code} body_len={len(json.dumps(response_data, ensure_ascii=False))}'
+    api_url_list = []
+    wbi_api_url = build_wbi_signed_url('/x/space/wbi/arc/search', params)
+    if wbi_api_url:
+        api_url_list.append(('wbi', wbi_api_url))
+    legacy_params = {
+        key: value
+        for key, value in params.items()
+        if key not in {'platform', 'web_location'}
+    }
+    api_url_list.append(
+        (
+            'legacy',
+            'https://api.bilibili.com/x/space/arc/search?'
+            + urllib.parse.urlencode(legacy_params),
         )
-        if response_code != 0:
-            return []
-        video_list = response_data.get('data', {}).get('list', {}).get('vlist', [])
-        return video_list if isinstance(video_list, list) else []
-    except Exception as exception_object:
-        parse_log(
-            f'UP主投稿API请求失败 mid={owner_mid} page={page} '
-            f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 180)}'
-        )
-        return []
+    )
+
+    for api_name, api_url in api_url_list:
+        try:
+            response_data = json.loads(
+                http_get_json_text(
+                    api_url,
+                    referer=f'https://space.bilibili.com/{owner_mid}',
+                )
+            )
+            response_code = response_data.get('code')
+            parse_log(
+                f'UP主投稿API响应 api={api_name} mid={owner_mid} page={page} order={order} '
+                f'code={response_code} body_len={len(json.dumps(response_data, ensure_ascii=False))}'
+            )
+            if response_code != 0:
+                continue
+            video_list = response_data.get('data', {}).get('list', {}).get('vlist', [])
+            return video_list if isinstance(video_list, list) else []
+        except Exception as exception_object:
+            parse_log(
+                f'UP主投稿API请求失败 api={api_name} mid={owner_mid} page={page} '
+                f'error={type(exception_object).__name__}: '
+                f'{shorten_log_text(exception_object, 180)}'
+            )
+    return []
 
 
 def score_owner_archive_candidate(
@@ -2288,6 +2638,25 @@ def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
         f'title={shorten_log_text(selected.get("title", ""), 120)}'
     )
     return video_ref
+
+
+def build_compact_search_keyword(keyword: str) -> str:
+    """提取前三个信息量较高的词，作为完整标题搜索失败后的补充查询。"""
+    keyword = clean_search_keyword(keyword)
+    stop_word_set = {'by', 'feat', 'ft', 'official', 'video', 'mv'}
+    selected_token_list = []
+    seen_token_set = set()
+    for token in re.findall(r'[^\W_]+(?:\+[^\W_]+)*', keyword, re.UNICODE):
+        token_key = token.casefold()
+        if token_key in stop_word_set or token_key in seen_token_set:
+            continue
+        if len(token) == 1 and token.isascii() and token.isalpha():
+            continue
+        seen_token_set.add(token_key)
+        selected_token_list.append(token)
+        if len(selected_token_list) >= 3:
+            break
+    return ' '.join(selected_token_list)
 
 
 def search_video_candidates_by_keyword(
@@ -2602,9 +2971,15 @@ def http_get_binary(url: str, max_bytes: int) -> bytes:
         return content
 
 
-def http_get_json_text(url: str, referer: str = 'https://www.bilibili.com/') -> str:
+def http_get_json_text(
+    url: str,
+    referer: str = 'https://www.bilibili.com/',
+    include_origin: bool = True,
+) -> str:
     headers = get_http_headers()
     headers['Referer'] = referer
+    if not include_origin:
+        headers.pop('Origin', None)
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
         return response.read().decode('utf-8', errors='ignore')
