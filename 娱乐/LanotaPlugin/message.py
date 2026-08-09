@@ -1630,7 +1630,10 @@ def handle_score(plugin_event, argument: str) -> None:
                 '手动录入仍可正常使用。',
             )
             return
-        reply_text(plugin_event, '已收到 Portal/游戏结算成绩截图，正在识别哪些歌曲并校验分数，请稍等……')
+        reply_text(
+            plugin_event,
+            '已收到 Portal 单曲/Rating 列表/游戏结算成绩截图，正在识别哪些歌曲并校验分数，请稍等……',
+        )
         added, messages = score_overrides.process_images(plugin_event, message_text, selected_region)
         reply_text(plugin_event, f'截图录入完成：成功 {added} 条。\n' + '\n'.join(messages))
         return
@@ -2107,10 +2110,10 @@ help_categories = {
             '/la score delete <序号> - 删除录入成绩',
             '/la score delete all cn - 清空国服录入成绩',
             '/la score delete all global - 清空国际服录入成绩',
-            '/la score + Portal/4.0+ 游戏结算截图 - 自动 OCR 识别，可一次发送多张图片',
+            '/la score + Portal 单曲/Rating 列表/4.0+ 游戏结算截图 - 自动 OCR 识别，可一次发送多张图片',
         ],
         'priority': [
-            'Portal 图至少包含曲名、难度标签和底部“单曲 RATING”数值；支持长截图。',
+            'Portal 单曲图至少包含曲名、难度标签和底部“单曲 RATING”数值；Rating 列表图需保留每行曲名、难度、Rating% 和右侧单曲 Rating；两类都支持长截图。',
             '游戏结算图至少包含曲名、难度和底部七位分数；展开判定详情时会同时严格校验 H/T/F 与总物量。',
             '只显示分数的 4.0+ 结算图会按曲目物量校验分数格式，通过后反推准度与 Single Rating。',
             '录入值只在其 Single Rating 高于官网值或官网记录格式异常时覆盖；确认后会自动清理较低录入。',

@@ -262,8 +262,12 @@ def _validation_warning(record: dict[str, Any]) -> str:
     return ''
 
 
-def _match_song(title: str, songs: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, float]:
-    aliases = function.load_alias_data()
+def _match_song(
+    title: str,
+    songs: list[dict[str, Any]],
+    aliases: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, Any] | None, float]:
+    aliases = aliases if isinstance(aliases, dict) else function.load_alias_data()
     matched_songs, match_type, _total_count = function.find_song_by_search_term(
         title,
         songs,
@@ -460,7 +464,19 @@ def _portal_fast_ocr_input(path: Path) -> Any | None:
         from PIL import Image
 
         with Image.open(path) as source_image:
-            image = np.asarray(source_image.convert('RGB'))
+            source_image = source_image.convert('RGB')
+            width, height = source_image.size
+            if height >= width * 3.2:
+                # Rating 列表长截图必须保留全部行；窄图适度放大，仍只执行一次 OCR。
+                content = source_image.crop((0, int(height * 0.05), width, height))
+                if width < 900:
+                    scale = 900 / width
+                    content = content.resize(
+                        (900, round(content.height * scale)),
+                        Image.Resampling.LANCZOS,
+                    )
+                return np.asarray(content)
+            image = np.asarray(source_image)
         height, width = image.shape[:2]
         if height <= width:
             return None
@@ -823,6 +839,187 @@ def _parse_game_result_ocr(
     return record, ''
 
 
+def _portal_list_difficulty(line: str) -> int | None:
+    source = re.sub(r'\s+', ' ', str(line or '')).strip()
+    has_level = bool(re.search(r'(?i)\blv\.?\s*\d', source))
+    direct_match = re.search(r'(?i)\b(whisper|acoustic|ultra|master)\b', source)
+    if direct_match and (has_level or re.fullmatch(r'(?i)[a-z\s.]+', source)):
+        return _difficulty(direct_match.group(1))
+    if not has_level:
+        return None
+    tokens = re.findall(r'[a-z]{3,10}', source.casefold())
+    for token in tokens:
+        best_name = max(
+            DIFFICULTY_NAMES,
+            key=lambda name: difflib.SequenceMatcher(None, token, name.casefold()).ratio(),
+        )
+        if difflib.SequenceMatcher(None, token, best_name.casefold()).ratio() >= 0.68:
+            return DIFFICULTY_NAMES.index(best_name)
+    return None
+
+
+def _looks_like_portal_rating_list(text: str) -> bool:
+    source = str(text or '')
+    compact = re.sub(r'[^a-z0-9]+', '', source.casefold())
+    has_section = bool(
+        re.search(r'best(?:30|3o)', compact)
+        or re.search(r'recent(?:15|1s)', compact)
+    )
+    if not has_section:
+        return False
+    lines = [line.strip() for line in source.splitlines() if line.strip()]
+    difficulty_count = sum(_portal_list_difficulty(line) is not None for line in lines)
+    percent_count = sum(bool(re.search(r'\d{1,3}(?:[.,]\d+)?\s*[%％]', line)) for line in lines)
+    decimal_count = sum(bool(re.search(r'(?<!\d)\d{1,2}[.,]\d{1,3}(?!\d)', line)) for line in lines)
+    return difficulty_count >= 1 and percent_count >= 1 and decimal_count >= 1
+
+
+def _portal_list_title_candidate(line: str) -> str:
+    source = re.sub(r'\s+', ' ', str(line or '')).strip()
+    source = re.sub(r'^\s*#?\d{1,2}\s+(?=\D)', '', source)
+    source = re.sub(r'\s+\d{1,2}[.,]\d{1,3}\s*$', '', source)
+    if (
+        len(source) < 2
+        or re.fullmatch(r'[\d\s,，.%％+\-]+', source)
+        or re.search(r'(?i)best\s*30|recent\s*15|rating|\blv\.?\s*\d|portal|lanota\.gmzon', source)
+    ):
+        return ''
+    return source
+
+
+def _portal_list_rating_values(lines: list[str]) -> tuple[float | None, float | None]:
+    rating_percent = None
+    single_rating_candidates = []
+    for line in lines:
+        percent_match = re.search(r'(\d{1,3}(?:[.,]\d{1,3})?)\s*[%％]', line)
+        if percent_match and rating_percent is None:
+            rating_percent = _clean_rating_percent(percent_match.group(1))
+        cleaned = re.sub(r'\d{1,3}(?:[.,]\d{1,3})?\s*[%％]', ' ', line)
+        cleaned = re.sub(r'(?i)\blv\.?\s*\d+(?:[.,]\d+)?\+?', ' ', cleaned)
+        for match in re.finditer(r'(?<!\d)(\d{1,2}[.,]\d{1,3})(?!\d)', cleaned):
+            value = _clean_single_rating(match.group(1))
+            if value is not None and 5 <= value <= 30:
+                single_rating_candidates.append(value)
+    single_rating = single_rating_candidates[-1] if single_rating_candidates else None
+    return single_rating, rating_percent
+
+
+def _parse_portal_rating_list_ocr(
+    text: str,
+    songs: list[dict[str, Any]],
+    region: str,
+) -> tuple[list[dict[str, Any]], list[str], dict[str, int | str]]:
+    lines = [re.sub(r'\s+', ' ', line).strip() for line in str(text).splitlines() if line.strip()]
+    aliases = function.load_alias_data()
+    matched_rows = []
+    row_starts = []
+    errors = []
+    previous_difficulty_index = -1
+    section = 'best30'
+    difficulty_row_count = 0
+    deduplicated_count = 0
+    for index, line in enumerate(lines):
+        compact = re.sub(r'[^a-z0-9]+', '', line.casefold())
+        if re.search(r'recent(?:15|1s)', compact):
+            section = 'recent15'
+            continue
+        if re.search(r'best(?:30|3o)', compact):
+            section = 'best30'
+            continue
+        difficulty = _portal_list_difficulty(line)
+        if difficulty is None:
+            continue
+        difficulty_row_count += 1
+        search_start = max(previous_difficulty_index + 1, index - 10)
+        best_match = None
+        best_rank = 0.0
+        recognized_candidates = []
+        for candidate_index in range(search_start, index):
+            candidate = _portal_list_title_candidate(lines[candidate_index])
+            if not candidate:
+                continue
+            recognized_candidates.append((candidate_index, candidate))
+            song, confidence = _match_song(candidate, songs, aliases)
+            rank = confidence - (index - candidate_index - 1) * 0.015
+            if song is not None and rank > best_rank:
+                best_match = (candidate_index, song, confidence, difficulty, section)
+                best_rank = rank
+        row_position = len(row_starts)
+        row_starts.append(recognized_candidates[-1][0] if recognized_candidates else search_start)
+        if best_match is None:
+            visible = [candidate for _index, candidate in recognized_candidates[-2:]]
+            errors.append(f'Portal Rating 列表有一行未能匹配曲名（当前识别：{visible}），未录入。')
+        else:
+            row_starts[-1] = best_match[0]
+            matched_rows.append((row_position, *best_match))
+        previous_difficulty_index = index
+
+    unique_records: dict[tuple[str, int], dict[str, Any]] = {}
+    for row_position, title_index, song, confidence, difficulty, section in matched_rows:
+        next_title_index = row_starts[row_position + 1] if row_position + 1 < len(row_starts) else len(lines)
+        row_lines = lines[title_index:next_title_index]
+        single_rating, rating_percent = _portal_list_rating_values(row_lines)
+        match_summary = _matched_chart_summary(song, difficulty)
+        if single_rating is None:
+            errors.append(f'{match_summary}\nPortal Rating 列表该行缺少右侧单曲 Rating，未录入。')
+            continue
+        total, chart_constant = _chart_values(song, difficulty)
+        if total is None or chart_constant is None:
+            errors.append(f'{match_summary}\n本地缺少该谱面的物量或官方定数，无法反推成绩。')
+            continue
+        evaluation = _evaluate_record_rating(
+            single_rating,
+            None,
+            total,
+            chart_constant,
+            'portal_list_ocr',
+        )
+        if evaluation is None:
+            errors.append(
+                f'{match_summary}\nOCR 的单曲 Rating {single_rating:.2f} '
+                '不可能由该谱面的 4.0+ 公式得到。',
+            )
+            continue
+        record = _new_record(
+            song,
+            difficulty,
+            single_rating,
+            region,
+            rating_percent=rating_percent,
+            source='portal_list_ocr',
+        )
+        record.update(evaluation)
+        record.update({
+            'total': total,
+            'chart_constant': chart_constant,
+            'title_match_confidence': confidence,
+            'ocr_list_section': section,
+        })
+        key = (record['chapter'], difficulty)
+        existing = unique_records.get(key)
+        if existing is not None:
+            deduplicated_count += 1
+        if (
+            existing is None
+            or float(record['single_rating']) > float(existing['single_rating'])
+            or (
+                float(record['single_rating']) == float(existing['single_rating'])
+                and record.get('rating_percent') is not None
+                and existing.get('rating_percent') is None
+            )
+        ):
+            unique_records[key] = record
+
+    records = list(unique_records.values())
+    stats: dict[str, int | str] = {
+        'mode': 'portal_list',
+        'rows': difficulty_row_count,
+        'matched': len(matched_rows),
+        'deduplicated': deduplicated_count,
+    }
+    return records, errors, stats
+
+
 def _parse_ocr(text: str, songs: list[dict[str, Any]], region: str) -> tuple[dict[str, Any] | None, str]:
     if _looks_like_game_result(text) or '[[LANOTA_OCR_' in str(text):
         return _parse_game_result_ocr(text, songs, region)
@@ -924,6 +1121,77 @@ def _parse_ocr(text: str, songs: list[dict[str, Any]], region: str) -> tuple[dic
     return record, ''
 
 
+def _parse_ocr_records(
+    text: str,
+    songs: list[dict[str, Any]],
+    region: str,
+) -> tuple[list[dict[str, Any]], list[str], dict[str, int | str]]:
+    if _looks_like_portal_rating_list(text):
+        return _parse_portal_rating_list_ocr(text, songs, region)
+    record, error = _parse_ocr(text, songs, region)
+    return (
+        [record] if record is not None else [],
+        [error] if error else [],
+        {'mode': 'single', 'rows': 1 if record is not None else 0, 'matched': 1 if record is not None else 0},
+    )
+
+
+def _record_key(record: dict[str, Any]) -> tuple[str, str, int]:
+    return (
+        normalize_region(record.get('region')),
+        str(record.get('chapter') or '').strip(),
+        int(record.get('difficulty', -1)),
+    )
+
+
+def _upsert_ocr_record(rows: list[dict[str, Any]], record: dict[str, Any]) -> tuple[bool, str]:
+    """按章节号和难度合并 OCR 成绩，避免低分 Recent 覆盖高分 Best。"""
+    key = _record_key(record)
+    matching_indexes = [index for index, row in enumerate(rows) if _record_key(row) == key]
+    if not matching_indexes:
+        rows.append(record)
+        return True, 'added'
+    existing_index = max(
+        matching_indexes,
+        key=lambda index: float(rows[index].get('single_rating') or 0),
+    )
+    existing = rows[existing_index]
+    existing_rating = float(existing.get('single_rating') or 0)
+    new_rating = float(record.get('single_rating') or 0)
+    if existing_rating > new_rating:
+        return False, 'kept_higher'
+    if (
+        existing_rating == new_rating
+        and existing.get('score') is not None
+        and record.get('score') is None
+    ):
+        return False, 'kept_validated'
+    rows[:] = [row for index, row in enumerate(rows) if index not in matching_indexes]
+    rows.append(record)
+    return True, 'replaced'
+
+
+def _portal_list_record_text(record: dict[str, Any], action: str) -> str:
+    action_text = {
+        'added': '已录入',
+        'replaced': '已更新',
+        'kept_higher': '档案已有更高 Rating，保留原记录',
+        'kept_validated': '档案已有已校验分数，保留原记录',
+    }.get(action, '已识别')
+    rating_percent = record.get('rating_percent')
+    rating_percent_text = f'，Rating% {float(rating_percent):.2f}%' if rating_percent is not None else ''
+    inferred_score = record.get('inferred_score')
+    inferred_accuracy = record.get('inferred_accuracy')
+    inferred_text = ''
+    if inferred_score is not None and inferred_accuracy is not None:
+        inferred_text = f'，近似分数 {int(inferred_score):,}，准度 {float(inferred_accuracy):.2f}%'
+    return (
+        f'{action_text}：{record["title"]}（章节号 {record["chapter"]}，'
+        f'难度 {record["difficulty_name"]}），单曲 Rating {float(record["single_rating"]):.2f}'
+        f'{rating_percent_text}{inferred_text}'
+    )
+
+
 def process_images(plugin_event, message_text: str, region: str = 'global') -> tuple[int, list[str]]:
     refs = extract_image_refs(message_text)
     ignored_count = max(0, len(refs) - config.ocr_max_images_per_message)
@@ -940,83 +1208,95 @@ def process_images(plugin_event, message_text: str, region: str = 'global') -> t
         is_downloaded_temp = ref.startswith(('http://', 'https://', 'base64://'))
         try:
             text = _ocr_text(path)
-            record, error = _parse_ocr(text, songs, region)
-            if record is None and _is_portrait_ocr_candidate(path):
+            records, errors, parse_stats = _parse_ocr_records(text, songs, region)
+            if not records and _is_portrait_ocr_candidate(path):
                 text = _ocr_text(path, force_full_image=True)
-                record, error = _parse_ocr(text, songs, region)
+                records, errors, parse_stats = _parse_ocr_records(text, songs, region)
         except Exception as exception_object:
-            record = None
-            error = f'图片识别失败：{type(exception_object).__name__}: {exception_object}'
+            records = []
+            errors = [f'图片识别失败：{type(exception_object).__name__}: {exception_object}']
+            parse_stats = {'mode': 'single', 'rows': 0, 'matched': 0}
         finally:
             if is_downloaded_temp:
                 try:
                     path.unlink(missing_ok=True)
                 except Exception:
                     pass
-        if record is None:
-            messages.append(error)
+        if not records:
+            messages.extend(errors or ['图片中没有识别到可录入的成绩。'])
             continue
-        rows = [
-            row for row in rows
-            if not (
-                normalize_region(row.get('region')) == record['region']
-                and str(row.get('chapter')) == record['chapter']
-                and int(row.get('difficulty', -1)) == int(record['difficulty'])
-            )
-        ]
-        rows.append(record)
-        added += 1
-        rating_percent_text = (
-            f'\n  Rating%：{record["rating_percent"]:.2f}%'
-            if record.get('rating_percent') is not None
-            else ''
-        )
-        if record.get('source') == 'game_ocr':
-            if all(record.get(key) is not None for key in ('harmony', 'tune', 'fail')):
-                validation_text = (
-                    f'  判定：H {record["harmony"]} / T {record["tune"]} / F {record["fail"]}\n'
-                    f'  总物量：{record["total"]}\n'
-                )
-            else:
-                validation_text = f'  校验：七位分数符合该谱面物量 {record["total"]} 的 4.0+ 公式\n'
-            messages.append(
-                f'识别并校验通过：{record["title"]}\n'
-                f'  章节号：{record["chapter"]}\n'
-                f'  区服：{portal.region_display_name(record["region"])}\n'
-                f'  难度：{record["difficulty_name"]}\n'
-                f'{validation_text}'
-                f'  新版分数：{int(record["score"]):07d}\n'
-                f'  分数准度：{float(record["score_accuracy"]):.2f}%\n'
-                f'  单曲 Rating：{record["single_rating"]:.2f}{rating_percent_text}'
-            )
-        else:
-            displayed_score = record.get('score')
-            score_prefix = ''
-            if displayed_score is None:
-                displayed_score = record.get('inferred_score')
-                score_prefix = '近似反推'
-            score_text = (
-                f'\n  {score_prefix}分数：{int(displayed_score):,}'
-                if displayed_score is not None
+        image_added = 0
+        list_mode = parse_stats.get('mode') == 'portal_list'
+        list_messages = []
+        for record in records:
+            stored, action = _upsert_ocr_record(rows, record)
+            if stored:
+                added += 1
+                image_added += 1
+            if list_mode:
+                list_messages.append(_portal_list_record_text(record, action))
+                continue
+            rating_percent_text = (
+                f'\n  Rating%：{record["rating_percent"]:.2f}%'
+                if record.get('rating_percent') is not None
                 else ''
             )
-            warning = _validation_warning(record)
-            warning_text = f'\n  提示：{warning}' if warning else ''
-            messages.append(
-                f'识别结果：{record["title"]}\n'
-                f'  章节号：{record["chapter"]}\n'
-                f'  区服：{portal.region_display_name(record["region"])}\n'
-                f'  难度：{record["difficulty_name"]}'
-                f'{score_text}{rating_percent_text}\n'
-                f'  单曲 Rating：{record["single_rating"]:.2f}'
-                f'{warning_text}'
-            )
+            if record.get('source') == 'game_ocr':
+                if all(record.get(key) is not None for key in ('harmony', 'tune', 'fail')):
+                    validation_text = (
+                        f'  判定：H {record["harmony"]} / T {record["tune"]} / F {record["fail"]}\n'
+                        f'  总物量：{record["total"]}\n'
+                    )
+                else:
+                    validation_text = f'  校验：七位分数符合该谱面物量 {record["total"]} 的 4.0+ 公式\n'
+                messages.append(
+                    f'识别并校验通过：{record["title"]}\n'
+                    f'  章节号：{record["chapter"]}\n'
+                    f'  区服：{portal.region_display_name(record["region"])}\n'
+                    f'  难度：{record["difficulty_name"]}\n'
+                    f'{validation_text}'
+                    f'  新版分数：{int(record["score"]):07d}\n'
+                    f'  分数准度：{float(record["score_accuracy"]):.2f}%\n'
+                    f'  单曲 Rating：{record["single_rating"]:.2f}{rating_percent_text}'
+                )
+            else:
+                displayed_score = record.get('score')
+                score_prefix = ''
+                if displayed_score is None:
+                    displayed_score = record.get('inferred_score')
+                    score_prefix = '近似反推'
+                score_text = (
+                    f'\n  {score_prefix}分数：{int(displayed_score):,}'
+                    if displayed_score is not None
+                    else ''
+                )
+                warning = _validation_warning(record)
+                warning_text = f'\n  提示：{warning}' if warning else ''
+                messages.append(
+                    f'识别结果：{record["title"]}\n'
+                    f'  章节号：{record["chapter"]}\n'
+                    f'  区服：{portal.region_display_name(record["region"])}\n'
+                    f'  难度：{record["difficulty_name"]}'
+                    f'{score_text}{rating_percent_text}\n'
+                    f'  单曲 Rating：{record["single_rating"]:.2f}'
+                    f'{warning_text}'
+                )
+        if list_mode:
+            row_count = int(parse_stats.get('rows', len(records)))
+            dedup_count = int(parse_stats.get('deduplicated', 0))
+            header = f'Portal Rating 列表识别：共识别 {row_count} 行，保留 {len(records)} 条'
+            if dedup_count:
+                header += f'（重复曲目已按更高单曲 Rating 合并 {dedup_count} 条）'
+            header += f'，本张图片写入 {image_added} 条。'
+            messages.append(header + '\n' + '\n'.join(list_messages))
+        messages.extend(errors)
     if added and not save_overrides(plugin_event, rows):
         messages.insert(0, '识别成功，但写入玩家档案失败；本次结果未保存。')
         added = 0
     if not refs:
         messages.append(
-            '未找到图片。Portal 图至少包含曲名、难度和“单曲 RATING”；'
+            '未找到图片。Portal 单曲图至少包含曲名、难度和“单曲 RATING”；'
+            'Portal Rating 列表图需保留每行曲名、难度、Rating% 和右侧单曲 Rating；'
             '4.0+ 结算图须包含曲名、难度、H/T/F、总物量和底部七位分数。'
         )
     elif ignored_count:
@@ -1027,7 +1307,10 @@ def process_images(plugin_event, message_text: str, region: str = 'global') -> t
 def list_text(plugin_event, region: str | None = None) -> str:
     rows = load_overrides(plugin_event, region)
     if not rows:
-        return '当前没有录入成绩。用法：/la score <曲名> <难度> <单曲Rating>，或附带 Portal/游戏结算截图。'
+        return (
+            '当前没有录入成绩。用法：/la score <曲名> <难度> <单曲Rating>，'
+            '或附带 Portal 单曲/Rating 列表/游戏结算截图。'
+        )
     try:
         from . import b30
 

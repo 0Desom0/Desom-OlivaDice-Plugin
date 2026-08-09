@@ -320,6 +320,188 @@ class ScoreOverrideTest(unittest.TestCase):
 
     def test_help_lists_global_clear_command(self) -> None:
         self.assertIn('/la score delete all global - 清空国际服录入成绩', message.help_categories['score']['commands'])
+        self.assertTrue(
+            any('Portal 单曲/Rating 列表' in command for command in message.help_categories['score']['commands']),
+        )
+
+    def test_portal_rating_list_records_multiple_rows_and_keeps_highest_duplicate(self) -> None:
+        songs = [
+            {
+                'title': 'Test Alpha',
+                'chapter': 'T-1',
+                'official_songid': 'test_alpha',
+                'notes': {'master': 1000},
+                'official_constant': {'master': 16.0},
+            },
+            {
+                'title': 'Test Beta',
+                'chapter': 'T-2',
+                'official_songid': 'test_beta',
+                'notes': {'master': 1000},
+                'official_constant': {'master': 15.0},
+            },
+        ]
+        text = '''Best 30
+01 Test Alpha 18.00
+MASTER Lv.16+
+Rating 99.90%
+02 Test Beta 16.50
+MASTER Lv.15+
+Rating 99.80%
+Recent 15
+01 Test Alpha 17.80
+MASTER Lv.16+
+Rating 98.20%'''
+        records, errors, stats = score_overrides._parse_ocr_records(text, songs, 'global')
+        self.assertFalse(errors)
+        self.assertEqual(stats['mode'], 'portal_list')
+        self.assertEqual(stats['rows'], 3)
+        self.assertEqual(stats['deduplicated'], 1)
+        self.assertEqual(len(records), 2)
+        by_title = {record['title']: record for record in records}
+        self.assertEqual(by_title['Test Alpha']['single_rating'], 18.0)
+        self.assertEqual(by_title['Test Alpha']['rating_percent'], 99.9)
+        self.assertEqual(by_title['Test Beta']['single_rating'], 16.5)
+        self.assertTrue(all(record['score_inferred'] for record in records))
+
+    def test_portal_rating_list_detection_accepts_one_visible_row(self) -> None:
+        self.assertTrue(score_overrides._looks_like_portal_rating_list('''Best 30
+Immaculate 18.27
+MASTER Lv.16+
+Rating 97.35%'''))
+
+    def test_portal_rating_list_failure_reports_matched_song(self) -> None:
+        songs = [
+            {
+                'title': 'Test Alpha',
+                'chapter': 'T-1',
+                'official_songid': 'test_alpha',
+                'notes': {'master': 1000},
+                'official_constant': {'master': 16.0},
+            },
+            {
+                'title': 'Test Beta',
+                'chapter': 'T-2',
+                'official_songid': 'test_beta',
+                'notes': {'master': 1000},
+                'official_constant': {'master': 15.0},
+            },
+        ]
+        text = '''Best 30
+Test Alpha 18.00
+MASTER Lv.16+
+Rating 100.00%
+Test Beta 25.00
+MASTER Lv.15+
+Rating 99.80%'''
+        records, errors, stats = score_overrides._parse_ocr_records(text, songs, 'global')
+        self.assertEqual(stats['rows'], 2)
+        self.assertEqual(len(records), 1)
+        self.assertIn('已匹配：Test Beta（章节号 T-2，难度 Master）', errors[0])
+        self.assertIn('不可能由该谱面的 4.0+ 公式得到', errors[0])
+
+    def test_unmatched_portal_list_row_does_not_change_neighbor_ratings(self) -> None:
+        songs = [
+            {
+                'title': 'Test Alpha',
+                'chapter': 'T-1',
+                'official_songid': 'test_alpha',
+                'notes': {'master': 1000},
+                'official_constant': {'master': 16.0},
+            },
+            {
+                'title': 'Test Beta',
+                'chapter': 'T-2',
+                'official_songid': 'test_beta',
+                'notes': {'master': 1000},
+                'official_constant': {'master': 15.0},
+            },
+        ]
+        text = '''Best 30
+Test Alpha 18.00
+MASTER Lv.16+
+Rating 100.00%
+Completely Unknown Song 10.00
+MASTER Lv.10
+Rating 80.00%
+Test Beta 16.50
+MASTER Lv.15+
+Rating 100.00%'''
+        records, errors, stats = score_overrides._parse_ocr_records(text, songs, 'global')
+        self.assertEqual(stats['rows'], 3)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(len(errors), 1)
+        by_title = {record['title']: record for record in records}
+        self.assertEqual(by_title['Test Alpha']['single_rating'], 18.0)
+        self.assertEqual(by_title['Test Beta']['single_rating'], 16.5)
+
+    def test_process_one_portal_rating_image_saves_multiple_records(self) -> None:
+        songs = [
+            {
+                'title': 'Test Alpha',
+                'chapter': 'T-1',
+                'official_songid': 'test_alpha',
+                'notes': {'master': 1000},
+                'official_constant': {'master': 16.0},
+            },
+            {
+                'title': 'Test Beta',
+                'chapter': 'T-2',
+                'official_songid': 'test_beta',
+                'notes': {'master': 1000},
+                'official_constant': {'master': 15.0},
+            },
+        ]
+        text = '''Best 30
+Test Alpha 18.00
+MASTER Lv.16+
+Rating 100.00%
+Test Beta 16.50
+MASTER Lv.15+
+Rating 100.00%'''
+        saved = []
+        with (
+            patch.object(score_overrides.function, 'load_song_data', return_value=songs),
+            patch.object(score_overrides, 'load_overrides', return_value=[]),
+            patch.object(score_overrides, '_read_image', return_value=Path('rating.png')),
+            patch.object(score_overrides, '_ocr_text', return_value=text),
+            patch.object(
+                score_overrides,
+                'save_overrides',
+                side_effect=lambda _event, rows: saved.extend(rows) or True,
+            ),
+        ):
+            added, messages = score_overrides.process_images(
+                SimpleNamespace(),
+                '[OP:image,file=rating.png]',
+                'global',
+            )
+        self.assertEqual(added, 2)
+        self.assertEqual({row['chapter'] for row in saved}, {'T-1', 'T-2'})
+        self.assertIn('共识别 2 行，保留 2 条', '\n'.join(messages))
+
+    def test_portal_list_does_not_replace_higher_or_validated_archive_record(self) -> None:
+        rows = [{
+            'region': 'global',
+            'chapter': 'T-1',
+            'difficulty': 3,
+            'single_rating': 18.0,
+            'score': 1_000_000,
+        }]
+        lower = {
+            'region': 'global',
+            'chapter': 'T-1',
+            'difficulty': 3,
+            'single_rating': 17.8,
+            'score': None,
+        }
+        same_inferred = dict(lower, single_rating=18.0)
+        self.assertEqual(score_overrides._upsert_ocr_record(rows, lower), (False, 'kept_higher'))
+        self.assertEqual(
+            score_overrides._upsert_ocr_record(rows, same_inferred),
+            (False, 'kept_validated'),
+        )
+        self.assertEqual(rows[0]['score'], 1_000_000)
 
     def test_score_only_game_result_is_accepted_and_bad_score_is_rejected(self) -> None:
         songs = function.load_song_data()
