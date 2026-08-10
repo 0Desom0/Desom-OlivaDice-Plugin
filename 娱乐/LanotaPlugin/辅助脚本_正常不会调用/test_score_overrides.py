@@ -563,7 +563,7 @@ Fail
 )
 class RapidOCRPortalRatingListScreenshotTest(unittest.TestCase):
     def test_new_portal_rating_list_screenshots(self) -> None:
-        plugin_dir = Path(__file__).resolve().parents[1]
+        fixture_dir = Path(__file__).resolve().parent / 'fixtures'
         fixtures = {
             '80351d682a60bf3005f5df046c15abba.jpg': 30,
             '941f745d493cead9759efaa5076af3ef.jpg': 20,
@@ -573,7 +573,7 @@ class RapidOCRPortalRatingListScreenshotTest(unittest.TestCase):
         songs = function.load_song_data()
         for file_name, expected_count in fixtures.items():
             with self.subTest(file_name=file_name):
-                image_path = plugin_dir / file_name
+                image_path = fixture_dir / file_name
                 self.assertTrue(image_path.is_file(), f'缺少用户新增回归截图：{image_path}')
                 text = score_overrides._ocr_text(image_path)
                 records, errors, stats = score_overrides._parse_ocr_records(text, songs, 'global')

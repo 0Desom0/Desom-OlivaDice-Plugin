@@ -16,9 +16,10 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 from . import config
+from . import china_grpc
 from . import function
 from . import utils
 
@@ -38,6 +39,7 @@ render_context = threading.local()
 compare_cache_lock = threading.RLock()
 compare_cache: dict[str, dict[str, Any]] = {}
 compare_cache_ttl_seconds = 60
+CHINA_FALLBACK_NOTICE = '现已切换备用 API，部分字段暂无法获取；如需查询完整信息请联系管理员更新 Token。'
 
 REGION_ALIAS_MAP = {
     'global': 'global',
@@ -267,6 +269,8 @@ def region_display_name(region: Any) -> str:
 
 def credential_error_hint(exception_object: Exception, region: Any) -> str:
     """Portal 凭据失效时返回面向查询用户的管理员处理提示。"""
+    if isinstance(exception_object, ChinaApiUnavailableError):
+        return '国服 Portal 与备用 API 均不可用，请联系管理员更新 Token。'
     error_text = format_error(exception_object).casefold()
     credential_markers = ('token', '登录', '账号', '密码', '授权', 'credential')
     if not isinstance(exception_object, PermissionError) and not any(
@@ -274,7 +278,7 @@ def credential_error_hint(exception_object: Exception, region: Any) -> str:
     ):
         return ''
     if normalize_region(region) == 'china':
-        return '国服状态可能已过期，请联系管理员；管理员可用 .la china login 重新登录。'
+        return '国服 Portal Token 可能已过期，请联系管理员更新 Token。'
     return '国际服登录失败，请联系管理员检查登录账号或密码配置。'
 
 
@@ -286,78 +290,6 @@ def _jwt_exp(token: str) -> int:
         return int(payload.get('exp', 0))
     except Exception:
         return 0
-
-
-def create_china_login_session() -> dict[str, str]:
-    """创建国服 App 授权会话，并返回可供 Lanota 扫描的深链。"""
-    data = _request_json(
-        'POST',
-        f'{config.lanota_portal_china_api_base_url}/auth/init-app-login',
-        headers={'Accept': 'application/json'},
-    )
-    session_id = str(data.get('session_id', '') or '').strip()
-    if not session_id:
-        raise RuntimeError('国服 Portal 没有返回登录会话 ID。')
-    callback_query = urlencode({'session_id': session_id, 'flow': 'qr'})
-    callback_url = f'{config.lanota_portal_china_asset_base_url}/auth/callback?{callback_query}'
-    deep_link_query = urlencode({'session_id': session_id, 'callback': callback_url})
-    deep_link = f'{config.lanota_portal_china_app_scheme}://portal-auth?{deep_link_query}'
-    return {
-        'session_id': session_id,
-        'callback_url': callback_url,
-        'deep_link': deep_link,
-    }
-
-
-def _exchange_china_login(session_id: str, code: str) -> dict[str, Any]:
-    data = _request_json(
-        'POST',
-        f'{config.lanota_portal_china_api_base_url}/auth/exchange',
-        json={'code': code, 'session_id': session_id},
-        headers={'Accept': 'application/json', 'Content-Type': 'application/json'},
-    )
-    token = str(data.get('chinaToken', '') or '').strip()
-    if not token:
-        raise RuntimeError('国服 Portal 授权响应中没有 chinaToken。')
-    expires_at = _jwt_exp(token)
-    if expires_at and expires_at <= int(time.time()):
-        raise PermissionError('国服 Portal 返回了已经过期的 Token。')
-    token_data = {
-        'china_token': token,
-        'uid': str(data.get('uid', '') or ''),
-        'expires_at': expires_at,
-        'saved_at': int(time.time()),
-    }
-    global china_portal_token
-    with portal_lock:
-        china_portal_token = token_data
-        if not _save_china_token_data(token_data):
-            china_portal_token = {}
-            raise OSError('国服授权成功，但保存 Token 失败，请检查插件数据目录权限。')
-    return token_data
-
-
-def poll_china_login(session_id: str) -> dict[str, Any]:
-    """轮询国服 App 授权结果；此函数应在后台线程中调用。"""
-    clean_session_id = str(session_id or '').strip()
-    if not clean_session_id:
-        raise ValueError('国服登录会话 ID 为空。')
-    deadline = time.monotonic() + config.lanota_portal_china_login_timeout_seconds
-    while time.monotonic() < deadline:
-        data = _request_json(
-            'GET',
-            f'{config.lanota_portal_china_api_base_url}/auth/poll',
-            params={'session_id': clean_session_id},
-            headers={'Accept': 'application/json'},
-        )
-        status = str(data.get('status', '') or '').strip().casefold()
-        code = str(data.get('code', '') or '').strip()
-        if status == 'ready' and code:
-            return _exchange_china_login(clean_session_id, code)
-        if status in ['expired', 'cancelled', 'canceled', 'failed', 'error']:
-            raise PermissionError(f'国服授权未完成：{status}')
-        time.sleep(config.lanota_portal_china_poll_interval_seconds)
-    raise TimeoutError('国服授权已超时，请重新授权')
 
 
 def get_china_token() -> str:
@@ -376,44 +308,7 @@ def get_china_token() -> str:
                 china_portal_token['expires_at'] = expires_at
                 return token
         china_portal_token = {}
-    raise PermissionError('国服尚未登录或登录已过期，请联系管理员。')
-
-
-def china_auth_status_text() -> str:
-    saved = utils.read_json_file(_china_auth_file_path(), {})
-    if not isinstance(saved, dict):
-        return '国服未登录'
-    token = str(saved.get('china_token', '') or '').strip()
-    expires_at = int(saved.get('expires_at', 0) or _jwt_exp(token))
-    if not token:
-        return '国服未登录'
-    if expires_at and expires_at <= int(time.time()):
-        return '国服登录已过期，需要重新授权'
-    if expires_at:
-        remaining_minutes = max(0, (expires_at - int(time.time())) // 60)
-        return f'国服已登录，Token 约 {remaining_minutes} 分钟后过期'
-    return '国服已登录，Token 未提供过期时间'
-
-
-def render_china_login_qr(deep_link: str) -> str | None:
-    """生成本地二维码；缺少 qrcode/Pillow 时由命令层退化为发送深链。"""
-    try:
-        import qrcode
-    except Exception:
-        return None
-    try:
-        function.cleanup_image_cache()
-        output_dir = Path(utils.get_generate_image_dir()).resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f'lanota_china_login_{uuid.uuid4().hex[:12]}.png'
-        qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
-        qr.add_data(str(deep_link))
-        qr.make(fit=True)
-        qr.make_image(fill_color='black', back_color='white').save(output_path)
-        return str(output_path)
-    except Exception as exception_object:
-        utils.debug_log(None, f'国服登录二维码生成失败：{type(exception_object).__name__}: {exception_object}')
-        return None
+    raise PermissionError('国服 Portal Token 不可用，请联系管理员更新 Token。')
 
 
 def api_get(
@@ -437,9 +332,7 @@ def api_get(
                 # 只清除本次请求实际使用的旧 Token，不覆盖手机刚上传的新 Token。
                 if saved_token == request_token:
                     _save_china_token_data({})
-            raise PermissionError(
-                '国服登录已失效，请管理员重新授权。'
-            ) from exception_object
+            raise PermissionError('国服 Portal Token 已失效，请联系管理员更新 Token。') from exception_object
 
     url = f'{config.lanota_portal_api_base_url}/{path.lstrip("/")}'
     try:
@@ -457,7 +350,12 @@ def get_player(nano_id: str, region: str = 'global') -> dict[str, Any]:
     if not clean_id or len(clean_id) > 32 or not clean_id.isalnum():
         raise ValueError('好友码格式不正确。')
     normalized_region = normalize_region(region)
-    data = api_get(f'player/{quote(clean_id, safe="")}', region=normalized_region)
+    try:
+        data = api_get(f'player/{quote(clean_id, safe="")}', region=normalized_region)
+    except Exception as portal_error:
+        if normalized_region != 'china':
+            raise
+        data = _china_fallback_player(clean_id, portal_error)
     data['_portal_region'] = normalized_region
     return data
 
@@ -500,6 +398,43 @@ def get_bound_nano_id(plugin_event, region: str | None = None) -> str:
         if nano_id:
             return nano_id
     return ''
+
+
+def fallback_notice(data: Any) -> str:
+    """返回备用 API 成功时需要附带的降级说明。"""
+    if isinstance(data, dict) and data.get('_api_fallback'):
+        return str(data.get('_api_fallback_notice') or CHINA_FALLBACK_NOTICE)
+    return ''
+
+
+class ChinaApiUnavailableError(RuntimeError):
+    """国服 Portal 与备用 API 均失败。"""
+
+    def __init__(self, portal_error: Exception, fallback_error: Exception):
+        self.portal_error = portal_error
+        self.fallback_error = fallback_error
+        super().__init__(
+            f'国服 Portal 与备用 API 均不可用：{format_error(portal_error)}；'
+            f'备用 API：{format_error(fallback_error)}'
+        )
+
+
+def _china_fallback_player(nano_id: str, portal_error: Exception) -> dict[str, Any]:
+    try:
+        data = china_grpc.get_player(nano_id, timeout=config.lanota_portal_timeout_seconds)
+    except Exception as fallback_error:
+        raise ChinaApiUnavailableError(portal_error, fallback_error) from fallback_error
+    data['_portal_error'] = format_error(portal_error)
+    return data
+
+
+def _china_fallback_compare(nano_id: str, portal_error: Exception) -> dict[str, Any]:
+    try:
+        data = china_grpc.get_compare(nano_id, timeout=config.lanota_portal_timeout_seconds)
+    except Exception as fallback_error:
+        raise ChinaApiUnavailableError(portal_error, fallback_error) from fallback_error
+    data['_portal_error'] = format_error(portal_error)
+    return data
 
 
 def get_bound_region(plugin_event) -> str:
@@ -655,7 +590,12 @@ def get_compare_data_cached(
             return cached_data, nano_id, None
 
     try:
-        data = api_get('compare', params={'friendNanoId': nano_id}, region=selected_region)
+        try:
+            data = api_get('compare', params={'friendNanoId': nano_id}, region=selected_region)
+        except Exception as portal_error:
+            if selected_region != 'china':
+                raise
+            data = _china_fallback_compare(nano_id, portal_error)
         data['_portal_region'] = selected_region
         with compare_cache_lock:
             compare_cache[cache_key] = {'data': data, 'saved_at': now_time}
@@ -707,6 +647,7 @@ def find_compare_song_scores(
         return []
 
     result_by_difficulty: dict[int, dict[str, Any]] = {}
+    missing_value = '暂无法获取' if compare_data.get('_api_fallback') else None
     for raw_row in song_rows:
         if not isinstance(raw_row, dict):
             continue
@@ -726,12 +667,12 @@ def find_compare_song_scores(
             'difficulty': difficulty_index,
             'score': score,
             'clear': _clear_display_name(clear),
-            'rank': rank,
+            'rank': rank if rank is not None else missing_value,
             # compare 接口不公开目标玩家的单谱 Rating 和判定明细。
             'singleRating': None,
-            'harmony': None,
-            'tune': None,
-            'fail': None,
+            'harmony': missing_value,
+            'tune': missing_value,
+            'fail': missing_value,
         }
     return [result_by_difficulty[index] for index in sorted(result_by_difficulty)]
 
@@ -1129,7 +1070,7 @@ def build_fallback_text(data: dict[str, Any]) -> str:
     clear_counts = stats.get('clearCounts', {})
     rank_counts = stats.get('rankCounts', {})
     region_name = region_display_name(data.get('_portal_region', 'global'))
-    return (
+    text = (
         f'玩家：{player.get("username") or "未知玩家"}（{region_name}）\n'
         f'Rating：{player.get("rating", "未知")}\n'
         f'总分：{player.get("totalScore", "未知")}\n'
@@ -1140,6 +1081,8 @@ def build_fallback_text(data: dict[str, Any]) -> str:
         f'A {rank_counts.get("A", 0)} / B {rank_counts.get("B", 0)} / '
         f'C {rank_counts.get("C", 0)} / D {rank_counts.get("D", 0)}'
     )
+    notice = fallback_notice(data)
+    return f'{text}\n{notice}' if notice else text
 
 
 def format_error(exception_object: Exception) -> str:

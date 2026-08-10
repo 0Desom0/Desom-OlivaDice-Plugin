@@ -1,6 +1,7 @@
 # 不上传打包好的opk或zip
 *.opk
 *.zip
+*.ipa
 # 屏蔽核心本体，方便开发
 /OlivaDiceCore
 /OlivaDiceMaster

@@ -19,9 +19,7 @@ from . import utils
 # 全局搜索结果会话管理（用于分页和序号选择）
 search_session_dict = {}
 
-management_command_name_set = {'laglobal', 'labot', 'lagroup', 'sync', 'cover', 'china'}
-china_login_lock = threading.RLock()
-china_login_in_progress: set[str] = set()
+management_command_name_set = {'laglobal', 'labot', 'lagroup', 'sync', 'cover'}
 b30_cooldown_lock = threading.RLock()
 b30_last_used: dict[str, float] = {}
 
@@ -48,7 +46,6 @@ command_configs = [
     ('unbind', '解绑'),
     ('user', '用户'),
     ('friend', '好友码'),
-    ('china', '国服'),
     ('category', 'cate'),
     ('table', '定数表'),
     ('ritmo', '里莫'),
@@ -108,9 +105,6 @@ subcommand_alias_dict = {
     '玩家': 'user',
     'friend': 'friend',
     '好友码': 'friend',
-    'china': 'china',
-    'cn': 'china',
-    '国服': 'china',
     'category': 'category',
     'cate': 'category',
     '分类': 'category',
@@ -597,9 +591,10 @@ def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = Non
                 )
             )
         score_rows = _add_calculated_info_ratings(song, score_rows)
-        notice = ''
+        notice = portal.fallback_notice(compare_data)
         if cache_error is not None:
-            notice = f'网络查询失败，当前显示最近缓存：{portal.format_error(cache_error)}'
+            cache_notice = f'网络查询失败，当前显示最近缓存：{portal.format_error(cache_error)}'
+            notice = f'{notice} {cache_notice}'.strip()
             credential_hint = portal.credential_error_hint(cache_error, selected_region)
             if credential_hint:
                 notice = f'{notice} {credential_hint}'
@@ -1551,7 +1546,8 @@ def handle_b30(plugin_event, argument: str) -> None:
                 else []
             )
             reconcile_score_field = 'friendScore'
-            if exact_check_error is not None:
+            using_fallback_api = bool(portal.fallback_notice(compare_data))
+            if exact_check_error is not None and not using_fallback_api:
                 _append_b30_notice(
                     card_data,
                     f'未使用准确 B30：{portal.format_error(exact_check_error)}',
@@ -1749,77 +1745,6 @@ def handle_user(plugin_event, argument: str) -> None:
         if credential_hint:
             error_text = f'{error_text}\n{credential_hint}'
         reply_text(plugin_event, error_text)
-
-
-def _china_login_worker(plugin_event, user_id: str, login_key: str, session_id: str) -> None:
-    try:
-        portal.poll_china_login(session_id)
-        result_text = '国服 Lanota 授权成功，现已可以使用 .la bind cn <好友码>。'
-    except Exception as exception_object:
-        result_text = f'国服 Lanota 授权失败：{portal.format_error(exception_object)}'
-        utils.error_log(None, f'国服授权失败：{type(exception_object).__name__}: {exception_object}')
-    finally:
-        with china_login_lock:
-            china_login_in_progress.discard(login_key)
-    if not utils.send_private_message(plugin_event, user_id, result_text):
-        utils.error_log(None, '国服授权结果私聊发送失败。')
-
-
-def handle_china(plugin_event, argument: str) -> None:
-    if not utils.sender_has_master_permission(plugin_event):
-        reply_text(plugin_event, '该命令仅限骰主或本插件管理员使用。')
-        return
-    action = argument.strip().casefold()
-    if action in ['', 'status', '状态']:
-        reply_text(plugin_event, f'{portal.china_auth_status_text()}\n登录命令：.la china login')
-        return
-    if action not in ['login', '登录', '登陆']:
-        reply_text(plugin_event, '用法：.la china status 或 .la china login')
-        return
-
-    user_id = utils.get_sender_id_from_event(plugin_event)
-    bot_hash = utils.get_bot_hash_from_event(plugin_event)
-    login_key = f'{bot_hash}|{user_id}'
-    with china_login_lock:
-        if china_login_in_progress:
-            reply_text(plugin_event, '已有国服 Portal 授权正在进行，请等待其完成或超时后重试。')
-            return
-        china_login_in_progress.add(login_key)
-
-    try:
-        login_session = portal.create_china_login_session()
-        qr_path = portal.render_china_login_qr(login_session['deep_link'])
-        timeout_seconds = config.lanota_portal_china_login_timeout_seconds
-        instruction_text = (
-            f'请在 {timeout_seconds} 秒内使用国服 Lanota App 扫描二维码完成 Portal 授权。\n'
-            '若无法扫码，也可以在已安装游戏的手机中打开下方链接：\n'
-            f'{login_session["deep_link"]}'
-        )
-
-        if utils.get_group_id_from_event(plugin_event):
-            sent = utils.send_private_message(plugin_event, user_id, instruction_text)
-            if qr_path:
-                image_message = utils.build_image_message(qr_path)
-                sent = bool(image_message) and utils.send_private_message(plugin_event, user_id, image_message) and sent
-            if not sent:
-                raise RuntimeError('私聊发送授权信息失败，请管理员重新授权。')
-            reply_text(plugin_event, '国服授权二维码已通过私聊发送。')
-        else:
-            utils.reply_message(plugin_event, instruction_text)
-            if qr_path:
-                utils.reply_image(plugin_event, qr_path, '国服 Portal 授权二维码生成失败。')
-
-        worker = threading.Thread(
-            target=_china_login_worker,
-            args=(plugin_event, user_id, login_key, login_session['session_id']),
-            name='LanotaPluginChinaLogin',
-            daemon=True,
-        )
-        worker.start()
-    except Exception as exception_object:
-        with china_login_lock:
-            china_login_in_progress.discard(login_key)
-        reply_text(plugin_event, f'国服 Portal 登录初始化失败：{portal.format_error(exception_object)}')
 
 
 def handle_category(plugin_event, argument: str) -> None:
@@ -2133,7 +2058,6 @@ help_categories = {
             '/la time - 显示长于3分钟和短于2分钟的乐曲列表',
             '/la all - 显示曲库统计信息',
             '/la notes - 物量最多的前50个谱面',
-            '/la china status - 查看国服登录状态（插件管理员）',
             '/la ritmo - 显示里莫绝赞昏睡时间',
         ],
         'examples': [
@@ -2142,8 +2066,6 @@ help_categories = {
             '/la notes',
             '/la b30',
             '/la b30 cn',
-            '/la china status',
-            '/la china login',
             '/la ritmo',
         ],
     },
@@ -2383,7 +2305,6 @@ command_handler_dict = {
     'unbind': handle_unbind,
     'user': handle_user,
     'friend': handle_friend,
-    'china': handle_china,
     'category': handle_category,
     'table': handle_table,
     'ritmo': lambda event, arg: handle_ritmo(event),

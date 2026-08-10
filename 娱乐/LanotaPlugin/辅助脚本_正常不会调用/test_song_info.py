@@ -150,7 +150,7 @@ class SongInfoTest(unittest.TestCase):
             patch.object(message, 'reply_song_card') as reply_song_card,
         ):
             message.reply_song_info(event, song, region='china')
-        self.assertIn('.la china login', reply_song_card.call_args.kwargs['notice'])
+        self.assertIn('更新 Token', reply_song_card.call_args.kwargs['notice'])
 
     def test_info_global_invalid_credentials_returns_admin_hint(self) -> None:
         event = object()
@@ -177,7 +177,7 @@ class SongInfoTest(unittest.TestCase):
             patch.object(message, 'reply_text') as reply_text,
         ):
             message.handle_user(event, 'cn')
-        self.assertIn('.la china login', reply_text.call_args.args[1])
+        self.assertIn('更新 Token', reply_text.call_args.args[1])
 
     def test_user_command_sends_querying_notice_first(self) -> None:
         event = object()

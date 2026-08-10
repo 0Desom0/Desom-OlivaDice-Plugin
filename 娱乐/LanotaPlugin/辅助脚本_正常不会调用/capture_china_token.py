@@ -387,7 +387,7 @@ def finish_capture(args: argparse.Namespace, captured: dict[str, str]) -> int:
     if not args.no_write:
         output_path = save_token(Path(args.output), token, captured.get('user', ''), verified_user)
         print(f'已写入：{output_path}')
-        print('重新加载 LanotaPlugin 后可执行 .la china status 和 .la user。')
+        print('Token 已上传；重新加载 LanotaPlugin 后可执行 .la user cn 验证。')
     return 0
 
 

@@ -172,7 +172,7 @@
       const player = data.player || {};
       const stats = data.stats || {};
       const asset = data.portalAssetBaseUrl || 'https://noxygames.com/lanota/portal';
-      const num = value => Number(value || 0).toLocaleString('en-US');
+      const num = value => typeof value === 'string' ? value : Number(value || 0).toLocaleString('en-US');
       const text = (id, value) => { document.getElementById(id).textContent = value; };
 
       text('username', player.username || 'Unknown Player');
