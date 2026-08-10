@@ -558,6 +558,40 @@ Fail
 
 
 @unittest.skipUnless(
+    importlib.util.find_spec('rapidocr_onnxruntime') and importlib.util.find_spec('onnxruntime'),
+    '需要安装 RapidOCR 与 ONNXRuntime 才能运行列表图回归',
+)
+class RapidOCRPortalRatingListScreenshotTest(unittest.TestCase):
+    def test_new_portal_rating_list_screenshots(self) -> None:
+        plugin_dir = Path(__file__).resolve().parents[1]
+        fixtures = {
+            '80351d682a60bf3005f5df046c15abba.jpg': 30,
+            '941f745d493cead9759efaa5076af3ef.jpg': 20,
+            '9519f6933e99f0aba5fe4e9fd7e8d152.png': 10,
+            'a72f9b06ac433de066aae6f6154178aa.png': 31,
+        }
+        songs = function.load_song_data()
+        for file_name, expected_count in fixtures.items():
+            with self.subTest(file_name=file_name):
+                image_path = plugin_dir / file_name
+                self.assertTrue(image_path.is_file(), f'缺少用户新增回归截图：{image_path}')
+                text = score_overrides._ocr_text(image_path)
+                records, errors, stats = score_overrides._parse_ocr_records(text, songs, 'global')
+                self.assertEqual(stats['mode'], 'portal_list')
+                self.assertEqual(len(records), expected_count)
+                self.assertFalse(errors)
+                self.assertTrue(all(record.get('chapter') for record in records))
+                self.assertTrue(all(record.get('difficulty_name') for record in records))
+                self.assertTrue(all(record.get('single_rating') for record in records))
+                if file_name == 'a72f9b06ac433de066aae6f6154178aa.png':
+                    by_title = {record['title']: record for record in records}
+                    self.assertIn('Fortuna', by_title)
+                    self.assertIn('GHOST VS. GHOUL MASHUP', by_title)
+                else:
+                    self.assertTrue(all(record.get('rating_percent') is not None for record in records))
+
+
+@unittest.skipUnless(
     importlib.util.find_spec('paddleocr') and importlib.util.find_spec('paddle'),
     '需要安装 PaddleOCR 与 PaddlePaddle 才能运行实图回归',
 )

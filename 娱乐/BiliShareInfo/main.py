@@ -40,6 +40,7 @@ DEFAULT_CONFIG = {
     'default_group_enable': False,
     'single_forward_enable': False,
     'multi_forward_enable': True,
+    'live_enable': False,
     'parse_debug_enable': False,
     'preview_ocr_enable': True,
     'configured_master_list': [],
@@ -69,6 +70,7 @@ PREVIEW_OCR_MAX_BYTES = 4 * 1024 * 1024
 CARD_SEARCH_WORKERS = 2
 CARD_SEARCH_CANDIDATE_LIMIT = 20
 OWNER_EXACT_DETAIL_LIMIT = 8
+LIVE_ROOM_API = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo'
 WBI_KEY_CACHE_TTL_SECONDS = 3600
 WBI_MIXIN_KEY_TABLE = (
     46, 47, 18, 2, 53, 8, 23, 32,
@@ -88,6 +90,9 @@ AT_SEGMENT_PATTERN = re.compile(
 AV_REFERENCE_PATTERN = re.compile(
     r'(?<![A-Za-z0-9_-])(?:av|aid\s*=\s*)(\d+)(?![A-Za-z0-9])',
     re.IGNORECASE,
+)
+LIVE_ROOM_ID_PATTERN = re.compile(
+    r'(?i)(?:https?://)?live\.bilibili\.com/(?:h5/)?(?P<room_id>\d+)'
 )
 
 
@@ -287,6 +292,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
         group_enabled = is_group_enabled(plugin_event)
         if not group_enabled:
             return
+        live_enabled = is_live_enabled(plugin_event)
 
         current_message, has_reference = prepare_current_message(plugin_event, message)
         is_candidate = is_parse_candidate_message(
@@ -313,6 +319,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
             plugin_event,
             current_message,
             include_event_cards=not has_reference,
+            live_enable=live_enabled,
         )
         parse_log(f'消息引用提取完成 count={len(video_ref_list)} refs={format_video_ref_list(video_ref_list)}')
         if not video_ref_list:
@@ -325,9 +332,12 @@ def handle_message(plugin_event, is_group: bool) -> None:
             if is_recent_duplicate(dedupe_key):
                 parse_log(f'跳过近期重复引用 ref={format_video_ref(video_ref)}')
                 continue
-            video_info = fetch_video_info(video_ref)
+            if is_live_ref(video_ref):
+                video_info = fetch_live_info(video_ref)
+            else:
+                video_info = fetch_video_info(video_ref)
             if not video_info:
-                parse_log(f'视频信息获取失败 ref={format_video_ref(video_ref)}')
+                parse_log(f'媒体信息获取失败 ref={format_video_ref(video_ref)}')
                 continue
             video_info_list.append(video_info)
             sent_dedupe_key_list.append(dedupe_key)
@@ -336,7 +346,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
             return
 
         send_video_info_list(plugin_event, video_info_list)
-        parse_log(f'视频信息发送完成 count={len(video_info_list)}')
+        parse_log(f'媒体信息发送完成 count={len(video_info_list)}')
         for dedupe_key in sent_dedupe_key_list:
             mark_recent_key(dedupe_key)
     except Exception as exception_object:
@@ -374,6 +384,8 @@ def log_resolved_video_refs(video_ref_list: list[dict[str, str]]) -> None:
             bili_log(f'解析出BV号: {video_ref["bvid"]}', 2)
         elif video_ref.get('aid'):
             bili_log(f'解析出av号: av{video_ref["aid"]}', 2)
+        elif video_ref.get('live_id'):
+            bili_log(f'解析出直播间号: {video_ref["live_id"]}', 2)
 
 
 def handle_command(plugin_event, message: str, is_group: bool) -> bool:
@@ -439,6 +451,24 @@ def handle_command(plugin_event, message: str, is_group: bool) -> bool:
         reply_message(
             plugin_event,
             f'预览图OCR匹配已{"开启" if command_action == "on" else "关闭"}。',
+        )
+        plugin_event.set_block()
+        return True
+
+    if command_scope == 'live':
+        if command_action not in ['on', 'off']:
+            reply_message(plugin_event, '用法：.bili live on/off')
+            plugin_event.set_block()
+            return True
+        if not has_global_switch_permission(plugin_event):
+            reply_message(plugin_event, '权限不足：只有骰主可以切换直播解析。')
+            plugin_event.set_block()
+            return True
+
+        set_live_enable(plugin_event, command_action == 'on')
+        reply_message(
+            plugin_event,
+            f'B站直播解析已{"开启" if command_action == "on" else "关闭"}。',
         )
         plugin_event.set_block()
         return True
@@ -516,6 +546,8 @@ def parse_bili_command(message: str) -> dict[str, str] | None:
         if compact_tail in ['ocron', 'ocroff', 'previewocron', 'previewocroff']:
             action = compact_tail.removeprefix('previewocr').removeprefix('ocr')
             return {'scope': 'preview_ocr', 'action': action}
+        if compact_tail in ['liveon', 'liveoff']:
+            return {'scope': 'live', 'action': compact_tail.removeprefix('live')}
         if compact_tail in ['globalon', 'globaloff']:
             return {'scope': 'global', 'action': compact_tail.removeprefix('global')}
         if compact_tail in ['defaulton', 'defaultoff']:
@@ -562,9 +594,10 @@ def build_help_message(plugin_event, is_group: bool) -> str:
             '多链接合并转发：.bili multiforward on/off（仅骰主）',
             '解析调试日志：.bili debug on/off（仅骰主）',
             '预览图OCR匹配：.bili ocr on/off（仅骰主，可选依赖）',
+            '直播解析：.bili live on/off（仅骰主，默认关闭）',
             '帮助：.bili help',
             '未单独设置的群会使用本群默认开关。',
-            '开启后会自动解析群内的B站小程序/链接分享并回复视频信息。',
+            '开启后会自动解析群内的B站小程序/链接分享并回复视频或直播信息。',
         ]
     )
 
@@ -682,6 +715,13 @@ def set_multi_forward_enable(plugin_event, enable: bool) -> None:
     save_bot_config(bot_hash, bot_config)
 
 
+def set_live_enable(plugin_event, enable: bool) -> None:
+    bot_hash = get_config_bot_hash_from_event(plugin_event)
+    bot_config = load_bot_config(bot_hash)
+    bot_config['live_enable'] = bool(enable)
+    save_bot_config(bot_hash, bot_config)
+
+
 def set_group_enable(plugin_event, enable: bool) -> None:
     group_key = get_group_key(plugin_event)
     if group_key:
@@ -724,6 +764,15 @@ def is_preview_ocr_enabled(plugin_event) -> bool:
         return bool(bot_config.get('preview_ocr_enable', True))
     except Exception:
         return True
+
+
+def is_live_enabled(plugin_event) -> bool:
+    try:
+        bot_hash = get_config_bot_hash_from_event(plugin_event)
+        bot_config = load_bot_config(bot_hash)
+        return bool(bot_config.get('live_enable', False))
+    except Exception:
+        return False
 
 
 def get_group_key(plugin_event) -> str:
@@ -795,6 +844,7 @@ def normalize_config_data(config_data: Any) -> dict[str, Any]:
     normalized_config['default_group_enable'] = bool(config_data.get('default_group_enable', False))
     normalized_config['single_forward_enable'] = bool(config_data.get('single_forward_enable', False))
     normalized_config['multi_forward_enable'] = bool(config_data.get('multi_forward_enable', True))
+    normalized_config['live_enable'] = bool(config_data.get('live_enable', False))
     normalized_config['parse_debug_enable'] = bool(config_data.get('parse_debug_enable', False))
     normalized_config['preview_ocr_enable'] = bool(config_data.get('preview_ocr_enable', True))
     normalized_config['configured_master_list'] = normalize_id_list(
@@ -1011,6 +1061,7 @@ def extract_video_refs_from_event(
     plugin_event,
     message: str,
     include_event_cards: bool = True,
+    live_enable: bool = False,
 ) -> list[dict[str, str]]:
     qq_ark_card_list = []
     if include_event_cards:
@@ -1032,12 +1083,18 @@ def extract_video_refs_from_event(
         include_json_card=not use_qq_ark_card,
         preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
     )
-    parse_log(f'消息文本解析初始refs={format_video_ref_list(video_ref_list)}')
     seen_key_set = {
         video_key
         for video_ref in video_ref_list
         if (video_key := get_video_ref_key(video_ref))
     }
+    if live_enable:
+        for live_ref in extract_live_refs_from_text(message):
+            add_video_ref(video_ref_list, seen_key_set, live_ref)
+        for card_data in qq_ark_card_list:
+            for live_ref in extract_live_refs_from_card(card_data):
+                add_video_ref(video_ref_list, seen_key_set, live_ref)
+    parse_log(f'消息文本解析初始refs={format_video_ref_list(video_ref_list)}')
     url_ref_cache = {}
 
     parse_log(f'QQ ARK卡片提取数量={len(qq_ark_card_list)}')
@@ -1151,7 +1208,11 @@ def is_parse_candidate_message(
     include_event_cards: bool = True,
 ) -> bool:
     """仅对可能包含 B 站引用的消息开启解析诊断日志。"""
-    if extract_video_refs_from_text(message) or extract_urls(message):
+    if (
+        extract_video_refs_from_text(message)
+        or extract_live_refs_from_text(message)
+        or extract_urls(message)
+    ):
         return True
 
     lowered_message = safe_str(message).lower()
@@ -1246,6 +1307,9 @@ def add_video_refs_from_card(
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
     if not card_video_ref_list and not video_ref_list:
+        if extract_live_refs_from_card(card_data):
+            parse_log(f'{card_label} 识别为直播卡片，跳过视频标题搜索')
+            return
         title_hint = get_title_hint(card_data)
         parse_log(
             f'{card_label} 未解析到显式视频引用，进入OCR/标题并行搜索 '
@@ -1350,6 +1414,8 @@ def get_video_ref_key(video_ref: dict[str, str]) -> str:
         return f'bvid:{video_ref["bvid"]}'
     if video_ref.get('aid'):
         return f'aid:{video_ref["aid"]}'
+    if video_ref.get('live_id'):
+        return f'live:{video_ref["live_id"]}'
     return ''
 
 
@@ -1382,13 +1448,77 @@ def shorten_log_text(text: Any, limit: int = 300) -> str:
     return f'{value[:limit]}...'
 
 
+def is_live_ref(video_ref: dict[str, str] | None) -> bool:
+    return bool(video_ref and safe_str(video_ref.get('live_id', '')).strip())
+
+
+def is_live_bilibili_url(url: str) -> bool:
+    try:
+        raw_url = safe_str(url).strip()
+        if not re.match(r'^[A-Za-z][A-Za-z0-9+.-]*://', raw_url):
+            raw_url = f'https://{raw_url}'
+        return urllib.parse.urlsplit(raw_url).netloc.casefold().rstrip('.') == 'live.bilibili.com'
+    except Exception:
+        return False
+
+
+def extract_live_ref_from_url(url: str) -> dict[str, str] | None:
+    try:
+        raw_url = safe_str(url).strip()
+        if not raw_url:
+            return None
+        if not re.match(r'^[A-Za-z][A-Za-z0-9+.-]*://', raw_url):
+            raw_url = f'https://{raw_url}'
+        parsed_url = urllib.parse.urlsplit(raw_url)
+        if parsed_url.netloc.casefold().rstrip('.') != 'live.bilibili.com':
+            return None
+        path_match = re.match(r'^/(?:h5/)?(?P<room_id>\d+)(?:/|$)', parsed_url.path)
+        room_id = path_match.group('room_id') if path_match else ''
+        if not room_id:
+            query_data = urllib.parse.parse_qs(parsed_url.query)
+            room_id = safe_str(
+                (query_data.get('room_id') or query_data.get('roomid') or [''])[0]
+            ).strip()
+        if not room_id or not room_id.isdigit() or int(room_id) <= 0:
+            return None
+        return {'live_id': room_id}
+    except Exception:
+        return None
+
+
+def extract_live_refs_from_text(text: str) -> list[dict[str, str]]:
+    live_ref_list = []
+    seen_key_set = set()
+    for url in extract_urls(text):
+        live_ref = extract_live_ref_from_url(url)
+        add_video_ref(live_ref_list, seen_key_set, live_ref)
+    for room_match in LIVE_ROOM_ID_PATTERN.finditer(html.unescape(safe_str(text))):
+        add_video_ref(
+            live_ref_list,
+            seen_key_set,
+            {'live_id': room_match.group('room_id')},
+        )
+    return live_ref_list
+
+
+def extract_live_refs_from_card(card_data: dict[str, Any]) -> list[dict[str, str]]:
+    live_ref_list = []
+    seen_key_set = set()
+    for text in collect_strings(card_data):
+        for live_ref in extract_live_refs_from_text(text):
+            add_video_ref(live_ref_list, seen_key_set, live_ref)
+    return live_ref_list
+
+
 def extract_urls(text: str) -> list[str]:
     clean_text = urllib.parse.unquote(html.unescape(safe_str(text))).replace('\\/', '/')
     url_pattern = (
+        r'https?://live\.bilibili\.com/[^\s"\'<>]+|'
         r'https?://(?:www\.|m\.)?bilibili\.com/[^\s"\'<>]+|'
         r'https?://b23\.tv/[^\s"\'<>]+|'
         r'https?://bili2233\.cn/[^\s"\'<>]+|'
         r'https?://m\.q\.qq\.com/[^\s"\'<>]+|'
+        r'live\.bilibili\.com/[^\s"\'<>]+|'
         r'(?:www\.|m\.)?bilibili\.com/[^\s"\'<>]+|'
         r'b23\.tv/[^\s"\'<>]+|'
         r'bili2233\.cn/[^\s"\'<>]+|'
@@ -1406,6 +1536,10 @@ def extract_urls(text: str) -> list[str]:
 
 
 def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
+    live_ref = extract_live_ref_from_url(url)
+    if live_ref or is_live_bilibili_url(url):
+        parse_log(f'识别为直播间URL，跳过视频链接解析 ref={format_video_ref(live_ref)}')
+        return None
     parse_log(f'开始解析URL url={shorten_log_text(url, 180)}')
     direct_ref = extract_video_ref_from_text(url)
     if direct_ref:
@@ -2950,6 +3084,70 @@ def fetch_video_info(video_ref: dict[str, str]) -> dict[str, Any] | None:
         return None
 
 
+def fetch_live_info(live_ref: dict[str, str]) -> dict[str, Any] | None:
+    room_id = safe_str(live_ref.get('live_id', '')).strip()
+    if not room_id.isdigit() or int(room_id) <= 0:
+        parse_log(f'获取直播间信息跳过：引用格式无效 ref={safe_str(live_ref)}')
+        return None
+
+    api_url_list = [
+        LIVE_ROOM_API + '?' + urllib.parse.urlencode(
+            {'room_ids': room_id, 'req_biz': 'web_room_componet'}
+        ),
+        'https://api.live.bilibili.com/room/v1/Room/get_info?'
+        + urllib.parse.urlencode({'room_id': room_id}),
+    ]
+    for api_index, api_url in enumerate(api_url_list, start=1):
+        try:
+            parse_log(f'开始获取直播间信息 ref={format_video_ref(live_ref)} api={api_index}')
+            response_data = json.loads(
+                http_get_json_text(api_url, referer=f'https://live.bilibili.com/{room_id}')
+            )
+            if response_data.get('code') != 0:
+                parse_log(
+                    f'直播间信息API#{api_index}返回非零code={response_data.get("code")} '
+                    f'message={shorten_log_text(response_data.get("message", response_data.get("msg", "")), 180)}'
+                )
+                continue
+
+            data = response_data.get('data', {})
+            if api_index == 1:
+                room_data_map = data.get('by_room_ids', {})
+                room_data = room_data_map.get(room_id, {})
+                if not room_data and isinstance(room_data_map, dict) and len(room_data_map) == 1:
+                    room_data = next(iter(room_data_map.values()))
+            else:
+                room_data = data
+                if isinstance(room_data, dict) and room_data.get('user_cover'):
+                    room_data = dict(room_data)
+                    room_data['cover'] = room_data.get('user_cover')
+            if not isinstance(room_data, dict) or not room_data:
+                parse_log(f'直播间信息API#{api_index}未找到房间 room_id={room_id}')
+                continue
+
+            live_info = dict(room_data)
+            live_info['_content_type'] = 'live'
+            live_info['_live_ref'] = dict(live_ref)
+            live_info['room_id'] = safe_str(live_info.get('room_id') or room_id)
+            live_info['live_url'] = (
+                safe_str(live_info.get('live_url')).strip()
+                or f'https://live.bilibili.com/{live_info["room_id"]}'
+            )
+            parse_log(
+                f'直播间信息解析成功 room_id={live_info["room_id"]} '
+                f'live_status={safe_str(live_info.get("live_status", ""))} '
+                f'title={shorten_log_text(live_info.get("title", ""), 120)}'
+            )
+            return live_info
+        except Exception as exception_object:
+            parse_log(
+                f'获取直播间信息API#{api_index}失败 room_id={room_id} '
+                f'error={type(exception_object).__name__}: '
+                f'{shorten_log_text(exception_object, 200)}'
+            )
+    return None
+
+
 def http_get_text(url: str, allow_response_body: bool = False) -> tuple[str, str]:
     request = urllib.request.Request(url, headers=get_http_headers())
     with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
@@ -3009,6 +3207,16 @@ def format_video_reply(video_info: dict[str, Any]) -> str:
     return reply_text
 
 
+def format_live_reply(live_info: dict[str, Any]) -> str:
+    cover_url = normalize_cover_url(
+        safe_str(live_info.get('cover') or live_info.get('user_cover', ''))
+    )
+    reply_text = format_live_text(live_info)
+    if cover_url:
+        return f'[OP:image,file={op_escape(cover_url)}]{reply_text}'
+    return reply_text
+
+
 def format_video_forward_content(video_info: dict[str, Any]) -> list[dict[str, Any]]:
     content_list = []
     cover_url = normalize_cover_url(safe_str(video_info.get('pic', '')))
@@ -3030,6 +3238,43 @@ def format_video_forward_content(video_info: dict[str, Any]) -> list[dict[str, A
         }
     )
     return content_list
+
+
+def format_live_forward_content(live_info: dict[str, Any]) -> list[dict[str, Any]]:
+    content_list = []
+    cover_url = normalize_cover_url(
+        safe_str(live_info.get('cover') or live_info.get('user_cover', ''))
+    )
+    if cover_url:
+        content_list.append(
+            {
+                'type': 'image',
+                'data': {
+                    'file': cover_url,
+                },
+            }
+        )
+    content_list.append(
+        {
+            'type': 'text',
+            'data': {
+                'text': format_live_text(live_info),
+            },
+        }
+    )
+    return content_list
+
+
+def format_info_reply(info: dict[str, Any]) -> str:
+    if info.get('_content_type') == 'live':
+        return format_live_reply(info)
+    return format_video_reply(info)
+
+
+def format_info_forward_content(info: dict[str, Any]) -> list[dict[str, Any]]:
+    if info.get('_content_type') == 'live':
+        return format_live_forward_content(info)
+    return format_video_forward_content(info)
 
 
 def format_video_text(video_info: dict[str, Any]) -> str:
@@ -3056,9 +3301,53 @@ def format_video_text(video_info: dict[str, Any]) -> str:
     return '\n'.join(lines)
 
 
+def format_live_text(live_info: dict[str, Any]) -> str:
+    live_status = {
+        0: '未开播',
+        1: '直播中',
+        2: '轮播中',
+    }.get(parse_count_text(live_info.get('live_status')), '未知')
+    title = safe_str(live_info.get('title', '未知直播间')).strip() or '未知直播间'
+    owner_name = safe_str(live_info.get('uname', '未知UP主')).strip() or '未知UP主'
+    parent_area = safe_str(live_info.get('parent_area_name', '')).strip()
+    area_name = safe_str(live_info.get('area_name', '')).strip()
+    area_text = ' / '.join(value for value in [parent_area, area_name] if value) or '未知分区'
+    announcement = safe_str(live_info.get('description', '')).strip() or '无公告'
+    tags = live_info.get('tags', '')
+    if isinstance(tags, list):
+        tags = ', '.join(safe_str(tag).strip() for tag in tags if safe_str(tag).strip())
+    tags = safe_str(tags).strip() or '无'
+    live_time = safe_str(live_info.get('live_time', '')).strip()
+    if not live_time or live_time.startswith('0000-00-00'):
+        live_time = '未开播'
+    room_id = safe_str(live_info.get('room_id', '')).strip()
+    short_id = safe_str(live_info.get('short_id', '')).strip()
+    room_id_text = room_id or '未知'
+    if short_id.isdigit() and int(short_id) > 0 and short_id != room_id:
+        room_id_text = f'{room_id_text}（短号：{short_id}）'
+    lines = [
+        f'直播间：{title}',
+        f'房间号：{room_id_text}',
+        f'状态：{live_status}',
+        f'UP主：{owner_name}',
+        f'分区：{area_text}',
+        f'公告：{shorten_text(announcement, 240)}',
+        f'标签：{shorten_text(tags, 240)}',
+        (
+            f'关注：{format_count(live_info.get("attention"))}  '
+            f'在线：{format_count(live_info.get("online"))}'
+        ),
+        f'开播时间：{live_time}',
+    ]
+    live_url = safe_str(live_info.get('live_url', '')).strip()
+    if live_url:
+        lines.append(f'链接：{live_url}')
+    return '\n'.join(lines)
+
+
 def send_video_info_list(plugin_event, video_info_list: list[dict[str, Any]]) -> None:
     parse_log(
-        f'准备发送视频信息 count={len(video_info_list)} '
+        f'准备发送媒体信息 count={len(video_info_list)} '
         f'platform={safe_str(getattr(plugin_event, "platform", {}))}'
     )
     if len(video_info_list) == 1:
@@ -3067,10 +3356,10 @@ def send_video_info_list(plugin_event, video_info_list: list[dict[str, Any]]) ->
             and is_single_forward_enabled(plugin_event)
             and send_group_forward(plugin_event, video_info_list)
         ):
-            parse_log('单视频采用合并转发发送')
+            parse_log('单条媒体采用合并转发发送')
             return
-        reply_message(plugin_event, format_video_reply(video_info_list[0]))
-        parse_log('单视频采用普通回复发送')
+        reply_message(plugin_event, format_info_reply(video_info_list[0]))
+        parse_log('单条媒体采用普通回复发送')
         return
 
     if (
@@ -3078,12 +3367,12 @@ def send_video_info_list(plugin_event, video_info_list: list[dict[str, Any]]) ->
         and is_multi_forward_enabled(plugin_event)
         and send_group_forward(plugin_event, video_info_list)
     ):
-        parse_log('多视频采用合并转发发送')
+        parse_log('多条媒体采用合并转发发送')
         return
 
     for video_info in video_info_list:
-        reply_message(plugin_event, format_video_reply(video_info))
-    parse_log('多视频采用逐条普通回复发送')
+        reply_message(plugin_event, format_info_reply(video_info))
+    parse_log('多条媒体采用逐条普通回复发送')
 
 
 def is_single_forward_enabled(plugin_event) -> bool:
@@ -3116,7 +3405,7 @@ def send_group_forward(plugin_event, video_info_list: list[dict[str, Any]]) -> b
                     'data': {
                         'name': gPluginName,
                         'uin': bot_id,
-                        'content': format_video_forward_content(video_info),
+                        'content': format_info_forward_content(video_info),
                     },
                 }
             )
@@ -3226,7 +3515,7 @@ def build_dedupe_key(plugin_event, video_ref: dict[str, str]) -> str:
     try:
         bot_hash = get_config_bot_hash_from_event(plugin_event)
         group_key = get_group_key(plugin_event)
-        video_key = video_ref.get('bvid') or video_ref.get('aid') or ''
+        video_key = get_video_ref_key(video_ref)
         return f'{bot_hash}|{group_key}|{video_key}'
     except Exception:
         return ''

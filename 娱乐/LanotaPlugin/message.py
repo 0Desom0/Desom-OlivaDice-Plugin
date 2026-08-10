@@ -1623,10 +1623,10 @@ def handle_score(plugin_event, argument: str) -> None:
 
     message_text = utils.get_message_text_from_event(plugin_event)
     if score_overrides.extract_image_refs(message_text):
-        if not score_overrides.paddleocr_available():
+        if not score_overrides.ocr_available():
             reply_text(
                 plugin_event,
-                '截图 OCR 不可用：请按 LanotaPlugin/requirements.txt 安装 PaddleOCR 与 PaddlePaddle；'
+                '截图 OCR 不可用：请按 LanotaPlugin/requirements.txt 安装 RapidOCR 或 PaddleOCR；'
                 '手动录入仍可正常使用。',
             )
             return

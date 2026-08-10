@@ -274,8 +274,8 @@ def credential_error_hint(exception_object: Exception, region: Any) -> str:
     ):
         return ''
     if normalize_region(region) == 'china':
-        return '国服状态可能已过期，请联系管理员。'
-    return '国际服登录失败，请联系管理员。'
+        return '国服状态可能已过期，请联系管理员；管理员可用 .la china login 重新登录。'
+    return '国际服登录失败，请联系管理员检查登录账号或密码配置。'
 
 
 def _jwt_exp(token: str) -> int:

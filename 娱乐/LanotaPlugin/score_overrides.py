@@ -1,5 +1,5 @@
 # -*- encoding: utf-8 -*-
-"""Lanota Portal 成绩覆盖：手动录入、PaddleOCR 与用户档案。"""
+"""Lanota Portal 成绩覆盖：手动录入、RapidOCR/PaddleOCR 与用户档案。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ except Exception:  # pragma: no cover - 运行环境可选
 
 _paddle_ocr = None
 _paddle_ocr_lock = threading.RLock()
+_rapid_ocr = None
+_rapid_ocr_lock = threading.RLock()
 
 DIFFICULTY_MAP = {
     '0': 0, 'whisper': 0, 'w': 0, '低': 0, '简单': 0,
@@ -45,6 +47,17 @@ def paddleocr_available() -> bool:
         importlib.util.find_spec('paddleocr')
         and importlib.util.find_spec('paddle')
     )
+
+
+def rapidocr_available() -> bool:
+    return bool(
+        importlib.util.find_spec('rapidocr_onnxruntime')
+        and importlib.util.find_spec('onnxruntime')
+    )
+
+
+def ocr_available() -> bool:
+    return rapidocr_available() or paddleocr_available()
 
 
 def normalize_region(value: Any) -> str:
@@ -428,7 +441,26 @@ def _prediction_lines(result: Any) -> list[str]:
     return lines
 
 
-def _predict_ocr_text(ocr_input: Any) -> str:
+def _rapid_prediction_lines(result: Any) -> list[str]:
+    lines = []
+    for item in result or []:
+        if isinstance(item, (list, tuple)) and len(item) >= 2 and str(item[1]).strip():
+            lines.append(str(item[1]).strip())
+    return lines
+
+
+def _predict_rapid_ocr_text(ocr_input: Any) -> str:
+    global _rapid_ocr
+    with _rapid_ocr_lock:
+        if _rapid_ocr is None:
+            from rapidocr_onnxruntime import RapidOCR
+
+            _rapid_ocr = RapidOCR()
+        result, _elapse = _rapid_ocr(ocr_input)
+    return '\n'.join(_rapid_prediction_lines(result))
+
+
+def _predict_paddle_ocr_text(ocr_input: Any) -> str:
     global _paddle_ocr
     with _paddle_ocr_lock:
         if _paddle_ocr is None:
@@ -447,6 +479,16 @@ def _predict_ocr_text(ocr_input: Any) -> str:
         return '\n'.join(_prediction_lines(_paddle_ocr.predict(paddle_input)))
 
 
+def _predict_ocr_text(ocr_input: Any) -> str:
+    """使用 RapidOCR 主识别，依赖或推理失败时回退 PaddleOCR。"""
+    if rapidocr_available():
+        try:
+            return _predict_rapid_ocr_text(ocr_input)
+        except Exception as exception_object:
+            utils.debug_log(None, f'RapidOCR 识别失败，回退 PaddleOCR：{type(exception_object).__name__}: {exception_object}')
+    return _predict_paddle_ocr_text(ocr_input)
+
+
 def _is_portrait_ocr_candidate(path: Path) -> bool:
     try:
         from PIL import Image
@@ -455,6 +497,63 @@ def _is_portrait_ocr_candidate(path: Path) -> bool:
             return image.height > image.width
     except Exception:
         return False
+
+
+def _portal_rating_list_ocr_inputs(path: Path) -> list[Any]:
+    """将超长 Rating 页面切成带重叠的垂直块，避免 OCR 缩小整张长图。"""
+    try:
+        import numpy as np
+        from PIL import Image
+
+        with Image.open(path) as source_image:
+            image = source_image.convert('RGB')
+        width, height = image.size
+        if height < width * 3.2:
+            return []
+        inputs = []
+
+        def append_chunks(chunk_height: int) -> None:
+            overlap = max(160, round(chunk_height * 0.10))
+            start = 0
+            while start < height:
+                end = min(height, start + chunk_height)
+                chunk = image.crop((0, start, width, end))
+                if width < 900:
+                    scale = 900 / width
+                    chunk = chunk.resize(
+                        (900, round(chunk.height * scale)),
+                        Image.Resampling.LANCZOS,
+                    )
+                inputs.append(np.asarray(chunk))
+                if end >= height:
+                    break
+                start = end - overlap
+
+        chunk_height = max(1800, min(3200, round(width * 1.8)))
+        append_chunks(chunk_height)
+        if width <= 1400:
+            # 中段歌曲名在部分窄屏主题上对比度较低，补扫一次中段以找回漏识别曲名。
+            middle_top = round(height * 0.18)
+            middle_bottom = round(height * 0.62)
+            middle = image.crop((0, middle_top, width, middle_bottom))
+            middle_scale = max(1.5, 1800 / width)
+            middle = middle.resize(
+                (round(middle.width * middle_scale), round(middle.height * middle_scale)),
+                Image.Resampling.LANCZOS,
+            )
+            inputs.append(np.asarray(middle))
+            # 窄屏长截图底部常被浮层/边缘裁切；只补扫底部并放大，避免重复整页 OCR。
+            bottom_top = max(0, round(height * 0.72))
+            bottom = image.crop((0, bottom_top, width, height))
+            scale = max(1.5, 1800 / width)
+            bottom = bottom.resize(
+                (round(bottom.width * scale), round(bottom.height * scale)),
+                Image.Resampling.LANCZOS,
+            )
+            inputs.append(np.asarray(bottom))
+        return inputs
+    except Exception:
+        return []
 
 
 def _portal_fast_ocr_input(path: Path) -> Any | None:
@@ -476,6 +575,9 @@ def _portal_fast_ocr_input(path: Path) -> Any | None:
                         Image.Resampling.LANCZOS,
                     )
                 return np.asarray(content)
+            if width >= 1500 and height > width * 1.1:
+                # 高分辨率列表截图保留完整行，避免固定三段裁切漏掉中间成绩。
+                return np.asarray(source_image)
             image = np.asarray(source_image)
         height, width = image.shape[:2]
         if height <= width:
@@ -532,6 +634,21 @@ def _ocr_plain_integer(line: str) -> int | None:
     return int(compact)
 
 
+def _ocr_percent_number(line: str) -> float | None:
+    """兼容 OCR 将百分号识别到数字前面的情况。"""
+    match = re.search(
+        r'(?:([0-9]{1,3}(?:[.,][0-9]{1,3})?)\s*[%％]|[%％]\s*([0-9]{1,3}(?:[.,][0-9]{1,3})?))',
+        str(line or ''),
+    )
+    if match is None:
+        return None
+    try:
+        value = float((match.group(1) or match.group(2)).replace(',', '.'))
+    except (TypeError, ValueError):
+        return None
+    return value if 0 <= value <= 100 else None
+
+
 def _select_judgement_triplet(values: list[int], total: int) -> tuple[int, int, int] | None:
     """从标签前的候选数字中选出物量校验成立的连续 H/T/F。"""
     for index in range(len(values) - 3, -1, -1):
@@ -539,6 +656,40 @@ def _select_judgement_triplet(values: list[int], total: int) -> tuple[int, int, 
         if sum(candidate) == total:
             return candidate
     return None
+
+
+def _infer_judgement_triplet_from_percentages(
+    percentages: list[float],
+    total: int,
+    score: int,
+) -> tuple[int, int, int] | None:
+    """判定小数字漏识别时，用画面百分比和已校验分数恢复唯一的 H/T/F。"""
+    if len(percentages) < 3 or total <= 0:
+        return None
+    displayed = percentages[-3:]
+    if any(abs(value - round(value)) > 0.01 for value in displayed):
+        return None
+    displayed_values = tuple(int(round(value)) for value in displayed)
+    max_ex_score = 2 * total
+    ex_score = (max_ex_score * score + 999_999) // 1_000_000
+    if 1_000_000 * ex_score // max_ex_score != score:
+        return None
+
+    candidates = []
+    for harmony in range(total + 1):
+        tune = ex_score - 2 * harmony
+        fail = total - harmony - tune
+        if tune < 0 or fail < 0:
+            continue
+        inferred_display = tuple(
+            0 if value == 0 else max(1, value * 100 // total)
+            for value in (harmony, tune, fail)
+        )
+        if inferred_display == displayed_values:
+            candidates.append((harmony, tune, fail))
+            if len(candidates) > 1:
+                return None
+    return candidates[0] if candidates else None
 
 
 def _needed_game_ocr_sections(text: str) -> tuple[str, ...]:
@@ -592,11 +743,13 @@ def _needed_game_ocr_sections(text: str) -> tuple[str, ...]:
 def _adaptive_game_result_sections(
     path: Path,
     section_names: tuple[str, ...] | None = None,
+    predictor=None,
 ) -> dict[str, str]:
     """按画面比例放大结算页关键区域，补足小号判定数字的 OCR。"""
     try:
         from PIL import Image, ImageEnhance, ImageFilter
 
+        predictor = predictor or _predict_ocr_text
         with Image.open(path) as source_image:
             image = source_image.convert('RGB')
         width, height = image.size
@@ -623,24 +776,33 @@ def _adaptive_game_result_sections(
                 crop = ImageEnhance.Contrast(crop).enhance(1.4).filter(ImageFilter.SHARPEN)
                 crop_path = Path(temp_dir) / f'{section_name}.png'
                 crop.save(crop_path)
-                sections[section_name] = _predict_ocr_text(crop_path)
+                sections[section_name] = predictor(crop_path)
         return sections
     except Exception as exception_object:
         utils.debug_log(None, f'结算图分区 OCR 失败：{type(exception_object).__name__}: {exception_object}')
         return {}
 
 
-def _ocr_text(path: Path, force_full_image: bool = False) -> str:
-    """使用 PaddleOCR 识别 Portal 或 4.0+ 游戏结算截图。"""
+def _ocr_text_with_predictor(path: Path, force_full_image: bool, predictor) -> str:
     try:
-        fast_input = None if force_full_image else _portal_fast_ocr_input(path)
-        full_text = _predict_ocr_text(path if fast_input is None else fast_input)
+        if force_full_image:
+            full_text = predictor(path)
+        else:
+            list_inputs = _portal_rating_list_ocr_inputs(path)
+            if list_inputs:
+                full_text = '\n'.join(predictor(item) for item in list_inputs)
+            else:
+                fast_input = _portal_fast_ocr_input(path)
+                full_text = predictor(path if fast_input is None else fast_input)
         if not full_text or not _looks_like_game_result(full_text):
             return full_text
         needed_sections = _needed_game_ocr_sections(full_text)
         if not needed_sections:
             return full_text
-        sections = _adaptive_game_result_sections(path, needed_sections)
+        if predictor is _predict_ocr_text:
+            sections = _adaptive_game_result_sections(path, needed_sections)
+        else:
+            sections = _adaptive_game_result_sections(path, needed_sections, predictor)
         parts = ['[[LANOTA_OCR_FULL]]', full_text]
         for section_name in ('meta', 'judgements', 'score'):
             section_text = sections.get(section_name, '')
@@ -648,8 +810,18 @@ def _ocr_text(path: Path, force_full_image: bool = False) -> str:
                 parts.extend([f'[[LANOTA_OCR_{section_name.upper()}]]', section_text])
         return '\n'.join(parts)
     except Exception as exception_object:
-        utils.debug_log(None, f'PaddleOCR 识别失败：{type(exception_object).__name__}: {exception_object}')
+        utils.debug_log(None, f'OCR 识别失败：{type(exception_object).__name__}: {exception_object}')
     return ''
+
+
+def _ocr_text(path: Path, force_full_image: bool = False) -> str:
+    """使用 RapidOCR 主识别 Portal/结算图，并保留 PaddleOCR 回退入口。"""
+    return _ocr_text_with_predictor(path, force_full_image, _predict_ocr_text)
+
+
+def _paddle_ocr_text(path: Path, force_full_image: bool = False) -> str:
+    """使用 PaddleOCR 对 RapidOCR 失败结果进行二次识别。"""
+    return _ocr_text_with_predictor(path, force_full_image, _predict_paddle_ocr_text)
 
 
 def _split_ocr_sections(text: str) -> dict[str, list[str]]:
@@ -792,9 +964,16 @@ def _parse_game_result_ocr(
             for line in judgement_lines[:first_label_index]
             if (value := _ocr_plain_integer(line)) is not None
         ]
-        if len(judgement_values) < 3:
-            return None, f'{match_summary}\n游戏结算图未能完整识别 Harmony/Tune/Fail 三项数字，未录入。'
         triplet = _select_judgement_triplet(judgement_values, total)
+        if triplet is None:
+            percentages = [
+                value
+                for line in judgement_lines[:first_label_index]
+                if (value := _ocr_percent_number(line)) is not None
+            ]
+            triplet = _infer_judgement_triplet_from_percentages(percentages, total, screenshot_score)
+        if triplet is None and len(judgement_values) < 3:
+            return None, f'{match_summary}\n游戏结算图未能完整识别 Harmony/Tune/Fail 三项数字，未录入。'
         harmony, tune, fail = triplet or tuple(judgement_values[-3:])
         if harmony + tune + fail != total:
             return None, (
@@ -841,13 +1020,19 @@ def _parse_game_result_ocr(
 
 def _portal_list_difficulty(line: str) -> int | None:
     source = re.sub(r'\s+', ' ', str(line or '')).strip()
-    has_level = bool(re.search(r'(?i)\blv\.?\s*\d', source))
-    direct_match = re.search(r'(?i)\b(whisper|acoustic|ultra|master)\b', source)
+    has_level = bool(
+        re.search(r'(?i)(whisper|acoustic|ultra|master)\s*lv\.?\s*\d', source)
+        or re.search(r'(?i)\blv\.?\s*\d', source)
+    )
+    direct_match = re.search(
+        r'(?i)(whisper|acoustic|ultra|master)(?=\s*lv\.?\s*\d|\b)',
+        source,
+    )
     if direct_match and (has_level or re.fullmatch(r'(?i)[a-z\s.]+', source)):
         return _difficulty(direct_match.group(1))
     if not has_level:
         return None
-    tokens = re.findall(r'[a-z]{3,10}', source.casefold())
+    tokens = [re.sub(r'lv$', '', token) for token in re.findall(r'[a-z]{3,12}', source.casefold())]
     for token in tokens:
         best_name = max(
             DIFFICULTY_NAMES,
@@ -865,13 +1050,12 @@ def _looks_like_portal_rating_list(text: str) -> bool:
         re.search(r'best(?:30|3o)', compact)
         or re.search(r'recent(?:15|1s)', compact)
     )
-    if not has_section:
-        return False
     lines = [line.strip() for line in source.splitlines() if line.strip()]
     difficulty_count = sum(_portal_list_difficulty(line) is not None for line in lines)
-    percent_count = sum(bool(re.search(r'\d{1,3}(?:[.,]\d+)?\s*[%％]', line)) for line in lines)
+    percent_count = sum(_ocr_percent_number(line) is not None for line in lines)
     decimal_count = sum(bool(re.search(r'(?<!\d)\d{1,2}[.,]\d{1,3}(?!\d)', line)) for line in lines)
-    return difficulty_count >= 1 and percent_count >= 1 and decimal_count >= 1
+    repeated_fragment = difficulty_count >= 3 and percent_count >= 3 and decimal_count >= 3
+    return (has_section or repeated_fragment) and difficulty_count >= 1 and percent_count >= 1 and decimal_count >= 1
 
 
 def _portal_list_title_candidate(line: str) -> str:
@@ -891,11 +1075,21 @@ def _portal_list_rating_values(lines: list[str]) -> tuple[float | None, float | 
     rating_percent = None
     single_rating_candidates = []
     for line in lines:
-        percent_match = re.search(r'(\d{1,3}(?:[.,]\d{1,3})?)\s*[%％]', line)
-        if percent_match and rating_percent is None:
-            rating_percent = _clean_rating_percent(percent_match.group(1))
-        cleaned = re.sub(r'\d{1,3}(?:[.,]\d{1,3})?\s*[%％]', ' ', line)
+        percent_value = _ocr_percent_number(line)
+        if percent_value is not None and rating_percent is None:
+            rating_percent = _clean_rating_percent(percent_value)
+        cleaned = re.sub(
+            r'(?:\d{1,3}(?:[.,]\d{1,3})?\s*[%％]|[%％]\s*\d{1,3}(?:[.,]\d{1,3})?)',
+            ' ',
+            line,
+        )
         cleaned = re.sub(r'(?i)\blv\.?\s*\d+(?:[.,]\d+)?\+?', ' ', cleaned)
+        # 部分 Portal 窄屏截图会把 16.99 的小数点吞掉，保留四位整数形式。
+        compact_rating = re.fullmatch(r'\s*(\d{4})\s*', cleaned)
+        if compact_rating:
+            compact_value = _clean_single_rating(f'{compact_rating.group(1)[:2]}.{compact_rating.group(1)[2:]}')
+            if compact_value is not None and 5 <= compact_value <= 30:
+                single_rating_candidates.append(compact_value)
         for match in re.finditer(r'(?<!\d)(\d{1,2}[.,]\d{1,3})(?!\d)', cleaned):
             value = _clean_single_rating(match.group(1))
             if value is not None and 5 <= value <= 30:
@@ -948,7 +1142,8 @@ def _parse_portal_rating_list_ocr(
         row_starts.append(recognized_candidates[-1][0] if recognized_candidates else search_start)
         if best_match is None:
             visible = [candidate for _index, candidate in recognized_candidates[-2:]]
-            errors.append(f'Portal Rating 列表有一行未能匹配曲名（当前识别：{visible}），未录入。')
+            if visible and any(len(candidate) >= 3 for candidate in visible):
+                errors.append(f'Portal Rating 列表有一行未能匹配曲名（当前识别：{visible}），未录入。')
         else:
             row_starts[-1] = best_match[0]
             matched_rows.append((row_position, *best_match))
@@ -1011,6 +1206,17 @@ def _parse_portal_rating_list_ocr(
             unique_records[key] = record
 
     records = list(unique_records.values())
+    successful_summaries = {
+        _matched_chart_summary(record, int(record['difficulty']))
+        for record in records
+    }
+    errors = [
+        error for error in errors
+        if not (
+            '当前识别：[]' in error
+            or any(error.startswith(summary) for summary in successful_summaries)
+        )
+    ]
     stats: dict[str, int | str] = {
         'mode': 'portal_list',
         'rows': difficulty_row_count,
@@ -1026,11 +1232,17 @@ def _parse_ocr(text: str, songs: list[dict[str, Any]], region: str) -> tuple[dic
 
     lines = [re.sub(r'\s+', ' ', line).strip() for line in str(text).splitlines() if line.strip()]
     difficulty = None
+    standalone_difficulties = []
     for line in lines:
-        found = re.search(r'(?i)\b(master|ultra|acoustic|whisper)\b', line)
-        if found:
-            difficulty = _difficulty(found.group(1))
+        found_difficulty = _portal_list_difficulty(line)
+        if found_difficulty is None:
+            continue
+        if re.search(r'(?i)(?:whisper|acoustic|ultra|master)\s*lv\.?\s*\d|\blv\.?\s*\d', line):
+            difficulty = found_difficulty
             break
+        standalone_difficulties.append(found_difficulty)
+    if difficulty is None and standalone_difficulties:
+        difficulty = standalone_difficulties[0]
     rating_percent = None
     rating_label_index = next(
         (
@@ -1042,9 +1254,9 @@ def _parse_ocr(text: str, songs: list[dict[str, Any]], region: str) -> tuple[dic
     )
     if rating_label_index is not None:
         for line in lines[rating_label_index:rating_label_index + 9]:
-            found = re.search(r'(\d{1,3}(?:[.,]\d{1,3})?)\s*%', line)
-            if found:
-                rating_percent = _clean_rating_percent(found.group(1))
+            percent_value = _ocr_percent_number(line)
+            if percent_value is not None:
+                rating_percent = _clean_rating_percent(percent_value)
                 break
 
     single_rating = None
@@ -1136,6 +1348,27 @@ def _parse_ocr_records(
     )
 
 
+def _ocr_parse_quality(
+    records: list[dict[str, Any]],
+    errors: list[str],
+    stats: dict[str, int | str],
+) -> int:
+    recognized = int(stats.get('matched', len(records)))
+    return len(records) * 100 + recognized - len(errors) * 50
+
+
+def _ocr_parse_needs_fallback(
+    records: list[dict[str, Any]],
+    errors: list[str],
+    stats: dict[str, int | str],
+) -> bool:
+    if not records or errors:
+        return True
+    if stats.get('mode') == 'portal_list':
+        return False
+    return False
+
+
 def _record_key(record: dict[str, Any]) -> tuple[str, str, int]:
     return (
         normalize_region(record.get('region')),
@@ -1209,8 +1442,17 @@ def process_images(plugin_event, message_text: str, region: str = 'global') -> t
         try:
             text = _ocr_text(path)
             records, errors, parse_stats = _parse_ocr_records(text, songs, region)
+            if rapidocr_available() and _ocr_parse_needs_fallback(records, errors, parse_stats):
+                paddle_text = _paddle_ocr_text(path)
+                paddle_records, paddle_errors, paddle_stats = _parse_ocr_records(paddle_text, songs, region)
+                if _ocr_parse_quality(paddle_records, paddle_errors, paddle_stats) > _ocr_parse_quality(
+                    records,
+                    errors,
+                    parse_stats,
+                ):
+                    records, errors, parse_stats = paddle_records, paddle_errors, paddle_stats
             if not records and _is_portrait_ocr_candidate(path):
-                text = _ocr_text(path, force_full_image=True)
+                text = _paddle_ocr_text(path, force_full_image=True)
                 records, errors, parse_stats = _parse_ocr_records(text, songs, region)
         except Exception as exception_object:
             records = []

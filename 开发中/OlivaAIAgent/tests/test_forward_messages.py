@@ -15,6 +15,7 @@ class FakeData:
         self.message_id = 'current-message'
         self.group_id = 'group-1'
         self.user_id = 'user-1'
+        self.sender = {'nickname': '当前用户', 'name': '当前用户'}
         self.extend = {}
 
 
@@ -248,6 +249,144 @@ class ForwardMessageTest(unittest.TestCase):
         self.assertEqual(3, parsed['forward_count'])
         self.assertEqual(1, parsed['forward_failed'])
 
+    def test_nested_forward_accepts_inline_content_nodes(self):
+        event = FakeEvent(
+            '[OP:forward,id=outer]',
+            forward_results={
+                'outer': forward_result([{
+                    'type': 'node',
+                    'data': {
+                        'nickname': '外层用户',
+                        'content': [{
+                            'type': 'forward',
+                            'data': {
+                                'content': [{
+                                    'type': 'node',
+                                    'data': {
+                                        'nickname': '内层用户',
+                                        'content': [{'type': 'text', 'data': {'text': '内层正文'}}],
+                                    },
+                                }],
+                            },
+                        }],
+                    },
+                }]),
+            },
+        )
+
+        parsed = self.parse(event)
+
+        self.assertIn('外层用户: [合并转发:\n内层用户: 内层正文\n]', parsed['text'])
+        self.assertEqual(2, parsed['forward_count'])
+        self.assertNotIn('未能读取', parsed['text'])
+
+    def test_chat_record_marker_with_inline_nodes_is_expanded(self):
+        event = FakeEvent(
+            '[OP:forward,id=outer]',
+            forward_results={
+                'outer': forward_result([{
+                    'type': 'node',
+                    'data': {
+                        'nickname': '用户',
+                        'content': [{'type': 'text', 'data': {'text': '[聊天记录]'}}],
+                        'msg_elements': [{
+                            'author': {'username': '内层甲'},
+                            'content': '第一条',
+                        }, {
+                            'author': {'username': '内层乙'},
+                            'content': '第二条',
+                        }],
+                    },
+                }]),
+            },
+        )
+
+        parsed = self.parse(event)
+
+        self.assertIn('内层甲: 第一条', parsed['text'])
+        self.assertIn('内层乙: 第二条', parsed['text'])
+        self.assertNotIn('[聊天记录]', parsed['text'])
+        self.assertNotIn('未能读取', parsed['text'])
+
+    def test_flattened_chat_record_marker_is_not_kept_as_message(self):
+        event = FakeEvent(
+            '[OP:forward,id=outer]',
+            forward_results={
+                'outer': forward_result([{
+                    'type': 'node',
+                    'data': {
+                        'nickname': '用户',
+                        'content': [{'type': 'text', 'data': {'text': '[聊天记录]'}}],
+                    },
+                }, {
+                    'type': 'node',
+                    'data': {
+                        'nickname': '内层甲',
+                        'content': [{'type': 'text', 'data': {'text': '第一条'}}],
+                    },
+                }, {
+                    'type': 'node',
+                    'data': {
+                        'nickname': '内层乙',
+                        'content': [{'type': 'text', 'data': {'text': '第二条'}}],
+                    },
+                }]),
+            },
+        )
+
+        parsed = self.parse(event)
+
+        self.assertIn('内层甲: 第一条\n内层乙: 第二条', parsed['text'])
+        self.assertNotIn('[聊天记录]', parsed['text'])
+
+    def test_duplicate_sender_metadata_is_not_kept_as_message(self):
+        event = FakeEvent(
+            '[OP:forward,id=outer]',
+            forward_results={
+                'outer': forward_result([{
+                    'type': 'node',
+                    'data': {
+                        'nickname': '番茄酱香饼',
+                        'content': [{
+                            'type': 'text',
+                            'data': {'text': '[发送者] 番茄酱香饼'},
+                        }],
+                    },
+                }, {
+                    'type': 'node',
+                    'data': {
+                        'nickname': 'Letoic',
+                        'content': [{'type': 'text', 'data': {'text': '实际正文'}}],
+                    },
+                }]),
+            },
+        )
+
+        parsed = self.parse(event)
+
+        self.assertIn('Letoic: 实际正文', parsed['text'])
+        self.assertNotIn('[发送者]', parsed['text'])
+
+    def test_unresolved_chat_record_marker_is_reported_as_incomplete(self):
+        event = FakeEvent(
+            '[OP:forward,id=outer]',
+            forward_results={
+                'outer': forward_result([{
+                    'type': 'node',
+                    'data': {
+                        'id': 'missing-inner',
+                        'nickname': '用户',
+                        'content': [{'type': 'text', 'data': {'text': '[聊天记录]'}}],
+                    },
+                }]),
+            },
+        )
+
+        parsed = self.parse(event)
+
+        self.assertIn('[嵌套合并转发:未能读取]', parsed['text'])
+        self.assertNotIn('用户: [聊天记录]', parsed['text'])
+
     def test_quote_falls_back_to_raw_message_when_forward_fetch_fails(self):
         event = FakeEvent(
             '[OP:reply,id=missing-forward]继续',
@@ -321,6 +460,121 @@ class ForwardMessageTest(unittest.TestCase):
         self.assertEqual(source['text'], quoted['quote']['text'])
         self.assertEqual([], quoted_event.get_msg_calls)
         self.assertEqual([], quoted_event.get_forward_msg_calls)
+
+    def test_ambient_history_and_current_ai_turn_keep_expanded_forward(self):
+        event = FakeEvent(
+            '[OP:forward,id=context-forward]',
+            forward_results={
+                'context-forward': forward_result([
+                    {
+                        'type': 'node',
+                        'data': {
+                            'nickname': '甲',
+                            'content': [{'type': 'text', 'data': {'text': '第一段'}}],
+                        },
+                    },
+                    {
+                        'type': 'node',
+                        'data': {
+                            'nickname': '乙',
+                            'content': [{'type': 'text', 'data': {'text': '第二段'}}],
+                        },
+                    },
+                ]),
+            },
+        )
+        parsed = self.parse(event)
+
+        class ImmediateThread:
+            def __init__(self, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        class ImmediateLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        with mock.patch.object(OlivaAIAgent.ambient, 'addToHistory') as add_history, \
+                mock.patch.object(OlivaAIAgent.ambient, 'getGroupLock', return_value=ImmediateLock()), \
+                mock.patch.object(OlivaAIAgent.ambient, '_reply') as reply, \
+                mock.patch.object(OlivaAIAgent.ambient.threading, 'Thread', ImmediateThread):
+            OlivaAIAgent.ambient.process(
+                event,
+                None,
+                parsed,
+                'bot-1',
+                force=True,
+                attempt=True,
+                _vision_worker=True,
+            )
+
+        stored_text = add_history.call_args.args[5]
+        current_ai_text = reply.call_args.args[8]
+        self.assertEqual(stored_text, current_ai_text)
+        self.assertIn('甲: 第一段\n乙: 第二段', stored_text)
+        self.assertNotIn('[OP:forward', stored_text)
+
+    def test_forward_image_facts_are_placed_into_expanded_nodes(self):
+        OlivaAIAgent.conf.gConf['forward']['image'] = True
+        event = FakeEvent(
+            '[OP:forward,id=image-forward]',
+            forward_results={
+                'image-forward': forward_result([{
+                    'type': 'node',
+                    'data': {
+                        'nickname': '图片用户',
+                        'content': [{
+                            'type': 'image',
+                            'data': {'url': 'https://example.invalid/forward.jpg'},
+                        }],
+                    },
+                }]),
+            },
+        )
+        parsed = self.parse(event)
+        fact = '[图片:一张展开后的合并转发图片]'
+        with mock.patch.object(OlivaAIAgent.ambient, 'addToHistory') as add_history, \
+                mock.patch.object(
+                    OlivaAIAgent.vision,
+                    'translateIncoming',
+                    return_value='[OP:forward,id=image-forward]',
+                ), \
+                mock.patch.object(OlivaAIAgent.vision, 'ensureImageFacts', return_value=[fact]):
+            OlivaAIAgent.ambient.process(
+                event,
+                None,
+                parsed,
+                'bot-1',
+                attempt=False,
+                _vision_worker=True,
+            )
+
+        stored_text = add_history.call_args.args[5]
+        self.assertIn('图片用户: %s' % fact, stored_text)
+        self.assertNotIn('[[OLIVA_IMAGE_', stored_text)
+        self.assertNotIn('[OP:forward', stored_text)
+
+    def test_failed_forward_keeps_readable_failure_in_ambient_history(self):
+        event = FakeEvent('[OP:forward,id=missing-forward]')
+        parsed = self.parse(event)
+        with mock.patch.object(OlivaAIAgent.ambient, 'addToHistory') as add_history:
+            OlivaAIAgent.ambient.process(
+                event,
+                None,
+                parsed,
+                'bot-1',
+                attempt=False,
+                _vision_worker=True,
+            )
+
+        stored_text = add_history.call_args.args[5]
+        self.assertEqual('[合并转发:未能读取]', stored_text)
+        self.assertNotIn('[OP:forward', stored_text)
 
 
 if __name__ == '__main__':

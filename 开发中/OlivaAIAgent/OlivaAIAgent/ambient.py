@@ -557,19 +557,20 @@ def process(plugin_event, Proc, parsed, self_id,
                 trace_id=trace_id,
             )
     else:
-        message = parsed['text']
+        # parsed['text'] 已经完成引用、合并转发和媒体占位展开，是本轮正文的规范来源。
+        # raw 只用于提取顶层图片事实，不能反过来把展开正文覆盖成 [OP:forward]。
+        message = str(parsed.get('text', ''))
         try:
-            message = OlivaAIAgent.vision.translateIncoming(
+            translated_raw = OlivaAIAgent.vision.translateIncoming(
                 raw or message,
                 group_id,
                 bot_hash,
                 allow_network=allow_vision_network,
                 trace_id=trace_id,
             )
-            translated_codes = OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(message)
+            translated_codes = OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(translated_raw)
             codes = _ensure_image_facts(translated_codes)
-            if not translated_codes and codes:
-                message = OlivaAIAgent.vision.placeImageFacts(parsed['text'], codes)
+            message = OlivaAIAgent.vision.placeImageFacts(message, codes)
         except Exception as e:
             OlivaAIAgent.conf.traceLog(
                 Proc,
@@ -577,7 +578,7 @@ def process(plugin_event, Proc, parsed, self_id,
                 trace_id,
                 error='%s: %s' % (type(e).__name__, e),
             )
-            message = parsed['text']
+            message = str(parsed.get('text', ''))
         if has_media:
             message = OlivaAIAgent.media.translateIncoming(
                 message,

@@ -17,6 +17,8 @@ MAX_NODES = 100
 MAX_TEXT_CHARS = 16000
 MAX_MEDIA_ITEMS = 4
 FORWARD_TAG_PATTERN = re.compile(r'\[(?:CQ|OP):forward,[^\]]*\bid=([^,\]]+)', re.I)
+CHAT_RECORD_PLACEHOLDER_PATTERN = re.compile(r'^\s*\[(?:聊天记录|合并转发|转发消息)\]\s*$', re.I)
+SENDER_METADATA_PATTERN = re.compile(r'^\s*\[发送者\]\s*(.*?)\s*$', re.I)
 
 
 def _configEnabled(kind):
@@ -100,10 +102,84 @@ def _messageSegments(content):
     if isinstance(content, dict):
         if content.get('type') not in [None, '']:
             return [content]
-        nested = _first(content, 'message', 'segments', 'content', 'raw_message')
+        nested = _first(
+            content,
+            'message',
+            'segments',
+            'content',
+            'raw_message',
+            'messages',
+            'nodes',
+            'msg_elements',
+        )
         if nested is not None:
             return _messageSegments(nested)
     return [content]
+
+
+def _nodeData(node):
+    if isinstance(node, OlivOS.messageAPI.PARA.node):
+        raw = node.data
+    elif isinstance(node, dict):
+        raw = node
+    else:
+        return {}
+    if str(raw.get('type') or '').lower() == 'node' and isinstance(raw.get('data'), dict):
+        return raw['data']
+    return raw
+
+
+def _inlineMessages(data, include_content=False):
+    if not isinstance(data, dict):
+        return None
+    keys = ['messages', 'nodes', 'msg_elements', 'message_chain']
+    if include_content:
+        keys.append('content')
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return None
+
+
+def _plainNodeText(node):
+    '''只读取纯文本节点，用于识别平台生成的“聊天记录”结构标记。'''
+    data = _nodeData(node)
+    content = _first(data, 'content', 'message', 'segments', 'raw_message')
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, OlivOS.messageAPI.Message_templet):
+        segments = list(content.data)
+    elif isinstance(content, (list, tuple)):
+        segments = list(content)
+    else:
+        return None
+    if len(segments) != 1:
+        return None
+    segment = segments[0]
+    if isinstance(segment, OlivOS.messageAPI.PARA.text):
+        return str(segment.data.get('text', '')).strip()
+    if isinstance(segment, dict) and str(segment.get('type') or '').lower() == 'text':
+        data = segment.get('data') if isinstance(segment.get('data'), dict) else {}
+        return str(_first(data, 'text', 'content') or '').strip()
+    return None
+
+
+def _isDuplicateSenderMetadata(node, plain_text):
+    match = SENDER_METADATA_PATTERN.fullmatch(str(plain_text or ''))
+    if match is None:
+        return False
+    sender_name, _, _, _ = _nodeFields(node)
+    return bool(str(sender_name or '').strip() == match.group(1).strip())
+
+
+def _inlineForward(plugin_event, messages, state, trace_id, depth, stack, budget):
+    state['forward_count'] += 1
+    if depth > MAX_DEPTH:
+        state['failed_count'] += 1
+        return '[合并转发:嵌套层级过深]'
+    content = _formatNodes(plugin_event, messages, state, trace_id, depth, stack, budget)
+    return '[合并转发:\n%s\n]' % (content or '[空转发]')
 
 
 def _paraText(para, plugin_event, state, trace_id, depth, stack, budget):
@@ -119,6 +195,17 @@ def _paraText(para, plugin_event, state, trace_id, depth, stack, budget):
     if isinstance(para, OlivOS.messageAPI.PARA.video):
         return _mediaPlaceholder(state, 'video', para.data.get('url') or para.data.get('file'))
     if isinstance(para, OlivOS.messageAPI.PARA.forward):
+        inline_messages = _inlineMessages(para.data, include_content=True)
+        if inline_messages is not None:
+            return _inlineForward(
+                plugin_event,
+                inline_messages,
+                state,
+                trace_id,
+                depth + 1,
+                stack,
+                budget,
+            )
         return _expandInto(
             plugin_event,
             para.data.get('id'),
@@ -184,9 +271,9 @@ def _dictText(segment, plugin_event, state, trace_id, depth, stack, budget):
     if segment_type == 'video':
         return _mediaPlaceholder(state, 'video', _first(data, 'url', 'temp_url', 'file', 'resource_id'))
     if segment_type == 'forward':
-        inline_messages = data.get('messages')
-        if isinstance(inline_messages, list):
-            return _formatNodes(
+        inline_messages = _inlineMessages(data, include_content=True)
+        if inline_messages is not None:
+            return _inlineForward(
                 plugin_event,
                 inline_messages,
                 state,
@@ -266,12 +353,14 @@ def _nodeFields(node):
     else:
         data = raw
     sender = data.get('sender') if isinstance(data.get('sender'), dict) else {}
-    name = _first(data, 'name', 'nickname', 'sender_name', 'sender_nick')
+    if not sender and isinstance(data.get('author'), dict):
+        sender = data['author']
+    name = _first(data, 'name', 'nickname', 'username', 'sender_name', 'sender_nick')
     if name in [None, '']:
-        name = _first(sender, 'nickname', 'name', 'sender_name')
-    user_id = _first(data, 'uin', 'user_id', 'sender_id')
+        name = _first(sender, 'nickname', 'username', 'name', 'sender_name')
+    user_id = _first(data, 'uin', 'user_id', 'sender_id', 'member_openid', 'user_openid')
     if user_id in [None, '']:
-        user_id = _first(sender, 'user_id', 'id', 'uin')
+        user_id = _first(sender, 'user_id', 'id', 'uin', 'member_openid', 'user_openid')
     content = _first(data, 'content', 'message', 'segments', 'raw_message')
     message_id = _first(data, 'id', 'message_id')
     return name, user_id, content, message_id
@@ -324,13 +413,51 @@ def _formatNodes(plugin_event, messages, state, trace_id, depth, stack, budget):
     if _looksLikeSegments(messages):
         messages = [{'name': '用户', 'content': messages}]
     lines = []
-    for node in messages:
+    for index, node in enumerate(messages):
+        plain_text = _plainNodeText(node)
+        if plain_text is not None and _isDuplicateSenderMetadata(node, plain_text):
+            _trace('message.forward.sender_metadata_skipped', trace_id, depth=depth)
+            continue
         if budget['nodes'] >= MAX_NODES:
             state['truncated'] = True
             lines.append('[后续节点已截断]')
             break
         budget['nodes'] += 1
         state['node_count'] += 1
+        if plain_text is not None and CHAT_RECORD_PLACEHOLDER_PATTERN.fullmatch(plain_text):
+            data = _nodeData(node)
+            inline_messages = _inlineMessages(data)
+            if inline_messages is not None:
+                lines.append(_inlineForward(
+                    plugin_event,
+                    inline_messages,
+                    state,
+                    trace_id,
+                    depth + 1,
+                    stack,
+                    budget,
+                ))
+                continue
+            # QQ 官方等实现可能已把内层节点平铺在该标记之后，此时标记本身不是聊天内容。
+            if index + 1 < len(messages):
+                _trace('message.forward.nested_flattened', trace_id, depth=depth)
+                continue
+            _, _, _, message_id = _nodeFields(node)
+            if message_id not in [None, '', '-1', -1]:
+                expanded = _expandInto(
+                    plugin_event,
+                    message_id,
+                    state,
+                    trace_id,
+                    depth + 1,
+                    stack,
+                    budget,
+                )
+                if expanded != '[合并转发:未能读取]':
+                    lines.append(expanded)
+                    continue
+            lines.append('[嵌套合并转发:未能读取]')
+            continue
         lines.append(_parseNode(plugin_event, node, state, trace_id, depth, stack, budget))
     return '\n'.join(line for line in lines if line)
 
