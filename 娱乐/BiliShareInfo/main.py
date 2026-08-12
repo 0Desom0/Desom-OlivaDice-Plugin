@@ -752,7 +752,7 @@ def is_group_enabled(plugin_event) -> bool:
     return bool(
         group_config.get('groups', {}).get(
             group_key,
-            bot_config.get('default_group_enable', False),
+                bot_config.get('default_group_enable', True),
         )
     )
 
@@ -788,7 +788,7 @@ def is_live_enabled(plugin_event) -> bool:
         return bool(
             group_config.get('live_groups', {}).get(
                 group_key,
-                bot_config.get('live_enable', False),
+                bot_config.get('live_enable', True),
             )
         )
     except Exception:
@@ -861,10 +861,10 @@ def normalize_config_data(config_data: Any) -> dict[str, Any]:
     if not isinstance(config_data, dict):
         return normalized_config
     normalized_config['global_enable'] = bool(config_data.get('global_enable', True))
-    normalized_config['default_group_enable'] = bool(config_data.get('default_group_enable', False))
+    normalized_config['default_group_enable'] = bool(config_data.get('default_group_enable', True))
     normalized_config['single_forward_enable'] = bool(config_data.get('single_forward_enable', False))
     normalized_config['multi_forward_enable'] = bool(config_data.get('multi_forward_enable', True))
-    normalized_config['live_enable'] = bool(config_data.get('live_enable', False))
+    normalized_config['live_enable'] = bool(config_data.get('live_enable', True))
     normalized_config['parse_debug_enable'] = bool(config_data.get('parse_debug_enable', False))
     normalized_config['preview_ocr_enable'] = bool(config_data.get('preview_ocr_enable', True))
     normalized_config['configured_master_list'] = normalize_id_list(

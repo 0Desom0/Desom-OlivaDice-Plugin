@@ -1433,6 +1433,7 @@ def _callReply(
         int(OlivaAIAgent.conf.get('agent', 'max_auto_continuations', default=2)),
     )
     continuation_rounds = 0
+    internal_repair_rounds = 0
     failed_attempts = 0
     request_round = 0
     convo = list(messages)
@@ -1462,6 +1463,22 @@ def _callReply(
             failed_attempts += 1
             continue
         reply_text = '\n\n'.join(reply_list)
+        if OlivaAIAgent.replyStyle.containsInternalDeliberation(reply_text):
+            internal_repair_rounds += 1
+            OlivaAIAgent.conf.traceLog(
+                Proc,
+                'agent.internal_deliberation.blocked',
+                trace_id,
+                attempt=internal_repair_rounds,
+                scene='ambient',
+            )
+            if internal_repair_rounds <= 2:
+                convo.append({
+                    'role': 'system',
+                    'content': OlivaAIAgent.completion.internalDeliberationPrompt(json_reply=True),
+                })
+                continue
+            return []
         if OlivaAIAgent.completion.needsContinuation(reply_text, request_text=request_text):
             if continuation_rounds < max_continuations:
                 continuation_rounds += 1
@@ -1524,6 +1541,7 @@ def _callReplyWithTools(
     tool_rounds = 0
     completed_action = False
     continuation_rounds = 0
+    internal_repair_rounds = 0
     request_round = 0
     convo = list(messages)
     while (
@@ -1563,6 +1581,22 @@ def _callReplyWithTools(
             elif reply_list is None:
                 conf.debugLog(Proc, '潜行+工具 空回复,跳过')
             reply_text = '\n\n'.join(reply_list or [])
+            if OlivaAIAgent.replyStyle.containsInternalDeliberation(reply_text):
+                internal_repair_rounds += 1
+                conf.traceLog(
+                    Proc,
+                    'agent.internal_deliberation.blocked',
+                    trace_id,
+                    attempt=internal_repair_rounds,
+                    scene='ambient_tools',
+                )
+                if internal_repair_rounds <= 2:
+                    convo.append({
+                        'role': 'system',
+                        'content': OlivaAIAgent.completion.internalDeliberationPrompt(json_reply=True),
+                    })
+                    continue
+                return _suppressTextAfterVoice([], ctx, Proc, trace_id)
             if OlivaAIAgent.completion.needsContinuation(
                 reply_text,
                 action_performed=completed_action,
@@ -1634,6 +1668,16 @@ def _callReplyWithTools(
             conf.debugLog(Proc, '潜行+工具 收尾JSON失败,兜底: %s' % text[:200])
             reply_list = _fallback_parse_intent(text)
         reply_text = '\n\n'.join(reply_list or [])
+        if OlivaAIAgent.replyStyle.containsInternalDeliberation(reply_text):
+            conf.traceLog(
+                Proc,
+                'agent.internal_deliberation.blocked',
+                trace_id,
+                attempt=internal_repair_rounds + 1,
+                scene='ambient_tools_final',
+            )
+            reply_list = []
+            reply_text = ''
         if OlivaAIAgent.completion.needsContinuation(
             reply_text,
             action_performed=completed_action,

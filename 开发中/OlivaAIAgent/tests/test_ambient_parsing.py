@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 import OlivaAIAgent
 
@@ -78,6 +79,72 @@ class AmbientReplyParsingTest(unittest.TestCase):
         self.assertEqual('答案在这里（这是补充说明）。', OlivaAIAgent.replyStyle.cleanReplyText(
             '答案在这里（这是补充说明）。',
         ))
+
+    def test_internal_agent_deliberation_is_never_outgoing_text(self):
+        leaked = (
+            'The current message from Zeroyume is "狗被小芙咬了". '
+            'Wait, but the current speaker listed in internal context is Zeroyume.'
+        )
+        self.assertTrue(OlivaAIAgent.replyStyle.containsInternalDeliberation(leaked))
+        self.assertEqual('', OlivaAIAgent.replyStyle.cleanReplyText(leaked))
+
+    def test_hidden_thinking_block_is_removed_but_final_answer_is_kept(self):
+        self.assertEqual(
+            '这锅我可不背。',
+            OlivaAIAgent.replyStyle.cleanReplyText(
+                '<think>Let me check the current speaker in internal context.</think>这锅我可不背。',
+            ),
+        )
+
+    def test_ambient_retries_instead_of_sending_internal_deliberation(self):
+        leaked = {
+            'ok': True,
+            'text': '{"r":["Actually the last message in history is from Zeroyume."]}',
+            'tool_calls': [],
+        }
+        repaired = {'ok': True, 'text': '{"r":["这锅我可不背。"]}', 'tool_calls': []}
+        with mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=[leaked, repaired]) as chat:
+            reply = OlivaAIAgent.ambient._callReply(
+                None,
+                None,
+                'bot',
+                'group',
+                [{'role': 'user', 'content': '狗被小芙咬了'}],
+                [],
+                False,
+                request_text='狗被小芙咬了',
+            )
+
+        self.assertEqual(['这锅我可不背。'], reply)
+        self.assertEqual(2, chat.call_count)
+        self.assertIn('内部过程泄漏修正', chat.call_args.args[0][-1]['content'])
+
+    def test_non_json_multiline_deliberation_uses_the_same_repair_path(self):
+        leaked = {
+            'ok': True,
+            'text': (
+                'The current message from Zeroyume is "狗被小芙咬了". Wait, but the current speaker '
+                'listed in internal context is Zeroyume.\n\n'
+                'Actually the last message in history is from another user.\n\n'
+                'Best to respond in character as 小芙.'
+            ),
+            'tool_calls': [],
+        }
+        repaired = {'ok': True, 'text': '{"r":["谁咬的？小芙可不认这口锅。"]}', 'tool_calls': []}
+        with mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=[leaked, repaired]) as chat:
+            reply = OlivaAIAgent.ambient._callReply(
+                None,
+                None,
+                'bot',
+                'group',
+                [{'role': 'user', 'content': '狗被小芙咬了'}],
+                [],
+                False,
+                request_text='狗被小芙咬了',
+            )
+
+        self.assertEqual(['谁咬的？小芙可不认这口锅。'], reply)
+        self.assertEqual(2, chat.call_count)
 
 
 if __name__ == '__main__':

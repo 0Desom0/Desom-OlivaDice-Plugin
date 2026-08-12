@@ -2,7 +2,7 @@
     "name" : "BiliShareInfo",
     "author" : "Desom-fu",
     "namespace" : "BiliShareInfo",
-    "info" : "自动解析B站小程序/链接分享并回复视频信息",
+    "info" : "自动解析B站视频、小程序和直播间链接并回复详细信息",
     "priority" : 30000,
     "svn" : 10,
     "version" : "1.1.0",

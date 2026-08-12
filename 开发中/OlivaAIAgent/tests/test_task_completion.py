@@ -127,6 +127,49 @@ class TaskCompletionTest(unittest.TestCase):
         self.assertEqual(['故事大纲：义体芯片正在吞噬持有者的记忆。'], reply)
         self.assertEqual(2, chat.call_count)
 
+    def test_tool_call_with_intermediate_text_continues_to_final_reply(self):
+        responses = [
+            {
+                'ok': True,
+                'text': '我先查一下，马上告诉你。',
+                'tool_calls': [{
+                    'id': 'call-1',
+                    'name': 'web_search',
+                    'arguments': '{"query":"测试"}',
+                }],
+            },
+            {
+                'ok': True,
+                'text': '{"r":["查到了：这是测试结果。"]}',
+                'tool_calls': [],
+            },
+        ]
+        with (
+            mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=responses) as chat,
+            mock.patch.object(
+                OlivaAIAgent.tools,
+                'execTool',
+                return_value='{"active":true,"data":{"items":["ok"]}}',
+            ) as exec_tool,
+            mock.patch.object(OlivaAIAgent.voice, 'hasSentVoice', return_value=False),
+        ):
+            reply = OlivaAIAgent.ambient._callReplyWithTools(
+                None,
+                None,
+                'bot',
+                'group',
+                [{'role': 'user', 'content': '帮我查测试'}],
+                [],
+                trace_id='tool-intermediate-text-test',
+                tool_ctx={'trace_id': 'tool-intermediate-text-test'},
+                tool_defs=[{'name': 'web_search'}],
+                request_text='帮我查测试',
+            )
+
+        self.assertEqual(['查到了：这是测试结果。'], reply)
+        self.assertEqual(2, chat.call_count)
+        exec_tool.assert_called_once()
+
     def test_repeated_empty_promises_stop_at_configured_limit(self):
         response = {'ok': True, 'text': '{"r":["稍等一下，我马上发"]}', 'tool_calls': []}
         with mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=[response, response, response]) as chat:
@@ -148,6 +191,21 @@ class TaskCompletionTest(unittest.TestCase):
         source = inspect.getsource(OlivaAIAgent.msgReply._runAgent)
         self.assertIn('completion.needsContinuation', source)
         self.assertIn('max_auto_continuations', source)
+        self.assertIn('智能体工具收尾', source)
+
+    def test_explicit_agent_normalizes_reply_json_but_keeps_plain_text(self):
+        self.assertEqual(
+            '已经查到了。',
+            OlivaAIAgent.msgReply._normalizeAgentFinalText('{"r":["已经查到了。"]}'),
+        )
+        self.assertEqual(
+            '普通自然语言回复。',
+            OlivaAIAgent.msgReply._normalizeAgentFinalText('普通自然语言回复。'),
+        )
+        self.assertEqual(
+            '',
+            OlivaAIAgent.msgReply._normalizeAgentFinalText('{"r":["结果未闭合"'),
+        )
 
 
 if __name__ == '__main__':

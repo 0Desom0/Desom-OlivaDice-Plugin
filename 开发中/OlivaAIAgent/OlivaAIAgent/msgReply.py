@@ -1683,6 +1683,27 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
     return '\n\n'.join([p for p in parts if p])
 
 
+def _normalizeAgentFinalText(value):
+    '''Normalize an Agent final message without treating ordinary prose as JSON.'''
+    raw = str(value or '').strip()
+    if not raw:
+        return ''
+    looks_like_reply_json = (
+        'Tesla.Env' in raw
+        or re.search(r'"r"\s*:', raw) is not None
+    )
+    if not looks_like_reply_json:
+        return OlivaAIAgent.replyStyle.cleanReplyText(raw)
+    parsed = OlivaAIAgent.ambient._parseR(raw)
+    if parsed is None:
+        parsed = OlivaAIAgent.ambient._fallback_parse_intent(raw)
+    if not isinstance(parsed, list):
+        return ''
+    return OlivaAIAgent.replyStyle.cleanReplyText(
+        '\n\n'.join(str(item) for item in parsed if str(item).strip()),
+    )
+
+
 def _buildVolatileContext(plugin_event, ctx, is_master):
     '''每轮或随检索变化的上下文，放到历史之后、当前用户消息之前。'''
     conf = OlivaAIAgent.conf
@@ -2071,6 +2092,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
         tool_rounds = 0
         completed_action = False
         continuation_rounds = 0
+        internal_repair_rounds = 0
         request_round = 0
         while True:
             request_round += 1
@@ -2116,7 +2138,24 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 asst_msg['tool_calls'] = tool_calls
             messages.append(asst_msg)
             if not tool_calls:
-                candidate_text = result.get('text', '')
+                raw_candidate_text = result.get('text', '')
+                if OlivaAIAgent.replyStyle.containsInternalDeliberation(raw_candidate_text):
+                    internal_repair_rounds += 1
+                    conf.traceLog(
+                        Proc,
+                        'agent.internal_deliberation.blocked',
+                        trace_id,
+                        attempt=internal_repair_rounds,
+                        scene='agent',
+                    )
+                    if internal_repair_rounds <= 2:
+                        messages.append({
+                            'role': 'system',
+                            'content': OlivaAIAgent.completion.internalDeliberationPrompt(),
+                        })
+                        continue
+                    raw_candidate_text = '这次回复生成异常，请再试一次。'
+                candidate_text = _normalizeAgentFinalText(raw_candidate_text)
                 needs_continuation = OlivaAIAgent.completion.needsContinuation(
                     candidate_text,
                     action_performed=completed_action,
@@ -2149,7 +2188,29 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 break
             new_msgs.append(asst_msg)
             if tool_rounds >= max_tool_rounds:
-                final_text = result.get('text', '') or '(已达到最大工具调用轮数)'
+                # 工具调用轮数耗尽时，assistant.content 仍可能只是“我先查一下”。
+                # 不把这类中间话术当最终回复，额外请求一次无工具的最终收尾。
+                messages.append({
+                    'role': 'system',
+                    'content': (
+                        '工具调用轮数已达到上限。不要再调用工具，也不要输出刚才的过程话术；'
+                        '请根据已有工具结果直接输出最终回复。'
+                    ),
+                })
+                final_result = OlivaAIAgent.aiClient.chat(
+                    messages,
+                    tools=None,
+                    force_no_stream=True,
+                    trace_id=trace_id,
+                    purpose='智能体工具收尾',
+                )
+                if final_result.get('ok'):
+                    final_text = _normalizeAgentFinalText(final_result.get('text', ''))
+                else:
+                    final_text = '工具处理已达到轮数上限，请稍后再试。'
+                if OlivaAIAgent.replyStyle.containsInternalDeliberation(final_text):
+                    final_text = '这次回复生成异常，请再试一次。'
+                new_msgs.append({'role': 'assistant', 'content': final_text})
                 break
             for tc in tool_calls:
                 try:

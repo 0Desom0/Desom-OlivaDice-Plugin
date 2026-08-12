@@ -1414,6 +1414,7 @@ _TRACE_STAGE_ZH = {
     'agent.round.response': '智能体轮次响应',
     'agent.continuation.requested': '检测到未完成承诺，继续执行',
     'agent.continuation.exhausted': '自动续行仍未完成',
+    'agent.internal_deliberation.blocked': '已拦截模型内部分析并重新生成',
     'agent.reply.send': '智能体发送回复',
     'agent.session.saved': '智能体会话已保存',
     'agent.finished': '智能体处理完成',

@@ -4,6 +4,20 @@
 import re
 
 
+_HIDDEN_REASONING_BLOCK = re.compile(
+    r'<(?:think|thinking|analysis|reasoning)>.*?</(?:think|thinking|analysis|reasoning)>',
+    re.I | re.S,
+)
+_INTERNAL_DELIBERATION_PATTERNS = (
+    re.compile(r'\b(?:internal|dynamic) context\b', re.I),
+    re.compile(r'\b(?:last|latest|final) (?:visible )?(?:new )?message (?:in|from|at) (?:the )?history\b', re.I),
+    re.compile(r'\bcurrent (?:message|speaker)\b.{0,80}\b(?:listed|internal|identity|sender|from)\b', re.I | re.S),
+    re.compile(r'\b(?:task|system) (?:header|prompt|says|instruction)\b', re.I),
+    re.compile(r'\b(?:best|better) to respond(?: in character)?\b', re.I),
+    re.compile(r'\bpresumably (?:the )?trigger message\b', re.I),
+    re.compile(r'(?:当前发言者身份|内部上下文|动态上下文|系统提示词|任务头部)'),
+    re.compile(r'(?:历史|上下文)(?:记录)?(?:里|中|末尾|最后).{0,20}(?:消息|发言者).{0,20}(?:是谁|身份|显示|来自)'),
+)
 _SELF_ACTION_FIRST_CLAUSE = re.compile(
     r'''^\s*(?:小芙|芙萝妮娅(?:Fronia)?|本姑娘|本小姐|我)\s*'''
     r'''(?:刚才|先|又|轻轻地?|微微地?)?'''
@@ -26,9 +40,20 @@ _STANDALONE_ACTION = re.compile(
 )
 
 
+def containsInternalDeliberation(text):
+    '''Detect model self-checks about private prompt/context before sending.'''
+    value = str(text or '').strip()
+    if not value:
+        return False
+    return any(pattern.search(value) for pattern in _INTERNAL_DELIBERATION_PATTERNS)
+
+
 def cleanReplyText(text):
     '''Remove explicit self-directed stage directions while preserving content.'''
     value = str(text or '').replace('\r\n', '\n').replace('\r', '\n')
+    value = _HIDDEN_REASONING_BLOCK.sub('', value).strip()
+    if containsInternalDeliberation(value):
+        return ''
     cleaned = _SELF_ACTION_FIRST_CLAUSE.sub('', value, count=1)
     if cleaned != value:
         value = cleaned.lstrip()
