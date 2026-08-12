@@ -90,7 +90,7 @@ def _template_path(region: str = 'global', card_type: str = 'user') -> Path:
             return candidate
     checked_paths = '\n'.join(f'- {candidate.resolve()}' for candidate in candidates)
     raise FileNotFoundError(
-        f'未找到 Lanota Portal {region_display_name(normalized_region)} HTML 模板，已检查：\n{checked_paths}'
+        f'未找到 Lanota {region_display_name(normalized_region)} HTML 卡片模板，已检查：\n{checked_paths}'
     )
 
 
@@ -108,26 +108,26 @@ def _request_json(method: str, url: str, **kwargs) -> dict[str, Any]:
         **kwargs,
     )
     if response.status_code == 401:
-        raise PermissionError('Portal 登录已失效。')
+        raise PermissionError('主力 API 登录已失效。')
     if response.status_code == 404:
         raise LookupError('没有找到对应的 Lanota 玩家。')
     try:
         data = response.json()
     except ValueError as exception_object:
         if response.ok:
-            raise RuntimeError('Portal 返回了无法解析的响应。') from exception_object
+            raise RuntimeError('主力 API 返回了无法解析的响应。') from exception_object
         response.raise_for_status()
-        raise RuntimeError('Portal 请求失败。') from exception_object
+        raise RuntimeError('主力 API 请求失败。') from exception_object
     if not response.ok:
         error_data = data.get('error', {}) if isinstance(data, dict) else {}
         error_message = error_data.get('message', '') if isinstance(error_data, dict) else ''
         if error_message == 'INVALID_LOGIN_CREDENTIALS':
-            raise PermissionError('Lanota Portal 登录账号或密码不正确。')
+            raise PermissionError('Lanota 主力 API 登录账号或密码不正确。')
         if error_message:
-            raise RuntimeError(f'Portal 请求失败：{error_message}')
+            raise RuntimeError(f'主力 API 请求失败：{error_message}')
         response.raise_for_status()
     if not isinstance(data, dict):
-        raise RuntimeError('Portal 返回了无法识别的数据。')
+        raise RuntimeError('主力 API 返回了无法识别的数据。')
     return data
 
 
@@ -147,7 +147,7 @@ def _password_config() -> tuple[str, str]:
     password = str(global_config.get('lanota_portal_password', '') or '')
     if not email or not password:
         config_path = os.path.abspath(utils.get_global_config_path())
-        raise RuntimeError(f'尚未配置 Lanota Portal 登录账号或密码，请填写：{config_path}')
+        raise RuntimeError(f'尚未配置 Lanota 主力 API 登录账号或密码，请填写：{config_path}')
     return email, password
 
 
@@ -155,7 +155,7 @@ def _firebase_api_key() -> str:
     global_config = utils.load_global_config()
     api_key = str(global_config.get('lanota_portal_firebase_api_key', '') or '').strip()
     if not api_key:
-        raise RuntimeError('尚未配置 Lanota Portal Firebase Web API Key。')
+        raise RuntimeError('尚未配置 Lanota 主力 API Firebase Web API Key。')
     return api_key
 
 
@@ -198,7 +198,7 @@ def _refresh_token(refresh_token: str, email: str) -> dict[str, Any]:
         response.raise_for_status()
         data = response.json()
     except Exception as exception_object:
-        raise PermissionError('Lanota Portal 登录会话刷新失败。') from exception_object
+        raise PermissionError('Lanota 主力 API 登录会话刷新失败。') from exception_object
     token_data = {
         'id_token': data.get('id_token', ''),
         'refresh_token': data.get('refresh_token', refresh_token),
@@ -270,7 +270,7 @@ def region_display_name(region: Any) -> str:
 def credential_error_hint(exception_object: Exception, region: Any) -> str:
     """Portal 凭据失效时返回面向查询用户的管理员处理提示。"""
     if isinstance(exception_object, ChinaApiUnavailableError):
-        return '国服 Portal 与备用 API 均不可用，请联系管理员更新 Token。'
+        return '国服主力 API 与备用 API 均不可用，请联系管理员更新 Token。'
     error_text = format_error(exception_object).casefold()
     credential_markers = ('token', '登录', '账号', '密码', '授权', 'credential')
     if not isinstance(exception_object, PermissionError) and not any(
@@ -278,7 +278,7 @@ def credential_error_hint(exception_object: Exception, region: Any) -> str:
     ):
         return ''
     if normalize_region(region) == 'china':
-        return '国服 Portal Token 可能已过期，请联系管理员更新 Token。'
+        return '国服主力 API Token 可能已过期，请联系管理员更新 Token。'
     return '国际服登录失败，请联系管理员检查登录账号或密码配置。'
 
 
@@ -308,7 +308,7 @@ def get_china_token() -> str:
                 china_portal_token['expires_at'] = expires_at
                 return token
         china_portal_token = {}
-    raise PermissionError('国服 Portal Token 不可用，请联系管理员更新 Token。')
+    raise PermissionError('国服主力 API Token 不可用，请联系管理员更新 Token。')
 
 
 def api_get(
@@ -332,7 +332,7 @@ def api_get(
                 # 只清除本次请求实际使用的旧 Token，不覆盖手机刚上传的新 Token。
                 if saved_token == request_token:
                     _save_china_token_data({})
-            raise PermissionError('国服 Portal Token 已失效，请联系管理员更新 Token。') from exception_object
+            raise PermissionError('国服主力 API Token 已失效，请联系管理员更新 Token。') from exception_object
 
     url = f'{config.lanota_portal_api_base_url}/{path.lstrip("/")}'
     try:
@@ -414,15 +414,22 @@ class ChinaApiUnavailableError(RuntimeError):
         self.portal_error = portal_error
         self.fallback_error = fallback_error
         super().__init__(
-            f'国服 Portal 与备用 API 均不可用：{format_error(portal_error)}；'
+            f'国服主力 API 与备用 API 均不可用：{format_error(portal_error)}；'
             f'备用 API：{format_error(fallback_error)}'
         )
+
+
+def _is_player_not_found(exception_object: Exception) -> bool:
+    return isinstance(exception_object, (LookupError, china_grpc.ChinaPlayerNotFoundError))
 
 
 def _china_fallback_player(nano_id: str, portal_error: Exception) -> dict[str, Any]:
     try:
         data = china_grpc.get_player(nano_id, timeout=config.lanota_portal_timeout_seconds)
     except Exception as fallback_error:
+        # 任一接口明确完成验证并返回查无玩家时，应优先相信该业务结果。
+        if _is_player_not_found(portal_error) or _is_player_not_found(fallback_error):
+            raise LookupError('验证失败：没有找到对应玩家。') from fallback_error
         raise ChinaApiUnavailableError(portal_error, fallback_error) from fallback_error
     data['_portal_error'] = format_error(portal_error)
     return data
@@ -480,7 +487,7 @@ def bind_nano_id(plugin_event, nano_id: str, region: str = 'global') -> tuple[bo
         data = get_player(clean_id, region=normalized_region)
         player = data.get('player', {})
         if not isinstance(player, dict) or not player.get('nanoId'):
-            raise RuntimeError('Portal 返回的玩家资料不完整。')
+            raise RuntimeError('主力 API 返回的玩家资料不完整。')
         bot_hash, user_id, user_info, user_data = _user_data_and_info(plugin_event)
         if not user_id:
             raise RuntimeError('无法取得当前消息发送者 ID。')
@@ -501,6 +508,10 @@ def bind_nano_id(plugin_event, nano_id: str, region: str = 'global') -> tuple[bo
             user_info['lanota_cache'] = cache
         if not function.save_user_data(user_data, bot_hash):
             raise OSError('好友码验证成功，但保存绑定失败，请检查插件数据目录权限。')
+    except LookupError:
+        return False, '验证失败：没有找到对应玩家。'
+    except ChinaApiUnavailableError:
+        return False, '国服主力 API 与备用 API 均不可用，请联系管理员更新 Token。'
     except Exception as exception_object:
         return False, format_error(exception_object)
     username = player.get('username') or '未知玩家'
@@ -913,7 +924,7 @@ def _compress_rendered_card(path: Path) -> Path:
         return output_path
     except Exception as exception_object:
         output_path.unlink(missing_ok=True)
-        utils.debug_log(None, f'Portal 图片压缩失败：{type(exception_object).__name__}: {exception_object}')
+        utils.debug_log(None, f'HTML 卡片图片压缩失败：{type(exception_object).__name__}: {exception_object}')
         return path
 
 
@@ -922,7 +933,7 @@ def _template_html(data: dict[str, Any], card_type: str = 'user') -> str:
     template = _template_path(normalized_region, card_type).read_text(encoding='utf-8')
     placeholder = '/*__LANOTA_DATA__*/'
     if placeholder not in template:
-        raise RuntimeError('Lanota Portal HTML 模板缺少数据占位符。')
+        raise RuntimeError('Lanota HTML 卡片模板缺少数据占位符。')
     template_data = dict(data)
     template_data.pop('_portal_region', None)
     asset_base_url = (
@@ -934,7 +945,7 @@ def _template_html(data: dict[str, Any], card_type: str = 'user') -> str:
     template = template.replace(config.lanota_portal_asset_base_url, asset_base_url)
     template_data['portalAssetBaseUrl'] = asset_base_url
     template_data['portalSourceLabel'] = (
-        'GMZON LANOTA PORTAL' if normalized_region == 'china' else 'NOXYGAMES LANOTA PORTAL'
+        'GMZON LANOTA' if normalized_region == 'china' else 'NOXYGAMES LANOTA'
     )
     template_data['portalRegionName'] = region_display_name(normalized_region)
     if card_type == 'b30':
@@ -1031,12 +1042,12 @@ def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> st
                 detail = '浏览器未生成有效 PNG 文件。'
             last_error = f'{headless_mode} 退出码 {result.returncode}：{detail[-800:]}'
         _set_render_error(last_error)
-        utils.debug_log(None, f'Portal 浏览器截图失败：{last_error}')
+        utils.debug_log(None, f'HTML 卡片浏览器截图失败：{last_error}')
         return None
     except Exception as exception_object:
         error_text = f'{type(exception_object).__name__}: {exception_object}'
         _set_render_error(error_text)
-        utils.debug_log(None, f'Portal 卡片渲染失败：{error_text}')
+        utils.debug_log(None, f'HTML 卡片渲染失败：{error_text}')
         return None
     finally:
         try:
@@ -1087,4 +1098,4 @@ def build_fallback_text(data: dict[str, Any]) -> str:
 
 def format_error(exception_object: Exception) -> str:
     message = str(exception_object).strip()
-    return message or f'Portal 请求失败：{type(exception_object).__name__}'
+    return message or f'主力 API 请求失败：{type(exception_object).__name__}'

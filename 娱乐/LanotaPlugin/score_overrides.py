@@ -1143,7 +1143,7 @@ def _parse_portal_rating_list_ocr(
         if best_match is None:
             visible = [candidate for _index, candidate in recognized_candidates[-2:]]
             if visible and any(len(candidate) >= 3 for candidate in visible):
-                errors.append(f'Portal Rating 列表有一行未能匹配曲名（当前识别：{visible}），未录入。')
+                errors.append(f'官网 Rating 列表有一行未能匹配曲名（当前识别：{visible}），未录入。')
         else:
             row_starts[-1] = best_match[0]
             matched_rows.append((row_position, *best_match))
@@ -1156,7 +1156,7 @@ def _parse_portal_rating_list_ocr(
         single_rating, rating_percent = _portal_list_rating_values(row_lines)
         match_summary = _matched_chart_summary(song, difficulty)
         if single_rating is None:
-            errors.append(f'{match_summary}\nPortal Rating 列表该行缺少右侧单曲 Rating，未录入。')
+            errors.append(f'{match_summary}\n官网 Rating 列表该行缺少右侧单曲 Rating，未录入。')
             continue
         total, chart_constant = _chart_values(song, difficulty)
         if total is None or chart_constant is None:
@@ -1526,7 +1526,7 @@ def process_images(plugin_event, message_text: str, region: str = 'global') -> t
         if list_mode:
             row_count = int(parse_stats.get('rows', len(records)))
             dedup_count = int(parse_stats.get('deduplicated', 0))
-            header = f'Portal Rating 列表识别：共识别 {row_count} 行，保留 {len(records)} 条'
+            header = f'官网 Rating 列表识别：共识别 {row_count} 行，保留 {len(records)} 条'
             if dedup_count:
                 header += f'（重复曲目已按更高单曲 Rating 合并 {dedup_count} 条）'
             header += f'，本张图片写入 {image_added} 条。'
@@ -1537,8 +1537,8 @@ def process_images(plugin_event, message_text: str, region: str = 'global') -> t
         added = 0
     if not refs:
         messages.append(
-            '未找到图片。Portal 单曲图至少包含曲名、难度和“单曲 RATING”；'
-            'Portal Rating 列表图需保留每行曲名、难度、Rating% 和右侧单曲 Rating；'
+            '未找到图片。官网单曲图至少包含曲名、难度和“单曲 RATING”；'
+            '官网 Rating 列表图需保留每行曲名、难度、Rating% 和右侧单曲 Rating；'
             '4.0+ 结算图须包含曲名、难度、H/T/F、总物量和底部七位分数。'
         )
     elif ignored_count:
@@ -1551,7 +1551,7 @@ def list_text(plugin_event, region: str | None = None) -> str:
     if not rows:
         return (
             '当前没有录入成绩。用法：/la score <曲名> <难度> <单曲Rating>，'
-            '或附带 Portal 单曲/Rating 列表/游戏结算截图。'
+            '或附带官网单曲/Rating 列表/游戏结算截图。'
         )
     try:
         from . import b30

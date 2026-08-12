@@ -321,7 +321,7 @@ class ScoreOverrideTest(unittest.TestCase):
     def test_help_lists_global_clear_command(self) -> None:
         self.assertIn('/la score delete all global - 清空国际服录入成绩', message.help_categories['score']['commands'])
         self.assertTrue(
-            any('Portal 单曲/Rating 列表' in command for command in message.help_categories['score']['commands']),
+            any('官网单曲/Rating 列表' in command for command in message.help_categories['score']['commands']),
         )
 
     def test_portal_rating_list_records_multiple_rows_and_keeps_highest_duplicate(self) -> None:

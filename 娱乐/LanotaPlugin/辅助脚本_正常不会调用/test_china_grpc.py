@@ -99,6 +99,54 @@ class ChinaGrpcTest(unittest.TestCase):
         self.assertTrue(result['_api_fallback'])
         self.assertIn('备用 API', portal.fallback_notice(result))
 
+    def test_portal_not_found_and_fallback_unavailable_is_validation_failure(self) -> None:
+        with (
+            patch.object(portal, 'api_get', side_effect=LookupError('Portal not found')),
+            patch.object(portal.china_grpc, 'get_player', side_effect=RuntimeError('gRPC offline')),
+        ):
+            with self.assertRaisesRegex(LookupError, '验证失败：没有找到对应玩家'):
+                portal.get_player('MISSING', region='china')
+
+    def test_portal_unavailable_and_fallback_not_found_is_validation_failure(self) -> None:
+        with (
+            patch.object(portal, 'api_get', side_effect=PermissionError('Token expired')),
+            patch.object(
+                portal.china_grpc,
+                'get_player',
+                side_effect=china_grpc.ChinaPlayerNotFoundError('not found'),
+            ),
+        ):
+            with self.assertRaisesRegex(LookupError, '验证失败：没有找到对应玩家'):
+                portal.get_player('MISSING', region='china')
+
+    def test_portal_not_found_but_fallback_success_still_binds(self) -> None:
+        fallback_data = {
+            '_api_fallback': True,
+            'player': {'nanoId': 'NANO', 'username': 'Player'},
+            'stats': {},
+        }
+        with (
+            patch.object(portal, 'api_get', side_effect=LookupError('Portal not found')),
+            patch.object(portal.china_grpc, 'get_player', return_value=fallback_data),
+        ):
+            result = portal.get_player('NANO', region='china')
+        self.assertEqual(result['player']['username'], 'Player')
+
+    def test_bind_formats_not_found_and_double_unavailable(self) -> None:
+        with patch.object(portal, 'get_player', side_effect=LookupError('not found')):
+            success, text = portal.bind_nano_id(object(), 'MISSING', region='china')
+        self.assertFalse(success)
+        self.assertEqual(text, '验证失败：没有找到对应玩家。')
+
+        unavailable = portal.ChinaApiUnavailableError(
+            PermissionError('Token expired'),
+            RuntimeError('gRPC offline'),
+        )
+        with patch.object(portal, 'get_player', side_effect=unavailable):
+            success, text = portal.bind_nano_id(object(), 'NANO', region='china')
+        self.assertFalse(success)
+        self.assertEqual(text, '国服主力 API 与备用 API 均不可用，请联系管理员更新 Token。')
+
     def test_compare_query_falls_back_after_portal_failure(self) -> None:
         fallback_data = {
             '_api_fallback': True,
@@ -124,7 +172,7 @@ class ChinaGrpcTest(unittest.TestCase):
         ):
             with self.assertRaises(portal.ChinaApiUnavailableError) as raised:
                 portal.get_player('NANO', region='china')
-        self.assertIn('Portal 与备用 API 均不可用', str(raised.exception))
+        self.assertIn('主力 API 与备用 API 均不可用', str(raised.exception))
         self.assertIn('更新 Token', portal.credential_error_hint(raised.exception, 'china'))
 
     def test_login_commands_are_not_exposed(self) -> None:

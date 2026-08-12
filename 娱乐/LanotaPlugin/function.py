@@ -742,7 +742,7 @@ def create_text_image(text: str, user_id: str = '', max_chars: int | None = None
 def build_update_report(result: dict[str, Any]) -> str:
     message = '乐曲数据更新完成！\n'
     message += f'原有乐曲: {result.get("before", 0)}首\n'
-    message += '\n【官方 Portal 对标】\n'
+    message += '\n【官网数据对标】\n'
     message += f'已匹配: {result.get("official_matched", 0)}首\n'
     message += f'Legacy 已匹配: {result.get("official_legacy_matched", 0)}首\n'
     message += f'本次更新官方字段: {result.get("official_updated", 0)}首\n'
@@ -801,9 +801,9 @@ def build_full_check_report(result: dict[str, Any]) -> str:
     official_pending = result.get('official_pending') or []
     message += f'官方匹配待确认: {len(official_pending)}首\n'
     if apply_mode:
-        message += '说明: Fandom 覆盖元数据，Portal 覆盖已有歌曲及 Legacy 的官方 ID、难度和官方定数；新曲不自动匹配 ID。\n'
+        message += '说明: Fandom 覆盖元数据，官网数据覆盖已有歌曲及 Legacy 的官方 ID、难度和官方定数；新曲不自动匹配 ID。\n'
     else:
-        message += '说明: 当前仅检测 Fandom/Portal 与本地差异及新增歌曲，未写入本地。\n'
+        message += '说明: 当前仅检测 Fandom/官网数据与本地差异及新增歌曲，未写入本地。\n'
 
     if official_pending:
         message += '\n【官方匹配待确认】\n'

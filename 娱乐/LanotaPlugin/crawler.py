@@ -199,7 +199,7 @@ def fetch_official_song_catalog() -> tuple[list[dict[str, Any]], list[str]]:
         except Exception as exception_object:
             errors.append(f'{region}: {type(exception_object).__name__}: {exception_object}')
     if not catalogs:
-        raise RuntimeError('无法取得 Portal 官方曲库：' + '；'.join(errors))
+        raise RuntimeError('无法取得官网曲库：' + '；'.join(errors))
 
     primary_region = max(catalogs, key=lambda item: len(catalogs[item]))
     merged_by_id = {str(song['songId']): song for song in catalogs[primary_region]}

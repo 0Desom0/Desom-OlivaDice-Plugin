@@ -34,6 +34,10 @@ class ChinaGrpcError(RuntimeError):
     """备用 gRPC 查询失败。"""
 
 
+class ChinaPlayerNotFoundError(LookupError):
+    """备用 gRPC 已响应，但没有找到目标玩家。"""
+
+
 def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
     value = 0
     shift = 0
@@ -183,6 +187,8 @@ def _call(method: str, payload: bytes, timeout: float) -> bytes:
                     channel.close()
                 except Exception:
                     pass
+        if isinstance(exception_object, grpc.RpcError) and exception_object.code() == grpc.StatusCode.NOT_FOUND:
+            raise ChinaPlayerNotFoundError('备用 API 没有找到对应的国服玩家。') from exception_object
         raise ChinaGrpcError(f'国服备用 API 请求失败：{exception_object}') from exception_object
 
 
@@ -195,7 +201,7 @@ def _query_profile(nano_id: str, timeout: float) -> dict[str, Any]:
             return profile
     if profiles:
         return profiles[0]
-    raise ChinaGrpcError('备用 API 没有找到对应的国服玩家。')
+    raise ChinaPlayerNotFoundError('备用 API 没有找到对应的国服玩家。')
 
 
 def _query_records(nano_id: str, timeout: float) -> list[dict[str, Any]]:
@@ -352,6 +358,7 @@ def get_compare(nano_id: str, timeout: float = 15) -> dict[str, Any]:
 
 __all__ = [
     'ChinaGrpcError',
+    'ChinaPlayerNotFoundError',
     'GRPC_AVAILABLE',
     'UNKNOWN',
     'get_compare',

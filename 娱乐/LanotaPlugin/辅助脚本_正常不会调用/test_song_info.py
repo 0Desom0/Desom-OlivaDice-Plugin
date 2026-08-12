@@ -78,6 +78,19 @@ class SongInfoTest(unittest.TestCase):
             message.handle_bind(event, 'cnNANO')
         bind_nano_id.assert_called_once_with(event, 'NANO', region='china')
 
+    def test_bind_does_not_prefix_classified_china_failures(self) -> None:
+        event = object()
+        with (
+            patch.object(
+                message.portal,
+                'bind_nano_id',
+                return_value=(False, '验证失败：没有找到对应玩家。'),
+            ),
+            patch.object(message.utils, 'reply_message') as reply_message,
+        ):
+            message.handle_bind(event, 'cn MISSING')
+        self.assertEqual(reply_message.call_args_list[-1].args[1], '验证失败：没有找到对应玩家。')
+
     def test_friend_greedily_extracts_china_region(self) -> None:
         event = object()
         with (
@@ -104,6 +117,41 @@ class SongInfoTest(unittest.TestCase):
         self.assertIn('/la user', account_commands)
         self.assertNotIn('/la bind', other_commands)
         self.assertNotIn('/la user', other_commands)
+
+    def test_table_help_documents_excel_json_conversion_and_permission(self) -> None:
+        table_help = message.help_categories['table']
+        help_text = '\n'.join([*table_help['commands'], *table_help['priority']])
+        self.assertIn('/la table update', help_text)
+        self.assertIn('Excel', help_text)
+        self.assertIn('plugin/data/LanotaPlugin/excel_table/', help_text)
+        self.assertIn('plugin/data/LanotaPlugin/SongList/song_table.json', help_text)
+        self.assertIn('仅 OlivaDiceCore 骰主或本插件配置管理员', help_text)
+
+    def test_table_update_requires_master_permission(self) -> None:
+        event = object()
+        with (
+            patch.object(message.utils, 'sender_has_master_permission', return_value=False),
+            patch.object(message.function, 'import_excel_table_to_song_table') as import_table,
+            patch.object(message, 'reply_text') as reply_text,
+        ):
+            message.handle_table(event, 'update')
+        import_table.assert_not_called()
+        self.assertIn('权限不足', reply_text.call_args.args[1])
+
+    def test_table_update_allows_master_permission(self) -> None:
+        event = object()
+        with (
+            patch.object(message.utils, 'sender_has_master_permission', return_value=True),
+            patch.object(
+                message.function,
+                'import_excel_table_to_song_table',
+                return_value=(True, 'Excel 定数表转换完成。'),
+            ) as import_table,
+            patch.object(message, 'reply_text') as reply_text,
+        ):
+            message.handle_table(event, 'update')
+        import_table.assert_called_once_with()
+        reply_text.assert_called_once_with(event, 'Excel 定数表转换完成。')
 
     def test_search_image_wrap_uses_proportional_character_count(self) -> None:
         source = '1. Event - ThisIsAnExtremelyLongUnbrokenSongTitleForWrapping (ID: 123)'
@@ -359,7 +407,8 @@ class SongInfoTest(unittest.TestCase):
         )
         self.assertIn('"song":{"title":"Frey"}', html)
         self.assertIn('"portalRegionName":"国服"', html)
-        self.assertIn('GMZON LANOTA PORTAL', html)
+        self.assertIn('GMZON LANOTA', html)
+        self.assertNotIn('GMZON LANOTA PORTAL', html)
         self.assertIn('!row.override && row.scoreRatingValid', html)
 
 

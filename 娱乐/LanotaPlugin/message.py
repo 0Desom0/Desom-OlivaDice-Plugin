@@ -1628,7 +1628,7 @@ def handle_score(plugin_event, argument: str) -> None:
             return
         reply_text(
             plugin_event,
-            '已收到 Portal 单曲/Rating 列表/游戏结算成绩截图，正在识别哪些歌曲并校验分数，请稍等……',
+            '已收到官网单曲/Rating 列表/游戏结算成绩截图，正在识别哪些歌曲并校验分数，请稍等……',
         )
         added, messages = score_overrides.process_images(plugin_event, message_text, selected_region)
         reply_text(plugin_event, f'截图录入完成：成功 {added} 条。\n' + '\n'.join(messages))
@@ -1652,7 +1652,11 @@ def handle_bind(plugin_event, argument: str) -> None:
     utils.reply_message(plugin_event, f'正在验证 Lanota {portal.region_display_name(region)}好友码，请稍候...')
     try:
         success, message_text = portal.bind_nano_id(plugin_event, nano_id, region=region)
-        utils.reply_message(plugin_event, message_text if success else f'绑定失败：{message_text}')
+        if success or message_text.startswith(('验证失败：', '国服主力 API 与备用 API 均不可用')):
+            reply_message = message_text
+        else:
+            reply_message = f'绑定失败：{message_text}'
+        utils.reply_message(plugin_event, reply_message)
     except Exception as exception_object:
         utils.error_log(None, f'Lanota 好友码绑定失败：{type(exception_object).__name__}: {exception_object}')
         utils.reply_message(plugin_event, f'绑定失败：{portal.format_error(exception_object)}')
@@ -1726,7 +1730,7 @@ def handle_user(plugin_event, argument: str) -> None:
         if cache_error is not None:
             selected_region = region or player_data.get('_portal_region') or portal.get_bound_region(plugin_event)
             credential_hint = portal.credential_error_hint(cache_error, selected_region)
-            hint_line = credential_hint or '若问题持续，请联系管理员检查 Portal 连接。'
+            hint_line = credential_hint or '若问题持续，请联系管理员检查主力 API 连接。'
             utils.reply_message(
                 plugin_event,
                 f'网络查询失败：{portal.format_error(cache_error)}\n'
@@ -2035,10 +2039,10 @@ help_categories = {
             '/la score delete <序号> - 删除录入成绩',
             '/la score delete all cn - 清空国服录入成绩',
             '/la score delete all global - 清空国际服录入成绩',
-            '/la score + Portal 单曲/Rating 列表/4.0+ 游戏结算截图 - 自动 OCR 识别，可一次发送多张图片',
+            '/la score + 官网单曲/Rating 列表/4.0+ 游戏结算截图 - 自动 OCR 识别，可一次发送多张图片',
         ],
         'priority': [
-            'Portal 单曲图至少包含曲名、难度标签和底部“单曲 RATING”数值；Rating 列表图需保留每行曲名、难度、Rating% 和右侧单曲 Rating；两类都支持长截图。',
+            '官网单曲图至少包含曲名、难度标签和底部“单曲 RATING”数值；Rating 列表图需保留每行曲名、难度、Rating% 和右侧单曲 Rating；两类都支持长截图。',
             '游戏结算图至少包含曲名、难度和底部七位分数；展开判定详情时会同时严格校验 H/T/F 与总物量。',
             '只显示分数的 4.0+ 结算图会按曲目物量校验分数格式，通过后反推准度与 Single Rating。',
             '录入值只在其 Single Rating 高于官网值或官网记录格式异常时覆盖；确认后会自动清理较低录入。',
@@ -2075,8 +2079,14 @@ help_categories = {
         'commands': [
             '/la table - 按定数从高到低显示所有谱面',
             '/la 定数表 - 同上',
-            '/la table update - （插件管理员）',
+            '/la table update - 从 Excel 生成定数表 JSON（仅骰主/插件管理员）',
         ],
+        'priority': [
+            '将唯一的 .xlsx 或 .xlsm 定数表放入 plugin/data/LanotaPlugin/excel_table/。',
+            '执行后生成并覆盖 plugin/data/LanotaPlugin/SongList/song_table.json。',
+            '权限：仅 OlivaDiceCore 骰主或本插件配置管理员可执行更新。',
+        ],
+        'priority_title': '说明',
         'examples': [
             '/la table',
             '/la table update',
@@ -2180,7 +2190,8 @@ def handle_help(plugin_event, argument: str) -> None:
             lines.append(f'{key}: {", ".join(values)}')
 
     if 'priority' in matched_category:
-        lines.extend(['', '匹配优先级:', *matched_category['priority']])
+        priority_title = matched_category.get('priority_title', '匹配优先级')
+        lines.extend(['', f'{priority_title}:', *matched_category['priority']])
 
     if matched_category['examples']:
         lines.extend(['', '示例:', *matched_category['examples']])

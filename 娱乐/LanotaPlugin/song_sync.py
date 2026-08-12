@@ -155,7 +155,7 @@ def official_title_variants(song: dict[str, Any]) -> list[str]:
 
 def validate_official_catalog(official_songs: Any) -> list[dict[str, Any]]:
     if not isinstance(official_songs, list):
-        raise ValueError("Portal /songs 响应中的 songs 不是列表。")
+        raise ValueError("官网曲库响应中的 songs 不是列表。")
     result = []
     seen_ids = set()
     for item in official_songs:
@@ -163,13 +163,13 @@ def validate_official_catalog(official_songs: Any) -> list[dict[str, Any]]:
             continue
         song_id = str(item.get("songId", "") or "").strip()
         if not song_id:
-            raise ValueError("Portal /songs 中存在空 songId。")
+            raise ValueError("官网曲库中存在空 songId。")
         if song_id in seen_ids:
-            raise ValueError(f"Portal /songs 中存在重复 songId：{song_id}")
+            raise ValueError(f"官网曲库中存在重复 songId：{song_id}")
         seen_ids.add(song_id)
         charts = item.get("charts")
         if not isinstance(charts, list):
-            raise ValueError(f"Portal 歌曲 {song_id} 缺少 charts。")
+            raise ValueError(f"官网曲库歌曲 {song_id} 缺少 charts。")
         difficulties = {
             int(chart.get("difficulty", -1))
             for chart in charts
@@ -177,7 +177,7 @@ def validate_official_catalog(official_songs: Any) -> list[dict[str, Any]]:
         }
         if difficulties != set(range(len(DIFFICULTY_NAMES))):
             raise ValueError(
-                f"Portal 歌曲 {song_id} 的难度不完整：{sorted(difficulties)}"
+                f"官网曲库歌曲 {song_id} 的难度不完整：{sorted(difficulties)}"
             )
         result.append(item)
     return result
