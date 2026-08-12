@@ -37,10 +37,10 @@ LEGACY_DATA_ROOT = os.path.join('data', PLUGIN_NAMESPACE)
 # 默认配置
 DEFAULT_CONFIG = {
     'global_enable': True,
-    'default_group_enable': False,
+    'default_group_enable': True,
     'single_forward_enable': False,
     'multi_forward_enable': True,
-    'live_enable': False,
+    'live_enable': True,
     'parse_debug_enable': False,
     'preview_ocr_enable': True,
     'configured_master_list': [],
@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
 
 DEFAULT_GROUP_CONFIG = {
     'groups': {},
+    'live_groups': {},
 }
 
 # 运行期状态
@@ -290,9 +291,9 @@ def handle_message(plugin_event, is_group: bool) -> None:
         if not is_group:
             return
         group_enabled = is_group_enabled(plugin_event)
-        if not group_enabled:
-            return
         live_enabled = is_live_enabled(plugin_event)
+        if not group_enabled and not live_enabled:
+            return
 
         current_message, has_reference = prepare_current_message(plugin_event, message)
         is_candidate = is_parse_candidate_message(
@@ -312,6 +313,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
             f'message={shorten_log_text(current_message, 240)}'
         )
         parse_log(f'群解析开关 enabled={group_enabled}')
+        parse_log(f'本群直播解析开关 enabled={live_enabled}')
         if has_reference:
             parse_log('当前消息带引用，仅解析引用后的文本，跳过extend/message_sdk卡片')
 
@@ -319,6 +321,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
             plugin_event,
             current_message,
             include_event_cards=not has_reference,
+            video_enable=group_enabled,
             live_enable=live_enabled,
         )
         parse_log(f'消息引用提取完成 count={len(video_ref_list)} refs={format_video_ref_list(video_ref_list)}')
@@ -460,15 +463,19 @@ def handle_command(plugin_event, message: str, is_group: bool) -> bool:
             reply_message(plugin_event, '用法：.bili live on/off')
             plugin_event.set_block()
             return True
-        if not has_global_switch_permission(plugin_event):
-            reply_message(plugin_event, '权限不足：只有骰主可以切换直播解析。')
+        if not is_group:
+            reply_message(plugin_event, '直播解析开关只能在群聊中使用。')
+            plugin_event.set_block()
+            return True
+        if not has_group_switch_permission(plugin_event):
+            reply_message(plugin_event, '权限不足：只有群主、群管理或骰主可以切换本群直播解析。')
             plugin_event.set_block()
             return True
 
         set_live_enable(plugin_event, command_action == 'on')
         reply_message(
             plugin_event,
-            f'B站直播解析已{"开启" if command_action == "on" else "关闭"}。',
+            f'本群B站直播解析已{"开启" if command_action == "on" else "关闭"}。',
         )
         plugin_event.set_block()
         return True
@@ -594,7 +601,7 @@ def build_help_message(plugin_event, is_group: bool) -> str:
             '多链接合并转发：.bili multiforward on/off（仅骰主）',
             '解析调试日志：.bili debug on/off（仅骰主）',
             '预览图OCR匹配：.bili ocr on/off（仅骰主，可选依赖）',
-            '直播解析：.bili live on/off（仅骰主，默认关闭）',
+            '本群直播解析：.bili live on/off（群主、管理员、骰主）',
             '帮助：.bili help',
             '未单独设置的群会使用本群默认开关。',
             '开启后会自动解析群内的B站小程序/链接分享并回复视频或直播信息。',
@@ -716,10 +723,12 @@ def set_multi_forward_enable(plugin_event, enable: bool) -> None:
 
 
 def set_live_enable(plugin_event, enable: bool) -> None:
-    bot_hash = get_config_bot_hash_from_event(plugin_event)
-    bot_config = load_bot_config(bot_hash)
-    bot_config['live_enable'] = bool(enable)
-    save_bot_config(bot_hash, bot_config)
+    group_key = get_group_key(plugin_event)
+    if group_key:
+        bot_hash = get_config_bot_hash_from_event(plugin_event)
+        group_config = load_group_config(bot_hash)
+        group_config.setdefault('live_groups', {})[group_key] = bool(enable)
+        save_group_config(bot_hash, group_config)
 
 
 def set_group_enable(plugin_event, enable: bool) -> None:
@@ -770,7 +779,18 @@ def is_live_enabled(plugin_event) -> bool:
     try:
         bot_hash = get_config_bot_hash_from_event(plugin_event)
         bot_config = load_bot_config(bot_hash)
-        return bool(bot_config.get('live_enable', False))
+        if not bool(bot_config.get('global_enable', True)):
+            return False
+        group_key = get_group_key(plugin_event)
+        if not group_key:
+            return False
+        group_config = load_group_config(bot_hash)
+        return bool(
+            group_config.get('live_groups', {}).get(
+                group_key,
+                bot_config.get('live_enable', False),
+            )
+        )
     except Exception:
         return False
 
@@ -856,11 +876,19 @@ def normalize_config_data(config_data: Any) -> dict[str, Any]:
 def normalize_group_data(group_data: Any) -> dict[str, Any]:
     normalized_group_data = dict(DEFAULT_GROUP_CONFIG)
     groups = group_data.get('groups', {}) if isinstance(group_data, dict) else {}
+    live_groups = group_data.get('live_groups', {}) if isinstance(group_data, dict) else {}
     if not isinstance(groups, dict):
         groups = {}
+    if not isinstance(live_groups, dict):
+        live_groups = {}
     normalized_group_data['groups'] = {
         safe_str(group_key): bool(enable)
         for group_key, enable in groups.items()
+        if safe_str(group_key)
+    }
+    normalized_group_data['live_groups'] = {
+        safe_str(group_key): bool(enable)
+        for group_key, enable in live_groups.items()
         if safe_str(group_key)
     }
     return normalized_group_data
@@ -1061,6 +1089,7 @@ def extract_video_refs_from_event(
     plugin_event,
     message: str,
     include_event_cards: bool = True,
+    video_enable: bool = True,
     live_enable: bool = False,
 ) -> list[dict[str, str]]:
     qq_ark_card_list = []
@@ -1078,11 +1107,15 @@ def extract_video_refs_from_event(
         f'qq_ark_count={len(qq_ark_card_list)}'
     )
 
-    video_ref_list = extract_video_refs_from_message(
-        message,
-        include_json_card=not use_qq_ark_card,
-        preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
-    )
+    if video_enable:
+        video_ref_list = extract_video_refs_from_message(
+            message,
+            include_json_card=not use_qq_ark_card,
+            preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
+        )
+    else:
+        video_ref_list = []
+        parse_log('本群普通视频解析关闭，跳过视频引用提取')
     seen_key_set = {
         video_key
         for video_ref in video_ref_list
@@ -1098,15 +1131,16 @@ def extract_video_refs_from_event(
     url_ref_cache = {}
 
     parse_log(f'QQ ARK卡片提取数量={len(qq_ark_card_list)}')
-    for card_index, card_data in enumerate(qq_ark_card_list, start=1):
-        add_video_refs_from_card(
-            card_data,
-            video_ref_list,
-            seen_key_set,
-            url_ref_cache,
-            f'QQ官机ARK卡片#{card_index}',
-            preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
-        )
+    if video_enable:
+        for card_index, card_data in enumerate(qq_ark_card_list, start=1):
+            add_video_refs_from_card(
+                card_data,
+                video_ref_list,
+                seen_key_set,
+                url_ref_cache,
+                f'QQ官机ARK卡片#{card_index}',
+                preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
+            )
 
     log_resolved_video_refs(video_ref_list)
     return video_ref_list

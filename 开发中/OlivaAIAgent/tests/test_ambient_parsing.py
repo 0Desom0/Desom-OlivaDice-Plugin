@@ -50,6 +50,35 @@ class AmbientReplyParsingTest(unittest.TestCase):
             ),
         )
 
+    def test_self_action_narration_is_removed_but_answer_is_kept(self):
+        self.assertEqual(
+            '叶师傅这伤看着不轻呀。',
+            OlivaAIAgent.replyStyle.cleanReplyText(
+                '小芙看了一眼图，尾巴微微一顿~叶师傅这伤看着不轻呀。',
+            ),
+        )
+        self.assertEqual(
+            '这波教程的步骤是先构建，再上传。',
+            OlivaAIAgent.replyStyle.cleanReplyText(
+                '小芙瞄了眼这段log提取的教程截图，尾巴轻轻晃了晃~\n\n这波教程的步骤是先构建，再上传。',
+            ),
+        )
+
+    def test_plain_tail_content_is_not_removed(self):
+        self.assertEqual('小芙的尾巴是设定里的装饰。', OlivaAIAgent.replyStyle.cleanReplyText(
+            '小芙的尾巴是设定里的装饰。',
+        ))
+
+    def test_action_prefix_does_not_consume_the_actual_answer(self):
+        self.assertEqual('答案是猫。', OlivaAIAgent.replyStyle.cleanReplyText(
+            '小芙看了一眼图，答案是猫。',
+        ))
+
+    def test_normal_parenthetical_reply_content_is_kept(self):
+        self.assertEqual('答案在这里（这是补充说明）。', OlivaAIAgent.replyStyle.cleanReplyText(
+            '答案在这里（这是补充说明）。',
+        ))
+
 
 if __name__ == '__main__':
     unittest.main()

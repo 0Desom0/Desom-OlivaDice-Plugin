@@ -36,6 +36,20 @@ class TaskCompletionTest(unittest.TestCase):
             with self.subTest(reply=reply):
                 self.assertTrue(OlivaAIAgent.completion.needsContinuation(reply))
 
+    def test_ordinary_chat_does_not_start_completion_chain(self):
+        self.assertFalse(OlivaAIAgent.completion.requestRequiresDelivery('我到时候给小芙也p一张'))
+        self.assertFalse(OlivaAIAgent.completion.needsContinuation(
+            '刚才没有真正完成你的请求，请再发一次。',
+            request_text='我到时候给小芙也p一张',
+        ))
+
+    def test_explicit_request_still_starts_completion_chain(self):
+        self.assertTrue(OlivaAIAgent.completion.requestRequiresDelivery('帮我写一个模组简介'))
+        self.assertTrue(OlivaAIAgent.completion.needsContinuation(
+            '资料我马上发。',
+            request_text='帮我写一个模组简介',
+        ))
+
     def test_accepts_delivered_content_and_real_action_confirmation(self):
         delivered = (
             '我已经帮你整理好了：开局背景是夜之城旧城区发生连续失踪案，'
@@ -77,6 +91,7 @@ class TaskCompletionTest(unittest.TestCase):
                 [],
                 False,
                 trace_id='continuation-test',
+                request_text='帮我写开局背景',
             )
 
         self.assertEqual(['开局背景：夜之城旧城区爆发了记忆失窃案。'], reply)
@@ -106,6 +121,7 @@ class TaskCompletionTest(unittest.TestCase):
                 trace_id='continuation-tools-test',
                 tool_ctx={'trace_id': 'continuation-tools-test'},
                 tool_defs=[{'name': 'dummy'}],
+                request_text='帮我写故事大纲',
             )
 
         self.assertEqual(['故事大纲：义体芯片正在吞噬持有者的记忆。'], reply)
@@ -122,6 +138,7 @@ class TaskCompletionTest(unittest.TestCase):
                 [{'role': 'user', 'content': '直接给我结果'}],
                 [],
                 False,
+                request_text='直接给我结果',
             )
 
         self.assertEqual([OlivaAIAgent.completion.exhaustedReply()], reply)

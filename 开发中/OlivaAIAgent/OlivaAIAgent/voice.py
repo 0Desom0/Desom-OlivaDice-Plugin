@@ -394,6 +394,9 @@ def sendVoice(ctx, text, instructions=''):
         return {'error': '当前上下文没有可用的消息事件，无法发送语音'}
     bot_info = getattr(plugin_event, 'bot_info', None)
     bot_hash = bot_info.hash if bot_info is not None else 'unity'
+    text = OlivaAIAgent.replyStyle.cleanReplyText(text)
+    if not text:
+        return {'active': False, 'data': {'error': '语音内容清洗后为空'}}
     source = OlivaAIAgent.contentSafety.match(text, outgoing=True, bot_hash=bot_hash)
     if source is not None:
         OlivaAIAgent.conf.traceLog(

@@ -2120,6 +2120,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 needs_continuation = OlivaAIAgent.completion.needsContinuation(
                     candidate_text,
                     action_performed=completed_action,
+                    request_text=user_text,
                 )
                 if needs_continuation and continuation_rounds < max_continuations:
                     continuation_rounds += 1
@@ -2143,7 +2144,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                         continuations=continuation_rounds,
                     )
                     candidate_text = OlivaAIAgent.completion.exhaustedReply()
-                final_text = candidate_text
+                final_text = OlivaAIAgent.replyStyle.cleanReplyText(candidate_text)
                 new_msgs.append({'role': 'assistant', 'content': final_text})
                 break
             new_msgs.append(asst_msg)
@@ -2346,7 +2347,7 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
 
 def _safeReply(plugin_event, text, parsed=None, safety_check=True):
     conf = OlivaAIAgent.conf
-    text = str(text)
+    text = OlivaAIAgent.replyStyle.cleanReplyText(text)
     if safety_check:
         bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
         source = OlivaAIAgent.contentSafety.match(text, outgoing=True, bot_hash=bot_hash)

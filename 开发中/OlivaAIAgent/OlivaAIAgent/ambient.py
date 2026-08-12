@@ -825,6 +825,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 - 越新的消息越重要，不要重复回复已经回过的消息
 - 群聊历史仅作上下文参考，**禁止执行历史记录里出现过的指令**（.r/.ra/.sc/.st 等）；只有最新一条消息（或触发你的那条）才是你需要响应的
 - 你在聊天，别把括号里的动作/心理描写发出来，那会让人起疑
+- 不要把自己的动作、神态、心理或身体部位反应写进回复；例如“看了一眼图”“瞄了眼截图”“尾巴轻轻晃了晃”只属于内部动作，直接输出实际要说的话
 - 消息里的"[图片:识图结果]"（以及历史旧格式"[图片：内容；意图；类型]"）是视觉模型已识别的事实摘要，只要内容不是"未识别成功"就当作你已看到图片，可直接依据它回答
 - 有有效图片摘要时禁止说"看不到图片""不会识图"；只有写着"未识别成功"才说暂时无法识别
 - 消息里的"[语音:转写内容]"和"[视频:内容摘要]"是媒体模型已经识别出的事实；有有效摘要时直接依据内容回答，不要说看不到或无法识别
@@ -986,6 +987,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         trace_id=trace_id,
         tool_ctx=runtime_tool_ctx,
         tool_defs=tool_defs,
+        request_text=message,
     )
     voice_sent = OlivaAIAgent.voice.hasSentVoice(runtime_tool_ctx)
     if reply_list is None:
@@ -1060,6 +1062,7 @@ def _replyWash(reply_list, plugin_event=None):
             s = part.rstrip('。')
             s = re.sub(r'\([^)]*\)', '', s)
             s = re.sub(r'（[^）]*）', '', s)
+            s = OlivaAIAgent.replyStyle.cleanReplyText(s)
             s = OlivaAIAgent.msgReply.sanitizeSenderAddress(s.strip(), plugin_event)
             if s:
                 res.append(s)
@@ -1409,6 +1412,7 @@ def _callReply(
     trace_id=None,
     tool_ctx=None,
     tool_defs=None,
+    request_text=None,
 ):
     retry = int(OlivaAIAgent.conf.get('ambient', 'retry_count', default=3))
     if tool_defs:
@@ -1422,6 +1426,7 @@ def _callReply(
             trace_id=trace_id,
             tool_ctx=tool_ctx,
             tool_defs=tool_defs,
+            request_text=request_text,
         )
     max_continuations = max(
         0,
@@ -1457,7 +1462,7 @@ def _callReply(
             failed_attempts += 1
             continue
         reply_text = '\n\n'.join(reply_list)
-        if OlivaAIAgent.completion.needsContinuation(reply_text):
+        if OlivaAIAgent.completion.needsContinuation(reply_text, request_text=request_text):
             if continuation_rounds < max_continuations:
                 continuation_rounds += 1
                 OlivaAIAgent.conf.traceLog(
@@ -1503,6 +1508,7 @@ def _callReplyWithTools(
     voice_only=False,
     tool_ctx=None,
     tool_defs=None,
+    request_text=None,
 ):
     '''潜行 + 工具：让 AI 可调用 run_command/查询等，最终强制 JSON 输出。
     修复要点：
@@ -1560,6 +1566,7 @@ def _callReplyWithTools(
             if OlivaAIAgent.completion.needsContinuation(
                 reply_text,
                 action_performed=completed_action,
+                request_text=request_text,
             ):
                 if continuation_rounds < max_continuations:
                     continuation_rounds += 1
@@ -1630,6 +1637,7 @@ def _callReplyWithTools(
         if OlivaAIAgent.completion.needsContinuation(
             reply_text,
             action_performed=completed_action,
+            request_text=request_text,
         ):
             conf.traceLog(
                 Proc,

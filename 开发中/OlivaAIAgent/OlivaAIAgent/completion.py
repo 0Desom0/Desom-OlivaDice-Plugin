@@ -10,7 +10,8 @@ COMPLETION_GUARD_PROMPT = '''# 当前轮任务交付规则
 - 不要只说“马上做”“稍等”“稍后发”“已经整理好”，也不要把尚未发送的结果说成已经完成。
 - 除非真实工具已经成功创建了对应内容，否则不得声称结果放在文件、文件夹、后台、草稿或其他位置。
 - 需要多个步骤时，在当前请求内继续调用工具或继续生成，直到给出实际结果；进度话术不是最终答案。
-- 确实缺少必要信息时，直接提出最少的澄清问题；确实失败时如实说明，不得虚构完成。'''
+- 确实缺少必要信息时，直接提出最少的澄清问题；确实失败时如实说明，不得虚构完成。
+- 最终只发送要对用户说的内容，不要发送自己的动作、神态、心理或身体部位反应；例如“看了一眼图”“瞄了眼截图”“尾巴轻轻晃了晃”都不要写，直接说实际内容。'''
 
 
 _FUTURE_ACTION_PATTERNS = (
@@ -57,6 +58,22 @@ _READ_ONLY_TOOLS = {
     'web_search',
 }
 
+_DELIVERY_REQUEST_PATTERNS = (
+    re.compile(r'(?:帮我|请你|请|给我|替我|麻烦).{0,40}(?:写|做|整理|总结|生成|制作|查询|查|找|解释|说明|分析|翻译|识别|判断|列出|介绍|发|贴|展示|继续)', re.I),
+    re.compile(r'(?:告诉我|说一下|讲讲|看一下|看看|查一下|搜一下|能不能|可以吗|怎么|如何|为什么|是什么|是否|有没有|哪里)', re.I),
+    re.compile(r'(?:写|整理|总结|生成|制作|查询|查|找|解释|说明|分析|翻译|识别|判断|列出|介绍|发|贴|展示|继续)一下?', re.I),
+    re.compile(r'(?:直接|现在|马上).{0,12}(?:给我|发我|贴出|输出).{0,12}(?:结果|内容|答案|资料)', re.I),
+    re.compile(r'[?？]'),
+)
+
+
+def requestRequiresDelivery(request_text):
+    '''Return whether the user actually asked for a result in this turn.'''
+    text = _visibleText(request_text)
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _DELIVERY_REQUEST_PATTERNS)
+
 
 def _visibleText(reply_text):
     text = str(reply_text or '')
@@ -76,10 +93,12 @@ def _hasDeliveredContent(reply_text):
     return False
 
 
-def needsContinuation(reply_text, action_performed=False):
+def needsContinuation(reply_text, action_performed=False, request_text=None):
     '''Return True when a terminal reply only postpones or pretends to finish work.'''
     text = _visibleText(reply_text)
     if not text:
+        return False
+    if request_text is not None and not requestRequiresDelivery(request_text):
         return False
     if action_performed:
         return False

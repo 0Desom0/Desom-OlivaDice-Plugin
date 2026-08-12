@@ -307,6 +307,25 @@ class McpVoiceTest(unittest.TestCase):
         self.assertEqual(2, synthesize.call_count)
         self.assertEqual(2, len(event.replies))
 
+    def test_send_voice_synthesizes_cleaned_spoken_text(self):
+        OlivaAIAgent.conf.gConf['voice']['enabled'] = True
+        event = FakeVoiceEvent()
+        ctx = {'plugin_event': event, 'Proc': None, 'trace_id': 'voice-style-test'}
+
+        with mock.patch.object(
+            OlivaAIAgent.voice,
+            'synthesize',
+            return_value=os.path.abspath('generated.mp3'),
+        ) as synthesize, mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'):
+            result = OlivaAIAgent.voice.sendVoice(
+                ctx,
+                '小芙看了一眼图，尾巴微微一顿~答案是猫。',
+                '自然地朗读。',
+            )
+
+        self.assertTrue(result['active'])
+        synthesize.assert_called_once_with('答案是猫。', instructions='自然地朗读。')
+
     def test_failed_voice_generation_can_be_retried(self):
         OlivaAIAgent.conf.gConf['voice']['enabled'] = True
         event = FakeVoiceEvent()
