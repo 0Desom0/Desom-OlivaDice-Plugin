@@ -247,6 +247,62 @@ def addSelfReply(
         _persist(key)
 
 
+def saveUserSession(plugin_event, message, sent_records, bot_hash=None):
+    '''把统一群聊管线中真正完成的问答保存为当前用户的个人会话视图。'''
+    records = [item for item in (sent_records or []) if isinstance(item, dict)]
+    if not records:
+        return False
+    try:
+        platform = str(plugin_event.platform['platform'])
+        group_id = str(plugin_event.data.group_id)
+        user_id = str(plugin_event.data.user_id)
+    except Exception:
+        return False
+    ids = []
+    indexes = []
+    references = []
+    replies = []
+    for record in records:
+        replies.append(str(record.get('message', '')).strip())
+        ids.extend(record.get('message_ids') or [])
+        indexes.extend(record.get('message_indexes') or [])
+        if record.get('reference_message_id') not in [None, '', '-1', -1]:
+            references.append(str(record['reference_message_id']))
+    replies = [item for item in replies if item]
+    if not replies:
+        return False
+    def stable_content(value):
+        clean = re.sub(r'\[发图片[:：].*?\]', '[发图片]', str(value))
+        return re.sub(r'\[(?:CQ|OP):image[^\]]*\]', '[图片]', clean, flags=re.I)
+
+    user_entry = {'role': 'user', 'content': stable_content(message)}
+    try:
+        incoming_id = getattr(plugin_event.data, 'message_id', None)
+        if incoming_id not in [None, '', '-1', -1]:
+            user_entry['message_id'] = str(incoming_id)
+    except Exception:
+        pass
+    assistant_entry = {
+        'role': 'assistant',
+        'content': stable_content('\n\n'.join(replies)),
+    }
+    unique_ids = list(dict.fromkeys(str(item) for item in ids if item not in [None, '', '-1', -1]))
+    unique_indexes = list(dict.fromkeys(
+        str(item) for item in indexes if item not in [None, '', '-1', -1]
+    ))
+    if unique_ids:
+        assistant_entry['message_id'] = unique_ids[0]
+        assistant_entry['message_ids'] = unique_ids
+    if unique_indexes:
+        assistant_entry['msg_idx'] = unique_indexes[0]
+        assistant_entry['message_indexes'] = unique_indexes
+    if references:
+        assistant_entry['reference_message_id'] = references[0]
+    key = OlivaAIAgent.memory.sessionKey(platform, group_id, user_id)
+    OlivaAIAgent.memory.appendSession(key, [user_entry, assistant_entry], bot_hash=bot_hash)
+    return True
+
+
 def getHistory(platform, group_id, bot_hash=None):
     history = []
     for entry in _getQueue(_hkey(platform, group_id)):
@@ -768,6 +824,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     voice_ready = OlivaAIAgent.voice.getStatus()['ready']
     if allow_tools or voice_ready:
         runtime_tool_ctx = _makeToolContext(plugin_event, Proc, group_id, trace_id)
+        runtime_tool_ctx['session_user_text'] = message
+        runtime_tool_ctx['bot_hash'] = bot_hash
 
     image_cache = OlivaAIAgent.vision.emojiIntentCache(
         bot_hash,
@@ -920,6 +978,31 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         patch['图片缓存'] = image_cache
     if skills_ctx:
         patch['技能片段'] = skills_ctx.strip()
+    main_history_size = max(1, int(cfg('history_size', 8)))
+    if force:
+        session_key = OlivaAIAgent.memory.sessionKey(
+            platform,
+            group_id,
+            plugin_event.data.user_id,
+        )
+        personal_session = OlivaAIAgent.memory.getSession(session_key, bot_hash=bot_hash)[-6:]
+        visible_ids = set()
+        visible_contents = set()
+        visible_history = _historyWithoutCurrentTurn(history, parsed)[-main_history_size:]
+        for entry in visible_history:
+            visible_ids.update(
+                str(item)
+                for item in [entry.get('message_id'), *(entry.get('message_ids') or [])]
+                if item not in [None, '', '-1', -1]
+            )
+            visible_contents.add(str(entry.get('message', '')).strip())
+        personal_session = [
+            item for item in personal_session
+            if str(item.get('message_id', '')) not in visible_ids
+            and str(item.get('content', '')).strip() not in visible_contents
+        ]
+        if personal_session:
+            patch['当前记忆']['当前用户近期对话'] = personal_session
     if OlivaAIAgent.msgReply.autonomousQuoteEnabled(plugin_event):
         quote_candidates = []
         for entry in history[-12:]:
@@ -937,7 +1020,6 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         if quote_candidates:
             patch['可引用消息'] = quote_candidates
 
-    main_history_size = max(1, int(cfg('history_size', 8)))
     context_history = _historyWithoutCurrentTurn(history, parsed)[-main_history_size:]
     messages = buildContextMessages(system_content, context_history, patch)
     # force 会随触发方式变化，不能拼入第一条稳定 system，否则兼容端可能整块缓存失效。
@@ -1068,6 +1150,14 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             message_ids=record['message_ids'],
             message_indexes=record['message_indexes'],
             reference_message_id=record.get('reference_message_id'),
+        )
+    if saveUserSession(plugin_event, message, sent_records, bot_hash=bot_hash):
+        conf.traceLog(
+            Proc,
+            'agent.session.saved',
+            trace_id,
+            messages=1 + len(sent_records),
+            scene='unified_group',
         )
 
 

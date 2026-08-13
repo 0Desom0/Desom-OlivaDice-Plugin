@@ -41,6 +41,7 @@ SECTION_ORDER = [
     'agent',
     'reply',
     'message_registry',
+    'file_logging',
 ]
 
 SECTION_LABELS = {
@@ -70,11 +71,13 @@ SECTION_LABELS = {
     'agent': 'Agent 与工具循环',
     'reply': '回复输出',
     'message_registry': '消息与引用索引',
+    'file_logging': '本地日志文件',
 }
 
 FIELD_LABELS = {
     'backend': '当前后端',
     'debug_log': '详细调试日志',
+    'max_file_mb': '单个日志文件上限（MB）',
     'api_url': '接口地址',
     'api_key': 'API Key',
     'model': '模型名称',
@@ -248,6 +251,8 @@ PATH_LABELS = {
     ('voice', 'api_url'): '语音接口地址',
     ('voice', 'api_key'): '语音 API Key',
     ('mcp', 'timeout_sec'): 'MCP 请求超时（秒）',
+    ('file_logging', 'enable'): '写入本地日志',
+    ('file_logging', 'retention_days'): '日志保留天数',
 }
 
 ENUM_VALUES = {
@@ -565,9 +570,19 @@ class ConfigWindow:
         ttk.Button(toolbar, text='刷新 MCP 工具', command=self.refreshMcp).pack(side=tkinter.LEFT, padx=(6, 0))
         ttk.Button(
             toolbar,
+            text='打开日志目录',
+            command=lambda: self.openPath(OlivaAIAgent.conf.logDir(), '日志目录'),
+        ).pack(side=tkinter.RIGHT)
+        ttk.Button(
+            toolbar,
+            text='打开会话目录',
+            command=lambda: self.openPath(os.path.join(OlivaAIAgent.conf.dataPath, 'sessions'), '会话目录'),
+        ).pack(side=tkinter.RIGHT, padx=(0, 6))
+        ttk.Button(
+            toolbar,
             text='打开技能目录',
             command=lambda: self.openPath(os.path.join(OlivaAIAgent.conf.dataPath, 'skills'), '技能目录'),
-        ).pack(side=tkinter.RIGHT)
+        ).pack(side=tkinter.RIGHT, padx=(0, 6))
         ttk.Button(
             toolbar,
             text='打开知识目录',

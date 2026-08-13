@@ -19,6 +19,8 @@ GROUPS_PATH = dataPath + '/groups.json'
 LOG_DIR = dataPath + '/logs'
 
 _lock = threading.RLock()
+_log_lock = threading.RLock()
+_last_log_cleanup_day = ''
 
 gConf = {}
 gGroups = {}
@@ -441,6 +443,12 @@ DEFAULT_CONF = {
         'split_length': 1500,
         'max_split_count': 3,
     },
+    'file_logging': {
+        '_说明': '插件日志按天写入 logs/；详细流程仍由 debug_log 控制，写入前会沿用终端日志脱敏',
+        'enable': True,
+        'retention_days': 14,
+        'max_file_mb': 20,
+    },
     'enable': {
         'global': True,
         'group_default': True,
@@ -473,6 +481,11 @@ def releaseDir(path):
         pass
 
 
+def logDir():
+    '''随 dataPath 变化返回日志目录，测试/迁移数据目录时不会写回旧位置。'''
+    return os.path.join(dataPath, 'logs')
+
+
 def atomicDump(data, path):
     '''原子写 JSON：先写同目录临时文件再 os.replace，避免进程中途被杀/并发写导致文件被截断损坏。'''
     d = os.path.dirname(path)
@@ -493,7 +506,7 @@ def atomicDump(data, path):
 
 
 def initDataPath():
-    for p in [dataPath, tmpPath, LOG_DIR, dataPath + '/sessions', dataPath + '/memory']:
+    for p in [dataPath, tmpPath, logDir(), dataPath + '/sessions', dataPath + '/memory']:
         releaseDir(p)
 
 
@@ -1351,12 +1364,106 @@ def senderIdentityPrompt(
     )
 
 
-def log(Proc, level, msg):
+_FILE_LOG_NAME_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}(?:\.\d+)?\.log$')
+_FILE_LOG_LEVELS = {0: 'DEBUG', 1: 'NOTE', 2: 'INFO', 3: 'WARN', 4: 'ERROR', 5: 'FATAL'}
+
+
+def _redactFileLogText(message):
+    '''日志落盘前做通用兜底脱敏；流程字段仍先经过 _traceValue。'''
+    text = str(message or '')
+    text = re.sub(
+        r'data:(?:image|audio|video)/[^;,\s]+(?:;[^,\s]+)*,[A-Za-z0-9+/=_-]+',
+        '<媒体数据已隐藏>',
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r'(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+', r'\1<已隐藏>', text)
+    text = re.sub(
+        r'(?i)(["\']?(?:api[_-]?key|access[_-]?token|secret|password)["\']?\s*[:=]\s*)'
+        r'(["\'])?[^\s,;"\'}]+\2?',
+        r'\1<已隐藏>',
+        text,
+    )
+    text = re.sub(
+        r'(?i)([?&](?:rkey|token|access_token|api_key|key)=)[^&#\s]+',
+        r'\1<已隐藏>',
+        text,
+    )
+    return text
+
+
+def _cleanupFileLogs(now=None):
+    global _last_log_cleanup_day
+    now = time.time() if now is None else float(now)
+    today = time.strftime('%Y-%m-%d', time.localtime(now))
+    if _last_log_cleanup_day == today:
+        return
+    _last_log_cleanup_day = today
     try:
-        if Proc is not None:
-            Proc.log(level, '[OlivaAIAgent] ' + str(msg))
+        retention_days = max(1.0, float(get('file_logging', 'retention_days', default=14)))
+    except (TypeError, ValueError):
+        retention_days = 14.0
+    cutoff = now - retention_days * 86400.0
+    try:
+        for entry in os.scandir(logDir()):
+            if not entry.is_file() or _FILE_LOG_NAME_PATTERN.fullmatch(entry.name) is None:
+                continue
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    os.remove(entry.path)
+            except Exception:
+                continue
     except Exception:
         pass
+
+
+def _currentFileLogPath(now=None):
+    now = time.time() if now is None else float(now)
+    day = time.strftime('%Y-%m-%d', time.localtime(now))
+    try:
+        max_bytes = max(1, int(float(get('file_logging', 'max_file_mb', default=20)) * 1024 * 1024))
+    except (TypeError, ValueError):
+        max_bytes = 20 * 1024 * 1024
+    for index in range(1000):
+        name = '%s.log' % day if index == 0 else '%s.%d.log' % (day, index)
+        path = os.path.join(logDir(), name)
+        try:
+            if not os.path.exists(path) or os.path.getsize(path) < max_bytes:
+                return path
+        except Exception:
+            return path
+    return os.path.join(logDir(), '%s.999.log' % day)
+
+
+def _writeFileLog(level, message):
+    if not get('file_logging', 'enable', default=False):
+        return
+    now = time.time()
+    try:
+        with _log_lock:
+            releaseDir(logDir())
+            _cleanupFileLogs(now)
+            path = _currentFileLogPath(now)
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))
+            level_name = _FILE_LOG_LEVELS.get(level, str(level))
+            clean = _redactFileLogText(message).replace('\r\n', '\n').replace('\r', '\n')
+            lines = clean.split('\n') or ['']
+            rendered = ['%s [%s] %s' % (timestamp, level_name, lines[0])]
+            rendered.extend('%s [%s]   %s' % (timestamp, level_name, line) for line in lines[1:])
+            with open(path, 'a', encoding='utf-8') as handle:
+                handle.write('\n'.join(rendered) + '\n')
+    except Exception:
+        pass
+
+
+def log(Proc, level, msg):
+    message = '[OlivaAIAgent] ' + str(msg)
+    try:
+        if Proc is not None:
+            Proc.log(level, message)
+    except Exception:
+        pass
+    _writeFileLog(level, message)
 
 
 def debugLog(Proc, msg):

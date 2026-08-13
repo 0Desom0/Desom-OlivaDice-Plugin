@@ -53,6 +53,9 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertTrue(default_conf['security']['use_olivadice_censor'])
         self.assertEqual('骰主', default_conf['masters']['default_title'])
         self.assertEqual({}, default_conf['masters']['titles'])
+        self.assertTrue(default_conf['file_logging']['enable'])
+        self.assertEqual(14, default_conf['file_logging']['retention_days'])
+        self.assertEqual(20, default_conf['file_logging']['max_file_mb'])
 
     def test_legacy_prompts_and_permissions_are_migrated_once(self):
         config = {

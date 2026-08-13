@@ -107,7 +107,7 @@ GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `t
 - 潜行模式自动积累的 **知识点 / 用户侧写 / 群前情提要**，Agent 会自动注入到系统提示，也能用工具主动查：`kb_search`（查知识库）、`kb_user_note`（查某人侧写）、`kb_group_brief`（查群前情提要）、`kb_save`（写入共享知识库）。
 - Agent 里 `.ai mem` / `memory_save` 记的 **用户跨群长期记忆 / 本群共享记忆**，潜行 AI 也会读到并纳入上下文。
 
-实现上各自的写入仍落在原生存储（Agent → `sessions/`+`memory/`，潜行 → `ambient_memory_*.json`），但两边读取时都读取合集——所以数据不会互相覆盖、结构不冲突，却能彼此看见。
+实现上各自的写入仍落在原生存储（当前用户与 AI 的实际问答 → `sessions/`，手动记忆 → `memory/`，群公共历史/侧写 → `ambient_history/`+`ambient_memory_*.json`）。统一群聊管线在真正发送回复后也会更新该用户的 session；后续定向触发时，仅在相同内容已经滚出当前群历史窗口后补充注入，避免重复占用 Token。
 
 ### 群滚动摘要与长期事实记忆（v2.17）
 
@@ -424,7 +424,9 @@ OlivOS 托盘菜单选择“打开设置面板”，即可在一个窗口完成�
 - `config.json` / `groups.json` — 全局配置与统一群列表/每群覆盖
 - `Knowledge/*.json` — 手动维护的静态知识库 `{关键词: 内容}`
 - `skills/<名>/SKILL.md` — Codex 技能/规则书（支持 frontmatter 的 name/description/aliases/keywords/triggers + references/ 资料）
-- `Image/` — 视觉缓存图片；`voice/` — AI 生成语音缓存；`ambient_history/` — 每群历史；`ambient_memory_*.json` — 知识/侧写/滚动摘要；`semantic_memory.sqlite3` — 长期事实与向量；`message_registry.sqlite3` — 消息 ID、引用及正文；`memory_extraction_state.json` — 提炼水位；`sessions/` `memory/` — Agent 对话与手动记忆
+- `Image/` — 视觉缓存图片；`voice/` — AI 生成语音缓存；`ambient_history/` — 每群公共历史；`ambient_memory_*.json` — 知识/侧写/滚动摘要；`semantic_memory.sqlite3` — 长期事实与向量；`message_registry.sqlite3` — 消息 ID、引用及正文；`memory_extraction_state.json` — 提炼水位；`sessions/` — 按平台、群和用户保存实际 AI 问答；`memory/` — 手动长期记忆；`logs/` — 按天保存脱敏后的插件运行日志
+
+`logs/` 默认启用，每日文件名为 `YYYY-MM-DD.log`。`file_logging.retention_days` 控制保留天数，`max_file_mb` 控制单文件轮转上限；`debug_log` 只决定是否产生详细流程记录，不影响启动信息和错误日志落盘。GUI“维护工具”中可以直接打开会话和日志目录。
 
 ## 说明
 

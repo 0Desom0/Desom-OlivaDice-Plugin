@@ -463,6 +463,16 @@ def sendVoice(ctx, text, instructions=''):
                         message_indexes=message_indexes,
                         message_type='voice',
                     )
+                    OlivaAIAgent.ambient.saveUserSession(
+                        plugin_event,
+                        ctx.get('session_user_text', ''),
+                        [{
+                            'message': '[语音:%s]' % str(text).strip(),
+                            'message_ids': message_ids,
+                            'message_indexes': message_indexes,
+                        }],
+                        bot_hash=ctx.get('bot_hash', bot_hash),
+                    )
             except Exception:
                 pass
         actual_format = os.path.splitext(path)[1].lstrip('.').lower()
