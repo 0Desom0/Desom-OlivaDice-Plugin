@@ -170,6 +170,37 @@ class TaskCompletionTest(unittest.TestCase):
         self.assertEqual(2, chat.call_count)
         exec_tool.assert_called_once()
 
+    def test_internal_planning_uses_configured_agent_round_budget(self):
+        planning = {
+            'ok': True,
+            'text': '不过按当前任务，我是被触发需要回应。我可以自然回应一下。\n\n输出 JSON。',
+            'tool_calls': [],
+        }
+        repaired = {'ok': True, 'text': '{"r":["最终回复。"]}', 'tool_calls': []}
+        with (
+            mock.patch.object(
+                OlivaAIAgent.aiClient,
+                'chat',
+                side_effect=[planning, planning, planning, repaired],
+            ) as chat,
+            mock.patch.object(OlivaAIAgent.voice, 'hasSentVoice', return_value=False),
+        ):
+            reply = OlivaAIAgent.ambient._callReplyWithTools(
+                None,
+                None,
+                'bot',
+                'group',
+                [{'role': 'user', 'content': '接着说'}],
+                [],
+                trace_id='agent-round-budget-test',
+                tool_ctx={'trace_id': 'agent-round-budget-test'},
+                tool_defs=[{'name': 'dummy'}],
+                request_text='接着说',
+            )
+
+        self.assertEqual(['最终回复。'], reply)
+        self.assertEqual(4, chat.call_count)
+
     def test_repeated_empty_promises_stop_at_configured_limit(self):
         response = {'ok': True, 'text': '{"r":["稍等一下，我马上发"]}', 'tool_calls': []}
         with mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=[response, response, response]) as chat:

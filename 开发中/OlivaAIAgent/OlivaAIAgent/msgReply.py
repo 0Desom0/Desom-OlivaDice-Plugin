@@ -1636,6 +1636,9 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
         '需要发图时输出 [发图片:缓存文件名或图片内容/意图关键词]；不要编造缓存中不存在的图片。'
         '插件会自动匹配并转换为当前平台的真实图片消息。'
     )
+    quote_prompt = autonomousQuotePrompt(plugin_event)
+    if quote_prompt:
+        parts.append(quote_prompt)
     env_lines = [
         '【当前环境(固定部分)】',
         '平台场景: %s' % ('群聊' if ctx['func_type'] == 'group_message' else '私聊'),
@@ -1688,15 +1691,16 @@ def _normalizeAgentFinalText(value):
     raw = str(value or '').strip()
     if not raw:
         return ''
+    normalized = OlivaAIAgent.ambient._normalizeReplyJsonSyntax(raw)
     looks_like_reply_json = (
-        'Tesla.Env' in raw
-        or re.search(r'"r"\s*:', raw) is not None
+        'Tesla.Env' in normalized
+        or re.search(r'"r"\s*:', normalized) is not None
     )
     if not looks_like_reply_json:
         return OlivaAIAgent.replyStyle.cleanReplyText(raw)
-    parsed = OlivaAIAgent.ambient._parseR(raw)
+    parsed = OlivaAIAgent.ambient._parseR(normalized)
     if parsed is None:
-        parsed = OlivaAIAgent.ambient._fallback_parse_intent(raw)
+        parsed = OlivaAIAgent.ambient._fallback_parse_intent(normalized)
     if not isinstance(parsed, list):
         return ''
     return OlivaAIAgent.replyStyle.cleanReplyText(
@@ -1737,6 +1741,14 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
             blocks.append(
                 '【当前消息标识】\n%s\n消息ID用于获取/撤回消息；引用消息ID指向被引用消息；事件ID不能代替消息ID。'
                 % json.dumps(identifiers, ensure_ascii=False)
+            )
+    if autonomousQuoteEnabled(plugin_event):
+        quote_candidates = OlivaAIAgent.identifiers.recent(plugin_event, limit=12, include_content=True)
+        if quote_candidates:
+            blocks.append(
+                '【可引用消息】\n'
+                + json.dumps(quote_candidates, ensure_ascii=False)
+                + '\n只能使用这里真实存在的“消息ID”；根据表达需要自行决定是否引用。'
             )
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     image_candidates = ctx.get('image_candidates')
@@ -2088,6 +2100,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
         new_msgs = [user_msg]
         final_text = ''
         max_tool_rounds = max(0, int(conf.get('agent', 'max_tool_rounds', default=8)))
+        max_agent_rounds = max(1, max_tool_rounds)
         max_continuations = max(0, int(conf.get('agent', 'max_auto_continuations', default=2)))
         tool_rounds = 0
         completed_action = False
@@ -2148,13 +2161,30 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                         attempt=internal_repair_rounds,
                         scene='agent',
                     )
-                    if internal_repair_rounds <= 2:
+                    if request_round < max_agent_rounds:
                         messages.append({
                             'role': 'system',
                             'content': OlivaAIAgent.completion.internalDeliberationPrompt(),
                         })
                         continue
-                    raw_candidate_text = '这次回复生成异常，请再试一次。'
+                    messages.append({
+                        'role': 'system',
+                        'content': (
+                            'Agent 轮数已达到上限。不要再调用工具，也不要输出分析过程；'
+                            '请根据已有上下文直接输出最终回复。'
+                        ),
+                    })
+                    final_result = OlivaAIAgent.aiClient.chat(
+                        messages,
+                        tools=None,
+                        force_no_stream=True,
+                        trace_id=trace_id,
+                        purpose='智能体规划收尾',
+                    )
+                    if final_result.get('ok'):
+                        raw_candidate_text = final_result.get('text', '')
+                    else:
+                        raw_candidate_text = '这次回复生成异常，请再试一次。'
                 candidate_text = _normalizeAgentFinalText(raw_candidate_text)
                 needs_continuation = OlivaAIAgent.completion.needsContinuation(
                     candidate_text,
@@ -2259,6 +2289,10 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 clean.append({'role': 'user', 'content': m.get('content', '')})
             elif m.get('role') == 'assistant' and not m.get('tool_calls') and str(m.get('content', '')).strip() != '':
                 assistant_message = dict(m)
+                assistant_message['content'] = _REPLY_SEGMENT_PATTERN.sub(
+                    '',
+                    str(assistant_message.get('content', '')),
+                ).lstrip()
                 if sent_ids and str(m.get('content', '')).strip() == final_text.strip():
                     assistant_message['message_id'] = sent_ids[0]
                     assistant_message['message_ids'] = sent_ids
@@ -2290,17 +2324,97 @@ _QQBOT_AT_TAG_PATTERN = re.compile(
     re.I,
 )
 
+_REPLY_SEGMENT_PATTERN = re.compile(
+    r'\[(?:OP|CQ):reply\s*,\s*id=([^,\]]+)(?:,[^\]]*)?\]',
+    re.I,
+)
+
+
+def autonomousQuoteEnabled(plugin_event):
+    '''引用能力总开关：只在群聊中允许模型选择引用。'''
+    try:
+        platform = str(plugin_event.platform.get('platform', '')).lower()
+        sdk = str(plugin_event.platform.get('sdk', '')).lower()
+        supports_reply_segment = (
+            platform in {'qq', 'qqguild', 'onebot'}
+            or any(name in sdk for name in ('qqguild', 'onebot', 'milky'))
+        )
+        return bool(
+            OlivaAIAgent.conf.get('reply', 'quote_reply', default=True)
+            and plugin_event.plugin_info.get('func_type') == 'group_message'
+            and supports_reply_segment
+        )
+    except Exception:
+        return False
+
+
+def autonomousQuotePrompt(plugin_event):
+    '''给模型的稳定引用规则；候选消息 ID 放在动态上下文。'''
+    if not autonomousQuoteEnabled(plugin_event):
+        return ''
+    return (
+        '【自主引用】你可以像决定是否@某人一样，自行决定是否引用一条对应消息。'
+        '需要引用时，只在该条回复正文最前面输出 [OP:reply,id=消息ID]，消息ID必须原样取自动态上下文的“可引用消息”；'
+        '不需要引用时不要输出该段。不要为了被@、被引用或明确触发而固定引用，也不要编造消息ID。'
+    )
+
+
+def _validAutonomousQuoteId(plugin_event, quote_id, parsed=None):
+    quote_id = str(quote_id or '').strip()
+    if quote_id in ['', '-1']:
+        return False
+    current_ids = []
+    if isinstance(parsed, dict):
+        current_ids.append(parsed.get('message_id'))
+    try:
+        current_ids.append(plugin_event.data.message_id)
+    except Exception:
+        pass
+    if quote_id in {str(item) for item in current_ids if item not in [None, '', '-1', -1]}:
+        return True
+    return OlivaAIAgent.identifiers.getByMessageId(plugin_event, quote_id) is not None
+
+
+def prepareAutonomousQuote(plugin_event, text, parsed=None, trace_id=None):
+    '''提取并校验模型选择的引用；无效或禁用的 reply 段只移除、不发送。'''
+    raw = str(text or '')
+    matches = list(_REPLY_SEGMENT_PATTERN.finditer(raw))
+    clean = _REPLY_SEGMENT_PATTERN.sub('', raw).lstrip()
+    if not matches or not autonomousQuoteEnabled(plugin_event):
+        return clean, None
+    quote_id = str(matches[0].group(1)).strip()
+    if not _validAutonomousQuoteId(plugin_event, quote_id, parsed=parsed):
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'message.quote.rejected',
+            trace_id,
+            quote_msg_id=quote_id,
+            reason='not_in_current_chat_cache',
+        )
+        return clean, None
+    OlivaAIAgent.conf.traceLog(
+        OlivaAIAgent.conf.gProc,
+        'message.quote.selected',
+        trace_id,
+        quote_msg_id=quote_id,
+    )
+    return clean, quote_id
+
 
 def _normalizeQqGuildSenderMention(plugin_event, text):
     '''兼容旧调用名：归一化当前群中所有可唯一反查的字面 @昵称。'''
     return OlivaAIAgent.memberDirectory.normalizeLiteralMentions(plugin_event, text)
 
 
-def _qqGuildMarkdownMentionContent(text):
+def _qqGuildMarkdownMentionContent(text, allow_plain=False):
     '''把纯文本/at/reply 消息转成 Markdown；其他消息段交回原发送链路。'''
     raw = str(text or '')
     has_at = _QQBOT_AT_TAG_PATTERN.search(raw) is not None
-    if not has_at and re.search(r'\[(?:OP:at\b|CQ:at\b)', raw, flags=re.I) is None:
+    if (
+        not allow_plain
+        and not has_at
+        and re.search(r'\[(?:OP:at\b|CQ:at\b)', raw, flags=re.I) is None
+    ):
         return None
     mode = 'olivos_string' if re.search(r'\[OP:', raw, flags=re.I) else 'old_string'
     try:
@@ -2331,7 +2445,7 @@ def _qqGuildMarkdownMentionContent(text):
                 converted = ''
         content.append(str(converted or ''))
     result = ''.join(content).strip()
-    return result if has_at and result else None
+    return result if (has_at or allow_plain) and result else None
 
 
 def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=None):
@@ -2343,7 +2457,10 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
     if 'qqguildv2' not in sdk:
         return None
     normalized_text = _normalizeQqGuildSenderMention(plugin_event, text)
-    markdown_content = _qqGuildMarkdownMentionContent(normalized_text)
+    markdown_content = _qqGuildMarkdownMentionContent(
+        normalized_text,
+        allow_plain=quote_msg_id not in [None, '', '-1', -1],
+    )
     if markdown_content is None:
         return None
     data = getattr(plugin_event, 'data', None)
@@ -2424,6 +2541,12 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
             text = OlivaAIAgent.contentSafety.refusal()
     text = OlivaAIAgent.memberDirectory.normalizeLiteralMentions(plugin_event, text)
     trace_id = parsed.get('trace_id') if isinstance(parsed, dict) else None
+    text, outgoing_reference_id = prepareAutonomousQuote(
+        plugin_event,
+        text,
+        parsed=parsed,
+        trace_id=trace_id,
+    )
     if re.search(r'\[发图片[:：]', text):
         try:
             bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
@@ -2433,22 +2556,7 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
             pass
     split_len = int(conf.get('reply', 'split_length', default=1500))
     max_count = int(conf.get('reply', 'max_split_count', default=3))
-    prefix = ''
-    outgoing_reference_id = None
-    try:
-        if (
-            conf.get('reply', 'quote_reply', default=True)
-            and parsed is not None
-            and plugin_event.plugin_info.get('func_type') == 'group_message'
-        ):
-            msg_id = parsed.get('message_id')
-            if msg_id in [None, '', '-1', -1]:
-                msg_id = plugin_event.data.message_id
-            if msg_id not in [None, '', '-1', -1]:
-                prefix = '[OP:reply,id=%s]' % str(msg_id)
-                outgoing_reference_id = str(msg_id)
-    except Exception:
-        prefix = ''
+    prefix = '[OP:reply,id=%s]' % outgoing_reference_id if outgoing_reference_id else ''
     chunks = splitReplyText(text, split_len, max_count)
     chunks = [sanitizeSenderAddress(chunk, plugin_event) for chunk in chunks]
     chunks = [chunk for chunk in chunks if chunk]

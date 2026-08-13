@@ -1529,6 +1529,7 @@ _TRACE_FIELD_ZH = {
     'facts': '图片摘要数',
     'fallback': '失败回退',
     'file': '文件',
+    'finish_reason': '结束原因',
     'flight_key': '并发键',
     'force': '强制回复',
     'group_id': '群ID',

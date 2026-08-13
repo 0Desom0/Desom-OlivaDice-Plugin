@@ -6,6 +6,29 @@ import OlivaAIAgent
 
 
 class AmbientReplyParsingTest(unittest.TestCase):
+    def test_smart_quotes_around_reply_key_are_normalized(self):
+        raw = '{“r”:["这只小狗配个“乐”字也太贴脸了吧"]}'
+        expected = ['这只小狗配个“乐”字也太贴脸了吧']
+
+        self.assertEqual(expected, OlivaAIAgent.ambient._parseR(raw))
+        self.assertEqual(expected, OlivaAIAgent.ambient._fallback_parse_intent(raw))
+        self.assertEqual(expected[0], OlivaAIAgent.msgReply._normalizeAgentFinalText(raw))
+
+    def test_fully_smart_quoted_reply_json_preserves_inner_chinese_quotes(self):
+        raw = '{“r”:[“这只小狗配个“乐”字也太贴脸了吧”]}'
+
+        self.assertEqual(
+            ['这只小狗配个“乐”字也太贴脸了吧'],
+            OlivaAIAgent.ambient._parseR(raw),
+        )
+
+    def test_broken_smart_quoted_json_is_not_sent_as_plain_text(self):
+        raw = '{“r”:["回复没有结束]}'
+
+        self.assertIsNone(OlivaAIAgent.ambient._parseR(raw))
+        self.assertEqual([], OlivaAIAgent.ambient._fallback_parse_intent(raw))
+        self.assertEqual('', OlivaAIAgent.msgReply._normalizeAgentFinalText(raw))
+
     def test_tesla_env_json_body_is_unwrapped_without_losing_content(self):
         reply = (
             '小芙帮你找了几个国内能直连的资源～\n\n'
@@ -144,6 +167,40 @@ class AmbientReplyParsingTest(unittest.TestCase):
             )
 
         self.assertEqual(['谁咬的？小芙可不认这口锅。'], reply)
+        self.assertEqual(2, chat.call_count)
+
+    def test_chinese_planning_that_stops_before_json_is_repaired(self):
+        leaked_text = (
+            '用户当前触发我的是一条日文小调戏，但历史消息我已有回复。'
+            '而当前最新消息是那条合并转发的跑团检定。这其实是被引用的历史，'
+            '我现在收到的是“当前消息”应该是转发内容。\n\n'
+            '不过按当前任务，我是被触发需要回应。最新实质内容是这个转发里的检定。'
+            '我作为骰娘可以自然回应一下这个失败结果。\n\n'
+            '我可以皮一下回个话。\n\n输出 JSON。'
+        )
+        self.assertTrue(OlivaAIAgent.replyStyle.containsInternalDeliberation(leaked_text))
+        responses = [
+            {'ok': True, 'text': leaked_text, 'tool_calls': []},
+            {'ok': True, 'text': '{"r":["这调查失败得也太快了吧。"]}', 'tool_calls': []},
+        ]
+        with (
+            mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=responses) as chat,
+            mock.patch.object(OlivaAIAgent.voice, 'hasSentVoice', return_value=False),
+        ):
+            reply = OlivaAIAgent.ambient._callReplyWithTools(
+                None,
+                None,
+                'bot',
+                'group',
+                [{'role': 'user', 'content': '[合并转发:检定失败]'}],
+                [],
+                trace_id='chinese-planning-leak-test',
+                tool_ctx={'trace_id': 'chinese-planning-leak-test'},
+                tool_defs=[{'name': 'run_command'}],
+                request_text='[合并转发:检定失败]',
+            )
+
+        self.assertEqual(['这调查失败得也太快了吧。'], reply)
         self.assertEqual(2, chat.call_count)
 
 

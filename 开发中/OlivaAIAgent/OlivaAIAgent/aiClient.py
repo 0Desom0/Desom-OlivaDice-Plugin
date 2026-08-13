@@ -202,6 +202,7 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
     except Exception as e:
         result = {'ok': False, 'text': '', 'tool_calls': [], 'error': '%s: %s' % (type(e).__name__, e)}
     usage = _normalizeUsage(result.pop('_usage', None))
+    finish_reason = str(result.pop('_finish_reason', '') or '')
     result['usage'] = usage
     response_fields = {
         'elapsed_ms': int((time.perf_counter() - started) * 1000),
@@ -217,6 +218,8 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
         response_fields['cache_key'] = cache_key
     response_fields.update(cache_details)
     response_fields.update(cache_observation)
+    if finish_reason:
+        response_fields['finish_reason'] = finish_reason
     if purpose:
         response_fields['purpose'] = purpose
     OlivaAIAgent.conf.traceLog(
@@ -400,7 +403,8 @@ def _chat_openai(bc, messages, tools, force_no_stream, opts=None):
 
 def _parse_openai_response(data):
     try:
-        msg = data['choices'][0]['message']
+        choice = data['choices'][0]
+        msg = choice['message']
         text = msg.get('content') or ''
         if isinstance(text, list):  # 部分兼容端返回分段 content
             text = ''.join([p.get('text', '') for p in text if isinstance(p, dict)])
@@ -422,6 +426,7 @@ def _parse_openai_response(data):
             'tool_calls': tool_calls,
             'error': '',
             '_usage': data.get('usage'),
+            '_finish_reason': choice.get('finish_reason'),
         }
     except Exception as e:
         return {'ok': False, 'text': '', 'tool_calls': [], 'error': '响应解析失败: %s | %s' % (e, str(data)[:300])}
@@ -431,6 +436,7 @@ def _parse_openai_stream(resp):
     text = ''
     tool_calls = {}
     usage = None
+    finish_reason = ''
     try:
         resp.encoding = 'utf-8'   # SSE 恒为 UTF-8；无 charset 时 requests 会误按 ISO-8859-1 解码致中文乱码
     except Exception:
@@ -459,6 +465,8 @@ def _parse_openai_stream(resp):
             if len(choices) == 0:
                 continue
             delta = choices[0].get('delta') or {}
+            if choices[0].get('finish_reason') not in [None, '']:
+                finish_reason = choices[0]['finish_reason']
             piece = delta.get('content')
             if isinstance(piece, str):
                 text += piece
@@ -480,7 +488,14 @@ def _parse_openai_stream(resp):
             if slot['arguments'] == '':
                 slot['arguments'] = '{}'
             result_calls.append(slot)
-        return {'ok': True, 'text': text, 'tool_calls': result_calls, 'error': '', '_usage': usage}
+        return {
+            'ok': True,
+            'text': text,
+            'tool_calls': result_calls,
+            'error': '',
+            '_usage': usage,
+            '_finish_reason': finish_reason,
+        }
     except Exception as e:
         return {'ok': False, 'text': text, 'tool_calls': [], 'error': '流式解析失败: %s' % e}
     finally:
@@ -599,6 +614,7 @@ def _parse_anthropic_response(data):
             'tool_calls': tool_calls,
             'error': '',
             '_usage': data.get('usage'),
+            '_finish_reason': data.get('stop_reason'),
         }
     except Exception as e:
         return {'ok': False, 'text': '', 'tool_calls': [], 'error': '响应解析失败: %s | %s' % (e, str(data)[:300])}
@@ -608,6 +624,7 @@ def _parse_anthropic_stream(resp):
     text = ''
     blocks = {}
     usage = {}
+    finish_reason = ''
     try:
         resp.encoding = 'utf-8'
     except Exception:
@@ -631,6 +648,7 @@ def _parse_anthropic_stream(resp):
                 usage.update((event.get('message') or {}).get('usage') or {})
             elif etype == 'message_delta':
                 usage.update(event.get('usage') or {})
+                finish_reason = (event.get('delta') or {}).get('stop_reason') or finish_reason
             elif etype == 'content_block_start':
                 idx = event.get('index', 0)
                 cb = event.get('content_block') or {}
@@ -657,7 +675,14 @@ def _parse_anthropic_stream(resp):
                     'name': slot.get('name', ''),
                     'arguments': slot.get('json') or '{}',
                 })
-        return {'ok': True, 'text': text, 'tool_calls': tool_calls, 'error': '', '_usage': usage}
+        return {
+            'ok': True,
+            'text': text,
+            'tool_calls': tool_calls,
+            'error': '',
+            '_usage': usage,
+            '_finish_reason': finish_reason,
+        }
     except Exception as e:
         return {'ok': False, 'text': text, 'tool_calls': [], 'error': '流式解析失败: %s' % e}
     finally:
@@ -792,6 +817,7 @@ def _parse_responses(data):
             'tool_calls': tool_calls,
             'error': '',
             '_usage': data.get('usage'),
+            '_finish_reason': data.get('status'),
         }
     except Exception as e:
         return {'ok': False, 'text': '', 'tool_calls': [], 'error': '响应解析失败: %s | %s' % (e, str(data)[:300])}

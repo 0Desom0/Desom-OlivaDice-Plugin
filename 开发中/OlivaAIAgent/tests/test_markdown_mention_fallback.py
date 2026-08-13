@@ -73,7 +73,7 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
 
         self.assertEqual('你好 <qqbot-at-user id="user-2" />', content)
 
-    def test_safe_reply_sends_at_as_markdown_and_preserves_quote(self):
+    def test_safe_reply_sends_at_as_markdown_without_forced_quote(self):
         event = FakeEvent()
         parsed = {'message_id': 'current-1', 'trace_id': 'trace-1'}
         with (
@@ -92,11 +92,78 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
         self.assertEqual(1, len(event.markdown_calls))
         self.assertEqual('qq_group', event.markdown_calls[0]['chat_type'])
         self.assertEqual('group-1', event.markdown_calls[0]['chat_id'])
-        self.assertEqual('current-1', event.markdown_calls[0]['quote_msg_id'])
+        self.assertNotIn('quote_msg_id', event.markdown_calls[0])
         self.assertEqual(
             {'content': '<qqbot-at-user id="user-2" /> 你好'},
             event.markdown_calls[0]['markdown'],
         )
+
+    def test_safe_reply_sends_model_selected_plain_quote_through_markdown_sdk(self):
+        event = FakeEvent()
+        parsed = {'message_id': 'current-1', 'trace_id': 'trace-quote'}
+        with (
+            mock.patch.object(OlivaAIAgent.coreLogger, 'recordToolCall'),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(
+                event,
+                '[OP:reply,id=current-1]普通文字回复',
+                parsed,
+                safety_check=False,
+            )
+
+        self.assertEqual([], event.replies)
+        self.assertEqual(1, len(event.markdown_calls))
+        self.assertEqual('current-1', event.markdown_calls[0]['quote_msg_id'])
+        self.assertEqual(
+            {'content': '普通文字回复'},
+            event.markdown_calls[0]['markdown'],
+        )
+
+    def test_ambient_model_selected_quote_uses_markdown_and_records_reference(self):
+        event = FakeEvent()
+        with (
+            mock.patch.object(OlivaAIAgent.ambient.time, 'sleep'),
+            mock.patch.object(OlivaAIAgent.coreLogger, 'recordToolCall'),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing') as record_outgoing,
+        ):
+            records = OlivaAIAgent.ambient._sendMulti(
+                event,
+                ['[OP:reply,id=current-1]普通文字回复'],
+                total_past=0,
+                trace_id='trace-ambient-quote',
+            )
+
+        self.assertEqual([], event.replies)
+        self.assertEqual('current-1', event.markdown_calls[0]['quote_msg_id'])
+        self.assertEqual('current-1', records[0]['reference_message_id'])
+        self.assertEqual('current-1', record_outgoing.call_args.kwargs['reference_message_id'])
+
+    def test_quote_switch_disables_model_reply_segment(self):
+        event = FakeEvent()
+        original_get = OlivaAIAgent.conf.get
+
+        def config_get(section, key, default=None):
+            if section == 'reply' and key == 'quote_reply':
+                return False
+            return original_get(section, key, default=default)
+
+        with (
+            mock.patch.object(OlivaAIAgent.conf, 'get', side_effect=config_get),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(
+                event,
+                '[OP:reply,id=current-1]普通文字回复',
+                {'message_id': 'current-1'},
+                safety_check=False,
+            )
+
+        self.assertEqual([], event.markdown_calls)
+        self.assertEqual(['普通文字回复'], event.replies)
 
     def test_safe_reply_converts_literal_current_sender_mention(self):
         event = FakeEvent()
@@ -167,7 +234,7 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
             )
 
         self.assertEqual(
-            ['[OP:reply,id=current-1][OP:at,id=user-2] 你好'],
+            ['[OP:at,id=user-2] 你好'],
             event.replies,
         )
 

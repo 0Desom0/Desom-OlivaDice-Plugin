@@ -238,10 +238,87 @@ class QuoteContextTest(unittest.TestCase):
         self.assertEqual(['https://example.com/op.png'], parsed['images'])
         self.assertIn('看这张图', parsed['text'])
 
-    def test_safe_reply_uses_op_reply_segment(self):
+    def test_safe_reply_does_not_force_quote_without_model_selection(self):
         event = FakeEvent('测试消息')
         OlivaAIAgent.msgReply._safeReply(event, '回复内容', {'message_id': 'current-1'})
+        self.assertEqual('回复内容', event.replies[0])
+
+    def test_safe_reply_uses_model_selected_current_message_quote(self):
+        event = FakeEvent('测试消息')
+        OlivaAIAgent.msgReply._safeReply(
+            event,
+            '[OP:reply,id=current-1]回复内容',
+            {'message_id': 'current-1'},
+        )
         self.assertEqual('[OP:reply,id=current-1]回复内容', event.replies[0])
+
+    def test_safe_reply_rejects_unknown_model_quote_id(self):
+        event = FakeEvent('测试消息')
+        with mock.patch.object(OlivaAIAgent.conf, 'traceLog') as trace_log:
+            OlivaAIAgent.msgReply._safeReply(
+                event,
+                '[OP:reply,id=made-up-id]回复内容',
+                {'message_id': 'current-1'},
+            )
+        self.assertEqual('回复内容', event.replies[0])
+        self.assertTrue(any(
+            call.args[1] == 'message.quote.rejected'
+            for call in trace_log.call_args_list
+        ))
+
+    def test_safe_reply_accepts_recent_message_from_same_chat(self):
+        event = FakeEvent('测试消息')
+        OlivaAIAgent.identifiers.record(
+            event,
+            'incoming',
+            message_id='history-1',
+            content='较早的消息',
+        )
+        OlivaAIAgent.msgReply._safeReply(
+            event,
+            '[OP:reply,id=history-1]我回应这一条',
+            {'message_id': 'current-1'},
+        )
+        self.assertEqual('[OP:reply,id=history-1]我回应这一条', event.replies[0])
+
+    def test_agent_prompt_allows_autonomous_quote_without_forcing_it(self):
+        event = FakeEvent('测试消息')
+        ctx = {
+            'func_type': 'group_message',
+            'group_id': 'group-1',
+            'self_id': 'bot-1',
+            'Proc': None,
+            'trace_id': 'trace-prompt',
+            'selected_tool_names': [],
+        }
+        with mock.patch.object(OlivaAIAgent.conf, 'loadedPlugins', return_value=[]):
+            prompt = OlivaAIAgent.msgReply._buildSystemPrompt(event, ctx, False)
+        self.assertIn('你可以像决定是否@某人一样，自行决定是否引用', prompt)
+        self.assertIn('不需要引用时不要输出该段', prompt)
+        self.assertIn('不要为了被@、被引用或明确触发而固定引用', prompt)
+
+    def test_agent_context_exposes_recent_quote_candidates(self):
+        event = FakeEvent('测试消息')
+        OlivaAIAgent.identifiers.record(
+            event,
+            'incoming',
+            message_id='history-prompt-1',
+            sender_name='测试用户',
+            content='需要回应的旧消息',
+        )
+        ctx = {
+            'platform': 'qqGuild',
+            'func_type': 'group_message',
+            'group_id': 'group-1',
+            'user_id': 'user-1',
+            'self_id': 'bot-1',
+            'message_id': 'current-1',
+            'selected_tool_names': [],
+        }
+        context = OlivaAIAgent.msgReply._buildVolatileContext(event, ctx, False)
+        self.assertIn('【可引用消息】', context)
+        self.assertIn('history-prompt-1', context)
+        self.assertIn('需要回应的旧消息', context)
 
     def test_qqguildv2_at_event_is_silent_when_ambient_is_disabled(self):
         event = FakeEvent('机器人在吗')

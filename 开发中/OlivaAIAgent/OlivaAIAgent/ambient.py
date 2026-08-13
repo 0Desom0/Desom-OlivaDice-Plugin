@@ -212,6 +212,7 @@ def addSelfReply(
     message_ids=None,
     message_indexes=None,
     message_type=None,
+    reference_message_id=None,
 ):
     '''把自己的回复以 assistant 身份记入历史（nickname=None 标记自己）。'''
     key = _hkey(platform, group_id)
@@ -240,6 +241,8 @@ def addSelfReply(
         if indexes:
             entry['msg_idx'] = indexes[0]
             entry['message_indexes'] = indexes
+        if reference_message_id not in [None, '', '-1', -1]:
+            entry['reference_message_id'] = str(reference_message_id)
         q.append(entry)
         _persist(key)
 
@@ -840,6 +843,9 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 
 # 已知信息
 - 你的QQ号是 %s，被@时是 %s''' % (tool_hint, persona, self_id, mention_str)
+    quote_prompt = OlivaAIAgent.msgReply.autonomousQuotePrompt(plugin_event)
+    if quote_prompt:
+        system_content += '\n\n' + quote_prompt
     system_content += '\n\n' + OlivaAIAgent.completion.COMPLETION_GUARD_PROMPT
     persona_guard = conf.personaGuardPrompt()
     if persona_guard:
@@ -914,6 +920,22 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         patch['图片缓存'] = image_cache
     if skills_ctx:
         patch['技能片段'] = skills_ctx.strip()
+    if OlivaAIAgent.msgReply.autonomousQuoteEnabled(plugin_event):
+        quote_candidates = []
+        for entry in history[-12:]:
+            ids = [entry.get('message_id')] + list(entry.get('message_ids') or [])
+            ids = list(dict.fromkeys(
+                str(item) for item in ids if item not in [None, '', '-1', -1]
+            ))
+            if not ids:
+                continue
+            quote_candidates.append({
+                '消息ID': ids[0],
+                '发送者': entry.get('nickname') or '我',
+                '内容摘要': str(entry.get('message', ''))[:160],
+            })
+        if quote_candidates:
+            patch['可引用消息'] = quote_candidates
 
     main_history_size = max(1, int(cfg('history_size', 8)))
     context_history = _historyWithoutCurrentTurn(history, parsed)[-main_history_size:]
@@ -1045,6 +1067,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             record['message'],
             message_ids=record['message_ids'],
             message_indexes=record['message_indexes'],
+            reference_message_id=record.get('reference_message_id'),
         )
 
 
@@ -1153,6 +1176,13 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
             i = OlivaAIAgent.contentSafety.refusal()
             safety_refused = True
         i = OlivaAIAgent.memberDirectory.normalizeLiteralMentions(plugin_event, i)
+        i, outgoing_reference_id = OlivaAIAgent.msgReply.prepareAutonomousQuote(
+            plugin_event,
+            i,
+            trace_id=trace_id,
+        )
+        if not i:
+            continue
         delay = sum(0.2 + (random.random() * 2 - 1) * 0.15 for _ in range(len(str(i))))
         if first:
             first = False
@@ -1167,15 +1197,18 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
         try:
             result = OlivaAIAgent.msgReply._sendQqGuildMarkdownMention(
                 plugin_event,
-                i,
+                ('[OP:reply,id=%s]' % outgoing_reference_id if outgoing_reference_id else '') + i,
+                quote_msg_id=outgoing_reference_id,
                 trace_id=trace_id,
             )
             if result is None:
-                result = plugin_event.reply(i)
+                payload = ('[OP:reply,id=%s]' % outgoing_reference_id if outgoing_reference_id else '') + i
+                result = plugin_event.reply(payload)
             sent = not isinstance(result, dict) or bool(result.get('active'))
         except Exception:
             try:
-                result = plugin_event.send('group', str(plugin_event.data.group_id), i)
+                payload = ('[OP:reply,id=%s]' % outgoing_reference_id if outgoing_reference_id else '') + i
+                result = plugin_event.send('group', str(plugin_event.data.group_id), payload)
                 sent = not isinstance(result, dict) or bool(result.get('active'))
             except Exception:
                 pass
@@ -1193,12 +1226,14 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
                 plugin_event,
                 str(i),
                 message_ids,
+                reference_message_id=outgoing_reference_id,
                 message_indexes=message_indexes,
             )
             sent_records.append({
                 'message': str(i),
                 'message_ids': message_ids,
                 'message_indexes': message_indexes,
+                'reference_message_id': outgoing_reference_id,
             })
     return sent_records
 
@@ -1309,12 +1344,64 @@ def _unwrapTeslaBody(text):
     return body if isinstance(body, str) else None
 
 
+def _normalizeReplyJsonSyntax(text):
+    '''只修正回复 JSON 的结构引号，保留正文中的中文引号。'''
+    return re.sub(
+        r'([,{]\s*)[“”‘’]\s*r\s*[“”‘’](\s*:)',
+        r'\1"r"\2',
+        str(text),
+        flags=re.I,
+    )
+
+
+def _parseSmartQuotedReplyList(text):
+    '''兼容 {“r”:[“回复”]}，结束引号须紧邻逗号或数组末尾。'''
+    match = re.search(r'\{\s*"r"\s*:\s*\[(.*)\]\s*\}', text, re.I | re.S)
+    if match is None:
+        return None
+    inner = match.group(1).strip()
+    if not inner:
+        return []
+    values = []
+    position = 0
+    while position < len(inner):
+        while position < len(inner) and inner[position].isspace():
+            position += 1
+        if position >= len(inner) or inner[position] not in '“‘':
+            return None
+        closer = '”' if inner[position] == '“' else '’'
+        start = position + 1
+        closing = None
+        for candidate in range(start, len(inner)):
+            if inner[candidate] != closer:
+                continue
+            tail = candidate + 1
+            while tail < len(inner) and inner[tail].isspace():
+                tail += 1
+            if tail == len(inner) or inner[tail] == ',':
+                closing = candidate
+                break
+        if closing is None:
+            return None
+        values.append(inner[start:closing])
+        position = closing + 1
+        while position < len(inner) and inner[position].isspace():
+            position += 1
+        if position >= len(inner):
+            break
+        if inner[position] != ',':
+            return None
+        position += 1
+    return values
+
+
 def _parseR(text):
-    text = str(text)
+    text = _normalizeReplyJsonSyntax(text)
     if 'Tesla.Env' in text or re.search(r'\bbody\s*:', text):
         wrapped_body = _unwrapTeslaBody(text)
         if wrapped_body is None:
             return None
+        wrapped_body = _normalizeReplyJsonSyntax(wrapped_body)
         try:
             wrapped_obj = json.loads(wrapped_body)
         except Exception:
@@ -1328,6 +1415,9 @@ def _parseR(text):
             return [x for x in obj['r']]
     except Exception:
         pass
+    smart_values = _parseSmartQuotedReplyList(text)
+    if smart_values is not None:
+        return smart_values
     matches = re.findall(r'\{[^{}]*"r"\s*:\s*\[[^\]]*\][^{}]*\}', text)
     if matches:
         try:
@@ -1345,6 +1435,9 @@ def _parseR(text):
             inner = text[start:end].strip()
             if not inner:
                 return []
+            unescaped_quotes = re.findall(r'(?<!\\)(?:\\\\)*"', inner)
+            if len(unescaped_quotes) % 2 != 0:
+                return None
             parts = re.split(r'"\s*,\s*"', inner.strip().strip('"'))
             return [p.strip().strip('"') for p in parts if p.strip()]
     return None
@@ -1364,7 +1457,7 @@ def _fallback_parse_intent(content):
     - 首尾含跳过关键词 → 视为不回复(返回空列表)
     - 否则 → 把原文当作回复内容返回 [content]
     返回 None 表示无法兜底(不应该发生)；返回 [] 表示不回复；返回 [str] 表示回复内容。'''
-    content = str(content).strip()
+    content = _normalizeReplyJsonSyntax(str(content).strip())
     if not content:
         return []
     if 'Tesla.Env' in content or re.search(r'\bbody\s*:', content):
@@ -1537,6 +1630,7 @@ def _callReplyWithTools(
     if tool_defs is None:
         tool_defs = OlivaAIAgent.tools.getToolsForRequest(ctx, voice_only=voice_only)
     max_rounds = max(0, int(conf.get('ambient', 'agent_max_turns', default=4)))
+    max_agent_rounds = max(1, max_rounds)
     max_continuations = max(0, int(conf.get('agent', 'max_auto_continuations', default=2)))
     tool_rounds = 0
     completed_action = False
@@ -1544,11 +1638,7 @@ def _callReplyWithTools(
     internal_repair_rounds = 0
     request_round = 0
     convo = list(messages)
-    while (
-        request_round == 0
-        or tool_rounds < max_rounds
-        or continuation_rounds < max_continuations
-    ):
+    while request_round < max_agent_rounds:
         request_round += 1
         conf.debugLog(Proc, '潜行+工具 请求%d, 已执行工具轮数%d/%d' % (
             request_round,
@@ -1590,7 +1680,7 @@ def _callReplyWithTools(
                     attempt=internal_repair_rounds,
                     scene='ambient_tools',
                 )
-                if internal_repair_rounds <= 2:
+                if request_round < max_agent_rounds:
                     convo.append({
                         'role': 'system',
                         'content': OlivaAIAgent.completion.internalDeliberationPrompt(json_reply=True),
@@ -1651,7 +1741,7 @@ def _callReplyWithTools(
             conf.debugLog(Proc, '潜行+工具 结果: %s' % result[:200])
         tool_rounds += 1
     # 循环用完 max_rounds → 强制收尾
-    conf.debugLog(Proc, '潜行+工具 达到max_rounds=%d,强制收尾' % max_rounds)
+    conf.debugLog(Proc, '潜行+工具 达到Agent轮数上限=%d,强制收尾' % max_agent_rounds)
     convo.append({'role': 'user', 'content': '现在直接输出最终 JSON：{"r":["回复"]} 或 {"r":[]}。'})
     res = OlivaAIAgent.aiClient.chat(
         convo,
