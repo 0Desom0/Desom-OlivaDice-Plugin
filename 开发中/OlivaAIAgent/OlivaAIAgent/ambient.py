@@ -1435,54 +1435,123 @@ def _unwrapTeslaBody(text):
 
 
 def _normalizeReplyJsonSyntax(text):
-    '''只修正回复 JSON 的结构引号，保留正文中的中文引号。'''
+    '''只规范回复对象的 r 键，保留正文中的标点和引号。'''
     return re.sub(
-        r'([,{]\s*)[“”‘’]\s*r\s*[“”‘’](\s*:)',
-        r'\1"r"\2',
+        r'(?P<prefix>[{｛,，]\s*)[:：]?\s*'
+        r'(?:(?:["\'“”‘’]\s*)?r(?:\s*["\'“”‘’])?)\s*[:：]',
+        lambda matched: matched.group('prefix') + '"r":',
         str(text),
         flags=re.I,
     )
 
 
-def _parseSmartQuotedReplyList(text):
-    '''兼容 {“r”:[“回复”]}，结束引号须紧邻逗号或数组末尾。'''
-    match = re.search(r'\{\s*"r"\s*:\s*\[(.*)\]\s*\}', text, re.I | re.S)
-    if match is None:
+def _decodeRelaxedReplyString(value, quote):
+    if quote in '“‘':
+        return value
+    escaped = {
+        '"': '"',
+        "'": "'",
+        '\\': '\\',
+        '/': '/',
+        'b': '\b',
+        'f': '\f',
+        'n': '\n',
+        'r': '\r',
+        't': '\t',
+    }
+
+    def replace_escape(matched):
+        token = matched.group(1)
+        if token.startswith('u') and len(token) == 5:
+            try:
+                return chr(int(token[1:], 16))
+            except ValueError:
+                return '\\' + token
+        return escaped.get(token, '\\' + token)
+
+    return re.sub(r'\\(u[0-9a-fA-F]{4}|.)', replace_escape, value, flags=re.S)
+
+
+def _parseRelaxedReplyList(text):
+    '''兼容 {:r:[...]}/{r:[...]}/单引号/全角符号等常见非标准 JSON。'''
+    matches = list(re.finditer(r'[{｛]\s*"r"\s*:\s*[\[［]', text, re.I | re.S))
+    if not matches:
         return None
-    inner = match.group(1).strip()
-    if not inner:
-        return []
+    start = matches[-1].end()
+    length = len(text)
     values = []
-    position = 0
-    while position < len(inner):
-        while position < len(inner) and inner[position].isspace():
+    position = start
+    while position < length:
+        while position < length and text[position].isspace():
             position += 1
-        if position >= len(inner) or inner[position] not in '“‘':
+        if position >= length:
             return None
-        closer = '”' if inner[position] == '“' else '’'
-        start = position + 1
-        closing = None
-        for candidate in range(start, len(inner)):
-            if inner[candidate] != closer:
-                continue
-            tail = candidate + 1
-            while tail < len(inner) and inner[tail].isspace():
-                tail += 1
-            if tail == len(inner) or inner[tail] == ',':
-                closing = candidate
-                break
-        if closing is None:
-            return None
-        values.append(inner[start:closing])
-        position = closing + 1
-        while position < len(inner) and inner[position].isspace():
+        if text[position] in ']］':
+            return values
+        quote = text[position]
+        if quote in '"\'“‘':
+            closer = {'"': '"', "'": "'", '“': '”', '‘': '’'}[quote]
+            value_start = position + 1
+            candidate = value_start
+            closing = None
+            while candidate < length:
+                if text[candidate] != closer:
+                    candidate += 1
+                    continue
+                if quote in '"\'' and candidate > value_start:
+                    escapes = 0
+                    probe = candidate - 1
+                    while probe >= value_start and text[probe] == '\\':
+                        escapes += 1
+                        probe -= 1
+                    if escapes % 2 == 1:
+                        candidate += 1
+                        continue
+                tail = candidate + 1
+                while tail < length and text[tail].isspace():
+                    tail += 1
+                if tail < length and text[tail] in ',，]］':
+                    closing = candidate
+                    break
+                candidate += 1
+            if closing is None:
+                return None
+            values.append(_decodeRelaxedReplyString(text[value_start:closing], quote))
+            position = closing + 1
+        else:
+            closing = position
+            while closing < length and text[closing] not in ',，]］':
+                closing += 1
+            bare = text[position:closing].strip()
+            if not bare:
+                return None
+            values.append(bare)
+            position = closing
+        while position < length and text[position].isspace():
             position += 1
-        if position >= len(inner):
-            break
-        if inner[position] != ',':
+        if position >= length:
+            return None
+        if text[position] in ']］':
+            return values
+        if text[position] not in ',，':
             return None
         position += 1
-    return values
+        probe = position
+        while probe < length and text[probe].isspace():
+            probe += 1
+        if probe < length and text[probe] in ']］':
+            return values
+    return None
+
+
+def _looksLikeReplyEnvelope(text):
+    normalized = _normalizeReplyJsonSyntax(text)
+    return re.search(r'[{｛]\s*"r"\s*:\s*[\[［]', normalized, re.I | re.S) is not None
+
+
+def _parseSmartQuotedReplyList(text):
+    '''保留旧内部调用名；统一转到宽容回复数组解析器。'''
+    return _parseRelaxedReplyList(text)
 
 
 def _parseR(text):
@@ -1491,23 +1560,16 @@ def _parseR(text):
         wrapped_body = _unwrapTeslaBody(text)
         if wrapped_body is None:
             return None
-        wrapped_body = _normalizeReplyJsonSyntax(wrapped_body)
-        try:
-            wrapped_obj = json.loads(wrapped_body)
-        except Exception:
-            return None
-        if isinstance(wrapped_obj, dict) and isinstance(wrapped_obj.get('r'), list):
-            return list(wrapped_obj['r'])
-        return None
+        return _parseR(wrapped_body)
     try:
         obj = json.loads(text)
         if isinstance(obj, dict) and isinstance(obj.get('r'), list):
             return [x for x in obj['r']]
     except Exception:
         pass
-    smart_values = _parseSmartQuotedReplyList(text)
-    if smart_values is not None:
-        return smart_values
+    relaxed_values = _parseRelaxedReplyList(text)
+    if relaxed_values is not None:
+        return relaxed_values
     matches = re.findall(r'\{[^{}]*"r"\s*:\s*\[[^\]]*\][^{}]*\}', text)
     if matches:
         try:
@@ -1547,23 +1609,24 @@ def _fallback_parse_intent(content):
     - 首尾含跳过关键词 → 视为不回复(返回空列表)
     - 否则 → 把原文当作回复内容返回 [content]
     返回 None 表示无法兜底(不应该发生)；返回 [] 表示不回复；返回 [str] 表示回复内容。'''
-    content = _normalizeReplyJsonSyntax(str(content).strip())
-    if not content:
+    raw_content = str(content).strip()
+    if not raw_content:
         return []
-    if 'Tesla.Env' in content or re.search(r'\bbody\s*:', content):
-        tolerant = _parseR(content)
+    normalized = _normalizeReplyJsonSyntax(raw_content)
+    if 'Tesla.Env' in normalized or re.search(r'\bbody\s*:', normalized):
+        tolerant = _parseR(normalized)
         return tolerant if tolerant is not None else []
-    if re.search(r'"r"\s*:\s*\[', content):
-        tolerant = _parseR(content)
+    if _looksLikeReplyEnvelope(normalized):
+        tolerant = _parseR(normalized)
         if tolerant is not None:
             return tolerant
         return []   # 检测到 JSON 结构但无法提取 → 安全跳过，不把损坏 JSON 当回复发出去
-    head = content[:15]
-    tail = content[-15:] if len(content) > 15 else content
+    head = raw_content[:15]
+    tail = raw_content[-15:] if len(raw_content) > 15 else raw_content
     for kw in _SKIP_KEYWORDS:
         if head.startswith(kw) or tail.endswith(kw):
             return []
-    return [content]   # 未命中跳过关键词 → 视为实际回复
+    return [raw_content]   # 未命中跳过关键词 → 视为实际回复
 
 
 def _makeToolContext(plugin_event, Proc, group_id, trace_id=None):

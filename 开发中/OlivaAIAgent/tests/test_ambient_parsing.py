@@ -6,6 +6,48 @@ import OlivaAIAgent
 
 
 class AmbientReplyParsingTest(unittest.TestCase):
+    def assert_relaxed_reply(self, raw, expected):
+        self.assertEqual(expected, OlivaAIAgent.ambient._parseR(raw))
+        self.assertEqual(expected, OlivaAIAgent.ambient._fallback_parse_intent(raw))
+        self.assertEqual(
+            '\n\n'.join(expected),
+            OlivaAIAgent.msgReply._normalizeAgentFinalText(raw),
+        )
+
+    def test_relaxed_reply_envelopes_are_unwrapped(self):
+        cases = (
+            ('{:r:["正文"]}', ['正文']),
+            ('{r:["正文"]}', ['正文']),
+            ("{'r':['正文']}", ['正文']),
+            ('｛：r：［“正文一”，“正文二”］｝', ['正文一', '正文二']),
+            ('```json\n{:r:["正文"]}\n```', ['正文']),
+        )
+
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assert_relaxed_reply(raw, expected)
+
+    def test_relaxed_reply_preserves_content_and_escapes(self):
+        raw = '{:r:["哪有那么文明呀~🦊 中文“引号”：保留。\\n下一行"]}'
+        self.assert_relaxed_reply(
+            raw,
+            ['哪有那么文明呀~🦊 中文“引号”：保留。\n下一行'],
+        )
+
+    def test_broken_relaxed_reply_envelope_is_not_sent_verbatim(self):
+        raw = '{:r:["正文没有结束]}'
+
+        self.assertIsNone(OlivaAIAgent.ambient._parseR(raw))
+        self.assertEqual([], OlivaAIAgent.ambient._fallback_parse_intent(raw))
+        self.assertEqual('', OlivaAIAgent.msgReply._normalizeAgentFinalText(raw))
+
+    def test_plain_text_that_only_mentions_reply_syntax_is_unchanged(self):
+        raw = '普通聊天里提到 {:r: 但不是完整结构'
+
+        self.assertIsNone(OlivaAIAgent.ambient._parseR(raw))
+        self.assertEqual([raw], OlivaAIAgent.ambient._fallback_parse_intent(raw))
+        self.assertEqual(raw, OlivaAIAgent.msgReply._normalizeAgentFinalText(raw))
+
     def test_smart_quotes_around_reply_key_are_normalized(self):
         raw = '{“r”:["这只小狗配个“乐”字也太贴脸了吧"]}'
         expected = ['这只小狗配个“乐”字也太贴脸了吧']

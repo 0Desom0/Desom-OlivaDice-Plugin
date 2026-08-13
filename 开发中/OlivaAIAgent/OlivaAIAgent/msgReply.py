@@ -1694,7 +1694,7 @@ def _normalizeAgentFinalText(value):
     normalized = OlivaAIAgent.ambient._normalizeReplyJsonSyntax(raw)
     looks_like_reply_json = (
         'Tesla.Env' in normalized
-        or re.search(r'"r"\s*:', normalized) is not None
+        or OlivaAIAgent.ambient._looksLikeReplyEnvelope(normalized)
     )
     if not looks_like_reply_json:
         return OlivaAIAgent.replyStyle.cleanReplyText(raw)
