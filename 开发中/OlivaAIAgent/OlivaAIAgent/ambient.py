@@ -21,6 +21,8 @@ _history = {}          # "platform|group_id" -> DynamicQueue
 _history_lock = threading.RLock()
 _group_locks = {}      # "platform|group_id" -> SlackableFairLock
 _glock_lock = threading.Lock()
+_group_agent_tasks = {}  # "platform|group_id" -> 当前统一群聊 Agent 任务令牌
+_group_agent_tasks_lock = threading.RLock()
 _memory_state = {}
 _memory_state_loaded = False
 _memory_jobs = set()
@@ -29,6 +31,68 @@ _memory_state_lock = threading.RLock()
 
 def _hkey(platform, group_id):
     return '%s|%s' % (platform, group_id)
+
+
+class GroupAgentInterrupted(RuntimeError):
+    '''同群后续消息已取代当前 Agent。'''
+
+
+def _beginGroupAgent(platform, group_id, trace_id=None):
+    '''登记同群最新任务；开关开启时让仍在运行或排队的旧任务失效。'''
+    if not OlivaAIAgent.conf.get('agent', 'interrupt_previous_in_group', default=True):
+        return None
+    key = _hkey(platform, group_id)
+    token = {
+        'key': key,
+        'trace_id': str(trace_id or ''),
+        'cancelled': threading.Event(),
+        'done': threading.Event(),
+        'interrupted_trace_id': '',
+    }
+    with _group_agent_tasks_lock:
+        previous = _group_agent_tasks.get(key)
+        if previous is not None and not previous['done'].is_set():
+            previous['cancelled'].set()
+            token['interrupted_trace_id'] = previous.get('trace_id', '')
+        _group_agent_tasks[key] = token
+    return token
+
+
+def _finishGroupAgent(token):
+    if token is None:
+        return
+    token['done'].set()
+    with _group_agent_tasks_lock:
+        if _group_agent_tasks.get(token['key']) is token:
+            _group_agent_tasks.pop(token['key'], None)
+
+
+def _groupAgentActive(token):
+    return token is None or not token['cancelled'].is_set()
+
+
+def _ensureGroupAgentActive(token):
+    if not _groupAgentActive(token):
+        raise GroupAgentInterrupted('同群出现了更新的 Agent 对话')
+
+
+def _groupAgentSleep(token, seconds):
+    delay = max(0.0, float(seconds))
+    if token is None:
+        if delay > 0:
+            time.sleep(delay)
+        return
+    if token['cancelled'].wait(delay):
+        raise GroupAgentInterrupted('同群出现了更新的 Agent 对话')
+
+
+def cancelAllGroupAgents():
+    '''插件重载前使尚未完成的群 Agent 停止后续动作。'''
+    with _group_agent_tasks_lock:
+        tasks = list(_group_agent_tasks.values())
+        _group_agent_tasks.clear()
+    for token in tasks:
+        token['cancelled'].set()
 
 
 def _histDir():
@@ -508,7 +572,7 @@ def _logConversationDecision(Proc, trace_id, decision, reason, result=None, mess
 
 def process(plugin_event, Proc, parsed, self_id,
             force=False, tools=False, attempt=True, text_override=None,
-            skip_first_thinking=None, _vision_worker=False):
+            skip_first_thinking=None, _vision_worker=False, _agent_token=None):
     '''统一群聊管线入口：记录历史 → 后台线程做节律+判定+回复。
     这一条管线同时具备潜行的群上下文/人设/知识/技能/视觉 与 全权限 Agent 的全部工具与骰点，
     无论怎么触发都是同一条请求。
@@ -524,6 +588,18 @@ def process(plugin_event, Proc, parsed, self_id,
     trace_id = parsed.get('trace_id')
     if skip_first_thinking is None:
         skip_first_thinking = bool(force)
+    agent_token = _agent_token
+    if attempt and agent_token is None:
+        agent_token = _beginGroupAgent(platform, group_id, trace_id=trace_id)
+        interrupted_trace_id = (agent_token or {}).get('interrupted_trace_id', '')
+        if interrupted_trace_id:
+            OlivaAIAgent.conf.traceLog(
+                Proc,
+                'agent.group.interrupt_requested',
+                trace_id,
+                group_id=group_id,
+                interrupted_trace_id=interrupted_trace_id,
+            )
 
     # sync_ocr=false 时把整条图片处理移到后台线程，但仍等待 OCR 完成后才生成本轮回复。
     # 这样不会阻塞 OlivOS 消息总线，也不会让当前回复只看到“未识别”占位。
@@ -563,8 +639,10 @@ def process(plugin_event, Proc, parsed, self_id,
                     text_override=text_override,
                     skip_first_thinking=skip_first_thinking,
                     _vision_worker=True,
+                    _agent_token=agent_token,
                 )
             except Exception as e:
+                _finishGroupAgent(agent_token)
                 OlivaAIAgent.conf.traceLog(
                     Proc,
                     'vision.worker.exception',
@@ -690,13 +768,14 @@ def process(plugin_event, Proc, parsed, self_id,
                  ref_msg_idx=parsed.get('ref_msg_idx'), trace_id=trace_id,
                  mentioned_user_ids=parsed.get('at_list'))
     if blocked_source is not None:
-        if force:
+        if force and _groupAgentActive(agent_token):
             OlivaAIAgent.msgReply._safeReply(
                 plugin_event,
                 OlivaAIAgent.contentSafety.refusal(),
                 parsed,
                 safety_check=False,
             )
+        _finishGroupAgent(agent_token)
         return
     if not attempt:
         return  # 仅记录历史作上下文，不回复
@@ -707,24 +786,37 @@ def process(plugin_event, Proc, parsed, self_id,
         for pref in OlivaAIAgent.conf.get('ambient', 'ignore_prefixes', default=[]) or []:
             if pref and text_now.startswith(pref):
                 _logConversationDecision(Proc, trace_id, '跳过', '命令类消息不主动接话')
+                _finishGroupAgent(agent_token)
                 return
 
     def worker():
         lock = getGroupLock(platform, group_id)
         with lock:
             try:
+                _ensureGroupAgentActive(agent_token)
                 _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
-                       force=force, tools=tools, skip_first_thinking=skip_first_thinking)
+                       force=force, tools=tools, skip_first_thinking=skip_first_thinking,
+                       agent_token=agent_token)
+            except GroupAgentInterrupted:
+                OlivaAIAgent.conf.traceLog(
+                    Proc,
+                    'agent.group.interrupted',
+                    trace_id,
+                    group_id=group_id,
+                )
             except Exception:
                 import traceback
                 OlivaAIAgent.conf.log(Proc, 3, '统一管线异常:\n' + traceback.format_exc())
+            finally:
+                _finishGroupAgent(agent_token)
     threading.Thread(target=worker, daemon=True).start()
 
 
 def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
-           force=False, tools=False, skip_first_thinking=False):
+           force=False, tools=False, skip_first_thinking=False, agent_token=None):
     conf = OlivaAIAgent.conf
     trace_id = parsed.get('trace_id')
+    _ensureGroupAgentActive(agent_token)
 
     def cfg(k, d=None):
         return conf.get('ambient', k, default=d)
@@ -745,6 +837,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     if not force and not lock.slack():
         _logConversationDecision(Proc, trace_id, '跳过', '等待期间出现更新消息')
         return
+    _ensureGroupAgentActive(agent_token)
 
     # 收集动态上下文
     search_ageing = cfg('search_ageing', 900)
@@ -856,7 +949,9 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             image_cache,
             trace_id=trace_id,
         )
+    _ensureGroupAgentActive(agent_token)
     aux_results = OlivaAIAgent.preflight.runCluster(aux_tasks, Proc=Proc, trace_id=trace_id)
+    _ensureGroupAgentActive(agent_token)
 
     if aux_results.get('reply') == 'SKIP':
         _logConversationDecision(Proc, trace_id, '跳过', '独立参与判断决定不进入主回复模型')
@@ -1072,6 +1167,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                 ) % fn,
             })
     main_audios, main_videos = OlivaAIAgent.media.prepareMainInputs(parsed, trace_id=trace_id)
+    _ensureGroupAgentActive(agent_token)
     current_message = {'role': 'user', 'content': message}
     if main_audios:
         current_message['audios'] = main_audios
@@ -1092,7 +1188,9 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         tool_ctx=runtime_tool_ctx,
         tool_defs=tool_defs,
         request_text=message,
+        agent_token=agent_token,
     )
+    _ensureGroupAgentActive(agent_token)
     voice_sent = OlivaAIAgent.voice.hasSentVoice(runtime_tool_ctx)
     if reply_list is None:
         if voice_sent:
@@ -1103,7 +1201,10 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         if force:
             tpl = str(conf.get('agent', 'error_reply', default='AI出错: {err}'))
             try:
+                _ensureGroupAgentActive(agent_token)
                 plugin_event.reply(tpl.replace('{err}', '暂时没能生成回复，请稍后再试'))
+            except GroupAgentInterrupted:
+                raise
             except Exception:
                 pass
         return
@@ -1118,11 +1219,13 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     converted_voice = False
     cleaned_reply_list = []
     for reply_text in reply_list:
+        _ensureGroupAgentActive(agent_token)
         simulated_text = OlivaAIAgent.voice.simulatedVoiceText(reply_text)
         if simulated_text is None:
             cleaned_reply_list.append(reply_text)
             continue
         voice_result = OlivaAIAgent.voice.sendSimulatedVoice(runtime_tool_ctx, reply_text)
+        _ensureGroupAgentActive(agent_token)
         if isinstance(voice_result, dict) and voice_result.get('active'):
             converted_voice = True
         else:
@@ -1139,9 +1242,17 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                              messages=len(reply_list))
 
     # 拟人发送节奏
-    time.sleep(1 + (random.random() * 2 - 1) * 0.9)
+    _groupAgentSleep(agent_token, 1 + (random.random() * 2 - 1) * 0.9)
+    _ensureGroupAgentActive(agent_token)
     out = OlivaAIAgent.vision.translateOutgoing(reply_list, bot_hash, trace_id=trace_id)
-    sent_records = _sendMulti(plugin_event, out, time.perf_counter() - total_start, trace_id=trace_id)
+    _ensureGroupAgentActive(agent_token)
+    sent_records = _sendMulti(
+        plugin_event,
+        out,
+        time.perf_counter() - total_start,
+        trace_id=trace_id,
+        agent_token=agent_token,
+    )
     for record in sent_records:
         addSelfReply(
             platform,
@@ -1151,6 +1262,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             message_indexes=record['message_indexes'],
             reference_message_id=record.get('reference_message_id'),
         )
+    _ensureGroupAgentActive(agent_token)
     if saveUserSession(plugin_event, message, sent_records, bot_hash=bot_hash):
         conf.traceLog(
             Proc,
@@ -1241,7 +1353,7 @@ def _sendResultMessageIndexes(result):
     return list(dict.fromkeys(str(item) for item in values if item not in [None, '', '-1', -1]))
 
 
-def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
+def _sendMulti(plugin_event, msg_list, total_past, trace_id=None, agent_token=None):
     # 逐条打字延迟上限：长回复不应让群锁休眠数分钟（会拖住该群后续所有回复）
     cap = float(OlivaAIAgent.conf.get('ambient', 'max_send_delay', default=6.0))
     first = True
@@ -1249,6 +1361,8 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
     safety_refused = False
     bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     for i in msg_list:
+        if not _groupAgentActive(agent_token):
+            break
         if not i or len(str(i)) == 0:
             continue
         source = OlivaAIAgent.contentSafety.match(i, outgoing=True, bot_hash=bot_hash)
@@ -1281,7 +1395,12 @@ def _sendMulti(plugin_event, msg_list, total_past, trace_id=None):
         if cap > 0 and delay > cap:
             delay = cap
         if delay > 0:
-            time.sleep(delay)
+            try:
+                _groupAgentSleep(agent_token, delay)
+            except GroupAgentInterrupted:
+                break
+        if not _groupAgentActive(agent_token):
+            break
         result = None
         sent = False
         try:
@@ -1659,6 +1778,7 @@ def _callReply(
     tool_ctx=None,
     tool_defs=None,
     request_text=None,
+    agent_token=None,
 ):
     retry = int(OlivaAIAgent.conf.get('ambient', 'retry_count', default=3))
     if tool_defs:
@@ -1673,6 +1793,7 @@ def _callReply(
             tool_ctx=tool_ctx,
             tool_defs=tool_defs,
             request_text=request_text,
+            agent_token=agent_token,
         )
     max_continuations = max(
         0,
@@ -1686,6 +1807,7 @@ def _callReply(
     reply_list = None
     res = None
     while failed_attempts < retry:
+        _ensureGroupAgentActive(agent_token)
         request_round += 1
         res = OlivaAIAgent.aiClient.chat(
             convo,
@@ -1695,6 +1817,7 @@ def _callReply(
             trace_id=trace_id,
             purpose='主回复第%d次' % request_round,
         )
+        _ensureGroupAgentActive(agent_token)
         if not res.get('ok'):
             OlivaAIAgent.conf.debugLog(Proc, '潜行调用失败: %s' % res.get('error'))
             failed_attempts += 1
@@ -1772,6 +1895,7 @@ def _callReplyWithTools(
     tool_ctx=None,
     tool_defs=None,
     request_text=None,
+    agent_token=None,
 ):
     '''潜行 + 工具：让 AI 可调用 run_command/查询等，最终强制 JSON 输出。
     修复要点：
@@ -1792,6 +1916,7 @@ def _callReplyWithTools(
     request_round = 0
     convo = list(messages)
     while request_round < max_agent_rounds:
+        _ensureGroupAgentActive(agent_token)
         request_round += 1
         conf.debugLog(Proc, '潜行+工具 请求%d, 已执行工具轮数%d/%d' % (
             request_round,
@@ -1805,6 +1930,7 @@ def _callReplyWithTools(
             trace_id=trace_id,
             purpose='主回复工具第%d轮' % request_round,
         )
+        _ensureGroupAgentActive(agent_token)
         if not res.get('ok'):
             conf.debugLog(Proc, '潜行+工具 AI调用失败(请求%d): %s' % (request_round, res.get('error')))
             return _suppressTextAfterVoice(None, ctx, Proc, trace_id)
@@ -1873,12 +1999,14 @@ def _callReplyWithTools(
         if tool_rounds >= max_rounds:
             break
         for tc in calls:
+            _ensureGroupAgentActive(agent_token)
             try:
                 args = json.loads(tc.get('arguments') or '{}')
             except Exception:
                 args = {}
             conf.debugLog(Proc, '潜行+工具 调用: %s(%s)' % (tc.get('name'), str(args)[:200]))
             result = OlivaAIAgent.tools.execTool(tc.get('name', ''), args, ctx)
+            _ensureGroupAgentActive(agent_token)
             completed_action = completed_action or OlivaAIAgent.completion.toolCompletedAction(
                 tc.get('name', ''),
                 result,
@@ -1894,6 +2022,7 @@ def _callReplyWithTools(
             conf.debugLog(Proc, '潜行+工具 结果: %s' % result[:200])
         tool_rounds += 1
     # 循环用完 max_rounds → 强制收尾
+    _ensureGroupAgentActive(agent_token)
     conf.debugLog(Proc, '潜行+工具 达到Agent轮数上限=%d,强制收尾' % max_agent_rounds)
     convo.append({'role': 'user', 'content': '现在直接输出最终 JSON：{"r":["回复"]} 或 {"r":[]}。'})
     res = OlivaAIAgent.aiClient.chat(
@@ -1904,6 +2033,7 @@ def _callReplyWithTools(
         trace_id=trace_id,
         purpose='主回复工具收尾',
     )
+    _ensureGroupAgentActive(agent_token)
     if res.get('ok'):
         text = res.get('text', '')
         reply_list = _parseR(text)
@@ -1952,6 +2082,7 @@ def _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id):
 
 
 def saveAll():
+    cancelAllGroupAgents()
     with _history_lock:
         for key in list(_history.keys()):
             _persist(key)

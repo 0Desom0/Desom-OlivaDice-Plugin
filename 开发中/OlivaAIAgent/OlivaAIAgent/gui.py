@@ -205,6 +205,7 @@ FIELD_LABELS = {
     'translate_query_to_foreign': '中文问题同时翻译为外文检索',
     'translate_query_to': '外文检索目标语言',
     'max_tool_rounds': 'Agent/工具最大轮数',
+    'interrupt_previous_in_group': '群内新对话打断旧 Agent',
     'max_auto_continuations': '未完成任务自动续行次数',
     'tool_result_max_chars': '工具结果字符上限',
     'max_concurrent': '并发对话数',
