@@ -1018,8 +1018,9 @@ def handle_cover(plugin_event, argument: str) -> None:
 
 def handle_today(plugin_event) -> None:
     user_id = utils.get_sender_id_from_event(plugin_event)
+    user_hash = utils.get_user_hash_from_event(plugin_event)
     linked_bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
-    song = function.get_user_today_song(user_id, linked_bot_hash)
+    song = function.get_user_today_song(user_hash, linked_bot_hash)
     if not song:
         reply_text(plugin_event, '今日乐曲获取失败，可能是乐曲数据未加载。')
         return
@@ -1883,7 +1884,7 @@ help_categories = {
         'name': '今日乐曲',
         'aliases': ['today', '今日曲'],
         'commands': [
-            '/la today - 获取今日随机乐曲(每天固定)',
+            '/la today - 获取个人今日乐曲（每人每天固定，曲库足够时互不重复）',
             '/la 今日曲 - 同上',
         ],
         'examples': [
@@ -2117,7 +2118,7 @@ help_categories = {
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
             '/la bot songcard on/off - 开关 song/info HTML 卡片（默认开启，关闭后使用兼容文本排版）',
             '/la global status/on/off - 查看或修改全局开关',
-            '/la update - 更新本地曲库数据（仅骰主）',
+            '/la update - 更新本地曲库；发现新曲时自动下载并校正曲绘（仅骰主）',
             '/la fullcheck - 全量检测 Fandom 与本地差异及新增歌曲（不写入，仅骰主）',
             '/la fullcheck apply - 全量覆盖 Fandom 数据（仅骰主）',
             '/la sync - 预览 Wiki Songs 页面同步（仅骰主）',

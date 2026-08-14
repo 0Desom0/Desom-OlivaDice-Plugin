@@ -872,6 +872,53 @@ def ensure_song_cover(song: dict[str, Any], force: bool = False) -> str:
     return cover_paths[0] if cover_paths else ''
 
 
+def update_new_song_covers(songs: list[dict[str, Any]]) -> dict[str, Any]:
+    """下载本次新增歌曲的曲绘，并立即生成需要的 2:1 校正版。"""
+    valid_songs = [song for song in songs if isinstance(song, dict)]
+    result = {
+        'total': len(valid_songs),
+        'ready': 0,
+        'images': 0,
+        'adjusted': 0,
+        'failed': 0,
+        'failed_songs': [],
+    }
+    if not valid_songs:
+        return result
+
+    adjusted_dir = os.path.abspath(utils.get_adjusted_cover_art_dir())
+
+    with ThreadPoolExecutor(max_workers=max(1, min(config.cover_download_workers, len(valid_songs)))) as executor:
+        future_song_map = {
+            executor.submit(ensure_song_covers, song, force=True): song
+            for song in valid_songs
+        }
+        for future in as_completed(future_song_map):
+            song = future_song_map[future]
+            try:
+                cover_paths = future.result()
+            except Exception as exception_object:
+                utils.debug_log(
+                    None,
+                    f'新曲曲绘自动处理失败：{song.get("title") or song.get("chapter") or "未知歌曲"}：'
+                    f'{type(exception_object).__name__}: {exception_object}',
+                )
+                result['failed'] += 1
+                result['failed_songs'].append(str(song.get('title') or song.get('chapter') or '未知歌曲'))
+                continue
+            if not cover_paths:
+                result['failed'] += 1
+                result['failed_songs'].append(str(song.get('title') or song.get('chapter') or '未知歌曲'))
+                continue
+            result['ready'] += 1
+            result['images'] += len(cover_paths)
+            result['adjusted'] += sum(
+                os.path.dirname(os.path.abspath(path)) == adjusted_dir
+                for path in cover_paths
+            )
+    return result
+
+
 def fetch_cover_file_map(session, songs: list[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
     """批量读取歌曲页，返回“章节缓存键 -> 筛选后的曲绘变体”。"""
     result = {}
@@ -1504,11 +1551,27 @@ def run_update() -> dict[str, Any]:
         matched_official_ids=matched_official_ids,
         apply=True,
     )
-    new_titles = [str(song.get('title', '')) for song in new_song_result.get('added_songs', [])]
+    new_songs = [song for song in new_song_result.get('added_songs', []) if isinstance(song, dict)]
+    new_titles = [str(song.get('title', '')) for song in new_songs]
 
     data = song_sync.sanitize_song_markup(data)
     if not function.save_song_data(data):
         raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
+    try:
+        new_cover_result = update_new_song_covers(new_songs)
+    except Exception as exception_object:
+        utils.debug_log(
+            None,
+            f'新曲已写入，但自动处理曲绘失败：{type(exception_object).__name__}: {exception_object}',
+        )
+        new_cover_result = {
+            'total': len(new_songs),
+            'ready': 0,
+            'images': 0,
+            'adjusted': 0,
+            'failed': len(new_songs),
+            'failed_songs': [str(song.get('title') or song.get('chapter') or '未知歌曲') for song in new_songs],
+        }
     official_pending = [
         {
             'title': item.get('title', ''),
@@ -1534,6 +1597,7 @@ def run_update() -> dict[str, Any]:
         'missing_results': update_results,
         'added': len(new_titles),
         'added_titles': new_titles,
+        'new_cover_result': new_cover_result,
         'official_matched': official_update_stats.get('matched', 0),
         'official_legacy_matched': official_update_stats.get('legacy_matched', 0),
         'official_updated': official_update_stats.get('changed_songs', 0),

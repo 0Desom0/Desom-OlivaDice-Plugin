@@ -71,6 +71,112 @@ class UpdateIdFlowTest(unittest.TestCase):
             ['Master 14+ visible'],
         )
 
+    def test_update_only_downloads_and_adjusts_new_song_covers(self):
+        song = self._complete_song_with_nowiki()
+        new_song = {'id': 2, 'title': 'New Song', 'chapter': 'Event-2'}
+        empty_match = {'matched': [], 'review': [], 'legacy_review': []}
+        new_result = {
+            'added_songs': [new_song],
+            'title_outside_updates': [],
+            'official_pending': [],
+        }
+        cover_result = {
+            'total': 1,
+            'ready': 1,
+            'images': 1,
+            'adjusted': 1,
+            'failed': 0,
+            'failed_songs': [],
+        }
+        with (
+            patch.object(function, 'load_song_data', return_value=[song]),
+            patch.object(crawler, 'fetch_official_song_catalog', return_value=([], [])),
+            patch.object(
+                crawler,
+                'match_and_apply_official_catalog',
+                side_effect=lambda data, _catalog: (data, {}, empty_match),
+            ),
+            patch.object(crawler, 'sync_new_songs_from_wiki', return_value=new_result),
+            patch.object(function, 'save_song_data', return_value=True),
+            patch.object(crawler, 'update_new_song_covers', return_value=cover_result) as update_covers,
+        ):
+            result = crawler.run_update()
+        update_covers.assert_called_once_with([new_song])
+        self.assertEqual(result['new_cover_result'], cover_result)
+
+    def test_new_song_cover_update_forces_download_and_counts_adjusted_paths(self):
+        songs = [
+            {'title': 'Ready Song', 'chapter': 'Event-2'},
+            {'title': 'Failed Song', 'chapter': 'Event-3'},
+        ]
+        adjusted_dir = str(Path('adjusted').resolve())
+
+        def fake_covers(song, force=False):
+            self.assertTrue(force)
+            if song['title'] == 'Ready Song':
+                return [str(Path(adjusted_dir) / 'Event-2.png')]
+            return []
+
+        with (
+            patch.object(crawler.utils, 'get_adjusted_cover_art_dir', return_value=adjusted_dir),
+            patch.object(crawler, 'ensure_song_covers', side_effect=fake_covers) as ensure_covers,
+        ):
+            result = crawler.update_new_song_covers(songs)
+        self.assertEqual(ensure_covers.call_count, 2)
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(result['ready'], 1)
+        self.assertEqual(result['images'], 1)
+        self.assertEqual(result['adjusted'], 1)
+        self.assertEqual(result['failed'], 1)
+        self.assertEqual(result['failed_songs'], ['Failed Song'])
+
+    def test_cover_failure_does_not_undo_successful_song_update(self):
+        song = self._complete_song_with_nowiki()
+        new_song = {'id': 2, 'title': 'New Song', 'chapter': 'Event-2'}
+        empty_match = {'matched': [], 'review': [], 'legacy_review': []}
+        new_result = {
+            'added_songs': [new_song],
+            'title_outside_updates': [],
+            'official_pending': [],
+        }
+        with (
+            patch.object(function, 'load_song_data', return_value=[song]),
+            patch.object(crawler, 'fetch_official_song_catalog', return_value=([], [])),
+            patch.object(
+                crawler,
+                'match_and_apply_official_catalog',
+                side_effect=lambda data, _catalog: (data, {}, empty_match),
+            ),
+            patch.object(crawler, 'sync_new_songs_from_wiki', return_value=new_result),
+            patch.object(function, 'save_song_data', return_value=True),
+            patch.object(crawler, 'update_new_song_covers', side_effect=RuntimeError('offline')),
+            patch.object(crawler.utils, 'debug_log'),
+        ):
+            result = crawler.run_update()
+        self.assertEqual(result['added_titles'], ['New Song'])
+        self.assertEqual(result['new_cover_result']['failed'], 1)
+        self.assertEqual(result['new_cover_result']['failed_songs'], ['New Song'])
+
+    def test_update_report_includes_new_song_cover_result(self):
+        report = function.build_update_report({
+            'before': 1,
+            'added': 2,
+            'added_titles': ['Ready Song', 'Failed Song'],
+            'new_cover_result': {
+                'total': 2,
+                'ready': 1,
+                'images': 1,
+                'adjusted': 1,
+                'failed': 1,
+                'failed_songs': ['Failed Song'],
+            },
+            'total': 3,
+        })
+        self.assertIn('【新曲曲绘】', report)
+        self.assertIn('处理成功: 1/2首', report)
+        self.assertIn('2:1 自动校正: 1张', report)
+        self.assertIn('失败歌曲: Failed Song', report)
+
     def test_fullcheck_apply_strips_historical_nowiki_before_save(self):
         song = self._complete_song_with_nowiki()
         empty_match = {'matched': [], 'review': [], 'legacy_review': []}

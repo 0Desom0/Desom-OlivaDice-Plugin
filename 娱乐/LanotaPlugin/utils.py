@@ -3,6 +3,7 @@
 
 import copy
 import functools
+import hashlib
 import json
 import os
 import re
@@ -438,6 +439,31 @@ def get_sender_id_from_event(plugin_event) -> str:
         return safe_str(plugin_event.data.user_id)
     except Exception:
         return ''
+
+
+def get_user_hash_from_event(plugin_event) -> str:
+    """优先使用 OlivaDiceCore 用户哈希；无 Core 时返回跨平台兼容哈希。"""
+    user_id = get_sender_id_from_event(plugin_event)
+    try:
+        platform_data = getattr(plugin_event, 'platform', {})
+        platform = safe_str(platform_data.get('platform', '')) if isinstance(platform_data, dict) else ''
+    except Exception:
+        platform = ''
+    platform = platform.strip() or 'unknown'
+    if has_oliva_dice_core:
+        try:
+            user_hash = safe_str(
+                OlivaDiceCore.userConfig.getUserHash(
+                    user_id,
+                    'user',
+                    platform,
+                )
+            ).strip()
+            if user_hash:
+                return user_hash
+        except Exception:
+            pass
+    return hashlib.sha256(f'{platform}:{user_id}'.encode('utf-8')).hexdigest()
 
 
 def get_sender_name_from_event(plugin_event) -> str:

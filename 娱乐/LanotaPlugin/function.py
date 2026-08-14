@@ -3,9 +3,11 @@
 
 import datetime
 import difflib
+import hashlib
 import math
 import random
 import re
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,7 @@ FONT_SIZE = 24
 PADDING = 30
 LINE_SPACING = 5
 MAX_WIDTH = 800
+today_song_lock = threading.RLock()
 
 
 category_map = {
@@ -151,30 +154,69 @@ def get_today_seed() -> int:
     return int(datetime.date.today().strftime('%Y%m%d'))
 
 
-def get_user_today_song(user_id: str, bot_hash: Any = None):
-    user_data = load_user_data(bot_hash)
-    today_seed = get_today_seed()
-    user_key = str(user_id)
-    user_info = user_data.setdefault(user_key, {})
+def _today_song_start_index(today_seed: int, user_key: str, song_count: int) -> int:
+    digest = hashlib.sha256(f'{today_seed}:{user_key}'.encode('utf-8')).digest()
+    return int.from_bytes(digest[:8], 'big') % song_count
 
-    if user_info.get('today_date') == today_seed:
-        chapter = str(user_info.get('today_chapter', '')).lower()
-        for song in load_song_data():
-            if str(song.get('chapter', '')).lower() == chapter:
-                return song
 
-    song_data = load_song_data()
-    if not song_data:
-        return None
-    try:
-        random.seed(today_seed + int(user_id))
-    except Exception:
-        random.seed(today_seed)
-    today_song = random.choice(song_data)
-    user_info['today_chapter'] = today_song.get('chapter', '')
-    user_info['today_date'] = today_seed
-    save_user_data(user_data, bot_hash)
-    return today_song
+def get_user_today_song(user_hash: str, bot_hash: Any = None):
+    with today_song_lock:
+        user_data = load_user_data(bot_hash)
+        today_seed = get_today_seed()
+        user_key = str(user_hash)
+        user_info = user_data.get(user_key)
+        if not isinstance(user_info, dict):
+            user_info = {}
+            user_data[user_key] = user_info
+
+        song_data = load_song_data()
+        if not song_data:
+            return None
+        song_by_chapter = {
+            str(song.get('chapter', '')).casefold(): song
+            for song in song_data
+            if str(song.get('chapter', '')).strip()
+        }
+
+        cached_chapter = str(user_info.get('today_chapter', '')).casefold()
+        if (
+            user_info.get('today_date') == today_seed
+            and str(user_info.get('today_identity_hash', '')) == user_key
+            and cached_chapter in song_by_chapter
+        ):
+            duplicate_owners = sorted(
+                str(other_user_key)
+                for other_user_key, other_info in user_data.items()
+                if isinstance(other_info, dict)
+                and other_info.get('today_date') == today_seed
+                and str(other_info.get('today_identity_hash', '')) == str(other_user_key)
+                and str(other_info.get('today_chapter', '')).casefold() == cached_chapter
+            )
+            if not duplicate_owners or user_key == duplicate_owners[0]:
+                return song_by_chapter[cached_chapter]
+
+        reserved_chapters = {
+            str(other_info.get('today_chapter', '')).casefold()
+            for other_user_key, other_info in user_data.items()
+            if str(other_user_key) != user_key
+            and isinstance(other_info, dict)
+            and other_info.get('today_date') == today_seed
+            and str(other_info.get('today_identity_hash', '')) == str(other_user_key)
+            and str(other_info.get('today_chapter', '')).strip()
+        }
+        start_index = _today_song_start_index(today_seed, user_key, len(song_data))
+        today_song = song_data[start_index]
+        for offset in range(len(song_data)):
+            candidate = song_data[(start_index + offset) % len(song_data)]
+            if str(candidate.get('chapter', '')).casefold() not in reserved_chapters:
+                today_song = candidate
+                break
+
+        user_info['today_chapter'] = today_song.get('chapter', '')
+        user_info['today_date'] = today_seed
+        user_info['today_identity_hash'] = user_key
+        save_user_data(user_data, bot_hash)
+        return today_song
 
 
 def get_value(value: Any) -> str:
@@ -779,6 +821,17 @@ def build_update_report(result: dict[str, Any]) -> str:
         message += '\n新增曲目:\n' + '\n'.join(str(title) for title in added_titles[:30])
         if len(added_titles) > 30:
             message += f'\n……共{len(added_titles)}首'
+        cover_result = result.get('new_cover_result') or {}
+        message += '\n\n【新曲曲绘】\n'
+        message += f'处理成功: {cover_result.get("ready", 0)}/{cover_result.get("total", len(added_titles))}首\n'
+        message += f'可用曲绘: {cover_result.get("images", 0)}张\n'
+        message += f'2:1 自动校正: {cover_result.get("adjusted", 0)}张\n'
+        message += f'失败: {cover_result.get("failed", 0)}首'
+        failed_songs = [str(title) for title in (cover_result.get('failed_songs') or []) if str(title).strip()]
+        if failed_songs:
+            message += '\n失败歌曲: ' + '、'.join(failed_songs[:10])
+            if len(failed_songs) > 10:
+                message += f' 等{len(failed_songs)}首'
     message += f'\n\n【总计】\n当前总乐曲: {result.get("total", 0)}首'
     return message
 
