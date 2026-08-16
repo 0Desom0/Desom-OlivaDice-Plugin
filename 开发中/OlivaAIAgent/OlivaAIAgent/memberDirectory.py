@@ -246,6 +246,68 @@ def _resolveFromOlivOSCache(plugin_event, nickname):
     return user_ids[0] if len(user_ids) == 1 else None
 
 
+def _displayFromOlivOSCache(plugin_event, user_id):
+    target = str(user_id or '').strip()
+    aliases = list(dict.fromkeys(
+        alias
+        for alias, cached_user_id in _olivosCacheEntries(plugin_event)
+        if cached_user_id == target
+    ))
+    return aliases[0] if aliases else None
+
+
+def _displayFromLocal(plugin_event, user_id):
+    bot_hash, platform, group_id = _eventContext(plugin_event)
+    target = str(user_id or '').strip()
+    if not group_id or not target:
+        return None
+    try:
+        with _lock:
+            conn = _connect()
+            try:
+                row = conn.execute('''
+                    SELECT nickname, name, card FROM members
+                    WHERE bot_hash=? AND platform=? AND group_id=? AND user_id=?
+                ''', (bot_hash, platform, group_id, target)).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None
+        for key in ('nickname', 'name', 'card'):
+            alias = _cleanAlias(row[key], target)
+            if alias:
+                return alias
+    except Exception:
+        return None
+    return None
+
+
+def _currentSenderDisplay(plugin_event, user_id):
+    data = getattr(plugin_event, 'data', None)
+    current_user_id = str(getattr(data, 'user_id', '') or '').strip()
+    target = str(user_id or '').strip()
+    sender = getattr(data, 'sender', {})
+    if not target or target != current_user_id or not isinstance(sender, dict):
+        return None
+    for key in ('nickname', 'name', 'card'):
+        alias = _cleanAlias(sender.get(key), target)
+        if alias:
+            return alias
+    return None
+
+
+def displayName(plugin_event, user_id):
+    '''按 OlivOS 缓存、本地目录、当前事件发送者的顺序用用户 ID 反查显示名。'''
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        return None
+    return (
+        _displayFromOlivOSCache(plugin_event, user_id)
+        or _displayFromLocal(plugin_event, user_id)
+        or _currentSenderDisplay(plugin_event, user_id)
+    )
+
+
 def _currentSenderMatch(plugin_event, nickname):
     data = getattr(plugin_event, 'data', None)
     user_id = str(getattr(data, 'user_id', '') or '').strip()

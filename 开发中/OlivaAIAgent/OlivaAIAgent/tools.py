@@ -3,7 +3,7 @@
 OlivaAIAgent 工具注册表
 - OlivOS 原生能力只通过内存中的 Event / Proc / indeAPI / adapter SDK 目录发现与调用
 - 不注册任何手写 OlivOS 原生接口工具
-- run_command: 以当前用户身份重注入消息事件，执行 OlivaDice 官方骰点指令及其他插件指令
+- run_command: 以当前用户身份重注入消息事件；jrrp 类指令可受限切到本轮明确提及的目标
 - 附带 记忆工具 与 联网工具
 - danger=True 的工具受三级管控: 全局开关 / 群开关 / 仅骰主
 '''
@@ -420,6 +420,80 @@ def _t_send_voice(ctx, args):
 # 核心: 官方指令重注入
 # =========================================================
 
+_MENTION_TARGET_COMMANDS = {'jrrp', 'zrrp', 'mrrp'}
+
+
+def _commandName(command):
+    match = re.match(r'^[.。/]\s*([A-Za-z]+)', str(command or '').strip())
+    return match.group(1).lower() if match else ''
+
+
+def _commandMentionIds(command):
+    raw = str(command or '')
+    mode = 'olivos_string' if '[OP:' in raw else 'old_string'
+    try:
+        message = OlivOS.messageAPI.Message_templet(mode_rx=mode, data_raw=raw)
+        return list(dict.fromkeys(
+            str(item.data.get('id', '')).strip()
+            for item in message.data
+            if isinstance(item, OlivOS.messageAPI.PARA.at)
+            and str(item.data.get('id', '')).strip()
+        ))
+    except Exception:
+        return []
+
+
+def _commandForRerx(command):
+    '''重注入接口接收 CQ 字符串；用 OlivOS 消息对象把 OP 段结构化转换过去。'''
+    raw = str(command or '')
+    if '[OP:' not in raw:
+        return raw
+    try:
+        message = OlivOS.messageAPI.Message_templet(mode_rx='olivos_string', data_raw=raw)
+        converted = message.get('old_string')
+        return str(converted) if converted not in [None, ''] else raw
+    except Exception:
+        return raw
+
+
+def _mentionedCommandTarget(ctx, command):
+    '''仅允许 jrrp 类只读命令切换到当前消息明确 AT 的唯一目标。'''
+    if _commandName(command) not in _MENTION_TARGET_COMMANDS:
+        return None, None
+    target_ids = _commandMentionIds(command)
+    if not target_ids:
+        return None, None
+    if len(target_ids) != 1:
+        return None, 'jrrp 类目标指令一次只能指定一位被提及用户'
+    allowed_ids = {
+        str(item).strip()
+        for item in (ctx.get('mentioned_user_ids') or [])
+        if str(item).strip()
+    }
+    target_id = target_ids[0]
+    if target_id not in allowed_ids:
+        return None, '目标用户必须是当前消息中明确 AT 的用户'
+    return target_id, None
+
+
+def _applyMentionedCommandTarget(rerx, source_event, target_id):
+    if target_id in [None, '']:
+        return
+    try:
+        display_name = OlivaAIAgent.memberDirectory.displayName(source_event, target_id)
+    except Exception:
+        display_name = None
+    display_name = str(display_name or target_id)
+    rerx.data.user_id = str(target_id)
+    rerx.data.sender = {
+        'id': str(target_id),
+        'user_id': str(target_id),
+        'name': display_name,
+        'nickname': display_name,
+        'card': display_name,
+    }
+
+
 def _local_rerx_event(src, message, func_type):
     '''不依赖 OlivaDiceCore 的重注入事件构造(复刻 OlivaDiceCore.msgEvent 逻辑)'''
     res = OlivOS.API.Event(sdk_event=OlivOS.contentAPI.fake_sdk_event(src.bot_info), log_func=None)
@@ -456,8 +530,13 @@ def _local_rerx_event(src, message, func_type):
     '包括 OlivaDiceCore(.r/.ra/.sc/.st/.coc)、Logger(.log 跑团日志)、Joy(.jrrp)、Master、Odyssey、'
     'StoryCore(.story 剧情)、以及第三方规则插件(如 ShouHun/狩魂者、Sanchi/三尺之下 等)，谁能处理谁就响应。'
     '结果直接发到聊天，返回值 replies 是各插件产生的回复。'
+    '给当前消息明确@的用户测今日/昨日/明日人品时，在对应命令后保留该用户的 '
+    '[OP:at,id=真实user_id]；插件会受限地以该用户身份执行 jrrp/zrrp/mrrp。'
     '骰点/检定/规则类操作必须用本工具执行真实指令，禁止编造结果；不确定指令语法时先执行 .help 或 .help 指令名 查询。',
-    params={'command': _p('string', "要执行的指令，以.或。开头，例如 '.r d100 侦查'")},
+    params={'command': _p(
+        'string',
+        "要执行的指令，以.或。开头，例如 '.r d100 侦查' 或 '.jrrp [OP:at,id=当前消息提及的user_id]'",
+    )},
     required=['command'],
 )
 def _t_run_command(ctx, args):
@@ -469,6 +548,10 @@ def _t_run_command(ctx, args):
     low = cmd.lstrip('.。/').lower()
     if low.startswith('ai'):
         return {'error': '禁止用 run_command 递归调用 AI 自身'}
+    target_user_id, target_error = _mentionedCommandTarget(ctx, cmd)
+    if target_error:
+        return {'error': target_error}
+    rerx_command = _commandForRerx(cmd)
     plugin_event = ctx['plugin_event']
     Proc = ctx['Proc']
     func_type = ctx['func_type']
@@ -478,16 +561,17 @@ def _t_run_command(ctx, args):
     try:
         import OlivaDiceCore
         if func_type == 'group_message':
-            rerx = OlivaDiceCore.msgEvent.getReRxEvent_group_message(plugin_event, cmd)
+            rerx = OlivaDiceCore.msgEvent.getReRxEvent_group_message(plugin_event, rerx_command)
         else:
-            rerx = OlivaDiceCore.msgEvent.getReRxEvent_private_message(plugin_event, cmd)
+            rerx = OlivaDiceCore.msgEvent.getReRxEvent_private_message(plugin_event, rerx_command)
     except Exception:
         rerx = None
     if rerx is None or not rerx.active:
         try:
-            rerx = _local_rerx_event(plugin_event, cmd, func_type)
+            rerx = _local_rerx_event(plugin_event, rerx_command, func_type)
         except Exception as e:
             return {'error': '重注入事件构造失败: %s' % e}
+    _applyMentionedCommandTarget(rerx, plugin_event, target_user_id)
     captured = []
     orig_reply = rerx.reply
     orig_send = rerx.send
@@ -551,6 +635,7 @@ def _t_run_command(ctx, args):
         'active': True,
         'data': {
             'executed': cmd,
+            'target_user_id': target_user_id,
             'handled_by': dispatched,
             'replies': [c[:600] for c in captured[:6]] if captured else ['(骰系未产生文本回复，可能是未知指令或无输出)'],
         },

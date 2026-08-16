@@ -785,14 +785,34 @@ def build_update_report(result: dict[str, Any]) -> str:
     message = '乐曲数据更新完成！\n'
     message += f'原有乐曲: {result.get("before", 0)}首\n'
     message += '\n【官网数据对标】\n'
+    catalog_size = result.get('official_catalog_size')
+    if catalog_size is not None:
+        message += f'本轮已读取官方曲库: {catalog_size}首（包含国际服 API）\n'
+    source_errors = result.get('official_source_errors') or []
+    if source_errors:
+        message += '部分官方曲库来源不可用: ' + '；'.join(str(error) for error in source_errors[:3]) + '\n'
     message += f'已匹配: {result.get("official_matched", 0)}首\n'
     message += f'Legacy 已匹配: {result.get("official_legacy_matched", 0)}首\n'
     message += f'本次更新官方字段: {result.get("official_updated", 0)}首\n'
+    changed_fields = result.get('official_changed_fields') or {}
+    message += f'官方 songId 写入/修正: {changed_fields.get("official_songid", 0)}首\n'
+    message += f'官方定数写入/修正: {changed_fields.get("official_constant", 0)}首\n'
+    unmatched_catalog = result.get('official_unmatched_catalog') or []
+    if unmatched_catalog:
+        message += f'官方目录中尚未对应本地: {len(unmatched_catalog)}首\n'
+        for item in unmatched_catalog[:10]:
+            message += f'• {item.get("songId", "?")} {item.get("title", "?")}\n'
     official_pending = result.get('official_pending') or []
     message += f'待人工确认: {len(official_pending)}首\n'
     if official_pending:
         for item in official_pending[:20]:
-            message += f'• {item.get("chapter", "?")} {item.get("title", "?")}\n'
+            chapter = item.get('chapter', '?')
+            title = item.get('title', '?')
+            reason = item.get('reason', '')
+            message += f'• {chapter} {title}'
+            if reason:
+                message += f'：{reason}'
+            message += '\n'
 
     missing_songs = result.get('missing_songs', 0)
     missing_updated = result.get('missing_updated', 0)
@@ -808,9 +828,13 @@ def build_update_report(result: dict[str, Any]) -> str:
                 status = '✓' if item.get('success') else '✗'
                 missing_text = ', '.join(str(field) for field in item.get('missing', [])) or '无'
                 updated_text = ', '.join(str(field) for field in item.get('updated', [])) or '无'
-                message += f'{status} {item.get("title", "")}\n'
+                chapter = item.get('chapter', '')
+                title = item.get('title', '')
+                message += f'{status} {chapter} {title}'.rstrip() + '\n'
                 message += f'  缺失: {missing_text}\n'
                 message += f'  已更新: {updated_text}\n'
+                if item.get('error'):
+                    message += f'  原因: {item.get("error")}\n'
     else:
         message += '✓ 所有歌曲信息完整\n'
 

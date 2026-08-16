@@ -62,12 +62,52 @@ class MemberDirectoryTest(unittest.TestCase):
             },
         }
         with (
-            mock.patch.object(adapter, 'sdkUserInfo', cache),
-            mock.patch.object(adapter, 'sdkUserInfoLock', threading.Lock()),
+            mock.patch.object(adapter, 'sdkUserInfo', cache, create=True),
+            mock.patch.object(adapter, 'sdkUserInfoLock', threading.Lock(), create=True),
         ):
             result = OlivaAIAgent.memberDirectory.resolveNickname(event, '雨多落为萁')
 
         self.assertEqual('cache-openid', result)
+
+    def test_display_name_uses_olivos_cache_before_local_directory(self):
+        event = FakeEvent(user_id='target-openid', nickname='本地昵称')
+        OlivaAIAgent.memberDirectory.recordIncoming(event)
+        adapter = OlivaAIAgent.memberDirectory.OlivOS.qqGuildv2SDK
+        cache = {
+            ('bot-hash', 'target-openid'): {
+                'id': 'target-openid',
+                'member_openid': 'target-openid',
+                'name': 'Fire of Rain',
+                'chat_type': 'qq_group',
+                'chat_id': 'group-1',
+            },
+        }
+        with (
+            mock.patch.object(adapter, 'sdkUserInfo', cache, create=True),
+            mock.patch.object(adapter, 'sdkUserInfoLock', threading.Lock(), create=True),
+        ):
+            result = OlivaAIAgent.memberDirectory.displayName(event, 'target-openid')
+
+        self.assertEqual('Fire of Rain', result)
+
+    def test_display_name_falls_back_to_persistent_member_directory(self):
+        target = FakeEvent(user_id='target-openid', nickname='Fire of Rain', sdk='onebot')
+        current = FakeEvent(user_id='sender-openid', nickname='Desom-fu', sdk='onebot')
+        OlivaAIAgent.memberDirectory.recordIncoming(target)
+
+        self.assertEqual(
+            'Fire of Rain',
+            OlivaAIAgent.memberDirectory.displayName(current, 'target-openid'),
+        )
+
+    def test_display_name_can_use_current_sender_and_unknown_id_stays_unknown(self):
+        event = FakeEvent(user_id='sender-openid', nickname='Desom-fu', sdk='onebot')
+
+        self.assertEqual(
+            'Desom-fu',
+            OlivaAIAgent.memberDirectory.displayName(event, 'sender-openid'),
+        )
+        self.assertIsNone(OlivaAIAgent.memberDirectory.displayName(event, 'unknown-openid'))
 
     def test_ambiguous_local_nickname_is_not_guessed(self):
         first = FakeEvent(user_id='openid-1', nickname='同名群友', sdk='onebot')

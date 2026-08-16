@@ -238,6 +238,49 @@ class QuoteContextTest(unittest.TestCase):
         self.assertEqual(['https://example.com/op.png'], parsed['images'])
         self.assertIn('看这张图', parsed['text'])
 
+    def test_non_bot_mention_keeps_target_name_and_openid_in_current_sentence(self):
+        event = FakeEvent('小芙帮我给[OP:at,id=target-openid] 也来个jrrp')
+        event.data.sender = {'nickname': 'Desom-fu', 'name': 'Desom-fu'}
+        with (
+            mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]),
+            mock.patch.object(
+                OlivaAIAgent.memberDirectory,
+                'displayName',
+                return_value='Fire of Rain',
+            ),
+        ):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+
+        self.assertEqual(['target-openid'], parsed['at_list'])
+        self.assertEqual(
+            '小芙帮我给 [提及用户:Fire of Rain (user_id=target-openid)] 也来个jrrp',
+            parsed['text'],
+        )
+        with mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=True):
+            identity = OlivaAIAgent.conf.senderIdentity(event, parsed['at_list'])
+        self.assertEqual('user-1', identity['user_id'])
+        self.assertEqual('Desom-fu', identity['nickname'])
+
+    def test_unknown_non_bot_mention_keeps_openid_in_current_sentence(self):
+        event = FakeEvent('请给[OP:at,id=unknown-openid]测一下')
+        with (
+            mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]),
+            mock.patch.object(OlivaAIAgent.memberDirectory, 'displayName', return_value=None),
+        ):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+
+        self.assertIn('[提及用户:user_id=unknown-openid]', parsed['text'])
+
+    def test_bot_mention_is_trigger_metadata_but_not_an_operation_target_marker(self):
+        event = FakeEvent('[OP:at,id=bot-member-openid] 小芙在吗')
+        event.data.extend['sub_self_open_id'] = 'bot-member-openid'
+        with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+
+        self.assertTrue(parsed['at_me'])
+        self.assertEqual(['bot-member-openid'], parsed['at_list'])
+        self.assertEqual('小芙在吗', parsed['text'])
+
     def test_safe_reply_does_not_force_quote_without_model_selection(self):
         event = FakeEvent('测试消息')
         OlivaAIAgent.msgReply._safeReply(event, '回复内容', {'message_id': 'current-1'})

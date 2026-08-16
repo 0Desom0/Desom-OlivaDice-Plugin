@@ -110,6 +110,14 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertFalse(merged['media']['audio']['enable'])
         self.assertFalse(merged['media']['video']['enable'])
 
+    def test_legacy_intent_timeout_is_migrated(self):
+        config = {'ambient': {'intent_api': {'timeout': 66}}}
+
+        OlivaAIAgent.conf._migrateIntentApi(config)
+
+        self.assertEqual(66, config['ambient']['intent_api']['timeout_sec'])
+        self.assertNotIn('timeout', config['ambient']['intent_api'])
+
     def test_legacy_persona_master_ids_move_to_internal_titles(self):
         config = {
             'prompt': {
@@ -244,10 +252,70 @@ class ConfigGuiSchemaTest(unittest.TestCase):
         }
         actual = set(OlivaAIAgent.gui.SECTION_ORDER)
         actual.discard('general')
+        actual -= set(OlivaAIAgent.gui.VIRTUAL_SECTION_PATHS)
         expected -= {'enable', 'whitelist'}
         self.assertEqual(expected, actual)
         self.assertNotIn('enable', OlivaAIAgent.gui.SECTION_ORDER)
         self.assertNotIn('whitelist', OlivaAIAgent.gui.SECTION_ORDER)
+
+    def test_auxiliary_model_has_a_dedicated_complete_gui_section(self):
+        window = OlivaAIAgent.gui.ConfigWindow()
+        window.working_conf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+
+        section_data, base_path = window._sectionData('intent_api')
+
+        self.assertEqual(('ambient', 'intent_api'), base_path)
+        self.assertEqual(
+            {
+                'enable',
+                'wire',
+                'api_url',
+                'api_key',
+                'model',
+                'max_tokens',
+                'temperature',
+                'timeout_sec',
+                'anthropic_version',
+                'extra_headers',
+                'extra_body',
+            },
+            {key for key in section_data if not key.startswith('_')},
+        )
+        ambient_data, _base_path = window._sectionData('ambient')
+        self.assertNotIn('intent_api', ambient_data)
+
+    def test_every_persisted_default_config_field_is_editable_in_gui(self):
+        def collect_fields(data, base_path=()):
+            fields = set()
+            if not isinstance(data, dict):
+                return fields
+            for key, value in data.items():
+                if str(key).startswith('_'):
+                    continue
+                path = base_path + (key,)
+                if isinstance(value, dict) and key not in OlivaAIAgent.gui.JSON_OBJECT_NAMES:
+                    fields.update(collect_fields(value, path))
+                else:
+                    fields.add(path)
+            return fields
+
+        window = OlivaAIAgent.gui.ConfigWindow()
+        window.working_conf = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF)
+        editable = set()
+        for section in OlivaAIAgent.gui.SECTION_ORDER:
+            section_data, base_path = window._sectionData(section)
+            editable.update(collect_fields(section_data, base_path))
+        editable.update({
+            ('enable', 'global'),
+            ('enable', 'group_default'),
+            ('whitelist', 'enabled'),
+            ('ambient', 'enable_default'),
+            ('trigger', 'prefix'),
+            ('trigger', 'keywords'),
+        })
+
+        expected = collect_fields(OlivaAIAgent.conf.DEFAULT_CONF)
+        self.assertEqual(expected, editable)
 
     def test_group_trigger_override_parser_supports_inherit_and_disable(self):
         parser = OlivaAIAgent.gui.ConfigWindow._parseStringList

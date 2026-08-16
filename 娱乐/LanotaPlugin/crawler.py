@@ -197,7 +197,8 @@ def fetch_official_song_catalog() -> tuple[list[dict[str, Any]], list[str]]:
                 for song in song_sync.validate_official_catalog(songs)
             ]
         except Exception as exception_object:
-            errors.append(f'{region}: {type(exception_object).__name__}: {exception_object}')
+            region_name = '国际服' if region == 'global' else '国服'
+            errors.append(f'{region_name}: {type(exception_object).__name__}: {exception_object}')
     if not catalogs:
         raise RuntimeError('无法取得官网曲库：' + '；'.join(errors))
 
@@ -265,8 +266,37 @@ def match_and_apply_official_catalog(
     return updated_data, update_stats, match_result
 
 
+def official_review_reason(item: dict[str, Any], legacy: bool = False) -> str:
+    candidates = item.get('candidates', [])
+    first_candidate = candidates[0] if isinstance(candidates, list) and candidates else {}
+    score_field = 'score' if legacy else 'title_score'
+    try:
+        candidate_score = float(first_candidate.get(score_field, 0) or 0)
+    except (TypeError, ValueError):
+        candidate_score = 0.0
+    official_title = str(item.get('official_title', '') or '').strip()
+    song_id = str(item.get('song_id', '') or '').strip()
+    chart_name = 'Legacy 曲目' if legacy else '曲目'
+    if official_title and candidate_score >= 0.7:
+        candidate_label = f'{song_id} {official_title}'.strip()
+        return f'候选 {candidate_label}，未达到唯一可信匹配条件'
+    return f'国际服 API 未找到可信的对应{chart_name}'
+
+
 def check_missing_fields(song: dict[str, Any]) -> list[str]:
     missing = []
+    if not str(song.get(song_sync.OFFICIAL_SONG_ID_FIELD, '') or '').strip():
+        missing.append(song_sync.OFFICIAL_SONG_ID_FIELD)
+
+    official_constant = song.get('official_constant', {})
+    constant_missing = []
+    for difficulty in song_sync.DIFFICULTY_NAMES:
+        value = official_constant.get(difficulty) if isinstance(official_constant, dict) else None
+        if value in [None, '']:
+            constant_missing.append(difficulty)
+    if constant_missing:
+        missing.append(f'official_constant({",".join(constant_missing)})')
+
     if not str(song.get('bpm', '')).strip():
         missing.append('bpm')
     if not str(song.get('time', '')).strip():
@@ -290,6 +320,78 @@ def check_missing_fields(song: dict[str, Any]) -> list[str]:
         if legacy_missing:
             missing.append(f'legacy_notes({",".join(legacy_missing)})')
     return missing
+
+
+def has_missing_official_fields(song: dict[str, Any]) -> bool:
+    """判断歌曲现行谱或 Legacy 是否缺少官方 songId/定数。"""
+    if not isinstance(song, dict):
+        return False
+
+    def constant_map_missing(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return True
+        return any(value.get(difficulty) in [None, ''] for difficulty in song_sync.DIFFICULTY_NAMES)
+
+    if (
+        not str(song.get(song_sync.OFFICIAL_SONG_ID_FIELD, '') or '').strip()
+        or constant_map_missing(song.get('official_constant'))
+    ):
+        return True
+
+    legacy = song.get('Legacy')
+    if isinstance(legacy, dict) and legacy:
+        return (
+            not str(legacy.get(song_sync.OFFICIAL_SONG_ID_FIELD, '') or '').strip()
+            or constant_map_missing(legacy.get('official_constant'))
+        )
+    return False
+
+
+def ensure_official_catalog_fields(
+    data: list[dict[str, Any]],
+    *,
+    persist: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """查询前按需从官方 /songs 目录补全 ID、标级和定数。"""
+    if not any(has_missing_official_fields(song) for song in data if isinstance(song, dict)):
+        return data, {
+            'attempted': False,
+            'changed': False,
+            'persisted': False,
+            'changed_fields': {},
+            'error': '',
+        }
+
+    try:
+        official_catalog, source_errors = fetch_official_song_catalog()
+        updated_data, update_stats, match_result = match_and_apply_official_catalog(
+            data,
+            official_catalog,
+        )
+    except Exception as exception_object:
+        return data, {
+            'attempted': True,
+            'changed': False,
+            'persisted': False,
+            'changed_fields': {},
+            'error': f'{type(exception_object).__name__}: {exception_object}',
+        }
+
+    changed = bool(update_stats.get('changed_songs'))
+    persisted = False
+    if changed and persist:
+        persisted = function.save_song_data(song_sync.sanitize_song_markup(updated_data))
+    return updated_data, {
+        'attempted': True,
+        'changed': changed,
+        'persisted': persisted,
+        'changed_fields': update_stats.get('changed_fields', {}),
+        'matched': update_stats.get('matched', 0),
+        'review': update_stats.get('review', 0),
+        'source_errors': source_errors,
+        'unmatched_official': match_result.get('unmatched_official', []),
+        'error': '',
+    }
 
 
 def get_song_template(wikitext: str):
@@ -1484,15 +1586,48 @@ def run_update() -> dict[str, Any]:
         data,
         official_catalog,
     )
+    matched_official_ids = {
+        str(item.get('song_id', ''))
+        for item in official_match_result.get('matched', [])
+        if item.get('song_id')
+    }
+    new_song_result = sync_new_songs_from_wiki(
+        session,
+        data,
+        official_catalog,
+        matched_official_ids=matched_official_ids,
+        apply=True,
+    )
+    new_songs = [song for song in new_song_result.get('added_songs', []) if isinstance(song, dict)]
+    new_titles = [str(song.get('title', '')) for song in new_songs]
+
+    # Wiki 新曲是在首次匹配之后才加入的；同一轮更新必须用国际服目录再次匹配，
+    # 否则新曲会被保存为没有 official_songid，直到下一次手动更新才会补齐。
+    data, rematch_stats, official_match_result = match_and_apply_official_catalog(
+        data,
+        official_catalog,
+    )
+    official_update_stats = {
+        'matched': rematch_stats.get('matched', official_update_stats.get('matched', 0)),
+        'legacy_matched': rematch_stats.get(
+            'legacy_matched', official_update_stats.get('legacy_matched', 0)
+        ),
+        'changed_songs': official_update_stats.get('changed_songs', 0)
+        + rematch_stats.get('changed_songs', 0),
+        'changed_fields': dict(official_update_stats.get('changed_fields', {})),
+    }
+    for field, count in rematch_stats.get('changed_fields', {}).items():
+        official_update_stats['changed_fields'][field] = (
+            official_update_stats['changed_fields'].get(field, 0) + count
+        )
+
+    # 新曲二次匹配完成后再检查缺失字段，确保新增曲也会进入本轮 Wiki/API 补全。
     official_by_id = {str(song.get('songId', '')): song for song in official_catalog}
-    songs_with_missing = [
-        {
-            'song': song,
-            'missing': check_missing_fields(song),
-        }
-        for song in data
-        if check_missing_fields(song)
-    ]
+    songs_with_missing = []
+    for song in data:
+        missing = check_missing_fields(song)
+        if missing:
+            songs_with_missing.append({'song': song, 'missing': missing})
 
     update_results = []
     for item in songs_with_missing:
@@ -1506,7 +1641,7 @@ def run_update() -> dict[str, Any]:
                     'missing': item['missing'],
                     'updated': [],
                     'success': False,
-                    'error': '没有取得唯一可信的官方 songId 匹配',
+                    'error': '国际服 API 未找到对应曲目，无法进行官方数据补全',
                 }
             )
             continue
@@ -1539,21 +1674,6 @@ def run_update() -> dict[str, Any]:
         )
         time.sleep(0.2)
 
-    matched_official_ids = {
-        str(item.get('song_id', ''))
-        for item in official_match_result.get('matched', [])
-        if item.get('song_id')
-    }
-    new_song_result = sync_new_songs_from_wiki(
-        session,
-        data,
-        official_catalog,
-        matched_official_ids=matched_official_ids,
-        apply=True,
-    )
-    new_songs = [song for song in new_song_result.get('added_songs', []) if isinstance(song, dict)]
-    new_titles = [str(song.get('title', '')) for song in new_songs]
-
     data = song_sync.sanitize_song_markup(data)
     if not function.save_song_data(data):
         raise RuntimeError('写入 song_list.json 失败，请检查插件数据目录权限。')
@@ -1576,6 +1696,9 @@ def run_update() -> dict[str, Any]:
         {
             'title': item.get('title', ''),
             'chapter': item.get('chapter', ''),
+            'song_id': item.get('song_id', ''),
+            'official_title': item.get('official_title', ''),
+            'reason': official_review_reason(item),
             'candidates': item.get('candidates', []),
         }
         for item in official_match_result.get('review', [])
@@ -1585,11 +1708,27 @@ def run_update() -> dict[str, Any]:
             'title': item.get('title', ''),
             'chapter': item.get('chapter', ''),
             'chart_type': 'legacy',
+            'song_id': item.get('song_id', ''),
+            'official_title': item.get('official_title', ''),
+            'reason': official_review_reason(item, legacy=True),
             'candidates': item.get('candidates', []),
         }
         for item in official_match_result.get('legacy_review', [])
     )
-    official_pending.extend(new_song_result.get('official_pending', []))
+    pending_keys = {
+        (str(item.get('chapter', '')).casefold(), str(item.get('title', '')).casefold())
+        for item in official_pending
+    }
+    matched_keys = {
+        (str(item.get('chapter', '')).casefold(), str(item.get('title', '')).casefold())
+        for match_type in ('matched', 'legacy_matched')
+        for item in official_match_result.get(match_type, [])
+    }
+    for item in new_song_result.get('official_pending', []):
+        key = (str(item.get('chapter', '')).casefold(), str(item.get('title', '')).casefold())
+        if key not in pending_keys and key not in matched_keys:
+            official_pending.append(item)
+            pending_keys.add(key)
     return {
         'before': original_count,
         'missing_songs': len(songs_with_missing),
@@ -1601,7 +1740,10 @@ def run_update() -> dict[str, Any]:
         'official_matched': official_update_stats.get('matched', 0),
         'official_legacy_matched': official_update_stats.get('legacy_matched', 0),
         'official_updated': official_update_stats.get('changed_songs', 0),
+        'official_changed_fields': official_update_stats.get('changed_fields', {}),
         'official_pending': official_pending,
+        'official_unmatched_catalog': official_match_result.get('unmatched_official', []),
         'official_source_errors': official_source_errors,
+        'official_catalog_size': len(official_catalog),
         'total': len(data),
     }

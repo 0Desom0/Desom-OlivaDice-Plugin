@@ -565,6 +565,23 @@ def _isReplyToCurrentBot(plugin_event, reference_message_id, quote, reference_in
         return False
 
 
+def _mentionContextText(plugin_event, user_id):
+    '''把 AT 保留为当前消息中的目标语义，同时避免把机器人自身当成操作对象。'''
+    user_id = str(user_id or '').strip()
+    if not user_id or user_id in _currentBotIds(plugin_event):
+        return ''
+    if user_id == 'all':
+        return '[提及用户:全体成员 (user_id=all)]'
+    try:
+        display_name = OlivaAIAgent.memberDirectory.displayName(plugin_event, user_id)
+    except Exception:
+        display_name = None
+    display_name = re.sub(r'[\[\]\r\n]+', ' ', str(display_name or '')).strip()
+    if display_name:
+        return '[提及用户:%s (user_id=%s)]' % (display_name, user_id)
+    return '[提及用户:user_id=%s]' % user_id
+
+
 def parseMessage(plugin_event):
     '''解析 OP/CQ 消息 → 纯文本 / at列表 / 图片URL列表 / 是否at了机器人。'''
     trace_id = '%012x' % (time.time_ns() & 0xffffffffffff)
@@ -587,7 +604,12 @@ def parseMessage(plugin_event):
         msg_obj = OlivOS.messageAPI.Message_templet(mode, raw)
         for para in msg_obj.data:
             if isinstance(para, OlivOS.messageAPI.PARA.at):
-                at_list.append(str(para.data.get('id', '')))
+                at_id = str(para.data.get('id', '')).strip()
+                if at_id:
+                    at_list.append(at_id)
+                    mention_text = _mentionContextText(plugin_event, at_id)
+                    if mention_text:
+                        text_parts.append(mention_text)
             elif isinstance(para, OlivOS.messageAPI.PARA.image):
                 image_count += 1
                 url = para.data.get('url') or para.data.get('file') or ''
@@ -650,6 +672,23 @@ def parseMessage(plugin_event):
                     pass
     except Exception:
         fallback = raw
+        def _at_fallback(match):
+            params = {}
+            for item in str(match.group(1) or '').split(','):
+                key, separator, value = item.partition('=')
+                if separator:
+                    params[key.strip().casefold()] = value.strip()
+            at_id = str(params.get('id') or params.get('qq') or '').strip()
+            if not at_id:
+                return ' '
+            at_list.append(at_id)
+            return _mentionContextText(plugin_event, at_id)
+        fallback = re.sub(
+            r'\[(?:CQ|OP):at,([^\]]*)\]',
+            _at_fallback,
+            fallback,
+            flags=re.I,
+        )
         def _audio_fallback(match):
             nonlocal audio_count
             audio_count += 1
@@ -690,11 +729,12 @@ def parseMessage(plugin_event):
             return OlivaAIAgent.forward.mergeInto(expanded, images, audio_urls, video_urls)
         fallback = OlivaAIAgent.forward.FORWARD_TAG_PATTERN.sub(_forward_fallback, fallback)
         text_parts = [re.sub(r'\[(?:CQ|OP):[^\]]*\]', ' ', fallback, flags=re.I)]
+    at_list = list(dict.fromkeys(item for item in at_list if item))
     if reply_id in [None, '', '-1', -1]:
         match = re.search(r'\[(?:CQ|OP):reply,[^\]]*\bid=([^,\]]+)', raw, re.I)
         if match:
             reply_id = match.group(1)
-    text = ' '.join([t for t in text_parts if t.strip() != '']).strip()
+    text = ' '.join(t.strip() for t in text_parts if t.strip()).strip()
     def _inline_file(match):
         nonlocal audio_count, video_count
         tag = match.group(0)
@@ -810,7 +850,7 @@ def parseMessage(plugin_event):
 
 
 def stripMentionSegments(text):
-    '''从正文移除 @ 消息段；提及对象由 parseMessage.at_list 单独保存。'''
+    '''移除尚未解析的原始 AT 段；parseMessage 生成的提及目标语义会保留。'''
     cleaned = re.sub(r'\[(?:OP|CQ):at[^\]]*\]', ' ', str(text), flags=re.I)
     return re.sub(r'[ \t]+', ' ', cleaned).strip()
 
@@ -1985,6 +2025,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
             'event_id': parsed.get('event_id'),
             'msg_idx': parsed.get('msg_idx'),
             'ref_msg_idx': parsed.get('ref_msg_idx'),
+            'mentioned_user_ids': list(parsed.get('at_list') or []),
         }
         user_text, agent_images = _prepareAgentVision(plugin_event, ctx, user_text, parsed)
         user_text, agent_audios, agent_videos = _prepareAgentMedia(

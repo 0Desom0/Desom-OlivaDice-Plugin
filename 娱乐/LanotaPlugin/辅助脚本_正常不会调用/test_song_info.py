@@ -323,10 +323,45 @@ class SongInfoTest(unittest.TestCase):
                 return_value=([song], '原名匹配', 1),
             ),
             patch.object(message, 'clear_search_session'),
+            patch.object(message, '_prepare_song_for_query', return_value=(song, '')),
             patch.object(message, 'reply_song_info') as reply_song_info,
         ):
             message.handle_info(event, 'cn Frey')
-        reply_song_info.assert_called_once_with(event, song, region='china')
+        reply_song_info.assert_called_once_with(
+            event,
+            song,
+            region='china',
+            notice_prefix='',
+        )
+
+    def test_info_prepares_missing_official_fields_before_query(self) -> None:
+        song = {'id': 1, 'title': 'Frey', 'chapter': '1-1'}
+        updated_song = {
+            **song,
+            'official_songid': 'frey',
+            'official_constant': {
+                'whisper': 6.0,
+                'acoustic': 8.0,
+                'ultra': 12.0,
+                'master': 15.0,
+            },
+        }
+        with (
+            patch.object(message.function, 'load_song_data', return_value=[song]),
+            patch.object(
+                message.crawler,
+                'ensure_official_catalog_fields',
+                return_value=(
+                    [updated_song],
+                    {'attempted': True, 'changed': True, 'persisted': True, 'error': ''},
+                ),
+            ) as ensure_fields,
+        ):
+            result, notice = message._prepare_song_for_query(song)
+
+        ensure_fields.assert_called_once_with([song])
+        self.assertEqual(result['official_songid'], 'frey')
+        self.assertIn('补全', notice)
 
     def test_info_queries_current_and_legacy_scores(self) -> None:
         event = object()

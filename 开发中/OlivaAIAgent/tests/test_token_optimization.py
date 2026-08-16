@@ -58,6 +58,8 @@ class TokenOptimizationTest(unittest.TestCase):
             'api_url': 'https://example.test/v1/responses',
             'api_key': 'test-key',
             'model': 'cheap-model',
+            'extra_headers': {'X-Test': 'yes'},
+            'extra_body': {'seed': 7},
         })
 
         backend = OlivaAIAgent.aiClient.getAuxiliaryBackendConf(
@@ -70,6 +72,8 @@ class TokenOptimizationTest(unittest.TestCase):
         self.assertEqual(1200, backend['max_tokens'])
         self.assertEqual(0.2, backend['temperature'])
         self.assertFalse(backend['stream'])
+        self.assertEqual({'X-Test': 'yes'}, backend['extra_headers'])
+        self.assertEqual({'seed': 7}, backend['extra_body'])
 
     def test_tool_router_can_select_no_tools_for_plain_chat(self):
         response = {'ok': True, 'text': json.dumps({'tools': []})}

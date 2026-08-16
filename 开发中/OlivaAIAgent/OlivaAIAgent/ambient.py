@@ -919,6 +919,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         runtime_tool_ctx = _makeToolContext(plugin_event, Proc, group_id, trace_id)
         runtime_tool_ctx['session_user_text'] = message
         runtime_tool_ctx['bot_hash'] = bot_hash
+        runtime_tool_ctx['mentioned_user_ids'] = list(parsed.get('at_list') or [])
 
     image_cache = OlivaAIAgent.vision.emojiIntentCache(
         bot_hash,

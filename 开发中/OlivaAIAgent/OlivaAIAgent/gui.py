@@ -22,6 +22,7 @@ SECTION_ORDER = [
     'prompt',
     'trigger',
     'ambient',
+    'intent_api',
     'memory',
     'semantic_memory',
     'vision',
@@ -52,6 +53,7 @@ SECTION_LABELS = {
     'prompt': '统一提示词',
     'trigger': '触发与私聊',
     'ambient': '潜行群友',
+    'intent_api': '前置辅助模型',
     'memory': '上下文与群记忆',
     'semantic_memory': '长期事实与向量',
     'vision': '图片视觉',
@@ -233,6 +235,17 @@ FIELD_LABELS = {
 }
 
 PATH_LABELS = {
+    ('ambient', 'intent_api', 'enable'): '启用独立前置辅助模型',
+    ('ambient', 'intent_api', 'wire'): '辅助模型报文格式',
+    ('ambient', 'intent_api', 'api_url'): '辅助模型接口地址',
+    ('ambient', 'intent_api', 'api_key'): '辅助模型 API Key',
+    ('ambient', 'intent_api', 'model'): '辅助模型名称',
+    ('ambient', 'intent_api', 'max_tokens'): '辅助模型最大输出 Token',
+    ('ambient', 'intent_api', 'temperature'): '辅助模型温度',
+    ('ambient', 'intent_api', 'timeout_sec'): '辅助模型超时（秒）',
+    ('ambient', 'intent_api', 'anthropic_version'): '辅助模型 Anthropic 版本',
+    ('ambient', 'intent_api', 'extra_headers'): '辅助模型附加请求头（JSON）',
+    ('ambient', 'intent_api', 'extra_body'): '辅助模型附加请求体（JSON）',
     ('forward', 'image'): '识别节点内图片',
     ('forward', 'audio'): '识别节点内语音',
     ('forward', 'video'): '识别节点内视频',
@@ -259,6 +272,7 @@ PATH_LABELS = {
 ENUM_VALUES = {
     ('backend',): ('openai', 'anthropic', 'custom'),
     ('custom', 'wire'): ('openai', 'anthropic', 'responses'),
+    ('ambient', 'intent_api', 'wire'): ('auto', 'openai', 'anthropic', 'responses'),
     ('permissions', 'admin_tools_min_role'): ('everyone', 'group_admin', 'master'),
     ('vision', 'use_main'): ('auto', 'true', 'false'),
     ('vision', 'mode'): ('base64', 'url'),
@@ -282,6 +296,10 @@ JSON_OBJECT_NAMES = {
     'embedding_extra_headers',
     'group_persona',
     'titles',
+}
+
+VIRTUAL_SECTION_PATHS = {
+    'intent_api': ('ambient', 'intent_api'),
 }
 GROUP_SWITCHES = [
     ('enabled', '插件启用'),
@@ -621,6 +639,11 @@ class ConfigWindow:
                 'backend': self.working_conf.get('backend', 'openai'),
                 'debug_log': self.working_conf.get('debug_log', False),
             }, ()
+        if section in VIRTUAL_SECTION_PATHS:
+            node = self.working_conf
+            for key in VIRTUAL_SECTION_PATHS[section]:
+                node = node.get(key, {}) if isinstance(node, dict) else {}
+            return node, VIRTUAL_SECTION_PATHS[section]
         section_data = self.working_conf.get(section, {})
         if section == 'trigger' and isinstance(section_data, dict):
             section_data = {
@@ -629,7 +652,10 @@ class ConfigWindow:
                 if key not in {'prefix', 'keywords', '_keywords说明'}
             }
         if section == 'ambient' and isinstance(section_data, dict):
-            section_data = {key: value for key, value in section_data.items() if key != 'enable_default'}
+            section_data = {
+                key: value for key, value in section_data.items()
+                if key not in {'enable_default', 'intent_api'}
+            }
         return section_data, (section,)
 
     def _onSectionSelected(self, _event=None):
@@ -848,6 +874,14 @@ class ConfigWindow:
             enable_default = bool(self.working_conf.get('ambient', {}).get('enable_default', False))
             self.working_conf['ambient'] = copy.deepcopy(OlivaAIAgent.conf.DEFAULT_CONF['ambient'])
             self.working_conf['ambient']['enable_default'] = enable_default
+        elif self.current_section in VIRTUAL_SECTION_PATHS:
+            parent = self.working_conf
+            path = VIRTUAL_SECTION_PATHS[self.current_section]
+            for key in path[:-1]:
+                parent = parent.setdefault(key, {})
+            parent[path[-1]] = copy.deepcopy(
+                OlivaAIAgent.conf.DEFAULT_CONF['ambient']['intent_api'],
+            )
         else:
             self.working_conf[self.current_section] = copy.deepcopy(
                 OlivaAIAgent.conf.DEFAULT_CONF[self.current_section]

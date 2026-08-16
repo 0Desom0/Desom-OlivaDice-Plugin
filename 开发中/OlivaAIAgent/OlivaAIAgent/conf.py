@@ -38,7 +38,8 @@ DICE_CHEATSHEET = (
     '.st 人物卡录入(.st show查看) | .stex 切换卡模板 | .coc 车卡 | .dnd DND车卡 | .nn 命名 | .pc 人物卡管理 | '
     '.set 设置默认骰 | .setcoc 房规 | .draw 抽牌 | .init 先攻(.init clr清空) | .ti/.li 疯狂症状 | '
     '.ob 旁观 | .sn 跑团名片 | .welcome 欢迎词 | .team 小队 | .help 帮助 | .bot 骰子开关 | '
-    '.dismiss 退群 | .log 跑团日志(Logger) | .story 剧情(StoryCore) | .jrrp 今日人品(Joy) | .hiy 骰点统计'
+    '.dismiss 退群 | .log 跑团日志(Logger) | .story 剧情(StoryCore) | '
+    '.jrrp 今日人品(Joy；给本轮明确@的人测时用 .jrrp [OP:at,id=其user_id]) | .hiy 骰点统计'
 )
 
 DEFAULT_PERSONALITY = (
@@ -285,12 +286,16 @@ DEFAULT_CONF = {
             '_说明': '辅助便宜模型，用于前置判定、图片建议、工具路由、记忆提炼和技能元数据翻译；'
                        'enable=false 时这些任务复用主后端',
             'enable': False,
+            'wire': 'auto',
             'api_url': 'https://api.siliconflow.cn/v1/chat/completions',
             'api_key': '',
             'model': 'Qwen/Qwen2.5-7B-Instruct',
             'max_tokens': 32,
             'temperature': 0.0,
-            'timeout': 45,
+            'timeout_sec': 45,
+            'anthropic_version': '2023-06-01',
+            'extra_headers': {},
+            'extra_body': {},
         },
         'intent_image_cache_size': 10,
         'record_memory': True,
@@ -562,6 +567,20 @@ def _migrateMediaSwitches(cfg):
         pass
 
 
+def _migrateIntentApi(cfg):
+    '''把辅助模型旧 timeout 字段迁移到与主后端一致的 timeout_sec。'''
+    try:
+        ambient = cfg.get('ambient')
+        intent_api = ambient.get('intent_api') if isinstance(ambient, dict) else None
+        if not isinstance(intent_api, dict):
+            return
+        if 'timeout_sec' not in intent_api and 'timeout' in intent_api:
+            intent_api['timeout_sec'] = intent_api.get('timeout')
+        intent_api.pop('timeout', None)
+    except Exception:
+        pass
+
+
 def _migrateLegacyMasterTitles(cfg):
     '''把旧版人设中这一种固定认主写法迁到 masters；运行时绝不据人设判断身份。'''
     try:
@@ -594,6 +613,7 @@ def _migrate(cfg):
     '''向后兼容迁移旧权限字段，并把多处全局提示词合并为 prompt.system。'''
     legacy_ambient_groups = []
     _migrateMediaSwitches(cfg)
+    _migrateIntentApi(cfg)
     try:
         perm = cfg.get('permissions', {})
         if perm.get('admin_tools_master_only') is True and perm.get('admin_tools_min_role', 'everyone') == 'everyone':
@@ -1350,7 +1370,10 @@ def senderIdentityPrompt(
         '# 当前发言者身份（内部可信）\n%s\n'
         '规则：发送者及本轮唯一对话对象仅为 user_id/interaction_target_user_id；第二人称“你”只能指此人。'
         'mentioned_user_ids 只是发送者提及的对象，不是发言者或当前对话对象；'
-        '不得转而对被提及者说话，也不得因为被提及者的身份而称其为“主人”或其他骰主称呼。'
+        '但当前消息明确要求“给/帮/对某位被提及者”执行操作时，该用户就是本次操作目标；'
+        '必须使用消息中已经给出的真实 user_id，不得再追问目标是谁。'
+        '没有这种明确操作请求时不得转而对被提及者说话；'
+        '无论是否为操作目标，都不得因为被提及者的身份而称其为“主人”或其他骰主称呼。'
         'quoted_message_sender_id/quoted_message_sender_name 只表示被引用消息的历史作者，不是当前发言者；'
         '即使该历史作者是骰主，也绝不能把其身份、称呼或“主人”关系转移给当前发言者。'
         'has_quoted_message 为 true 时，[引用上文:...] 与后面的文字共同构成本轮当前消息；'

@@ -274,7 +274,13 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
         selected_song = results[selected_index - 1]
         clear_search_session(plugin_event)
         if session_data.get('view_mode') == 'info':
-            reply_song_info(plugin_event, selected_song, region=session_data.get('region'))
+            selected_song, sync_notice = _prepare_song_for_query(selected_song)
+            reply_song_info(
+                plugin_event,
+                selected_song,
+                region=session_data.get('region'),
+                notice_prefix=sync_notice,
+            )
         else:
             reply_song_card(plugin_event, selected_song)
         return True
@@ -557,7 +563,45 @@ def reply_song_card(
     reply_text(plugin_event, f'{fallback_text}\n\nHTML 卡片截图失败。\n{portal.render_status_text()}')
 
 
-def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = None) -> None:
+def _prepare_song_for_query(song: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """在 info 查询前按需补全官方 songId/定数，并返回提示。"""
+    if not crawler.has_missing_official_fields(song):
+        return song, ''
+    song_data = function.load_song_data()
+    updated_data, sync_result = crawler.ensure_official_catalog_fields(song_data)
+    chapter = str(song.get('chapter', '') or '').strip().casefold()
+    numeric_id = str(song.get('id', '') or '').strip()
+    title = str(song.get('title', '') or '').strip().casefold()
+    updated_song = next(
+        (
+            item
+            for item in updated_data
+            if (
+                chapter
+                and str(item.get('chapter', '') or '').strip().casefold() == chapter
+            )
+            or (numeric_id and str(item.get('id', '') or '').strip() == numeric_id)
+            or (title and str(item.get('title', '') or '').strip().casefold() == title)
+        ),
+        song,
+    )
+    if sync_result.get('changed'):
+        if sync_result.get('persisted'):
+            return updated_song, '已从官方曲目目录补全 songId 和定数。'
+        return updated_song, '已取得官方 songId 和定数，但本地保存失败。'
+    error = str(sync_result.get('error', '') or '').strip()
+    if error:
+        return updated_song, f'已尝试从官方曲目目录补全 songId 和定数，但未成功：{error}'
+    return updated_song, '官方曲目目录中暂未找到这首歌的 songId 和定数。'
+
+
+def reply_song_info(
+    plugin_event,
+    song: dict[str, Any],
+    region: str | None = None,
+    *,
+    notice_prefix: str = '',
+) -> None:
     """查询绑定玩家该歌曲成绩；没有成绩时回退为歌曲卡片并提示。"""
     legacy_data = song.get('Legacy', {})
     legacy_song_id = (
@@ -571,7 +615,7 @@ def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = Non
             plugin_event,
             song,
             region=region,
-            notice='这首歌曲尚未关联官方 ID，暂时无法查询个人成绩。',
+            notice=f'{notice_prefix} 这首歌曲尚未关联官方 ID，暂时无法查询个人成绩。'.strip(),
         )
         return
     try:
@@ -591,7 +635,7 @@ def reply_song_info(plugin_event, song: dict[str, Any], region: str | None = Non
                 )
             )
         score_rows = _add_calculated_info_ratings(song, score_rows)
-        notice = portal.fallback_notice(compare_data)
+        notice = f'{notice_prefix} {portal.fallback_notice(compare_data)}'.strip()
         if cache_error is not None:
             cache_notice = f'网络查询失败，当前显示最近缓存：{portal.format_error(cache_error)}'
             notice = f'{notice} {cache_notice}'.strip()
@@ -1258,7 +1302,13 @@ def handle_info(plugin_event, argument: str) -> None:
         return
     if total_count == 1:
         clear_search_session(plugin_event)
-        reply_song_info(plugin_event, matched_songs[0], region=region)
+        matched_song, sync_notice = _prepare_song_for_query(matched_songs[0])
+        reply_song_info(
+            plugin_event,
+            matched_song,
+            region=region,
+            notice_prefix=sync_notice,
+        )
         return
 
     save_search_session(plugin_event, matched_songs, match_type, view_mode='info', region=region)
@@ -1502,7 +1552,9 @@ def handle_b30(plugin_event, argument: str) -> None:
         f'正在生成 Lanota {portal.region_display_name(selected_region)} B30，请稍候...',
     )
     try:
-        catalog = b30.build_chart_catalog()
+        song_data = function.load_song_data()
+        song_data, official_sync_result = crawler.ensure_official_catalog_fields(song_data)
+        catalog = b30.build_chart_catalog(song_data)
         card_data = None
         exact_check_error = None
         reconcile_rows = []
@@ -1558,6 +1610,19 @@ def handle_b30(plugin_event, argument: str) -> None:
                     card_data,
                     f'网络查询失败，当前使用最近缓存：{portal.format_error(cache_error)}',
                 )
+
+        if official_sync_result.get('changed'):
+            sync_notice = (
+                '查询前已从官方曲目目录补全 songId 和定数。'
+                if official_sync_result.get('persisted')
+                else '查询前已取得官方 songId 和定数，但本地保存失败。'
+            )
+            _append_b30_notice(card_data, sync_notice)
+        elif official_sync_result.get('error'):
+            _append_b30_notice(
+                card_data,
+                f'查询前尝试补全官方 songId 和定数失败：{official_sync_result["error"]}',
+            )
 
         reconciled_count = score_overrides.reconcile_official_scores(
             plugin_event,

@@ -228,6 +228,55 @@ class B30CommandTest(unittest.TestCase):
             self.assertEqual(message._consume_b30_cooldown(first, 'global'), 0)
             self.assertEqual(message._consume_b30_cooldown(second, 'global'), 0)
 
+    def test_b30_prepares_official_fields_before_building_catalog(self) -> None:
+        event = object()
+        local_song = {'id': 1, 'title': 'Song', 'chapter': '1-1'}
+        updated_song = {
+            **local_song,
+            'official_songid': 'song',
+            'official_constant': {
+                'whisper': 1.0,
+                'acoustic': 2.0,
+                'ultra': 3.0,
+                'master': 4.0,
+            },
+        }
+        card_data = {'entries': [], 'notice': '', 'player': {}, 'metrics': {}}
+        with (
+            patch.object(message.portal, 'get_bound_region', return_value='global'),
+            patch.object(message.portal, 'get_bound_nano_id', return_value='NANO'),
+            patch.object(message, '_consume_b30_cooldown', return_value=0),
+            patch.object(message.utils, 'reply_message'),
+            patch.object(message.function, 'load_song_data', return_value=[local_song]),
+            patch.object(
+                message.crawler,
+                'ensure_official_catalog_fields',
+                return_value=(
+                    [updated_song],
+                    {'attempted': True, 'changed': True, 'persisted': True, 'error': ''},
+                ),
+            ) as ensure_fields,
+            patch.object(message.b30, 'build_chart_catalog', return_value={}) as build_catalog,
+            patch.object(message.portal, 'get_me', return_value={'nanoId': 'OTHER'}),
+            patch.object(
+                message.portal,
+                'get_compare_data_cached',
+                return_value=({'friend': {}, 'songs': []}, 'NANO', None),
+            ),
+            patch.object(message.b30, 'build_inferred_card_data', return_value=card_data),
+            patch.object(message.score_overrides, 'reconcile_official_scores', return_value=0),
+            patch.object(message.score_overrides, 'apply_to_card', side_effect=lambda *_args: card_data),
+            patch.object(message.b30, 'build_fallback_text', return_value='fallback'),
+            patch.object(message, 'is_plain_text_mode', return_value=True),
+            patch.object(message.b30, 'strip_internal_fields'),
+            patch.object(message, 'reply_large_text'),
+        ):
+            message.handle_b30(event, '')
+
+        ensure_fields.assert_called_once_with([local_song])
+        build_catalog.assert_called_once_with([updated_song])
+        self.assertIn('补全', card_data['notice'])
+
 
 class B30RenderTest(unittest.TestCase):
     def test_screenshot_height_tracks_entry_rows(self) -> None:

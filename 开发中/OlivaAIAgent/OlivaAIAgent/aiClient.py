@@ -117,15 +117,12 @@ def getAuxiliaryBackendConf(max_tokens=512, temperature=0.0):
     '''优先复用前置便宜模型处理路由、提炼和翻译；未配置时才回退主后端。'''
     ic = OlivaAIAgent.conf.get('ambient', 'intent_api', default={}) or {}
     if ic.get('enable') and ic.get('api_url') and ic.get('api_key'):
-        bc = {
-            'wire': _detectWire(ic),
-            'api_url': ic.get('api_url', ''),
-            'api_key': ic.get('api_key', ''),
-            'model': ic.get('model', ''),
-            'timeout_sec': ic.get('timeout', 45),
-            'vision': False,
-            '_name': 'intent',
-        }
+        # 保留辅助模型自己的兼容协议、请求头/请求体和 Anthropic 版本等适配项。
+        bc = dict(ic)
+        bc['wire'] = _detectWire(ic)
+        bc['timeout_sec'] = ic.get('timeout_sec', ic.get('timeout', 45))
+        bc['vision'] = False
+        bc['_name'] = 'intent'
     else:
         bc = getBackendConf()
     bc = dict(bc)
