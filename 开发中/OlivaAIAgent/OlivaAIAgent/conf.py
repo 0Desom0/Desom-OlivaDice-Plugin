@@ -434,6 +434,10 @@ DEFAULT_CONF = {
         'translate_query_to': 'en',
     },
     'agent': {
+        '_说明': '同群并发优先级：allow_multiple_agents_in_group=true 时允许同群多个 Agent 同时运行；'
+               '否则由 interrupt_previous_in_group 决定新对话是打断旧 Agent，还是排队等待。'
+               '所有模式仍受 max_concurrent 全局并发上限约束',
+        'allow_multiple_agents_in_group': False,
         'interrupt_previous_in_group': True,
         'max_tool_rounds': 8,
         'max_auto_continuations': 2,
@@ -445,6 +449,7 @@ DEFAULT_CONF = {
         'error_reply': 'AI 出错了：{err}',
     },
     'reply': {
+        'qqguild_auto_markdown': True,
         'quote_reply': True,
         'split_length': 1500,
         'max_split_count': 3,
@@ -1181,12 +1186,14 @@ def platformBrief(plugin_event, include_interfaces=True):
         lines.append('能力判定: 不得凭模型常识猜测当前平台不支持某项能力。优先查看提示词中由运行时内省生成的'
                      '“当前协议已验证接口”；未列出时必须先调用 olivos_discover，只有目录确实没有或真实调用返回'
                      '不支持后，才能向用户声称不可用。')
-        lines.append('发送选择: 普通聊天直接使用最终回复；用户明确需要 Markdown、键盘、主动发送等协议能力时，'
+        lines.append('发送选择: 普通聊天直接使用最终回复；用户明确需要键盘、主动发送等协议能力时，'
                      '可发现并调用对应接口。create/send 类接口调用成功即已直接发送，不要再用普通回复重复同一内容；'
                      '如有必要只做简短确认。')
     if 'qqguildv2' in str(sdk).lower():
         lines.append(
-            '【QQ Guild v2 @格式】最终回复需要@当前发言者时，禁止输出字面“@昵称”；'
+            '【QQ Guild v2 回复格式】最终回复包含标题、粗体、列表、表格、代码块、链接等Markdown语法时，'
+            '插件会自动通过SDK发送Markdown消息，无需为格式化文本主动调用create_markdown_message。'
+            '最终回复需要@当前发言者时，禁止输出字面“@昵称”；'
             '必须输出[OP:at,id=当前发言者user_id]，插件会自动通过SDK转成Markdown @。'
             '只有主动调用create_markdown_message时才直接使用Markdown at标签；不得猜测其他昵称的ID。'
         )
@@ -1521,6 +1528,8 @@ _TRACE_STAGE_ZH = {
     'security.content.blocked': '已拦截不参与的话题',
     'message.markdown_mention.fallback': '已将含@回复改用Markdown发送',
     'message.markdown_mention.fallback_failed': '含@回复的Markdown兜底失败，退回普通发送',
+    'message.qqguild_markdown.auto': '检测到Markdown格式，已通过Markdown消息发送',
+    'message.qqguild_markdown.auto_failed': 'Markdown自动发送失败，退回普通发送',
     'logger.bridge.failed': 'OlivaDice团日志桥接失败',
     'message.group.duplicate': '忽略重复群消息',
     'message.private.received': '收到私聊消息',

@@ -104,7 +104,9 @@ class TaskCompletionTest(unittest.TestCase):
 
     def test_ambient_tool_chain_also_continues_without_a_tool_call(self):
         responses = [
+            {'ok': True, 'text': '都整理好了呢', 'tool_calls': []},
             {'ok': True, 'text': '{"r":["都整理好了呢"]}', 'tool_calls': []},
+            {'ok': True, 'text': '故事大纲：义体芯片正在吞噬持有者的记忆。', 'tool_calls': []},
             {'ok': True, 'text': '{"r":["故事大纲：义体芯片正在吞噬持有者的记忆。"]}', 'tool_calls': []},
         ]
         with (
@@ -122,10 +124,12 @@ class TaskCompletionTest(unittest.TestCase):
                 tool_ctx={'trace_id': 'continuation-tools-test'},
                 tool_defs=[{'name': 'dummy'}],
                 request_text='帮我写故事大纲',
-            )
+        )
 
         self.assertEqual(['故事大纲：义体芯片正在吞噬持有者的记忆。'], reply)
-        self.assertEqual(2, chat.call_count)
+        self.assertEqual(4, chat.call_count)
+        self.assertIsNotNone(chat.call_args_list[2].kwargs['tools'])
+        self.assertIsNone(chat.call_args_list[3].kwargs['tools'])
 
     def test_tool_call_with_intermediate_text_continues_to_final_reply(self):
         responses = [
@@ -140,9 +144,10 @@ class TaskCompletionTest(unittest.TestCase):
             },
             {
                 'ok': True,
-                'text': '{"r":["查到了：这是测试结果。"]}',
+                'text': '查到了：这是测试结果。',
                 'tool_calls': [],
             },
+            {'ok': True, 'text': '{"r":["查到了：这是测试结果。"]}', 'tool_calls': []},
         ]
         with (
             mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=responses) as chat,
@@ -167,21 +172,25 @@ class TaskCompletionTest(unittest.TestCase):
             )
 
         self.assertEqual(['查到了：这是测试结果。'], reply)
-        self.assertEqual(2, chat.call_count)
+        self.assertEqual(3, chat.call_count)
         exec_tool.assert_called_once()
+        final_call = chat.call_args_list[2]
+        self.assertIsNone(final_call.kwargs['tools'])
+        self.assertTrue(final_call.kwargs['response_json'])
+        self.assertTrue(final_call.kwargs['thinking_off'])
 
-    def test_internal_planning_uses_configured_agent_round_budget(self):
+    def test_planning_draft_is_always_finalized_by_separate_json_call(self):
         planning = {
             'ok': True,
-            'text': '不过按当前任务，我是被触发需要回应。我可以自然回应一下。\n\n输出 JSON。',
+            'text': '最终回复。',
             'tool_calls': [],
         }
-        repaired = {'ok': True, 'text': '{"r":["最终回复。"]}', 'tool_calls': []}
+        finalized = {'ok': True, 'text': '{"r":["最终回复。"]}', 'tool_calls': []}
         with (
             mock.patch.object(
                 OlivaAIAgent.aiClient,
                 'chat',
-                side_effect=[planning, planning, planning, repaired],
+                side_effect=[planning, finalized],
             ) as chat,
             mock.patch.object(OlivaAIAgent.voice, 'hasSentVoice', return_value=False),
         ):
@@ -199,7 +208,11 @@ class TaskCompletionTest(unittest.TestCase):
             )
 
         self.assertEqual(['最终回复。'], reply)
-        self.assertEqual(4, chat.call_count)
+        self.assertEqual(2, chat.call_count)
+        self.assertIsNotNone(chat.call_args_list[0].kwargs['tools'])
+        self.assertIsNone(chat.call_args_list[1].kwargs['tools'])
+        self.assertTrue(chat.call_args_list[1].kwargs['response_json'])
+        self.assertTrue(chat.call_args_list[1].kwargs['thinking_off'])
 
     def test_repeated_empty_promises_stop_at_configured_limit(self):
         response = {'ok': True, 'text': '{"r":["稍等一下，我马上发"]}', 'tool_calls': []}
@@ -223,6 +236,7 @@ class TaskCompletionTest(unittest.TestCase):
         self.assertIn('completion.needsContinuation', source)
         self.assertIn('max_auto_continuations', source)
         self.assertIn('智能体工具收尾', source)
+        self.assertIn('finalReply.finalize', source)
 
     def test_explicit_agent_normalizes_reply_json_but_keeps_plain_text(self):
         self.assertEqual(

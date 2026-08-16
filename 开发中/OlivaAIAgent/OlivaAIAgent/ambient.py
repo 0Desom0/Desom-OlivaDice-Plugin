@@ -21,7 +21,7 @@ _history = {}          # "platform|group_id" -> DynamicQueue
 _history_lock = threading.RLock()
 _group_locks = {}      # "platform|group_id" -> SlackableFairLock
 _glock_lock = threading.Lock()
-_group_agent_tasks = {}  # "platform|group_id" -> 当前统一群聊 Agent 任务令牌
+_group_agent_tasks = {}  # "platform|group_id" -> 仍在运行的统一群聊 Agent 任务令牌列表
 _group_agent_tasks_lock = threading.RLock()
 _memory_state = {}
 _memory_state_loaded = False
@@ -37,9 +37,23 @@ class GroupAgentInterrupted(RuntimeError):
     '''同群后续消息已取代当前 Agent。'''
 
 
+def _allowMultipleGroupAgents():
+    return bool(OlivaAIAgent.conf.get(
+        'agent',
+        'allow_multiple_agents_in_group',
+        default=False,
+    ))
+
+
 def _beginGroupAgent(platform, group_id, trace_id=None):
-    '''登记同群最新任务；开关开启时让仍在运行或排队的旧任务失效。'''
-    if not OlivaAIAgent.conf.get('agent', 'interrupt_previous_in_group', default=True):
+    '''登记群任务；并行关闭时可让仍在运行或排队的旧任务失效。'''
+    allow_multiple = _allowMultipleGroupAgents()
+    interrupt_previous = bool(OlivaAIAgent.conf.get(
+        'agent',
+        'interrupt_previous_in_group',
+        default=True,
+    ))
+    if not allow_multiple and not interrupt_previous:
         return None
     key = _hkey(platform, group_id)
     token = {
@@ -50,11 +64,18 @@ def _beginGroupAgent(platform, group_id, trace_id=None):
         'interrupted_trace_id': '',
     }
     with _group_agent_tasks_lock:
-        previous = _group_agent_tasks.get(key)
-        if previous is not None and not previous['done'].is_set():
-            previous['cancelled'].set()
-            token['interrupted_trace_id'] = previous.get('trace_id', '')
-        _group_agent_tasks[key] = token
+        active = [
+            item for item in _group_agent_tasks.get(key, [])
+            if not item['done'].is_set()
+        ]
+        if not allow_multiple:
+            for previous in active:
+                previous['cancelled'].set()
+            if active:
+                token['interrupted_trace_id'] = active[-1].get('trace_id', '')
+            active = []
+        active.append(token)
+        _group_agent_tasks[key] = active
     return token
 
 
@@ -63,7 +84,13 @@ def _finishGroupAgent(token):
         return
     token['done'].set()
     with _group_agent_tasks_lock:
-        if _group_agent_tasks.get(token['key']) is token:
+        active = [
+            item for item in _group_agent_tasks.get(token['key'], [])
+            if item is not token and not item['done'].is_set()
+        ]
+        if active:
+            _group_agent_tasks[token['key']] = active
+        else:
             _group_agent_tasks.pop(token['key'], None)
 
 
@@ -89,7 +116,11 @@ def _groupAgentSleep(token, seconds):
 def cancelAllGroupAgents():
     '''插件重载前使尚未完成的群 Agent 停止后续动作。'''
     with _group_agent_tasks_lock:
-        tasks = list(_group_agent_tasks.values())
+        tasks = [
+            token
+            for group_tasks in _group_agent_tasks.values()
+            for token in group_tasks
+        ]
         _group_agent_tasks.clear()
     for token in tasks:
         token['cancelled'].set()
@@ -790,25 +821,36 @@ def process(plugin_event, Proc, parsed, self_id,
                 return
 
     def worker():
-        lock = getGroupLock(platform, group_id)
-        with lock:
+        def run_reply(lock):
+            sem = OlivaAIAgent.msgReply._getSem()
+            sem.acquire()
             try:
                 _ensureGroupAgentActive(agent_token)
                 _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
                        force=force, tools=tools, skip_first_thinking=skip_first_thinking,
                        agent_token=agent_token)
-            except GroupAgentInterrupted:
-                OlivaAIAgent.conf.traceLog(
-                    Proc,
-                    'agent.group.interrupted',
-                    trace_id,
-                    group_id=group_id,
-                )
-            except Exception:
-                import traceback
-                OlivaAIAgent.conf.log(Proc, 3, '统一管线异常:\n' + traceback.format_exc())
             finally:
-                _finishGroupAgent(agent_token)
+                sem.release()
+
+        try:
+            if _allowMultipleGroupAgents():
+                run_reply(None)
+            else:
+                lock = getGroupLock(platform, group_id)
+                with lock:
+                    run_reply(lock)
+        except GroupAgentInterrupted:
+            OlivaAIAgent.conf.traceLog(
+                Proc,
+                'agent.group.interrupted',
+                trace_id,
+                group_id=group_id,
+            )
+        except Exception:
+            import traceback
+            OlivaAIAgent.conf.log(Proc, 3, '统一管线异常:\n' + traceback.format_exc())
+        finally:
+            _finishGroupAgent(agent_token)
     threading.Thread(target=worker, daemon=True).start()
 
 
@@ -834,7 +876,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     # 节律：等一会，若期间来了更新的消息则让位。
     # 定向或显式触发(.ai/@/引用/关键词)不参与让位，否则忙群里会被静默丢弃。
     total_start = time.perf_counter()
-    if not force and not lock.slack():
+    if not force and lock is not None and not lock.slack():
         _logConversationDecision(Proc, trace_id, '跳过', '等待期间出现更新消息')
         return
     _ensureGroupAgentActive(agent_token)
@@ -988,7 +1030,6 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 - 消息里的"[语音:转写内容]"和"[视频:内容摘要]"是媒体模型已经识别出的事实；有有效摘要时直接依据内容回答，不要说看不到或无法识别
 - 主模型收到的音频/视频段是当前消息的一部分，可以直接理解；不要向用户暴露媒体 URL、Base64 或识别模型实现
 - 不要暴露文件路径/Base64/OCR/模型等实现细节%s
-- 【最高优先级】最终只输出一个 JSON 对象：要回复输出 {"r":["内容1","内容2"]}，不回复输出 {"r":[]}；多条消息拆成多个元素；不要在 JSON 前后加任何文字
 - 主回复模型可根据动态上下文中的图片缓存自行决定是否发图、选择或改选图片，不必等待前置模型指定
 - 发图片用单独一条消息，格式 [发图片:缓存文件名或图片内容/意图关键词]；不要编造缓存中不存在的图片
 
@@ -997,6 +1038,11 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 
 # 已知信息
 - 你的QQ号是 %s，被@时是 %s''' % (tool_hint, persona, self_id, mention_str)
+    system_content += '\n\n' + (
+        OlivaAIAgent.finalReply.PLANNING_ROLE_PROMPT
+        if tool_defs
+        else OlivaAIAgent.finalReply.FINAL_JSON_ROLE_PROMPT
+    )
     quote_prompt = OlivaAIAgent.msgReply.autonomousQuotePrompt(plugin_event)
     if quote_prompt:
         system_content += '\n\n' + quote_prompt
@@ -1281,14 +1327,21 @@ def _replyWash(reply_list, plugin_event=None):
     for i in reply_list:
         if not isinstance(i, str):
             continue
+        cleaned = OlivaAIAgent.replyStyle.cleanReplyText(i)
+        markdown = OlivaAIAgent.msgReply._qqGuildAutoMarkdown(plugin_event, cleaned)
         remaining = max_count - len(res)
         if remaining <= 0:
             break
-        for part in OlivaAIAgent.msgReply.splitReplyText(i, split_len, remaining):
-            s = part.rstrip('。')
-            s = re.sub(r'\([^)]*\)', '', s)
-            s = re.sub(r'（[^）]*）', '', s)
-            s = OlivaAIAgent.replyStyle.cleanReplyText(s)
+        splitter = (
+            OlivaAIAgent.msgReply.splitMarkdownReplyText
+            if markdown else OlivaAIAgent.msgReply.splitReplyText
+        )
+        for part in splitter(cleaned, split_len, remaining):
+            s = part
+            if not markdown:
+                s = s.rstrip('。')
+                s = re.sub(r'\([^)]*\)', '', s)
+                s = re.sub(r'（[^）]*）', '', s)
             s = OlivaAIAgent.msgReply.sanitizeSenderAddress(s.strip(), plugin_event)
             if s:
                 res.append(s)
@@ -1781,7 +1834,6 @@ def _callReply(
     request_text=None,
     agent_token=None,
 ):
-    retry = int(OlivaAIAgent.conf.get('ambient', 'retry_count', default=3))
     if tool_defs:
         return _callReplyWithTools(
             plugin_event,
@@ -1801,54 +1853,24 @@ def _callReply(
         int(OlivaAIAgent.conf.get('agent', 'max_auto_continuations', default=2)),
     )
     continuation_rounds = 0
-    internal_repair_rounds = 0
-    failed_attempts = 0
     request_round = 0
     convo = list(messages)
-    reply_list = None
-    res = None
-    while failed_attempts < retry:
+    while True:
         _ensureGroupAgentActive(agent_token)
         request_round += 1
-        res = OlivaAIAgent.aiClient.chat(
+        reply_list = OlivaAIAgent.finalReply.finalize(
             convo,
-            tools=None,
-            force_no_stream=True,
-            response_json=True,
+            Proc=Proc,
             trace_id=trace_id,
-            purpose='主回复第%d次' % request_round,
+            purpose='主回复最终整理第%d轮' % request_round,
+            max_attempts=2,
+            relaxed_parser=_parseR,
         )
         _ensureGroupAgentActive(agent_token)
-        if not res.get('ok'):
-            OlivaAIAgent.conf.debugLog(Proc, '潜行调用失败: %s' % res.get('error'))
-            failed_attempts += 1
-            continue
-        text = res.get('text', '')
-        reply_list = _parseR(text)
-        if reply_list is None and text.strip():
-            # 模型已成功生成内容时直接本地兜底，避免为格式问题重复整轮主模型请求。
-            OlivaAIAgent.conf.debugLog(Proc, '潜行 JSON解析失败,立即兜底: %s' % text[:200])
-            reply_list = _fallback_parse_intent(text)
-        elif reply_list is None:
-            failed_attempts += 1
-            continue
+        if reply_list is None:
+            OlivaAIAgent.conf.debugLog(Proc, '潜行最终回复整理失败')
+            return None
         reply_text = '\n\n'.join(reply_list)
-        if OlivaAIAgent.replyStyle.containsInternalDeliberation(reply_text):
-            internal_repair_rounds += 1
-            OlivaAIAgent.conf.traceLog(
-                Proc,
-                'agent.internal_deliberation.blocked',
-                trace_id,
-                attempt=internal_repair_rounds,
-                scene='ambient',
-            )
-            if internal_repair_rounds <= 2:
-                convo.append({
-                    'role': 'system',
-                    'content': OlivaAIAgent.completion.internalDeliberationPrompt(json_reply=True),
-                })
-                continue
-            return []
         if OlivaAIAgent.completion.needsContinuation(reply_text, request_text=request_text):
             if continuation_rounds < max_continuations:
                 continuation_rounds += 1
@@ -1860,7 +1882,10 @@ def _callReply(
                     scene='ambient',
                     text=reply_text[:300],
                 )
-                convo.append({'role': 'assistant', 'content': text})
+                convo.append({
+                    'role': 'assistant',
+                    'content': OlivaAIAgent.finalReply.dumpEnvelope(reply_list),
+                })
                 convo.append({
                     'role': 'system',
                     'content': OlivaAIAgent.completion.continuationPrompt(json_reply=True),
@@ -1875,13 +1900,6 @@ def _callReply(
             )
             return [OlivaAIAgent.completion.exhaustedReply()]
         return reply_list
-    # 接口失败或空响应重试完毕后，若仍有文本则做最后兜底。
-    if reply_list is None:
-        last_text = res.get('text', '') if res else ''
-        if last_text.strip():
-            OlivaAIAgent.conf.debugLog(Proc, '潜行 JSON重试%d次失败,兜底: %s' % (retry, last_text[:200]))
-            reply_list = _fallback_parse_intent(last_text)
-    return reply_list
 
 
 def _callReplyWithTools(
@@ -1898,11 +1916,7 @@ def _callReplyWithTools(
     request_text=None,
     agent_token=None,
 ):
-    '''潜行 + 工具：让 AI 可调用 run_command/查询等，最终强制 JSON 输出。
-    修复要点：
-    1. 每一步加 debugLog，让 debug_log=true 时能看到失败原因(之前静默 return None)
-    2. _parseR 解析失败但有文本时，用 _fallback_parse_intent 兜底(参考刺客 agent.py)
-    3. 工具调用记录到 debugLog，方便排查"调了工具但没回复"的问题'''
+    '''潜行 + 工具：规划阶段可调用工具，最终阶段独立输出严格 JSON。'''
     conf = OlivaAIAgent.conf
     ctx = tool_ctx or _makeToolContext(plugin_event, Proc, group_id, trace_id)
     if tool_defs is None:
@@ -1913,7 +1927,6 @@ def _callReplyWithTools(
     tool_rounds = 0
     completed_action = False
     continuation_rounds = 0
-    internal_repair_rounds = 0
     request_round = 0
     convo = list(messages)
     while request_round < max_agent_rounds:
@@ -1941,38 +1954,28 @@ def _callReplyWithTools(
             asst['tool_calls'] = calls
         convo.append(asst)
         if not calls:
-            # 没有工具调用 → 这是最终回复，解析 JSON
+            # 规划阶段结束；其 content 只是草稿，必须进入无工具最终整理阶段。
             text = res.get('text', '')
-            reply_list = _parseR(text)
-            if reply_list is None and text.strip():
-                # 兜底：AI 返回非标准 JSON 但有内容 → 尝试宽容解析
-                conf.debugLog(Proc, '潜行+工具 JSON解析失败,兜底: %s' % text[:200])
-                reply_list = _fallback_parse_intent(text)
-            elif reply_list is None:
-                conf.debugLog(Proc, '潜行+工具 空回复,跳过')
+            reply_list = OlivaAIAgent.finalReply.finalize(
+                convo,
+                Proc=Proc,
+                trace_id=trace_id,
+                purpose='主回复工具最终整理第%d轮' % request_round,
+                draft=text,
+                max_attempts=2,
+                relaxed_parser=_parseR,
+            )
+            _ensureGroupAgentActive(agent_token)
+            if reply_list is None:
+                conf.debugLog(Proc, '潜行+工具 最终回复整理失败')
+                return _suppressTextAfterVoice(None, ctx, Proc, trace_id)
             reply_text = '\n\n'.join(reply_list or [])
-            if OlivaAIAgent.replyStyle.containsInternalDeliberation(reply_text):
-                internal_repair_rounds += 1
-                conf.traceLog(
-                    Proc,
-                    'agent.internal_deliberation.blocked',
-                    trace_id,
-                    attempt=internal_repair_rounds,
-                    scene='ambient_tools',
-                )
-                if request_round < max_agent_rounds:
-                    convo.append({
-                        'role': 'system',
-                        'content': OlivaAIAgent.completion.internalDeliberationPrompt(json_reply=True),
-                    })
-                    continue
-                return _suppressTextAfterVoice([], ctx, Proc, trace_id)
             if OlivaAIAgent.completion.needsContinuation(
                 reply_text,
                 action_performed=completed_action,
                 request_text=request_text,
             ):
-                if continuation_rounds < max_continuations:
+                if continuation_rounds < max_continuations and request_round < max_agent_rounds:
                     continuation_rounds += 1
                     conf.traceLog(
                         Proc,
@@ -1984,7 +1987,7 @@ def _callReplyWithTools(
                     )
                     convo.append({
                         'role': 'system',
-                        'content': OlivaAIAgent.completion.continuationPrompt(json_reply=True),
+                        'content': OlivaAIAgent.completion.continuationPrompt(json_reply=False),
                     })
                     continue
                 conf.traceLog(
@@ -1998,6 +2001,13 @@ def _callReplyWithTools(
             return _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id)
         # 有工具调用 → 执行并继续循环
         if tool_rounds >= max_rounds:
+            for tc in calls:
+                convo.append({
+                    'role': 'tool',
+                    'tool_call_id': tc.get('id', ''),
+                    'name': tc.get('name', ''),
+                    'content': '{"active":false,"error":"工具调用轮数已达到上限，未执行"}',
+                })
             break
         for tc in calls:
             _ensureGroupAgentActive(agent_token)
@@ -2025,33 +2035,17 @@ def _callReplyWithTools(
     # 循环用完 max_rounds → 强制收尾
     _ensureGroupAgentActive(agent_token)
     conf.debugLog(Proc, '潜行+工具 达到Agent轮数上限=%d,强制收尾' % max_agent_rounds)
-    convo.append({'role': 'user', 'content': '现在直接输出最终 JSON：{"r":["回复"]} 或 {"r":[]}。'})
-    res = OlivaAIAgent.aiClient.chat(
+    reply_list = OlivaAIAgent.finalReply.finalize(
         convo,
-        tools=None,
-        force_no_stream=True,
-        response_json=True,
+        Proc=Proc,
         trace_id=trace_id,
         purpose='主回复工具收尾',
+        max_attempts=2,
+        relaxed_parser=_parseR,
     )
     _ensureGroupAgentActive(agent_token)
-    if res.get('ok'):
-        text = res.get('text', '')
-        reply_list = _parseR(text)
-        if reply_list is None and text.strip():
-            conf.debugLog(Proc, '潜行+工具 收尾JSON失败,兜底: %s' % text[:200])
-            reply_list = _fallback_parse_intent(text)
+    if reply_list is not None:
         reply_text = '\n\n'.join(reply_list or [])
-        if OlivaAIAgent.replyStyle.containsInternalDeliberation(reply_text):
-            conf.traceLog(
-                Proc,
-                'agent.internal_deliberation.blocked',
-                trace_id,
-                attempt=internal_repair_rounds + 1,
-                scene='ambient_tools_final',
-            )
-            reply_list = []
-            reply_text = ''
         if OlivaAIAgent.completion.needsContinuation(
             reply_text,
             action_performed=completed_action,
@@ -2066,7 +2060,7 @@ def _callReplyWithTools(
             )
             reply_list = [OlivaAIAgent.completion.exhaustedReply()]
         return _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id)
-    conf.debugLog(Proc, '潜行+工具 收尾AI调用失败: %s' % res.get('error'))
+    conf.debugLog(Proc, '潜行+工具 收尾AI调用失败')
     return _suppressTextAfterVoice(None, ctx, Proc, trace_id)
 
 

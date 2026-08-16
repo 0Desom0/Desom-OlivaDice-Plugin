@@ -73,6 +73,76 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
 
         self.assertEqual('你好 <qqbot-at-user id="user-2" />', content)
 
+    def test_detects_explicit_markdown_without_matching_plain_punctuation(self):
+        markdown_samples = [
+            '# 标题\n正文',
+            '**粗体内容**',
+            '- 第一项\n- 第二项',
+            '| 名称 | 数值 |\n| --- | --- |\n| 力量 | 80 |',
+            '```python\nprint("ok")\n```',
+            '[规则书](https://example.com/rule)',
+        ]
+
+        for sample in markdown_samples:
+            with self.subTest(sample=sample):
+                self.assertTrue(OlivaAIAgent.msgReply._looksLikeMarkdown(sample))
+        self.assertFalse(OlivaAIAgent.msgReply._looksLikeMarkdown('普通回复 * 只是乘号'))
+        self.assertFalse(OlivaAIAgent.msgReply._looksLikeMarkdown('今天编号是 item_1'))
+
+    def test_safe_reply_sends_formatted_text_as_markdown(self):
+        event = FakeEvent()
+        content = '# 检定结果\n\n- 力量：80\n- 结果：成功'
+        with (
+            mock.patch.object(OlivaAIAgent.coreLogger, 'recordToolCall'),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(event, content, safety_check=False)
+
+        self.assertEqual([], event.replies)
+        self.assertEqual(1, len(event.markdown_calls))
+        self.assertEqual({'content': content}, event.markdown_calls[0]['markdown'])
+
+    def test_markdown_switch_can_disable_automatic_format_sending(self):
+        event = FakeEvent()
+        original_get = OlivaAIAgent.conf.get
+
+        def config_get(section, key, default=None):
+            if section == 'reply' and key == 'qqguild_auto_markdown':
+                return False
+            return original_get(section, key, default=default)
+
+        with (
+            mock.patch.object(OlivaAIAgent.conf, 'get', side_effect=config_get),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(event, '**普通粗体**', safety_check=False)
+
+        self.assertEqual([], event.markdown_calls)
+        self.assertEqual(['**普通粗体**'], event.replies)
+
+    def test_ambient_markdown_keeps_links_and_paragraphs_in_one_message(self):
+        event = FakeEvent()
+        content = '# 资料\n\n[规则书](https://example.com/rule)\n\n**请查收**'
+        with (
+            mock.patch.object(OlivaAIAgent.ambient.time, 'sleep'),
+            mock.patch.object(OlivaAIAgent.coreLogger, 'recordToolCall'),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            washed = OlivaAIAgent.ambient._replyWash([content], plugin_event=event)
+            records = OlivaAIAgent.ambient._sendMulti(
+                event,
+                washed,
+                total_past=0,
+                trace_id='trace-markdown',
+            )
+
+        self.assertEqual([content], washed)
+        self.assertEqual({'content': content}, event.markdown_calls[0]['markdown'])
+        self.assertEqual(content, records[0]['message'])
+
     def test_safe_reply_sends_at_as_markdown_without_forced_quote(self):
         event = FakeEvent()
         parsed = {'message_id': 'current-1', 'trace_id': 'trace-1'}

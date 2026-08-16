@@ -245,6 +245,42 @@ class AmbientReplyParsingTest(unittest.TestCase):
         self.assertEqual(['这调查失败得也太快了吧。'], reply)
         self.assertEqual(2, chat.call_count)
 
+    def test_chinese_design_planning_mixed_with_final_answer_is_repaired(self):
+        leaked_text = (
+            '用户"燕尘"要求我帮他设计一个灵能力，主题是"超高校级的coser"。'
+            '参考狩魂者灵能力规则来创作。让我构思一个有画面感、非结果性的标签。'
+            '当前发言者是燕尘，只有这一条有效任务，最后按格式输出JSON。\n\n'
+            '来啦来啦~名称【角色上身】【完美复现所见之人的容貌声线】'
+            '【临摹并施展他人的招式与习惯】缺陷【入戏太深】'
+        )
+        self.assertTrue(OlivaAIAgent.replyStyle.containsInternalDeliberation(leaked_text))
+        responses = [
+            {'ok': True, 'text': leaked_text, 'tool_calls': []},
+            {
+                'ok': True,
+                'text': '{"r":["名称【角色上身】【完美复现所见之人的容貌声线】缺陷【入戏太深】"]}',
+                'tool_calls': [],
+            },
+        ]
+        with mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=responses) as chat:
+            reply = OlivaAIAgent.ambient._callReply(
+                None,
+                None,
+                'bot',
+                'group',
+                [{'role': 'user', 'content': '帮我设计一个超高校级coser的灵能力'}],
+                [],
+                False,
+                request_text='帮我设计一个超高校级coser的灵能力',
+            )
+
+        self.assertEqual(
+            ['名称【角色上身】【完美复现所见之人的容貌声线】缺陷【入戏太深】'],
+            reply,
+        )
+        self.assertEqual(2, chat.call_count)
+        self.assertIn('内部过程泄漏修正', chat.call_args.args[0][-1]['content'])
+
 
 if __name__ == '__main__':
     unittest.main()

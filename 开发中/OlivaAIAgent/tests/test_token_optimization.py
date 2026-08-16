@@ -147,7 +147,7 @@ class TokenOptimizationTest(unittest.TestCase):
 
         self.assertEqual(['web_search', 'fetch_url'], [item['name'] for item in definitions])
 
-    def test_malformed_successful_reply_uses_local_fallback_without_retry(self):
+    def test_malformed_successful_reply_gets_one_json_repair_before_local_fallback(self):
         response = {'ok': True, 'text': '直接回复内容'}
         with mock.patch.object(OlivaAIAgent.aiClient, 'chat', return_value=response) as chat:
             replies = OlivaAIAgent.ambient._callReply(
@@ -161,7 +161,9 @@ class TokenOptimizationTest(unittest.TestCase):
             )
 
         self.assertEqual(['直接回复内容'], replies)
-        self.assertEqual(1, chat.call_count)
+        self.assertEqual(2, chat.call_count)
+        self.assertTrue(chat.call_args.kwargs['response_json'])
+        self.assertTrue(chat.call_args.kwargs['thinking_off'])
 
     def test_participation_parser_accepts_json_alias_and_plain_text(self):
         self.assertEqual(

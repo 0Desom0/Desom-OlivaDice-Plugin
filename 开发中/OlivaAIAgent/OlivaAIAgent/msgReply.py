@@ -880,6 +880,43 @@ def splitReplyText(text, split_length, max_count):
     return chunks
 
 
+def splitMarkdownReplyText(text, split_length, max_count):
+    '''合并 Markdown 段落后再分段，避免标题、列表和链接被逐段拆散。'''
+    try:
+        split_length = max(1, int(split_length))
+    except (TypeError, ValueError):
+        split_length = 1500
+    try:
+        max_count = max(1, int(max_count))
+    except (TypeError, ValueError):
+        max_count = 3
+    value = str(text).replace('\r\n', '\n').replace('\r', '\n').strip()
+    if not value:
+        return []
+    paragraphs = [item.strip() for item in re.split(r'\n[ \t]*\n+', value) if item.strip()]
+    chunks = []
+    current = ''
+    for paragraph in paragraphs:
+        candidate = paragraph if not current else current + '\n\n' + paragraph
+        if len(candidate) <= split_length:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            if len(chunks) >= max_count:
+                return chunks
+            current = ''
+        while len(paragraph) > split_length and len(chunks) < max_count:
+            chunks.append(paragraph[:split_length].rstrip())
+            paragraph = paragraph[split_length:].lstrip()
+        if len(chunks) >= max_count:
+            return chunks
+        current = paragraph
+    if current and len(chunks) < max_count:
+        chunks.append(current)
+    return chunks
+
+
 def sanitizeSenderAddress(text, plugin_event):
     '''非骰主发言时，移除模型误加给当前发送者的骰主专属称呼。'''
     if plugin_event is None:
@@ -1723,6 +1760,7 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
                 )
         except Exception:
             pass
+    parts.append(OlivaAIAgent.finalReply.PLANNING_ROLE_PROMPT)
     return '\n\n'.join([p for p in parts if p])
 
 
@@ -2141,12 +2179,10 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
         new_msgs = [user_msg]
         final_text = ''
         max_tool_rounds = max(0, int(conf.get('agent', 'max_tool_rounds', default=8)))
-        max_agent_rounds = max(1, max_tool_rounds)
         max_continuations = max(0, int(conf.get('agent', 'max_auto_continuations', default=2)))
         tool_rounds = 0
         completed_action = False
         continuation_rounds = 0
-        internal_repair_rounds = 0
         request_round = 0
         while True:
             request_round += 1
@@ -2193,40 +2229,23 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
             messages.append(asst_msg)
             if not tool_calls:
                 raw_candidate_text = result.get('text', '')
-                if OlivaAIAgent.replyStyle.containsInternalDeliberation(raw_candidate_text):
-                    internal_repair_rounds += 1
-                    conf.traceLog(
-                        Proc,
-                        'agent.internal_deliberation.blocked',
-                        trace_id,
-                        attempt=internal_repair_rounds,
-                        scene='agent',
-                    )
-                    if request_round < max_agent_rounds:
-                        messages.append({
-                            'role': 'system',
-                            'content': OlivaAIAgent.completion.internalDeliberationPrompt(),
-                        })
-                        continue
-                    messages.append({
-                        'role': 'system',
-                        'content': (
-                            'Agent 轮数已达到上限。不要再调用工具，也不要输出分析过程；'
-                            '请根据已有上下文直接输出最终回复。'
-                        ),
-                    })
-                    final_result = OlivaAIAgent.aiClient.chat(
-                        messages,
-                        tools=None,
-                        force_no_stream=True,
-                        trace_id=trace_id,
-                        purpose='智能体规划收尾',
-                    )
-                    if final_result.get('ok'):
-                        raw_candidate_text = final_result.get('text', '')
-                    else:
-                        raw_candidate_text = '这次回复生成异常，请再试一次。'
-                candidate_text = _normalizeAgentFinalText(raw_candidate_text)
+                final_replies = OlivaAIAgent.finalReply.finalize(
+                    messages,
+                    Proc=Proc,
+                    trace_id=trace_id,
+                    purpose='智能体最终整理第%d轮' % request_round,
+                    draft=raw_candidate_text,
+                    max_attempts=2,
+                    relaxed_parser=OlivaAIAgent.ambient._parseR,
+                )
+                if final_replies is None:
+                    if OlivaAIAgent.voice.hasSentVoice(ctx):
+                        conf.traceLog(Proc, 'voice.reply.text_suppressed', trace_id, messages=0)
+                        return
+                    final_text = '这次回复生成异常，请再试一次。'
+                    new_msgs.append({'role': 'assistant', 'content': final_text})
+                    break
+                candidate_text = '\n\n'.join(final_replies)
                 needs_continuation = OlivaAIAgent.completion.needsContinuation(
                     candidate_text,
                     action_performed=completed_action,
@@ -2243,7 +2262,7 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                     )
                     messages.append({
                         'role': 'system',
-                        'content': OlivaAIAgent.completion.continuationPrompt(),
+                        'content': OlivaAIAgent.completion.continuationPrompt(json_reply=False),
                     })
                     continue
                 if needs_continuation:
@@ -2260,27 +2279,32 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
             new_msgs.append(asst_msg)
             if tool_rounds >= max_tool_rounds:
                 # 工具调用轮数耗尽时，assistant.content 仍可能只是“我先查一下”。
-                # 不把这类中间话术当最终回复，额外请求一次无工具的最终收尾。
-                messages.append({
-                    'role': 'system',
-                    'content': (
-                        '工具调用轮数已达到上限。不要再调用工具，也不要输出刚才的过程话术；'
-                        '请根据已有工具结果直接输出最终回复。'
-                    ),
-                })
-                final_result = OlivaAIAgent.aiClient.chat(
+                # 补齐未执行的 tool 响应，再交给独立 JSON 最终整理阶段。
+                for tc in tool_calls:
+                    messages.append({
+                        'role': 'tool',
+                        'tool_call_id': tc.get('id', ''),
+                        'name': tc.get('name', ''),
+                        'content': '{"active":false,"error":"工具调用轮数已达到上限，未执行"}',
+                    })
+                final_replies = OlivaAIAgent.finalReply.finalize(
                     messages,
-                    tools=None,
-                    force_no_stream=True,
+                    Proc=Proc,
                     trace_id=trace_id,
                     purpose='智能体工具收尾',
+                    max_attempts=2,
+                    relaxed_parser=OlivaAIAgent.ambient._parseR,
                 )
-                if final_result.get('ok'):
-                    final_text = _normalizeAgentFinalText(final_result.get('text', ''))
-                else:
+                if final_replies is None:
                     final_text = '工具处理已达到轮数上限，请稍后再试。'
-                if OlivaAIAgent.replyStyle.containsInternalDeliberation(final_text):
-                    final_text = '这次回复生成异常，请再试一次。'
+                else:
+                    final_text = '\n\n'.join(final_replies)
+                    if OlivaAIAgent.completion.needsContinuation(
+                        final_text,
+                        action_performed=completed_action,
+                        request_text=user_text,
+                    ):
+                        final_text = OlivaAIAgent.completion.exhaustedReply()
                 new_msgs.append({'role': 'assistant', 'content': final_text})
                 break
             for tc in tool_calls:
@@ -2447,13 +2471,50 @@ def _normalizeQqGuildSenderMention(plugin_event, text):
     return OlivaAIAgent.memberDirectory.normalizeLiteralMentions(plugin_event, text)
 
 
-def _qqGuildMarkdownMentionContent(text, allow_plain=False):
-    '''把纯文本/at/reply 消息转成 Markdown；其他消息段交回原发送链路。'''
+_MARKDOWN_BLOCK_PATTERN = re.compile(
+    r'(?m)^(?: {0,3}(?:#{1,6}\s+\S|>\s+\S|[-+*]\s+\S|\d+[.)]\s+\S|```|~~~)|'
+    r'\s*\|?.+\|.+\n\s*\|?\s*:?-{3,}[^\n]*\|)',
+)
+_MARKDOWN_INLINE_PATTERNS = (
+    re.compile(r'\*\*(?=\S).+?(?<=\S)\*\*', re.S),
+    re.compile(r'__(?=\S).+?(?<=\S)__', re.S),
+    re.compile(r'~~(?=\S).+?(?<=\S)~~', re.S),
+    re.compile(r'(?<!`)`[^`\n]+`(?!`)'),
+    re.compile(r'!?\[[^\]\n]+\]\([^\s)]+(?:\s+["\'][^"\']*["\'])?\)'),
+)
+
+
+def _looksLikeMarkdown(text):
+    '''识别明确的常用 Markdown 结构，普通标点和单个星号不会触发。'''
+    value = str(text or '').replace('\r\n', '\n').replace('\r', '\n')
+    if not value.strip():
+        return False
+    if _MARKDOWN_BLOCK_PATTERN.search(value):
+        return True
+    return any(pattern.search(value) for pattern in _MARKDOWN_INLINE_PATTERNS)
+
+
+def _qqGuildAutoMarkdown(plugin_event, text):
+    try:
+        sdk = str(plugin_event.platform.get('sdk', '')).lower()
+    except Exception:
+        return False
+    return (
+        'qqguildv2' in sdk
+        and bool(OlivaAIAgent.conf.get('reply', 'qqguild_auto_markdown', default=True))
+        and _looksLikeMarkdown(text)
+    )
+
+
+def _qqGuildMarkdownMentionContent(text, allow_plain=False, allow_markdown=True):
+    '''把 Markdown/纯文本/at/reply 转成 SDK Markdown；其他消息段交回原发送链路。'''
     raw = str(text or '')
     has_at = _QQBOT_AT_TAG_PATTERN.search(raw) is not None
+    has_markdown = bool(allow_markdown and _looksLikeMarkdown(raw))
     if (
         not allow_plain
         and not has_at
+        and not has_markdown
         and re.search(r'\[(?:OP:at\b|CQ:at\b)', raw, flags=re.I) is None
     ):
         return None
@@ -2486,11 +2547,11 @@ def _qqGuildMarkdownMentionContent(text, allow_plain=False):
                 converted = ''
         content.append(str(converted or ''))
     result = ''.join(content).strip()
-    return result if (has_at or allow_plain) and result else None
+    return result if (has_at or has_markdown or allow_plain) and result else None
 
 
 def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=None):
-    '''qqGuildv2 普通回复含 at 时自动改走 Markdown；失败返回 None 以便原链路兜底。'''
+    '''qqGuildv2 的 Markdown、at 和引用自动改走 SDK；失败返回 None 供普通链路兜底。'''
     try:
         sdk = str(plugin_event.platform.get('sdk', '')).lower()
     except Exception:
@@ -2498,9 +2559,11 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
     if 'qqguildv2' not in sdk:
         return None
     normalized_text = _normalizeQqGuildSenderMention(plugin_event, text)
+    auto_markdown = _qqGuildAutoMarkdown(plugin_event, normalized_text)
     markdown_content = _qqGuildMarkdownMentionContent(
         normalized_text,
         allow_plain=quote_msg_id not in [None, '', '-1', -1],
+        allow_markdown=auto_markdown,
     )
     if markdown_content is None:
         return None
@@ -2535,7 +2598,8 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
     except Exception as e:
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
-            'message.markdown_mention.fallback_failed',
+            'message.qqguild_markdown.auto_failed'
+            if auto_markdown else 'message.markdown_mention.fallback_failed',
             trace_id,
             error='%s: %s' % (type(e).__name__, e),
         )
@@ -2543,7 +2607,8 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
     if isinstance(result, dict) and not result.get('active'):
         OlivaAIAgent.conf.traceLog(
             OlivaAIAgent.conf.gProc,
-            'message.markdown_mention.fallback_failed',
+            'message.qqguild_markdown.auto_failed'
+            if auto_markdown else 'message.markdown_mention.fallback_failed',
             trace_id,
             error=result.get('data', {}).get('error', 'inactive'),
         )
@@ -2557,7 +2622,8 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
     )
     OlivaAIAgent.conf.traceLog(
         OlivaAIAgent.conf.gProc,
-        'message.markdown_mention.fallback',
+        'message.qqguild_markdown.auto'
+        if auto_markdown else 'message.markdown_mention.fallback',
         trace_id,
         chat_type=chat_type,
     )
@@ -2598,7 +2664,10 @@ def _safeReply(plugin_event, text, parsed=None, safety_check=True):
     split_len = int(conf.get('reply', 'split_length', default=1500))
     max_count = int(conf.get('reply', 'max_split_count', default=3))
     prefix = '[OP:reply,id=%s]' % outgoing_reference_id if outgoing_reference_id else ''
-    chunks = splitReplyText(text, split_len, max_count)
+    if _qqGuildAutoMarkdown(plugin_event, text):
+        chunks = splitMarkdownReplyText(text, split_len, max_count)
+    else:
+        chunks = splitReplyText(text, split_len, max_count)
     chunks = [sanitizeSenderAddress(chunk, plugin_event) for chunk in chunks]
     chunks = [chunk for chunk in chunks if chunk]
     message_ids = []

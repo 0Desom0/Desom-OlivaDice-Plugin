@@ -16,8 +16,10 @@ class GroupAgentInterruptTest(unittest.TestCase):
                 'agent_max_turns': 4,
             },
             'agent': {
+                'allow_multiple_agents_in_group': False,
                 'interrupt_previous_in_group': True,
                 'max_auto_continuations': 2,
+                'max_concurrent': 4,
             },
             'debug_log': False,
         }
@@ -28,6 +30,13 @@ class GroupAgentInterruptTest(unittest.TestCase):
         OlivaAIAgent.conf.gConf = self.old_conf
 
     def test_default_config_and_gui_expose_group_interrupt_switch(self):
+        self.assertFalse(
+            OlivaAIAgent.conf.DEFAULT_CONF['agent']['allow_multiple_agents_in_group'],
+        )
+        self.assertEqual(
+            '允许同群多个 Agent 并行',
+            OlivaAIAgent.gui.FIELD_LABELS['allow_multiple_agents_in_group'],
+        )
         self.assertTrue(
             OlivaAIAgent.conf.DEFAULT_CONF['agent']['interrupt_previous_in_group'],
         )
@@ -45,6 +54,20 @@ class GroupAgentInterruptTest(unittest.TestCase):
         self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(other_group))
         self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(latest))
         self.assertEqual('trace-first', latest['interrupted_trace_id'])
+
+    def test_multiple_agents_switch_keeps_all_same_group_tasks_active(self):
+        OlivaAIAgent.conf.gConf['agent']['allow_multiple_agents_in_group'] = True
+
+        first = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-first')
+        latest = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-latest')
+
+        self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(first))
+        self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(latest))
+        self.assertEqual('', latest['interrupted_trace_id'])
+        self.assertEqual(2, len(OlivaAIAgent.ambient._group_agent_tasks['qq|group-1']))
+
+        OlivaAIAgent.ambient._finishGroupAgent(first)
+        self.assertEqual([latest], OlivaAIAgent.ambient._group_agent_tasks['qq|group-1'])
 
     def test_disabled_switch_keeps_existing_queue_behavior(self):
         OlivaAIAgent.conf.gConf['agent']['interrupt_previous_in_group'] = False
