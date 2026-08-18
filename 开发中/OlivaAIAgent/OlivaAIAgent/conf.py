@@ -1611,6 +1611,9 @@ _TRACE_STAGE_ZH = {
     'media.video.request': '视频识别请求',
     'media.audio.result': '语音识别结果',
     'media.video.result': '视频识别结果',
+    'media.video.history_request': '视频历史摘要请求',
+    'media.video.history_result': '视频历史摘要结果',
+    'media.video.history_registry_failed': '视频历史注册表回写失败',
     'media.audio.failed': '语音识别失败',
     'media.video.failed': '视频识别失败',
     'media.quote.failed': '引用媒体识别失败',
@@ -1632,6 +1635,9 @@ _VISIBLE_VISION_TRACE_STAGES = {
     'media.video.request',
     'media.audio.result',
     'media.video.result',
+    'media.video.history_request',
+    'media.video.history_result',
+    'media.video.history_registry_failed',
 }
 
 _TRACE_FIELD_ZH = {

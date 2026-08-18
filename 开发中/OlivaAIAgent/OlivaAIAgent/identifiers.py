@@ -244,6 +244,33 @@ def recordIncoming(plugin_event, parsed):
     )
 
 
+def updateIncomingContent(plugin_event, parsed, content):
+    '''媒体识别完成后，用原消息标识幂等刷新注册表正文。'''
+    if not isinstance(parsed, dict) or str(content or '').strip() == '':
+        return
+    sender = getattr(getattr(plugin_event, 'data', None), 'sender', {})
+    sender = sender if isinstance(sender, dict) else {}
+    bot_hash = eventContext(plugin_event)['bot_hash']
+    forward_storage_limit = None
+    if int(parsed.get('forward_count') or 0) > 0:
+        forward_storage_limit = OlivaAIAgent.conf.get(
+            'forward', 'storage_max_chars', default=20000,
+        )
+    record(
+        plugin_event,
+        'incoming',
+        message_id=parsed.get('message_id'),
+        message_index=parsed.get('msg_idx'),
+        reference_message_id=parsed.get('reference_message_id'),
+        reference_index=parsed.get('ref_msg_idx'),
+        event_id=parsed.get('event_id'),
+        sender_id=getattr(getattr(plugin_event, 'data', None), 'user_id', None),
+        sender_name=sender.get('nickname') or sender.get('name'),
+        content=OlivaAIAgent.contentSafety.hiddenForMemory(content, bot_hash=bot_hash),
+        content_max_chars=forward_storage_limit,
+    )
+
+
 def recordOutgoing(
     plugin_event,
     content,

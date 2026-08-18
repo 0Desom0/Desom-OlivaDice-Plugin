@@ -649,6 +649,7 @@ def process(plugin_event, Proc, parsed, self_id,
     )
     sync_media = bool(OlivaAIAgent.conf.get('media', 'sync_media', default=False))
     defer_media = has_enabled_media and not sync_media
+    had_video_input = bool(parsed.get('video_urls'))
     if (has_img and not sync_ocr or defer_media) and not _vision_worker:
         OlivaAIAgent.conf.traceLog(
             Proc,
@@ -796,8 +797,18 @@ def process(plugin_event, Proc, parsed, self_id,
                  message, message_id=parsed.get('message_id'),
                  reference_message_id=parsed.get('reference_message_id'),
                  event_id=parsed.get('event_id'), msg_idx=parsed.get('msg_idx'),
-                 ref_msg_idx=parsed.get('ref_msg_idx'), trace_id=trace_id,
-                 mentioned_user_ids=parsed.get('at_list'))
+                  ref_msg_idx=parsed.get('ref_msg_idx'), trace_id=trace_id,
+                  mentioned_user_ids=parsed.get('at_list'))
+    if had_video_input and re.search(r'\[视频[:：][^\]]+\]', message):
+        try:
+            OlivaAIAgent.identifiers.updateIncomingContent(plugin_event, parsed, message)
+        except Exception as exc:
+            OlivaAIAgent.conf.traceLog(
+                Proc,
+                'media.video.history_registry_failed',
+                trace_id,
+                error='%s: %s' % (type(exc).__name__, exc),
+            )
     if blocked_source is not None:
         if force and _groupAgentActive(agent_token):
             OlivaAIAgent.msgReply._safeReply(

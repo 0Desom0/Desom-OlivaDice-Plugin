@@ -548,6 +548,34 @@ class MediaRecognitionTest(unittest.TestCase):
         self.assertEqual('main', OlivaAIAgent.media._route('audio'))
         self.assertEqual('main', OlivaAIAgent.media._route('video'))
 
+    def test_main_video_route_writes_a_summary_but_keeps_video_input(self):
+        OlivaAIAgent.conf.gConf['openai']['video'] = True
+        url = 'https://example.invalid/video.mp4?rkey=secret'
+        parsed = {'audio_urls': [], 'video_urls': [url]}
+        response = {
+            'ok': True,
+            'text': '{"summary":"正在用 sviber 编辑谱面，画面中的自动播放分数持续上升"}',
+            'tool_calls': [],
+        }
+        with mock.patch.object(OlivaAIAgent.aiClient, 'chat', return_value=response) as chat:
+            result = OlivaAIAgent.media.translateIncoming(
+                '[[OLIVA_VIDEO_0]]',
+                parsed,
+                trace_id='main-video-history',
+            )
+
+        self.assertEqual(
+            '[视频:正在用 sviber 编辑谱面，画面中的自动播放分数持续上升]',
+            result,
+        )
+        self.assertEqual([url], parsed['video_urls'])
+        self.assertEqual('视频历史摘要', chat.call_args.kwargs['purpose'])
+        self.assertTrue(chat.call_args.kwargs['response_json'])
+        self.assertTrue(chat.call_args.kwargs['thinking_off'])
+        logs = '\n'.join(item[1] for item in self.proc.records)
+        self.assertIn('视频历史摘要请求', logs)
+        self.assertIn('视频历史摘要结果', logs)
+
     def test_independent_audio_request_and_logs_are_redacted(self):
         ref = 'data:audio/mpeg;base64,' + base64.b64encode(b'voice-bytes').decode('ascii')
         cfg = OlivaAIAgent.media._independentConf('audio')

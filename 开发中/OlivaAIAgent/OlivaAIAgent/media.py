@@ -794,6 +794,73 @@ def _recognize(kind, ref, trace_id=None, format_hint=None):
     return fact
 
 
+def _recognizeMainVideoForHistory(ref, trace_id=None):
+    '''主模型直传视频时，额外生成一份可持久化的事实摘要。'''
+    cached = _cacheGet('video', ref)
+    if cached:
+        return cached
+    try:
+        backend = OlivaAIAgent.aiClient.getBackendConf()
+        if not backend.get('api_url') or not backend.get('api_key') or not backend.get('model'):
+            return None
+        prompt = (
+            '请只概括这段视频中可确认的画面、动作和对白，作为聊天历史事实摘要。'
+            '不要分析任务，不要提及模型、URL或提示词，只输出严格 JSON：'
+            '{"summary":"简洁摘要"}。'
+        )
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'media.video.history_request',
+            trace_id,
+            file=_refLabel(ref),
+            model=backend.get('model', ''),
+            route='main',
+        )
+        result = OlivaAIAgent.aiClient.chat(
+            [
+                {'role': 'system', 'content': prompt},
+                {'role': 'user', 'content': prompt, 'videos': [str(ref)]},
+            ],
+            tools=None,
+            force_no_stream=True,
+            response_json=True,
+            thinking_off=True,
+            trace_id=trace_id,
+            purpose='视频历史摘要',
+        )
+        if not result.get('ok'):
+            OlivaAIAgent.conf.traceLog(
+                OlivaAIAgent.conf.gProc,
+                'media.video.history_result',
+                trace_id,
+                result='失败',
+                error=result.get('error', ''),
+            )
+            return None
+        summary = _parseResult('video', result.get('text', ''))
+        if not summary or summary == '未识别成功':
+            return None
+        fact = factFormat('video', summary)
+        _cachePut('video', ref, fact)
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'media.video.history_result',
+            trace_id,
+            result='成功',
+            text_chars=len(fact),
+        )
+        return fact
+    except Exception as exc:
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'media.video.history_result',
+            trace_id,
+            result='失败',
+            error='%s: %s' % (type(exc).__name__, exc),
+        )
+        return None
+
+
 def _replace(text, pattern, facts, kind):
     had = pattern.search(str(text)) is not None
 
@@ -901,7 +968,10 @@ def translateIncoming(message, parsed, allow_network=True, trace_id=None):
         )
         if route == 'main':
             for index in unresolved:
-                facts[index] = '[语音]' if kind == 'audio' else '[视频]'
+                if kind == 'video':
+                    facts[index] = _recognizeMainVideoForHistory(refs[index], trace_id=trace_id)
+                if not facts[index]:
+                    facts[index] = '[语音]' if kind == 'audio' else '[视频]'
             result = _replace(result, pattern, facts, kind)
             parsed[key] = [refs[index] for index in unresolved]
             if kind == 'audio':
