@@ -214,6 +214,40 @@ class VisionLoggingTest(unittest.TestCase):
         })
         self.assertEqual('[图片:一只白色狐狸站在雪地里]', result)
 
+    def test_emoji_image_format_uses_recognition_type(self):
+        emoji = OlivaAIAgent.vision.imgcode_format({
+            'content': '一只圆滚滚的小狗配着乐字',
+            'intent': '表达开心',
+            'type': '表情包',
+        })
+        meme = OlivaAIAgent.vision.imgcode_format({
+            'content': '人物指着黑板吐槽',
+            'intent': '调侃',
+            'type': '梗图',
+        })
+        photo = OlivaAIAgent.vision.imgcode_format({
+            'content': '人物表情严肃',
+            'intent': '展示表情变化',
+            'type': '照片',
+        })
+        self.assertEqual('[表情包:一只圆滚滚的小狗配着乐字]', emoji)
+        self.assertEqual('[表情包:人物指着黑板吐槽]', meme)
+        self.assertEqual('[图片:人物表情严肃]', photo)
+
+    def test_emoji_fact_is_readable_and_does_not_repeat_ocr(self):
+        fact = '[表情包:狐狸捂脸]'
+        self.assertEqual(['狐狸捂脸'], OlivaAIAgent.vision.extractVisionFacts(fact))
+        with mock.patch.object(OlivaAIAgent.vision, 'describeImages') as describe:
+            facts = OlivaAIAgent.vision.ensureImageFacts(
+                [fact],
+                ['https://example.invalid/reaction.jpg'],
+                'group-1',
+                'bot-hash',
+                trace_id='trace-emoji-no-repeat',
+            )
+        self.assertEqual([fact], facts)
+        describe.assert_not_called()
+
     def test_old_image_fact_format_remains_readable(self):
         message = '[图片：一只橘猫；意图：卖萌；类型：照片]'
         self.assertEqual(['一只橘猫'], OlivaAIAgent.vision.extractVisionFacts(message))
@@ -322,7 +356,7 @@ class VisionLoggingTest(unittest.TestCase):
                 allow_network=True,
             )
             keys = list(memory['全局']['图片缓存'])
-            self.assertEqual('[图片:旧记录中的白色狐狸]', fact)
+            self.assertEqual('[表情包:旧记录中的白色狐狸]', fact)
             self.assertEqual(1, len(keys))
             self.assertRegex(keys[0], r'^img_[0-9a-f]{20}\.gif$')
             self.assertTrue(os.path.isfile(os.path.join(directory, keys[0])))

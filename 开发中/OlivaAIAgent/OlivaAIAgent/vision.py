@@ -1,7 +1,7 @@
 # -*- encoding: utf-8 -*-
 '''
 OlivaAIAgent 视觉/图片子系统（移植并增强自刺客）
-- OCR/视觉识别: 把消息中的 [CQ/OP:image] / mface 原位转成 [图片:识图结果]
+- OCR/视觉识别: 把消息中的 [CQ/OP:image] / mface 原位转成图片或表情包事实
 - 图片缓存: 按群保留最近若干张图（内容/意图/类型），供 AI 引用与"发表情包"
 - 表情包主动发送: AI 输出 [发图片:关键词] → 模糊匹配缓存里的真实图片文件发出
 - 视觉否认纠偏: 已有有效摘要时若模型说"看不到图"，自动纠正
@@ -26,6 +26,8 @@ import OlivaAIAgent
 OP_IMAGE_PATTERN = re.compile(r'\[(?:CQ|OP):image,[^\]]+\]')
 MFACE_PATTERN = re.compile(r'\[(?:CQ|OP):mface,[^\]]*\]')
 IMAGE_CODE_PATTERN = re.compile(r'\[图片[:：][^\]]*\]')
+EMOJI_CODE_PATTERN = re.compile(r'\[表情包[:：][^\]]*\]')
+VISUAL_FACT_PATTERN = re.compile(r'\[(?:图片|表情包)[:：][^\]]*\]')
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r'\[\[OLIVA_IMAGE_([0-9]+)\]\]')
 VISION_DENIAL_PATTERN = re.compile(
     r'(看不到|看不见|无法(查看|识别|看到|读取)|不能识图|不会识图|没有图片|图片打不开|发不了图|还没.*识图)')
@@ -50,6 +52,8 @@ def imgcode_format(data=None):
     if isinstance(data, dict):
         content = str(data.get('content') or content)
     content = re.sub(r'[\r\n]+', ' ', content).replace(']', '】').strip()[:160]
+    if isEmojiData(data):
+        return '[表情包:%s]' % (content or '未识别成功')
     return '[图片:%s]' % (content or '未识别成功')
 
 
@@ -677,7 +681,8 @@ def translateIncoming(message, group_id, bot_hash, allow_network=True, trace_id=
         OlivaAIAgent.conf.gProc,
         'vision.translate.done',
         trace_id,
-        facts=len(IMAGE_CODE_PATTERN.findall(res)),
+        facts=len(VISUAL_FACT_PATTERN.findall(res)),
+        emojis=len(EMOJI_CODE_PATTERN.findall(res)),
     )
     return res
 
@@ -753,8 +758,8 @@ def groupImageCacheDict(group_id):
 def isEmojiData(d):
     if not isinstance(d, dict):
         return False
-    target = '%s %s %s' % (d.get('type', ''), d.get('intent', ''), d.get('content', ''))
-    return any(x in target for x in ('表情包', '梗图', 'mface', '表情', 'emoji'))
+    image_type = str(d.get('type', '')).strip().lower()
+    return any(x in image_type for x in ('表情包', '梗图', 'mface', '表情', 'emoji'))
 
 
 def resolveImageRef(image_ref, cache_map, trace_id=None):
@@ -1015,8 +1020,8 @@ def translateOutgoing(msg_list, bot_hash, trace_id=None):
 
 def extractVisionFacts(message):
     facts = []
-    for m in IMAGE_CODE_PATTERN.finditer(str(message)):
-        cm = re.search(r'\[图片[:：]([^；\]]+)', m.group(0))
+    for m in VISUAL_FACT_PATTERN.finditer(str(message)):
+        cm = re.search(r'\[(?:图片|表情包)[:：]([^；\]]+)', m.group(0))
         if not cm:
             continue
         c = cm.group(1).strip()

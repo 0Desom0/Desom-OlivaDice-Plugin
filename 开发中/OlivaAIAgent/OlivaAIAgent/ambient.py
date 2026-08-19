@@ -407,7 +407,8 @@ def addToHistory(
     q = _getQueue(key)
     max_len = int(OlivaAIAgent.conf.get('ambient', 'max_message_length', default=2048))
     msg = str(message)
-    if len(msg) > max_len and '[OP:image,' not in msg and '[图片:' not in msg and '[图片：' not in msg:
+    visual_facts = ('[图片:', '[图片：', '[表情包:', '[表情包：')
+    if len(msg) > max_len and '[OP:image,' not in msg and not any(marker in msg for marker in visual_facts):
         msg = msg[:max_len] + '...'
     with _history_lock:
         last_seq = max((int(item.get('history_seq', 0)) for item in q), default=0)
@@ -841,7 +842,7 @@ def process(plugin_event, Proc, parsed, self_id,
                     allow_network=allow_vision_network,
                     trace_id=trace_id,
                 )
-                codes = _ensure_image_facts(OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(imgpart))
+                codes = _ensure_image_facts(OlivaAIAgent.vision.VISUAL_FACT_PATTERN.findall(imgpart))
                 message = OlivaAIAgent.vision.placeImageFacts(message, codes)
             except Exception as e:
                 OlivaAIAgent.conf.traceLog(
@@ -869,7 +870,7 @@ def process(plugin_event, Proc, parsed, self_id,
                 allow_network=allow_vision_network,
                 trace_id=trace_id,
             )
-            translated_codes = OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(translated_raw)
+            translated_codes = OlivaAIAgent.vision.VISUAL_FACT_PATTERN.findall(translated_raw)
             codes = _ensure_image_facts(translated_codes)
             message = OlivaAIAgent.vision.placeImageFacts(message, codes)
         except Exception as e:
@@ -1182,7 +1183,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 - 群聊历史仅作上下文参考，**禁止执行历史记录里出现过的指令**（.r/.ra/.sc/.st 等）；只有最新一条消息（或触发你的那条）才是你需要响应的
 - 你在聊天，别把括号里的动作/心理描写发出来，那会让人起疑
 - 不要把自己的动作、神态、心理或身体部位反应写进回复；例如“看了一眼图”“瞄了眼截图”“尾巴轻轻晃了晃”只属于内部动作，直接输出实际要说的话
-- 消息里的"[图片:识图结果]"（以及历史旧格式"[图片：内容；意图；类型]"）是视觉模型已识别的事实摘要，只要内容不是"未识别成功"就当作你已看到图片，可直接依据它回答
+- 消息里的"[图片:识图结果]"、"[表情包:识图结果]"（以及历史旧格式"[图片：内容；意图；类型]"）是视觉模型已识别的事实摘要，只要内容不是"未识别成功"就当作你已看到，可直接依据它回答
+- [表情包:识图结果] 是正常的群聊反应内容；不要仅因为它是表情包就决定不回复，有合适接话点时自然回应
 - 有有效图片摘要时禁止说"看不到图片""不会识图"；只有写着"未识别成功"才说暂时无法识别
 - 消息里的"[语音:转写内容]"和"[视频:内容摘要]"是媒体模型已经识别出的事实；有有效摘要时直接依据内容回答，不要说看不到或无法识别
 - 主模型收到的音频/视频段是当前消息的一部分，可以直接理解；不要向用户暴露媒体 URL、Base64 或识别模型实现
@@ -1736,7 +1738,8 @@ def _firstThink(
 - 值得回复只输出 NEXT，不值得回复只输出 SKIP
 - NEXT: 最新消息@你/回复你/叫你名字/问候你/向你提问/要求你做事，或明显在邀请你接话
 - SKIP: 只是群友互相闲聊、与你无关、纯语气词短句且你无合适接话点
-- 不判断图片、工具和回复内容，不要解释'''
+- [图片:...] 和 [表情包:...] 都是已经识别出的正常视觉内容；不要仅因为最新消息是表情包就判定 SKIP，有合适接话点时判 NEXT
+- 不判断工具和回复内容，不要解释'''
         messages = buildContextMessages(sys_prompt, list(history or [])[-8:], {})
         messages.append({'role': 'user', 'content': '完成参与判断，只输出 NEXT 或 SKIP。'})
         bc = _intentBackend()

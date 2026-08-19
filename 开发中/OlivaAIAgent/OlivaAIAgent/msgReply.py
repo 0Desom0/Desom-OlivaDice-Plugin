@@ -1709,6 +1709,11 @@ def _buildSystemPrompt(plugin_event, ctx, is_master):
     if cheat and has_tool('run_command'):
         parts.append('【官方指令速查(用 run_command 执行；也能调用其他已加载插件指令)】\n%s' % cheat)
     parts.append(
+        '【视觉事实】消息中的 [图片:识图结果] 和 [表情包:识图结果] 都是视觉模型已经识别出的事实摘要，'
+        '可直接依据摘要理解和回应；表情包也是正常聊天内容，有合适接话点时自然回应，但不要求每张都回复。'
+        '只有摘要明确写着“未识别成功”时，才表示本次无法识别。'
+    )
+    parts.append(
         '【主动发图】若动态上下文提供“可发送图片缓存”，你可以自行决定是否发图并选择其中的图片。'
         '需要发图时输出 [发图片:缓存文件名或图片内容/意图关键词]；不要编造缓存中不存在的图片。'
         '插件会自动匹配并转换为当前平台的真实图片消息。'
@@ -1949,7 +1954,7 @@ def _prepareAgentVision(plugin_event, ctx, user_text, parsed):
             allow_network=True,
             trace_id=trace_id,
         )
-        facts.extend(OlivaAIAgent.vision.IMAGE_CODE_PATTERN.findall(translated))
+        facts.extend(OlivaAIAgent.vision.VISUAL_FACT_PATTERN.findall(translated))
         facts = OlivaAIAgent.vision.ensureImageFacts(
             facts,
             images,
