@@ -23,6 +23,7 @@ _group_locks = {}      # "platform|group_id" -> SlackableFairLock
 _glock_lock = threading.Lock()
 _group_agent_tasks = {}  # "platform|group_id" -> 仍在运行的统一群聊 Agent 任务令牌列表
 _group_agent_tasks_lock = threading.RLock()
+_group_agent_sequence = 0
 _memory_state = {}
 _memory_state_loaded = False
 _memory_jobs = set()
@@ -34,7 +35,7 @@ def _hkey(platform, group_id):
 
 
 class GroupAgentInterrupted(RuntimeError):
-    '''同群后续消息已取代当前 Agent。'''
+    '''同群后续消息已接管当前 Agent，旧上下文已转移到新轮次。'''
 
 
 def _allowMultipleGroupAgents():
@@ -46,7 +47,7 @@ def _allowMultipleGroupAgents():
 
 
 def _beginGroupAgent(platform, group_id, trace_id=None):
-    '''登记群任务；并行关闭时可让仍在运行或排队的旧任务失效。'''
+    '''登记群任务；真正接管旧任务延迟到前置审查通过后。'''
     allow_multiple = _allowMultipleGroupAgents()
     interrupt_previous = bool(OlivaAIAgent.conf.get(
         'agent',
@@ -56,32 +57,171 @@ def _beginGroupAgent(platform, group_id, trace_id=None):
     if not allow_multiple and not interrupt_previous:
         return None
     key = _hkey(platform, group_id)
-    token = {
-        'key': key,
-        'trace_id': str(trace_id or ''),
-        'cancelled': threading.Event(),
-        'done': threading.Event(),
-        'interrupted_trace_id': '',
-    }
+    global _group_agent_sequence
     with _group_agent_tasks_lock:
+        _group_agent_sequence += 1
+        token = {
+            'key': key,
+            'sequence': _group_agent_sequence,
+            'trace_id': str(trace_id or ''),
+            'cancelled': threading.Event(),
+            'decision_done': threading.Event(),
+            'done': threading.Event(),
+            'interrupted_trace_id': '',
+            'claimed': bool(allow_multiple or not interrupt_previous),
+            'handoff_records': [],
+            'handoff_context': [],
+            'conversation_snapshot': [],
+            'pending_record': None,
+        }
+        if token['claimed']:
+            token['decision_done'].set()
         active = [
             item for item in _group_agent_tasks.get(key, [])
             if not item['done'].is_set()
         ]
-        if not allow_multiple:
-            for previous in active:
-                previous['cancelled'].set()
-            if active:
-                token['interrupted_trace_id'] = active[-1].get('trace_id', '')
-            active = []
         active.append(token)
         _group_agent_tasks[key] = active
     return token
 
 
+def _conversationHandoff(messages, limit=16):
+    '''提取可安全续接的非系统对话，避免把旧轮系统身份和媒体 URL 搬进新轮。'''
+    records = []
+    for message in list(messages or []):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get('role') or '')
+        if role not in {'user', 'assistant', 'tool'}:
+            continue
+        content = str(message.get('content') or '').strip()
+        if not content:
+            continue
+        record = {'role': role, 'content': content[:4000]}
+        if role == 'tool' and message.get('name'):
+            record['name'] = str(message['name'])
+        records.append(record)
+    return records[-max(1, int(limit)):]
+
+
+def _setGroupAgentConversation(token, messages):
+    if token is None:
+        return
+    token['conversation_snapshot'] = _conversationHandoff(messages)
+
+
+def _previewGroupAgentHandoff(token):
+    '''只读取旧 Agent 的当前记录供新主模型审查，不在此时取消旧任务。'''
+    if token is None or token.get('claimed'):
+        return
+    with _group_agent_tasks_lock:
+        older = [
+            item for item in _group_agent_tasks.get(token['key'], [])
+            if item is not token
+            and not item['done'].is_set()
+            and int(item.get('sequence', 0)) < int(token.get('sequence', 0))
+        ]
+        if not older:
+            return
+        source = older[-1]
+        token['handoff_context'] = list(source.get('conversation_snapshot') or [])
+        inherited = [
+            dict(item) for item in source.get('handoff_records', [])
+            if isinstance(item, dict)
+        ]
+        if inherited:
+            token['handoff_records'] = inherited[-8:]
+
+
+def _waitNewerGroupAgentDecisions(token):
+    '''旧回复发送前等待更新消息完成审查，确保最新一轮拥有接管优先级。'''
+    if token is None:
+        return
+    while True:
+        _ensureGroupAgentActive(token)
+        with _group_agent_tasks_lock:
+            newer = [
+                item for item in _group_agent_tasks.get(token['key'], [])
+                if item is not token
+                and not item['done'].is_set()
+                and int(item.get('sequence', 0)) > int(token.get('sequence', 0))
+                and not item['decision_done'].is_set()
+            ]
+        if not newer:
+            return
+        for item in newer:
+            while not item['decision_done'].wait(0.1):
+                _ensureGroupAgentActive(token)
+
+
+def _claimGroupAgent(token, record=None):
+    '''前置审查通过后接管同群旧任务，并保留新消息的接续记录。'''
+    if token is None or token.get('claimed'):
+        return False
+    if _allowMultipleGroupAgents() or not bool(OlivaAIAgent.conf.get(
+        'agent',
+        'interrupt_previous_in_group',
+        default=True,
+    )):
+        token['claimed'] = True
+        token['decision_done'].set()
+        return False
+    _waitNewerGroupAgentDecisions(token)
+    _ensureGroupAgentActive(token)
+    key = token['key']
+    with _group_agent_tasks_lock:
+        active = [
+            item for item in _group_agent_tasks.get(key, [])
+            if not item['done'].is_set()
+        ]
+        previous_tasks = [
+            item for item in active
+            if item is not token
+            and int(item.get('sequence', 0)) < int(token.get('sequence', 0))
+        ]
+        if previous_tasks:
+            token['interrupted_trace_id'] = previous_tasks[-1].get('trace_id', '')
+        handoff = dict(record) if isinstance(record, dict) else None
+        if handoff:
+            handoff.setdefault('interrupted_by_trace_id', token.get('trace_id', ''))
+        inherited = []
+        for previous in previous_tasks:
+            inherited.extend(
+                item for item in previous.get('handoff_records', [])
+                if isinstance(item, dict)
+            )
+        if inherited:
+            token.setdefault('handoff_records', []).extend(inherited[-8:])
+        if previous_tasks and not token.get('handoff_context'):
+            token['handoff_context'] = list(
+                previous_tasks[-1].get('conversation_snapshot') or [],
+            )
+        for previous in previous_tasks:
+            if handoff:
+                previous.setdefault('handoff_records', []).append(dict(handoff))
+            previous['cancelled'].set()
+        if handoff:
+            token.setdefault('handoff_records', []).append(dict(handoff))
+        token['claimed'] = True
+        token['decision_done'].set()
+        _group_agent_tasks[key] = active
+    if previous_tasks:
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'agent.group.handoff',
+            token.get('trace_id'),
+            group_id=key.rsplit('|', 1)[-1],
+            interrupted_trace_id=token.get('interrupted_trace_id', ''),
+            handoff_record=bool(handoff),
+            handoff_context=len(token.get('handoff_context') or []),
+        )
+    return bool(previous_tasks)
+
+
 def _finishGroupAgent(token):
     if token is None:
         return
+    token['decision_done'].set()
     token['done'].set()
     with _group_agent_tasks_lock:
         active = [
@@ -124,6 +264,7 @@ def cancelAllGroupAgents():
         _group_agent_tasks.clear()
     for token in tasks:
         token['cancelled'].set()
+        token['decision_done'].set()
 
 
 def _histDir():
@@ -622,15 +763,6 @@ def process(plugin_event, Proc, parsed, self_id,
     agent_token = _agent_token
     if attempt and agent_token is None:
         agent_token = _beginGroupAgent(platform, group_id, trace_id=trace_id)
-        interrupted_trace_id = (agent_token or {}).get('interrupted_trace_id', '')
-        if interrupted_trace_id:
-            OlivaAIAgent.conf.traceLog(
-                Proc,
-                'agent.group.interrupt_requested',
-                trace_id,
-                group_id=group_id,
-                interrupted_trace_id=interrupted_trace_id,
-            )
 
     # sync_ocr=false 时把整条图片处理移到后台线程，但仍等待 OCR 完成后才生成本轮回复。
     # 这样不会阻塞 OlivOS 消息总线，也不会让当前回复只看到“未识别”占位。
@@ -799,6 +931,14 @@ def process(plugin_event, Proc, parsed, self_id,
                  event_id=parsed.get('event_id'), msg_idx=parsed.get('msg_idx'),
                   ref_msg_idx=parsed.get('ref_msg_idx'), trace_id=trace_id,
                   mentioned_user_ids=parsed.get('at_list'))
+    if agent_token is not None:
+        agent_token['pending_record'] = {
+            'trace_id': str(trace_id or ''),
+            'message_id': str(parsed.get('message_id') or ''),
+            'user_id': str(plugin_event.data.user_id or ''),
+            'nickname': nickname,
+            'message': message,
+        }
     if had_video_input and re.search(r'\[视频[:：][^\]]+\]', message):
         try:
             OlivaAIAgent.identifiers.updateIncomingContent(plugin_event, parsed, message)
@@ -833,18 +973,18 @@ def process(plugin_event, Proc, parsed, self_id,
 
     def worker():
         def run_reply(lock):
-            sem = OlivaAIAgent.msgReply._getSem()
-            sem.acquire()
-            try:
-                _ensureGroupAgentActive(agent_token)
-                _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
-                       force=force, tools=tools, skip_first_thinking=skip_first_thinking,
-                       agent_token=agent_token)
-            finally:
-                sem.release()
+            _ensureGroupAgentActive(agent_token)
+            _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
+                   force=force, tools=tools, skip_first_thinking=skip_first_thinking,
+                   agent_token=agent_token)
 
         try:
-            if _allowMultipleGroupAgents():
+            interrupt_previous = bool(OlivaAIAgent.conf.get(
+                'agent',
+                'interrupt_previous_in_group',
+                default=True,
+            ))
+            if _allowMultipleGroupAgents() or interrupt_previous:
                 run_reply(None)
             else:
                 lock = getGroupLock(platform, group_id)
@@ -1004,12 +1144,18 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             trace_id=trace_id,
         )
     _ensureGroupAgentActive(agent_token)
-    aux_results = OlivaAIAgent.preflight.runCluster(aux_tasks, Proc=Proc, trace_id=trace_id)
+    sem = OlivaAIAgent.msgReply._getSem()
+    sem.acquire()
+    try:
+        aux_results = OlivaAIAgent.preflight.runCluster(aux_tasks, Proc=Proc, trace_id=trace_id)
+    finally:
+        sem.release()
     _ensureGroupAgentActive(agent_token)
 
     if aux_results.get('reply') == 'SKIP':
         _logConversationDecision(Proc, trace_id, '跳过', '独立参与判断决定不进入主回复模型')
         return
+    _previewGroupAgentHandoff(agent_token)
     selected_tool_names = aux_results.get('tools')
     if not isinstance(selected_tool_names, list):
         selected_tool_names = [
@@ -1127,6 +1273,26 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         patch['当前记忆']['长期事实'] = semantic_facts
     if agent_mem:
         patch['当前记忆']['互通记忆'] = agent_mem
+    handoff_records = [
+        item for item in (agent_token or {}).get('handoff_records', [])
+        if isinstance(item, dict)
+    ]
+    if handoff_records:
+        patch['同群Agent接续记录'] = [
+            {
+                '来源流程': item.get('interrupted_by_trace_id') or item.get('trace_id', ''),
+                '消息ID': item.get('message_id', ''),
+                '发送者': item.get('nickname', ''),
+                '追加消息': str(item.get('message', ''))[:1200],
+            }
+            for item in handoff_records[-4:]
+        ]
+    handoff_context = [
+        item for item in (agent_token or {}).get('handoff_context', [])
+        if isinstance(item, dict)
+    ]
+    if handoff_context:
+        patch['被接续Agent的未完成上下文'] = handoff_context[-12:]
     if image_cache:
         patch['图片缓存'] = image_cache
     if skills_ctx:
@@ -1232,6 +1398,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     if main_videos:
         current_message['videos'] = main_videos
     messages.append(current_message)
+    _setGroupAgentConversation(agent_token, messages)
 
     # 调用回复模型（可选带工具）
     reply_list = _callReply(
@@ -1274,6 +1441,15 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         return
 
     reply_list = _replyWash(reply_list, plugin_event=plugin_event)
+    if not reply_list:
+        _logConversationDecision(Proc, trace_id, '跳过', '回复清洗后没有可发送内容')
+        return
+
+    # 只有前置审查通过且主模型已经产出可发送回复，才接管同群旧 Agent。
+    # 主模型决定沉默时，新消息只是附加历史，不能把旧 Agent 提前取消。
+    _claimGroupAgent(agent_token, record=(agent_token or {}).get('pending_record'))
+    _ensureGroupAgentActive(agent_token)
+
     converted_voice = False
     cleaned_reply_list = []
     for reply_text in reply_list:
@@ -1866,17 +2042,31 @@ def _callReply(
     continuation_rounds = 0
     request_round = 0
     convo = list(messages)
+    sem = OlivaAIAgent.msgReply._getSem()
     while True:
         _ensureGroupAgentActive(agent_token)
+        _setGroupAgentConversation(agent_token, convo)
         request_round += 1
-        reply_list = OlivaAIAgent.finalReply.finalize(
-            convo,
-            Proc=Proc,
-            trace_id=trace_id,
-            purpose='主回复最终整理第%d轮' % request_round,
-            max_attempts=2,
-            relaxed_parser=_parseR,
-        )
+        sem.acquire()
+        try:
+            reply_list = OlivaAIAgent.finalReply.finalize(
+                convo,
+                Proc=Proc,
+                trace_id=trace_id,
+                purpose='主回复最终整理第%d轮' % request_round,
+                max_attempts=2,
+                relaxed_parser=_parseR,
+            )
+        finally:
+            sem.release()
+        if reply_list is not None:
+            _setGroupAgentConversation(
+                agent_token,
+                convo + [{
+                    'role': 'assistant',
+                    'content': OlivaAIAgent.finalReply.dumpEnvelope(reply_list),
+                }],
+            )
         _ensureGroupAgentActive(agent_token)
         if reply_list is None:
             OlivaAIAgent.conf.debugLog(Proc, '潜行最终回复整理失败')
@@ -1901,6 +2091,7 @@ def _callReply(
                     'role': 'system',
                     'content': OlivaAIAgent.completion.continuationPrompt(json_reply=True),
                 })
+                _setGroupAgentConversation(agent_token, convo)
                 continue
             OlivaAIAgent.conf.traceLog(
                 Proc,
@@ -1940,22 +2131,27 @@ def _callReplyWithTools(
     continuation_rounds = 0
     request_round = 0
     convo = list(messages)
+    sem = OlivaAIAgent.msgReply._getSem()
     while request_round < max_agent_rounds:
         _ensureGroupAgentActive(agent_token)
+        _setGroupAgentConversation(agent_token, convo)
         request_round += 1
         conf.debugLog(Proc, '潜行+工具 请求%d, 已执行工具轮数%d/%d' % (
             request_round,
             tool_rounds,
             max_rounds,
         ))
-        res = OlivaAIAgent.aiClient.chat(
-            convo,
-            tools=tool_defs,
-            force_no_stream=True,
-            trace_id=trace_id,
-            purpose='主回复工具第%d轮' % request_round,
-        )
-        _ensureGroupAgentActive(agent_token)
+        sem.acquire()
+        try:
+            res = OlivaAIAgent.aiClient.chat(
+                convo,
+                tools=tool_defs,
+                force_no_stream=True,
+                trace_id=trace_id,
+                purpose='主回复工具第%d轮' % request_round,
+            )
+        finally:
+            sem.release()
         if not res.get('ok'):
             conf.debugLog(Proc, '潜行+工具 AI调用失败(请求%d): %s' % (request_round, res.get('error')))
             return _suppressTextAfterVoice(None, ctx, Proc, trace_id)
@@ -1964,18 +2160,32 @@ def _callReplyWithTools(
         if calls:
             asst['tool_calls'] = calls
         convo.append(asst)
+        _setGroupAgentConversation(agent_token, convo)
+        _ensureGroupAgentActive(agent_token)
         if not calls:
             # 规划阶段结束；其 content 只是草稿，必须进入无工具最终整理阶段。
             text = res.get('text', '')
-            reply_list = OlivaAIAgent.finalReply.finalize(
-                convo,
-                Proc=Proc,
-                trace_id=trace_id,
-                purpose='主回复工具最终整理第%d轮' % request_round,
-                draft=text,
-                max_attempts=2,
-                relaxed_parser=_parseR,
-            )
+            sem.acquire()
+            try:
+                reply_list = OlivaAIAgent.finalReply.finalize(
+                    convo,
+                    Proc=Proc,
+                    trace_id=trace_id,
+                    purpose='主回复工具最终整理第%d轮' % request_round,
+                    draft=text,
+                    max_attempts=2,
+                    relaxed_parser=_parseR,
+                )
+            finally:
+                sem.release()
+            if reply_list is not None:
+                _setGroupAgentConversation(
+                    agent_token,
+                    convo + [{
+                        'role': 'assistant',
+                        'content': OlivaAIAgent.finalReply.dumpEnvelope(reply_list),
+                    }],
+                )
             _ensureGroupAgentActive(agent_token)
             if reply_list is None:
                 conf.debugLog(Proc, '潜行+工具 最终回复整理失败')
@@ -2000,6 +2210,7 @@ def _callReplyWithTools(
                         'role': 'system',
                         'content': OlivaAIAgent.completion.continuationPrompt(json_reply=False),
                     })
+                    _setGroupAgentConversation(agent_token, convo)
                     continue
                 conf.traceLog(
                     Proc,
@@ -2011,6 +2222,9 @@ def _callReplyWithTools(
                 reply_list = [OlivaAIAgent.completion.exhaustedReply()]
             return _suppressTextAfterVoice(reply_list, ctx, Proc, trace_id)
         # 有工具调用 → 执行并继续循环
+        # 工具可能直接产生外部动作或语音；主模型决定调用工具即视为本轮确认参与，先完成同群接管。
+        _claimGroupAgent(agent_token, record=(agent_token or {}).get('pending_record'))
+        _ensureGroupAgentActive(agent_token)
         if tool_rounds >= max_rounds:
             for tc in calls:
                 convo.append({
@@ -2041,19 +2255,32 @@ def _callReplyWithTools(
                     result = str(result)
             convo.append({'role': 'tool', 'tool_call_id': tc.get('id', ''),
                           'name': tc.get('name', ''), 'content': result})
+            _setGroupAgentConversation(agent_token, convo)
             conf.debugLog(Proc, '潜行+工具 结果: %s' % result[:200])
         tool_rounds += 1
     # 循环用完 max_rounds → 强制收尾
     _ensureGroupAgentActive(agent_token)
     conf.debugLog(Proc, '潜行+工具 达到Agent轮数上限=%d,强制收尾' % max_agent_rounds)
-    reply_list = OlivaAIAgent.finalReply.finalize(
-        convo,
-        Proc=Proc,
-        trace_id=trace_id,
-        purpose='主回复工具收尾',
-        max_attempts=2,
-        relaxed_parser=_parseR,
-    )
+    sem.acquire()
+    try:
+        reply_list = OlivaAIAgent.finalReply.finalize(
+            convo,
+            Proc=Proc,
+            trace_id=trace_id,
+            purpose='主回复工具收尾',
+            max_attempts=2,
+            relaxed_parser=_parseR,
+        )
+    finally:
+        sem.release()
+    if reply_list is not None:
+        _setGroupAgentConversation(
+            agent_token,
+            convo + [{
+                'role': 'assistant',
+                'content': OlivaAIAgent.finalReply.dumpEnvelope(reply_list),
+            }],
+        )
     _ensureGroupAgentActive(agent_token)
     if reply_list is not None:
         reply_text = '\n\n'.join(reply_list or [])

@@ -435,7 +435,8 @@ DEFAULT_CONF = {
     },
     'agent': {
         '_说明': '同群并发优先级：allow_multiple_agents_in_group=true 时允许同群多个 Agent 同时运行；'
-               '否则由 interrupt_previous_in_group 决定新对话是打断旧 Agent，还是排队等待。'
+               '否则由 interrupt_previous_in_group 决定新对话是接管旧 Agent，还是排队等待；'
+               '接管只在前置模型和主模型确认需要回复后发生，旧 Agent 的未完成上下文会作为接续记录传入新轮次。'
                '所有模式仍受 max_concurrent 全局并发上限约束',
         'allow_multiple_agents_in_group': False,
         'interrupt_previous_in_group': True,
@@ -1548,6 +1549,7 @@ _TRACE_STAGE_ZH = {
     'route.private.prefix': '私聊消息命中前缀',
     'agent.queued': '智能体已排队',
     'agent.group.interrupt_requested': '同群新对话请求中断旧智能体',
+    'agent.group.handoff': '同群新对话接续旧智能体上下文',
     'agent.group.interrupted': '旧智能体已被同群新对话中断',
     'agent.busy': '智能体正忙',
     'agent.started': '智能体开始处理',

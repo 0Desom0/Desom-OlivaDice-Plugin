@@ -50,10 +50,46 @@ class GroupAgentInterruptTest(unittest.TestCase):
         other_group = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-2', 'trace-other')
         latest = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-latest')
 
-        self.assertFalse(OlivaAIAgent.ambient._groupAgentActive(first))
+        # 新任务尚未通过前置审查时，旧任务仍可继续运行。
+        self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(first))
         self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(other_group))
         self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(latest))
+        OlivaAIAgent.ambient._claimGroupAgent(
+            latest,
+            {'trace_id': 'trace-latest', 'message': '新消息', 'nickname': '用户'},
+        )
+        self.assertFalse(OlivaAIAgent.ambient._groupAgentActive(first))
         self.assertEqual('trace-first', latest['interrupted_trace_id'])
+        self.assertEqual('新消息', first['handoff_records'][0]['message'])
+
+    def test_unapproved_task_does_not_interrupt_previous_task(self):
+        first = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-first')
+        latest = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-latest')
+
+        self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(first))
+        self.assertTrue(OlivaAIAgent.ambient._groupAgentActive(latest))
+        self.assertFalse(first['handoff_records'])
+
+    def test_claim_transfers_previous_agent_context_and_new_record(self):
+        first = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-first')
+        OlivaAIAgent.ambient._setGroupAgentConversation(first, [
+            {'role': 'system', 'content': '不应转移的系统提示'},
+            {'role': 'user', 'content': '旧问题'},
+            {'role': 'assistant', 'content': '旧 Agent 尚未完成'},
+        ])
+        latest = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-latest')
+
+        OlivaAIAgent.ambient._previewGroupAgentHandoff(latest)
+        OlivaAIAgent.ambient._claimGroupAgent(
+            latest,
+            {'trace_id': 'trace-latest', 'message': '追加问题', 'nickname': '用户'},
+        )
+
+        self.assertEqual(
+            ['user', 'assistant'],
+            [item['role'] for item in latest['handoff_context']],
+        )
+        self.assertEqual('追加问题', latest['handoff_records'][0]['message'])
 
     def test_multiple_agents_switch_keeps_all_same_group_tasks_active(self):
         OlivaAIAgent.conf.gConf['agent']['allow_multiple_agents_in_group'] = True
@@ -76,11 +112,15 @@ class GroupAgentInterruptTest(unittest.TestCase):
             OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-disabled'),
         )
 
-    def test_interruption_during_model_request_discards_old_reply(self):
+    def test_interruption_during_model_request_discards_old_reply_after_claim(self):
         old_token = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-old')
 
         def replace_old_task(*_args, **_kwargs):
-            OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-new')
+            new_token = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-new')
+            OlivaAIAgent.ambient._claimGroupAgent(
+                new_token,
+                {'trace_id': 'trace-new', 'message': '新消息', 'nickname': '用户'},
+            )
             return {'ok': True, 'text': '{"r":["过时回复"]}', 'tool_calls': []}
 
         with mock.patch.object(OlivaAIAgent.aiClient, 'chat', side_effect=replace_old_task) as chat:
@@ -104,7 +144,11 @@ class GroupAgentInterruptTest(unittest.TestCase):
         old_token = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-old')
 
         def replace_old_task(*_args, **_kwargs):
-            OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-new')
+            new_token = OlivaAIAgent.ambient._beginGroupAgent('qq', 'group-1', 'trace-new')
+            OlivaAIAgent.ambient._claimGroupAgent(
+                new_token,
+                {'trace_id': 'trace-new', 'message': '新消息', 'nickname': '用户'},
+            )
             return {
                 'ok': True,
                 'text': '准备执行工具',
