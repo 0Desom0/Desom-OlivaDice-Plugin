@@ -111,6 +111,7 @@ FIELD_LABELS = {
     'group_default': '新群默认启用',
     'enable_default': '新群潜行默认启用',
     'reply_probability': '主动插话概率',
+    'standalone_emoji_reply_probability': '纯表情包插话概率',
     'ignore_prefixes': '潜行忽略前缀',
     'integrate_hard_trigger': '定向触发整合全部能力',
     'history_size': '潜行历史条数',
@@ -317,6 +318,57 @@ SECURITY_LEXICON_ACTIONS = ('下载 / 检查更新', '打开词库目录')
 
 _gui_instance = None
 
+DESCRIPTION_SUFFIXES = ('说明', '提示')
+
+
+def _isDescriptionKey(key):
+    return str(key).startswith('_') and str(key).endswith(DESCRIPTION_SUFFIXES)
+
+
+def _descriptionTarget(key):
+    """从 `_字段名说明` 取出它描述的字段名；`_说明` 返回空串表示整节说明。"""
+    text = str(key)[1:]
+    for suffix in DESCRIPTION_SUFFIXES:
+        if text.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
+
+
+def _matchDescriptionField(target, field_keys):
+    if not target:
+        return None
+    if target in field_keys:
+        return target
+    for key in field_keys:
+        if key.startswith(target) or key.endswith(target):
+            return key
+    return None
+
+
+def collectFieldHints(data):
+    """把配置里的说明元数据归位到字段上；归不上的作为本层补充说明返回。"""
+    if not isinstance(data, dict):
+        return {}, []
+    field_keys = [key for key in data if not str(key).startswith('_')]
+    hints = {}
+    notes = []
+    for key, value in data.items():
+        if not _isDescriptionKey(key):
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        target = _descriptionTarget(key)
+        if not target:
+            # `_说明` 由所在层级单独作为标题下方描述渲染。
+            continue
+        field = _matchDescriptionField(target, field_keys)
+        if field is None:
+            notes.append(text)
+        else:
+            hints[field] = '%s\n%s' % (hints[field], text) if field in hints else text
+    return hints, notes
+
 
 def _fieldLabel(path):
     return PATH_LABELS.get(tuple(path), FIELD_LABELS.get(path[-1], path[-1]))
@@ -503,6 +555,17 @@ class ConfigWindow:
         ttk.Label(global_frame, text='默认触发关键词（JSON 数组）').grid(row=2, column=0, sticky='nw', pady=(8, 0))
         self.group_default_keywords = scrolledtext.ScrolledText(global_frame, height=3, wrap='word', undo=True)
         self.group_default_keywords.grid(row=2, column=1, columnspan=4, sticky='ew', pady=(8, 0))
+        keywords_hint = str(
+            OlivaAIAgent.conf.DEFAULT_CONF.get('trigger', {}).get('_keywords说明', '')
+        ).strip()
+        if keywords_hint:
+            ttk.Label(
+                global_frame,
+                text=keywords_hint,
+                style='Hint.TLabel',
+                wraplength=700,
+                justify='left',
+            ).grid(row=3, column=1, columnspan=4, sticky='w', pady=(4, 0))
 
         ttk.Label(page, text='群列表与群级覆盖', style='Section.TLabel').grid(
             row=1,
@@ -638,6 +701,7 @@ class ConfigWindow:
     def _sectionData(self, section):
         if section == 'general':
             return {
+                '_说明': self.working_conf.get('_说明', ''),
                 'backend': self.working_conf.get('backend', 'openai'),
                 'debug_log': self.working_conf.get('debug_log', False),
             }, ()
@@ -735,6 +799,7 @@ class ConfigWindow:
     def _addFields(self, data, base_path, row, depth):
         if not isinstance(data, dict):
             return row
+        hints, notes = collectFieldHints(data)
         for key, value in data.items():
             if str(key).startswith('_'):
                 continue
@@ -750,10 +815,35 @@ class ConfigWindow:
                     pady=(0, 5),
                 )
                 row += 1
+                row = self._addHint(value.get('_说明', ''), row, depth)
                 row = self._addFields(value, path, row, depth + 1)
                 continue
             row = self._addField(path, value, row, depth)
+            row = self._addHint(hints.get(key, ''), row, depth)
+        for note in notes:
+            row = self._addHint(note, row, depth)
         return row
+
+    def _addHint(self, text, row, depth):
+        """在字段下方显示配置自带的中文说明，GUI 不再需要另抄一份文档。"""
+        content = str(text or '').strip()
+        if not content:
+            return row
+        ttk.Label(
+            self.form_frame,
+            text=content,
+            style='Hint.TLabel',
+            wraplength=700,
+            justify='left',
+        ).grid(
+            row=row,
+            column=0,
+            columnspan=3,
+            sticky='w',
+            padx=(18 * depth + 6, 12),
+            pady=(0, 8),
+        )
+        return row + 1
 
     def _addField(self, path, value, row, depth):
         label = ttk.Label(self.form_frame, text=_fieldLabel(path))

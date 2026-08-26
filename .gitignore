@@ -13,3 +13,5 @@ __pycache__
 /娱乐/LanotaPlugin/Data/CoverArt/
 lanota_songs_preview.wikitext
 lanota_songs_preview.diff
+config.json
+*.log

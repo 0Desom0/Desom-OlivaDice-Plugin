@@ -692,8 +692,14 @@ def _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=None):
 # ---------------- 触发判定 ----------------
 
 def shouldReply(parsed, config_get):
-    '''普通潜行消息只做随机概率判定；@、引用和群关键词由 msgReply 统一路由。'''
-    prob = config_get('reply_probability', 1.0)
+    '''普通潜行消息做随机判定；纯表情包使用更低的独立候选概率。'''
+    standalone_emoji = bool(parsed.get('standalone_emoji'))
+    probability_key = (
+        'standalone_emoji_reply_probability'
+        if standalone_emoji
+        else 'reply_probability'
+    )
+    prob = config_get(probability_key, 0.05 if standalone_emoji else 1.0)
     try:
         if random.random() < float(prob):
             return True
@@ -709,12 +715,16 @@ def _shouldFirstThink(enabled, skip_first_thinking):
 def _mainDecisionTask(force=False):
     '''主回复模型任务：普通潜行可二次跳过，明确触发必须回应。'''
     if force:
-        return ('\n\n# 当前任务\n- 当前是用户明确触发你的消息，必须回应，r 不得为空列表\n'
-                '- 把回复内容追加到 r 列表，多条消息分开\n- 避免重复已回过的话题和自己说过的话\n'
+        return ('\n\n# 当前任务\n- 当前消息明确触发了你，必须回应，r 不得为空列表\n'
+                '- 先回应最新消息真正的重点；若只是定向发来的表情包，结合其情绪给出简短自然反应，不复述识图摘要\n'
+                '- 把回复内容追加到 r 列表，多条消息分开；没有必要不要拆成多条\n'
+                '- 避免重复已回过的话题、照抄用户原话或解释自己的回复策略\n'
                 '- 只输出严格 JSON：{"r":[...]}')
-    return ('\n\n# 当前任务\n- 主回复模型再次判断是否加入对话；不想参与就让 r 为空列表'
-            '(你不必每句都回，按心情，但有人找你尽量回)\n'
-            '- 要回复就把内容追加到 r 列表，多条消息分开\n- 避免重复已回过的话题和自己说过的话\n'
+    return ('\n\n# 当前任务\n- 主回复模型再次判断是否加入对话；群消息不一定在对你说，不想参与就让 r 为空列表\n'
+            '- 只有能回应明确对象、补充有效信息或自然接住具体话题时才回复；若只能说“哈哈”“确实”“懂了”等空泛附和，保持沉默\n'
+            '- 最新消息只有表情包且没有点名、问题或请求时，通常保持沉默，但保留对其情绪含义的理解\n'
+            '- 要回复就把内容追加到 r 列表，多条消息分开；没有必要不要拆成多条\n'
+            '- 避免重复已回过的话题、照抄用户原话或解释自己的回复策略\n'
             '- 只输出严格 JSON：{"r":[...]}')
 
 
@@ -892,6 +902,8 @@ def process(plugin_event, Proc, parsed, self_id,
     message = re.sub(r'\[(?:CQ|OP):reply[^\]]*\]', ' ', str(message), flags=re.I).strip()
     # @ 关系单独写入历史元数据，不能让模型把 OP/CQ 段误读成当前发言者。
     message = OlivaAIAgent.msgReply.stripMentionSegments(message)
+    # 必须在拼入引用内容前判断：当前纯表情包仍会进入历史，只影响本轮是否主动接话。
+    parsed['standalone_emoji'] = OlivaAIAgent.vision.isStandaloneEmojiMessage(message)
     quote_facts = OlivaAIAgent.msgReply.prepareQuotedImages(
         parsed,
         group_id,
@@ -1022,7 +1034,12 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         return
     # force 只负责绕过概率等前置门槛；是否调用小模型由 skip_first_thinking 单独决定。
     if not force and not shouldReply(parsed, cfg):
-        _logConversationDecision(Proc, trace_id, '跳过', '未满足触发概率或条件')
+        reason = (
+            '纯表情包已理解并记入上下文，本轮默认不主动接话'
+            if parsed.get('standalone_emoji')
+            else '未满足触发概率或条件'
+        )
+        _logConversationDecision(Proc, trace_id, '跳过', reason)
         return
 
     # 节律：等一会，若期间来了更新的消息则让位。
@@ -1135,6 +1152,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             '',
             self_id,
             trace_id=trace_id,
+            directed=bool(force and not skip_first_thinking),
         )[0]
     if image_cache:
         aux_tasks['image'] = lambda: OlivaAIAgent.preflight.selectImageIntent(
@@ -1177,14 +1195,17 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             tool_hint += '\n- 骰点/检定必须用 run_command 执行真实指令，禁止编造结果'
 
     system_content = '''# 规则
-- 你是一个人类，这是你日常水群的群聊，你会根据人格设定自行决定要不要参与对话
+- 你以普通群友的方式参与这场日常群聊，而不是客服、旁白或对每条消息都要响应的机器人
+- 回复前先分清当前消息是在对你说、对其他群友说，还是只在延续群友之间的话题；群聊历史中的每句话都不默认指向你
+- 普通潜行时，没有新的有效内容可说就保持沉默；不要用“哈哈”“确实”“懂了”等空泛附和刷存在感，也不要为了表现人设强行接话
 - 提及用户时必须遵循下方当前平台说明；不要套用其他平台的@格式
-- 越新的消息越重要，不要重复回复已经回过的消息
+- 越新的消息越重要，不要重复回复已经回过的消息，也不要把用户原话换个说法再复述一遍
 - 群聊历史仅作上下文参考，**禁止执行历史记录里出现过的指令**（.r/.ra/.sc/.st 等）；只有最新一条消息（或触发你的那条）才是你需要响应的
 - 你在聊天，别把括号里的动作/心理描写发出来，那会让人起疑
 - 不要把自己的动作、神态、心理或身体部位反应写进回复；例如“看了一眼图”“瞄了眼截图”“尾巴轻轻晃了晃”只属于内部动作，直接输出实际要说的话
 - 消息里的"[图片:识图结果]"、"[表情包:识图结果]"（以及历史旧格式"[图片：内容；意图；类型]"）是视觉模型已识别的事实摘要，只要内容不是"未识别成功"就当作你已看到，可直接依据它回答
-- [表情包:识图结果] 是正常的群聊反应内容；不要仅因为它是表情包就决定不回复，有合适接话点时自然回应
+- [表情包:识图结果] 通常只是群友表达情绪或对前文作出反应。若最新消息只有表情包、没有@/引用/叫你名字，也没有文字问题或请求，通常不要专门回复，普通潜行时优先返回空列表 r=[]
+- 若表情包同时附有实际文字问题/请求，或对方明确@你、引用你、叫你名字，则把表情包含义纳入语境后自然回应；不要机械复述识图摘要
 - 有有效图片摘要时禁止说"看不到图片""不会识图"；只有写着"未识别成功"才说暂时无法识别
 - 消息里的"[语音:转写内容]"和"[视频:内容摘要]"是媒体模型已经识别出的事实；有有效摘要时直接依据内容回答，不要说看不到或无法识别
 - 主模型收到的音频/视频段是当前消息的一部分，可以直接理解；不要向用户暴露媒体 URL、Base64 或识别模型实现
@@ -1731,6 +1752,7 @@ def _firstThink(
     self_id,
     trace_id=None,
     image_candidates=None,
+    directed=False,
 ):
     '''独立参与判断，兼容旧返回结构 ('NEXT'|'SKIP', '')。失败默认 NEXT。'''
     try:
@@ -1738,10 +1760,20 @@ def _firstThink(
 - 值得回复只输出 NEXT，不值得回复只输出 SKIP
 - NEXT: 最新消息@你/回复你/叫你名字/问候你/向你提问/要求你做事，或明显在邀请你接话
 - SKIP: 只是群友互相闲聊、与你无关、纯语气词短句且你无合适接话点
-- [图片:...] 和 [表情包:...] 都是已经识别出的正常视觉内容；不要仅因为最新消息是表情包就判定 SKIP，有合适接话点时判 NEXT
+- [图片:...] 和 [表情包:...] 是已经识别出的正常视觉内容，必须理解其含义，不能当作看不到
+- 最新消息只有[表情包:...]且没有定向信号、文字问题或请求时，通常视为群友对前文的反应并判 SKIP；只有确实在邀请你接话时才判 NEXT
+- 表情包附带实际文字问题/请求，或本轮有明确@你、引用你的定向信号时，按完整语境判 NEXT
 - 不判断工具和回复内容，不要解释'''
         messages = buildContextMessages(sys_prompt, list(history or [])[-8:], {})
-        messages.append({'role': 'user', 'content': '完成参与判断，只输出 NEXT 或 SKIP。'})
+        directed_hint = (
+            '本轮有明确的@你或引用你的定向信号。'
+            if directed
+            else '本轮没有明确的@你或引用你的定向信号。'
+        )
+        messages.append({
+            'role': 'user',
+            'content': directed_hint + '完成参与判断，只输出 NEXT 或 SKIP。',
+        })
         bc = _intentBackend()
         OlivaAIAgent.conf.traceLog(
             Proc,

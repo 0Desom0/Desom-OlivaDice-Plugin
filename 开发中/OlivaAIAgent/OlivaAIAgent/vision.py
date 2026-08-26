@@ -32,6 +32,16 @@ IMAGE_PLACEHOLDER_PATTERN = re.compile(r'\[\[OLIVA_IMAGE_([0-9]+)\]\]')
 VISION_DENIAL_PATTERN = re.compile(
     r'(看不到|看不见|无法(查看|识别|看到|读取)|不能识图|不会识图|没有图片|图片打不开|发不了图|还没.*识图)')
 
+
+def isStandaloneEmojiMessage(message):
+    '''当前消息只有表情包事实和标点时返回 True；附带实际文字或普通图片时返回 False。'''
+    text = str(message or '').strip()
+    if not EMOJI_CODE_PATTERN.search(text):
+        return False
+    remainder = EMOJI_CODE_PATTERN.sub(' ', text)
+    return re.sub(r'[\W_]+', '', remainder, flags=re.UNICODE) == ''
+
+
 # group_id -> deque[(file_name, data_dict)]
 _imageCache = {}
 # 保护 _imageCache 的跨线程读写（派发线程写入 vs 潜行工作线程迭代）。

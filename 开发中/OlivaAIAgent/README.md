@@ -227,6 +227,7 @@ GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `t
 - 防护同时覆盖最新消息、历史、引用、用户侧写、群总结、长期记忆、知识库、技能、网页、图片文字和工具结果；这些内容均作为不可信数据使用，不能覆盖系统人设。
 - `memory_save`、`kb_save` 会拒绝人格控制内容；后台知识/侧写/群总结提炼在提示阶段与落盘阶段各过滤一次。升级前已经写入的数据也会在注入模型前过滤，不必立即手工删除。
 - `ambient.first_thinking` 处理普通潜行消息及定向触发：普通消息先通过 `reply_probability` 概率门，命中后调用前置模型；被 @ 或引用机器人消息会跳过概率，直接交给前置模型判断。前置模型返回 `SKIP` 时不进入主模型，返回 `NEXT` 时主模型必须回应。只有关键词和 `.ai` 跳过前置判断并直接要求主模型回应。
+- 只有表情包、没有文字的消息走单独的 `ambient.standalone_emoji_reply_probability`（默认 0.05）：识图结果照常写入上下文供后续理解，但默认不专门接话；被 @、引用、命中关键词或 `.ai` 触发时不受此概率限制，前置模型与主模型也会把表情包含义纳入语境后自然回应，不复述识图摘要。
 
 ## 现实政治话题保护（v2.20.11）
 
@@ -366,6 +367,7 @@ OlivOS 托盘菜单选择“打开设置面板”，即可在一个窗口完成�
 
   "ambient": {                       // ← 潜行模式（刺客同款+增强）
     "reply_probability": 1.0,        // 随机插话概率(建议连同 first_thinking 一起调)
+    "standalone_emoji_reply_probability": 0.05,   // 纯表情包消息的插话概率(照旧识图入上下文)
     "history_size": 8,
     "prompt_cache_optimized": true,  // DeepSeek 前缀缓存优化
     "prompt_cache_history_size": 16,
