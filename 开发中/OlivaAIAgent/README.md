@@ -84,6 +84,8 @@ AI 可以自由使用 OlivOS 上**已加载的所有插件**的功能，不局�
 
 GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `true`；没有 Core 时自动不工作，关闭开关后也只停止补记，不影响消息发送。运行维护页会显示 Core/Logger 检测状态。实际是否落盘仍由 OlivaDiceLogger 的 `.log` 开团状态决定。
 
+`olivadice_logger.record_other_plugin_messages` 默认 `true`，是同一个 `msgHook` 的反向用法：插件会在 Core 的 hook 外再包一层（原 hook 照常先执行，团日志行为不变），把骰系插件经 `replyMsg`/`sendMsgByEvent` 发到群里的消息补进潜行历史与群滚动缓冲，AI 因此知道刚才骰出了什么。这类条目在历史里的发言者为 `骰系插件(机器人名)`，按群内第三方发言注入而非 AI 自己的 assistant 轮次，系统提示已要求不冒充、不复述、不当成待回答的提问。`recv` 事件跳过（本插件事件入口已记录），私聊方向跳过，插件自身补记的消息通过线程标记跳过，不会与 `addSelfReply` 重复。只覆盖走 OlivaDiceCore 发送的插件，直接调用 OlivOS 接口的第三方插件捕获不到；仅在该群潜行开启时记录。
+
 ## 权限、平台、去重、热重载（v2.2）
 
 **权限管理**：两套独立且都正确。
@@ -113,6 +115,7 @@ GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `t
 
 - `.ai memory history on/off`：按群控制滚动摘要，默认开。每新增 `memory.extraction_batch_size` 条已进入 AI 管线的记录才后台更新一次；潜行关闭时普通消息完全静默，不会为其调用摘要/事实模型。
 - `.ai memory long on/off`：按群控制长期事实，默认开。事实写入 `semantic_memory.sqlite3`，包含来源消息 ID、引用 ID、事件 ID和时间。
+- 长期事实分两种作用域：不带 `user_id` 的写成 `scope=group`，只在本群召回；后台提炼时判定为个人事实（长期偏好、身份、习惯、人物卡归属等）并带上真实 `user_id` 的写成 `scope=user`，**跟着这个人在所有群和私聊召回**，其他人检索不到。群聊里两种作用域一起检索并按分数合并去重；私聊只召回该用户自己的跨群事实。模型编造的 `user_id` 会被本批聊天记录校验掉，注入时该条会带 `scope`/`user_id` 字段告诉模型这是个人事实。
 - `semantic_memory.embedding_*`：独立配置 OpenAI-compatible `/embeddings`。配置可用时按 cosine 相似度、关键词和时效混合排序；未配置或接口失败时自动降级关键词检索，并有失败退避，不会每条消息持续请求坏端点。
 - `.ai memory status` / `.ai status`：查看两项群开关及当前是“向量就绪”还是“关键词降级”。开关写入 `groups.json`，无需改全局配置。
 

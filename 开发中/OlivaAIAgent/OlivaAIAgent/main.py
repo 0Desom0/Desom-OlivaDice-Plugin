@@ -114,6 +114,15 @@ class Event(object):
             OlivaAIAgent.conf.log(Proc, 2, '群成员目录: SQLite 就绪（昵称反查兜底）')
         except Exception as e:
             OlivaAIAgent.conf.log(Proc, 3, '群成员目录初始化失败: %s' % e)
+        try:
+            logger_status = OlivaAIAgent.coreLogger.getStatus(Proc)
+            if logger_status['core_ready'] and logger_status['bridge_enabled']:
+                OlivaAIAgent.coreLogger.installMessageBridge()
+                OlivaAIAgent.conf.log(Proc, 2, '骰系消息桥接: 其他插件的群消息会补进潜行上下文')
+            elif not logger_status['bridge_enabled']:
+                OlivaAIAgent.conf.log(Proc, 2, '骰系消息桥接: 已按配置关闭')
+        except Exception as e:
+            OlivaAIAgent.conf.log(Proc, 3, '骰系消息桥接安装失败: %s' % e)
 
         def _load_skills():
             try:
@@ -165,6 +174,8 @@ class Event(object):
 
     def group_message(plugin_event, Proc):
         OlivaAIAgent.coreLogger.install(plugin_event)
+        # 其他骰系插件可能在本插件之后才回复，这里每次事件都确认反向桥接仍然生效。
+        OlivaAIAgent.coreLogger.installMessageBridge()
         OlivaAIAgent.passiveReply.install(plugin_event)
         OlivaAIAgent.msgReply.onGroupMessage(plugin_event, Proc)
 

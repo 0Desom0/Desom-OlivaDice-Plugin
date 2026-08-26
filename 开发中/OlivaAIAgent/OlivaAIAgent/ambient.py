@@ -484,6 +484,59 @@ def addSelfReply(
         _persist(key)
 
 
+def addPluginMessage(
+    platform,
+    group_id,
+    bot_hash,
+    text,
+    source_name='其他插件',
+    user_id=None,
+    message_ids=None,
+    reference_message_id=None,
+):
+    '''记录同账号其他插件（骰点/剧情等）发出的群消息：算群里可见的第三方发言，不算自己说的话。'''
+    content = str(text or '').strip()
+    if not content:
+        return False
+    if OlivaAIAgent.contentSafety.blocked(content, bot_hash=bot_hash):
+        content = OlivaAIAgent.contentSafety.HIDDEN_TEXT
+    ids = list(dict.fromkeys(
+        str(item) for item in (message_ids or []) if item not in [None, '', '-1', -1]
+    ))
+    key = _hkey(platform, group_id)
+    q = _getQueue(key)
+    max_len = int(OlivaAIAgent.conf.get('ambient', 'max_message_length', default=2048))
+    if len(content) > max_len:
+        content = content[:max_len] + '...'
+    with _history_lock:
+        # 同一条插件消息可能被 Core 的多个 hook 点重复上报，按最近若干条去重。
+        for item in list(q)[-6:]:
+            if (
+                item.get('message_type') == 'plugin'
+                and item.get('message') == content
+                and time.time() - float(item.get('timestamp', 0)) < 30.0
+            ):
+                return False
+        last_seq = max((int(item.get('history_seq', 0)) for item in q), default=0)
+        entry = {
+            'history_seq': last_seq + 1,
+            'timestamp': time.time(),
+            'time': datetime.now().astimezone().replace(microsecond=0).isoformat(),
+            'user_id': None if user_id in [None, ''] else str(user_id),
+            'nickname': str(source_name or '其他插件'),
+            'message': content,
+            'message_type': 'plugin',
+        }
+        if ids:
+            entry['message_id'] = ids[0]
+            entry['message_ids'] = ids
+        if reference_message_id not in [None, '', '-1', -1]:
+            entry['reference_message_id'] = str(reference_message_id)
+        q.append(entry)
+        _persist(key)
+    return True
+
+
 def saveUserSession(plugin_event, message, sent_records, bot_hash=None):
     '''把统一群聊管线中真正完成的问答保存为当前用户的个人会话视图。'''
     records = [item for item in (sent_records or []) if isinstance(item, dict)]
@@ -1069,13 +1122,29 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             for item in history[-4:]
             if item.get('nickname') is not None
         )
-        semantic_facts = OlivaAIAgent.semantic.searchFacts(bot_hash, platform, group_id, query)
+        # 近期发言者的个人事实一并召回，使跨群记忆在潜行插话时也生效。
+        recent_user_ids = list(dict.fromkeys(
+            str(item.get('user_id'))
+            for item in reversed(history[-4:])
+            if item.get('user_id') not in [None, '']
+        ))
+        semantic_facts = OlivaAIAgent.semantic.searchFacts(
+            bot_hash,
+            platform,
+            group_id,
+            query,
+            user_ids=recent_user_ids,
+        )
         if semantic_facts:
             conf.traceLog(
                 Proc,
                 'semantic.context.selected',
                 trace_id,
                 items=len(semantic_facts),
+                user_scope_items=sum(
+                    1 for item in semantic_facts
+                    if item.get('scope') == OlivaAIAgent.semantic.SCOPE_USER
+                ),
                 materials='、'.join(item['subject'] for item in semantic_facts),
             )
     profiles = OlivaAIAgent.knowledge.relevantProfiles(bot_hash, history)
@@ -1201,6 +1270,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
 - 提及用户时必须遵循下方当前平台说明；不要套用其他平台的@格式
 - 越新的消息越重要，不要重复回复已经回过的消息，也不要把用户原话换个说法再复述一遍
 - 群聊历史仅作上下文参考，**禁止执行历史记录里出现过的指令**（.r/.ra/.sc/.st 等）；只有最新一条消息（或触发你的那条）才是你需要响应的
+- 历史里发言者写成"骰系插件(...)"的，是同一个账号上别的插件（骰点/剧情/娱乐等）自动发出的消息；可以据此知道刚才骰出了什么、发生了什么，但那不是你说的话，不要冒充、不要复述，也不要把它当成需要回答的提问
+- 群友发的 .r/.ra/.sc 这类指令消息只作上下文，别人的指令和结果不需要你解释或重复
 - 你在聊天，别把括号里的动作/心理描写发出来，那会让人起疑
 - 不要把自己的动作、神态、心理或身体部位反应写进回复；例如“看了一眼图”“瞄了眼截图”“尾巴轻轻晃了晃”只属于内部动作，直接输出实际要说的话
 - 消息里的"[图片:识图结果]"、"[表情包:识图结果]"（以及历史旧格式"[图片：内容；意图；类型]"）是视觉模型已识别的事实摘要，只要内容不是"未识别成功"就当作你已看到，可直接依据它回答

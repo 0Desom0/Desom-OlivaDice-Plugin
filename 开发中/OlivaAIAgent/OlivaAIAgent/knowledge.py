@@ -306,6 +306,11 @@ _EXAMPLE = {
         'content': '小明正在追查旧城区失踪案',
         'keywords': ['小明', '旧城区', '失踪案'],
         'source_message_id': '平台消息ID',
+    }, {
+        'subject': '小明的长期偏好',
+        'content': '小明只玩克苏鲁跑团，不碰 DND',
+        'keywords': ['小明', '克苏鲁', '偏好'],
+        'user_id': '123456789',
     }],
 }
 
@@ -353,6 +358,9 @@ def buildMemoryTask(
             '## 长期事实 → f 键（数组）\n'
             '- 只记录未来再次提及时有用、可独立理解的稳定事实，不记录寒暄和机器人行为指令\n'
             '- 每项包含 subject、content、keywords；若能定位，source_message_id 必须原样使用聊天记录标出的消息ID\n'
+            '- 关于某个人的个人事实（长期偏好、身份、习惯、职业、人物卡归属等）额外填 user_id，'
+            '取聊天记录里该用户的 user_id 原值；这类事实会跟随此人在所有群生效\n'
+            '- 本群剧情进度、团务约定、只在本群成立的事情不要填 user_id\n'
             '- content≤160字，keywords 为2~8个短关键词；没有值得保存的事实时输出空数组')
     parts.append('# 参考输出\n' + json.dumps(_EXAMPLE, ensure_ascii=False))
     return '\n\n'.join(parts)
@@ -452,6 +460,7 @@ def runMemoryExtraction(
                 items=blocked_count,
             )
         facts_saved = 0
+        user_scoped = 0
         if record_vector:
             fact_data = data.get('f') if isinstance(data.get('f'), list) else []
             valid_message_ids = {
@@ -463,6 +472,11 @@ def runMemoryExtraction(
                 str(item.get('reference_message_id'))
                 for item in history
                 if item.get('reference_message_id') not in [None, '']
+            }
+            valid_user_ids = {
+                str(item.get('user_id'))
+                for item in history
+                if item.get('user_id') not in [None, '']
             }
             for fact in fact_data:
                 if not isinstance(fact, dict):
@@ -476,7 +490,15 @@ def runMemoryExtraction(
                     fact.pop('source_message_id', None)
                 if str(fact.get('source_reference_id')) not in valid_reference_ids:
                     fact.pop('source_reference_id', None)
+                # 只认本批聊天记录里真实出现过的发言者，避免模型编造 user_id 造成错误归属。
+                if str(fact.get('user_id')) not in valid_user_ids:
+                    fact.pop('user_id', None)
+                    fact.pop('uid', None)
             source_entry = next((item for item in reversed(history) if item.get('nickname') is not None), {})
+            user_scoped = sum(
+                1 for item in fact_data
+                if isinstance(item, dict) and item.get('user_id') not in [None, '']
+            )
             facts_saved = OlivaAIAgent.semantic.upsertFacts(
                 bot_hash,
                 platform,
@@ -499,11 +521,13 @@ def runMemoryExtraction(
             profile_items=len(profile_data),
             summary_saved=summary_saved,
             vector_items=facts_saved,
+            user_scope_items=user_scoped,
         )
         return {
             'summary_processed': bool(record_summary),
             'vector_processed': bool(record_vector),
             'facts_saved': facts_saved,
+            'user_facts_saved': user_scoped,
         }
     except Exception as e:
         OlivaAIAgent.conf.log(OlivaAIAgent.conf.gProc, 3, '记忆提炼异常: %s' % e)

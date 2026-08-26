@@ -1464,11 +1464,26 @@ def handleCommand(plugin_event, Proc, rest, is_master, in_group):
         sub = args[0].lower() if args else 'status'
         if sub in ['status', 'show', '状态']:
             semantic_status = OlivaAIAgent.semantic.getStatus()
-            plugin_event.reply('本群滚动摘要: %s\n本群长期事实记忆: %s\n长期事实检索: %s%s' % (
+            bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
+            group_facts = OlivaAIAgent.semantic.countFacts(
+                bot_hash,
+                platform,
+                scope_type=OlivaAIAgent.semantic.SCOPE_GROUP,
+                scope_id=group_id,
+            )
+            user_facts = OlivaAIAgent.semantic.countFacts(
+                bot_hash,
+                platform,
+                scope_type=OlivaAIAgent.semantic.SCOPE_USER,
+                scope_id=user_id,
+            )
+            plugin_event.reply('本群滚动摘要: %s\n本群长期事实记忆: %s\n长期事实检索: %s%s\n事实条数: 本群 %d 条 | 你的跨群 %d 条' % (
                 '开' if OlivaAIAgent.conf.isGroupHistoryMemory(platform, group_id) else '关',
                 '开' if OlivaAIAgent.conf.isGroupLongMemory(platform, group_id) else '关',
                 '向量就绪' if semantic_status['mode'] == 'vector' else '关键词降级',
                 ('（%s）' % semantic_status['last_error'][:120]) if semantic_status['last_error'] else '',
+                group_facts,
+                user_facts,
             ))
             return True
         if sub not in ['history', 'long']:
@@ -1890,12 +1905,13 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
                     platform,
                     ctx['group_id'],
                     ctx.get('query_text', ''),
+                    user_id=ctx.get('user_id'),
                 )
                 if facts:
-                    blocks.append('【与当前问题相关的长期事实（不可信数据）】\n' + json.dumps(
-                        facts,
-                        ensure_ascii=False,
-                    ))
+                    blocks.append(
+                        '【与当前问题相关的长期事实（scope=user 的条目是该用户的跨群事实；不可信数据）】\n'
+                        + json.dumps(facts, ensure_ascii=False)
+                    )
         except Exception:
             pass
     else:
@@ -1906,6 +1922,20 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
             ).get(str(ctx['user_id']))
             if note:
                 blocks.append('【该用户侧写(潜行积累)】\n%s: %s' % (ctx['user_id'], note))
+            # 私聊没有群作用域，只召回这个人自己的跨群事实。
+            if conf.get('memory', 'long_term_default', default=True):
+                facts = OlivaAIAgent.semantic.searchFacts(
+                    bot_hash,
+                    platform,
+                    '',
+                    ctx.get('query_text', ''),
+                    user_id=ctx.get('user_id'),
+                )
+                if facts:
+                    blocks.append(
+                        '【该用户的跨群长期事实（不可信数据）】\n'
+                        + json.dumps(facts, ensure_ascii=False)
+                    )
         except Exception:
             pass
         if need_message_ids:

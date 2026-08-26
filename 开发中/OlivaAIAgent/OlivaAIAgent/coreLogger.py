@@ -14,8 +14,11 @@ import OlivOS
 import OlivaAIAgent
 
 _hint_local = threading.local()
+_bridge_local = threading.local()
+_bridge_install_lock = threading.RLock()
 _INSTALL_FLAG = '_oliva_ai_core_logger_installed'
 _SNAPSHOT_FLAG = '_oliva_ai_event_snapshot'
+_BRIDGE_FLAG = '_oliva_ai_msg_bridge_installed'
 
 
 def enabled():
@@ -39,11 +42,16 @@ def getStatus(Proc=None):
     plugins = OlivaAIAgent.conf.loadedPlugins(Proc or OlivaAIAgent.conf.gProc)
     logger_loaded = any(str(item).split('(', 1)[0] == 'OlivaDiceLogger' for item in plugins)
     logger_loaded = logger_loaded or 'OlivaDiceLogger' in sys.modules
+    bridged = False
+    if core is not None:
+        bridged = bool(getattr(core.crossHook.dictHookFunc.get('msgHook'), _BRIDGE_FLAG, False))
     return {
         'enabled': enabled(),
         'core_ready': core is not None,
         'logger_loaded': logger_loaded,
         'active': enabled() and core is not None,
+        'bridge_enabled': bridgeEnabled(),
+        'bridge_installed': bridged,
     }
 
 
@@ -172,7 +180,10 @@ def record(plugin_event, message, func_type='reply', targets=None, hint=None):
     log_text = readableMessage(plugin_event, message, hint=hint)
     if not log_text:
         return False
+    previous_skip = getattr(_bridge_local, 'skip', False)
     try:
+        # 自己补记的消息不再经反向桥接写回历史，避免与 addSelfReply 重复。
+        _bridge_local.skip = True
         core.crossHook.dictHookFunc['msgHook'](
             plugin_event,
             str(func_type),
@@ -188,6 +199,105 @@ def record(plugin_event, message, func_type='reply', targets=None, hint=None):
             error='%s: %s' % (type(e).__name__, e),
         )
         return False
+    finally:
+        _bridge_local.skip = previous_skip
+
+
+def bridgeEnabled():
+    return bool(OlivaAIAgent.conf.get(
+        'olivadice_logger', 'record_other_plugin_messages', default=True,
+    ))
+
+
+def _bridgeRecordable(func_type):
+    '''只接同账号其他插件发往群聊的出站消息；recv 已由本插件事件入口记录。'''
+    return str(func_type) in ('reply', 'send_group')
+
+
+def _bridgeMessage(event, func_type, sender, targets, message):
+    if getattr(_bridge_local, 'skip', False) or not bridgeEnabled():
+        return False
+    if not _bridgeRecordable(func_type) or event is None:
+        return False
+    group_id = targets[1] if isinstance(targets, (list, tuple)) and len(targets) > 1 else None
+    if group_id in [None, '', '-1', -1]:
+        return False
+    try:
+        platform = str(event.platform['platform'])
+    except Exception:
+        return False
+    conf = OlivaAIAgent.conf
+    if not conf.get('enable', 'global', default=True):
+        return False
+    if not conf.isWhitelisted(platform, group_id) or not conf.isGroupEnabled(platform, group_id):
+        return False
+    if not conf.isAmbientEnabled(platform, group_id):
+        # 潜行关闭的群本来就不积累群上下文，这里保持一致，不单独留下骰子消息。
+        return False
+    text = readableMessage(event, message)
+    if not text:
+        return False
+    bot_hash = _botHash(event) or 'unity'
+    source_name = '骰系插件'
+    if isinstance(sender, dict) and str(sender.get('name') or '').strip():
+        source_name = '骰系插件(%s)' % str(sender['name']).strip()
+    recorded = OlivaAIAgent.ambient.addPluginMessage(
+        platform,
+        group_id,
+        bot_hash,
+        text,
+        source_name=source_name,
+        user_id=sender.get('id') if isinstance(sender, dict) else None,
+    )
+    if recorded:
+        # 群滚动缓冲同样补上，让显式 .ai 对话里的"最近群聊记录"也能看到骰点结果。
+        try:
+            OlivaAIAgent.memory.bufferAppend(
+                platform,
+                group_id,
+                sender.get('id') if isinstance(sender, dict) else '',
+                source_name,
+                text,
+            )
+        except Exception:
+            pass
+        OlivaAIAgent.conf.traceLog(
+            OlivaAIAgent.conf.gProc,
+            'logger.bridge.plugin_message',
+            func_type=str(func_type),
+            group_id=str(group_id),
+            chars=len(text),
+        )
+    return recorded
+
+
+def installMessageBridge():
+    '''包一层 Core 的 msgHook：其他骰系插件发出的群消息也进潜行上下文，不改变原有日志行为。'''
+    core = _core()
+    if core is None:
+        return False
+    with _bridge_install_lock:
+        hook = core.crossHook.dictHookFunc.get('msgHook')
+        if not callable(hook) or getattr(hook, _BRIDGE_FLAG, False):
+            return False
+
+        def bridged(event, funcType, sender, dectData, message):
+            # 先让原 hook（通常是 OlivaDiceLogger）正常记团日志，再补进本插件上下文。
+            result = hook(event, funcType, sender, dectData, message)
+            try:
+                _bridgeMessage(event, funcType, sender, dectData, message)
+            except Exception as e:
+                OlivaAIAgent.conf.traceLog(
+                    OlivaAIAgent.conf.gProc,
+                    'logger.bridge.context_failed',
+                    error='%s: %s' % (type(e).__name__, e),
+                )
+            return result
+
+        setattr(bridged, _BRIDGE_FLAG, True)
+        setattr(bridged, '_oliva_ai_original_hook', hook)
+        core.crossHook.dictHookFunc['msgHook'] = bridged
+        return True
 
 
 def _recordReply(plugin_event, message, result):

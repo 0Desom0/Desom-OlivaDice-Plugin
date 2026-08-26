@@ -15,6 +15,9 @@ import requests
 
 import OlivaAIAgent
 
+SCOPE_GROUP = 'group'
+SCOPE_USER = 'user'
+
 _lock = threading.RLock()
 _initialized_path = None
 _embedding_cache = OrderedDict()
@@ -189,9 +192,28 @@ def embedTexts(texts):
     return result
 
 
-def _factId(bot_hash, platform, group_id, subject, content):
-    raw = '\x1f'.join([str(bot_hash), str(platform), str(group_id), str(subject), str(content)])
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+def _factId(bot_hash, platform, scope_type, scope_id, subject, content):
+    '''群作用域沿用旧公式，保证升级后历史行仍能命中 upsert，不会重复插入。'''
+    parts = [str(bot_hash), str(platform), str(scope_id), str(subject), str(content)]
+    if str(scope_type) != SCOPE_GROUP:
+        parts.insert(2, str(scope_type))
+    return hashlib.sha256('\x1f'.join(parts).encode('utf-8')).hexdigest()
+
+
+def _factScope(fact, group_id):
+    '''按事实自带的 user_id 决定作用域：个人事实跟人跨群，其余留在本群。'''
+    user_id = ''
+    for key in ('user_id', 'uid'):
+        value = fact.get(key)
+        if value not in [None, '', '-1', -1]:
+            user_id = str(value).strip()
+            break
+    if user_id:
+        return SCOPE_USER, user_id
+    group_key = str(group_id or '').strip()
+    if group_key:
+        return SCOPE_GROUP, group_key
+    return '', ''
 
 
 def _cleanKeywords(value):
@@ -203,7 +225,7 @@ def _cleanKeywords(value):
 
 
 def upsertFacts(bot_hash, platform, group_id, facts, source=None):
-    '''写入事实并尽力补齐向量；embedding 失败仍保留事实供关键词检索。'''
+    '''写入事实并尽力补齐向量；带 user_id 的个人事实存为用户作用域，跟随此人跨群。'''
     source = source if isinstance(source, dict) else {}
     clean = []
     for fact in facts or []:
@@ -219,9 +241,15 @@ def upsertFacts(bot_hash, platform, group_id, facts, source=None):
             )
         ):
             continue
+        scope_type, scope_id = _factScope(fact, group_id)
+        if not scope_type:
+            # 私聊里没有群号、模型又没给 user_id 时无处归属，丢弃而不是写成空作用域。
+            continue
         if not subject:
             subject = content[:32]
         clean.append({
+            'scope_type': scope_type,
+            'scope_id': scope_id,
             'subject': subject,
             'content': content,
             'keywords': _cleanKeywords(fact.get('keywords') or fact.get('k')),
@@ -239,13 +267,20 @@ def upsertFacts(bot_hash, platform, group_id, facts, source=None):
     conn = _connect()
     try:
         for item, vector in zip(clean, vectors):
-            fact_id = _factId(data_bot_hash, platform, group_id, item['subject'], item['content'])
+            fact_id = _factId(
+                data_bot_hash,
+                platform,
+                item['scope_type'],
+                item['scope_id'],
+                item['subject'],
+                item['content'],
+            )
             conn.execute('''
                 INSERT INTO facts (
                     id, bot_hash, platform, scope_type, scope_id, subject, content, keywords,
                     source_message_id, source_reference_id, source_event_id, source_time,
                     embedding, embedding_model, created_at, updated_at
-                ) VALUES (?, ?, ?, 'group', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     keywords=excluded.keywords,
                     source_message_id=COALESCE(excluded.source_message_id, facts.source_message_id),
@@ -256,7 +291,8 @@ def upsertFacts(bot_hash, platform, group_id, facts, source=None):
                     embedding_model=COALESCE(excluded.embedding_model, facts.embedding_model),
                     updated_at=excluded.updated_at
             ''', (
-                fact_id, str(data_bot_hash), str(platform), str(group_id), item['subject'], item['content'],
+                fact_id, str(data_bot_hash), str(platform), item['scope_type'], item['scope_id'],
+                item['subject'], item['content'],
                 json.dumps(item['keywords'], ensure_ascii=False),
                 _noneString(item['source_message_id']), _noneString(item['source_reference_id']),
                 _noneString(item['source_event_id']), _noneString(item['source_time']),
@@ -293,22 +329,40 @@ def _cosine(left, right):
     return dot / (lnorm * rnorm)
 
 
-def searchFacts(bot_hash, platform, group_id, query, top_k=None):
-    '''检索本群长期事实；有向量时混合 cosine/关键词/时效，失败时纯关键词降级。'''
+def searchFacts(bot_hash, platform, group_id, query, top_k=None, user_id=None, user_ids=None):
+    '''检索本群长期事实，并按需并入指定用户的跨群事实；有向量时混合 cosine/关键词/时效。'''
     query = str(query or '').strip()
     if not query:
         return []
+    scopes = []
+    group_key = str(group_id or '').strip()
+    if group_key:
+        scopes.append((SCOPE_GROUP, group_key))
+    candidates = list(user_ids or [])
+    if user_id not in [None, '']:
+        candidates.insert(0, user_id)
+    for value in candidates:
+        key = str(value or '').strip()
+        if key and (SCOPE_USER, key) not in scopes:
+            scopes.append((SCOPE_USER, key))
+    if not scopes:
+        return []
     limit = max(1, int(top_k or OlivaAIAgent.conf.get('semantic_memory', 'top_k', default=6)))
-    fetch_limit = max(limit, int(OlivaAIAgent.conf.get(
+    per_scope = max(limit, int(OlivaAIAgent.conf.get(
         'semantic_memory', 'max_scope_facts', default=2000,
     )))
+    conditions = ' OR '.join(['(scope_type=? AND scope_id=?)'] * len(scopes))
+    params = [str(OlivaAIAgent.conf.dataBotHash(bot_hash)), str(platform)]
+    for scope_type, scope_id in scopes:
+        params.extend([scope_type, scope_id])
+    params.append(per_scope * len(scopes))
     conn = _connect()
     try:
         rows = conn.execute('''
             SELECT * FROM facts
-            WHERE bot_hash=? AND platform=? AND scope_type='group' AND scope_id=?
+            WHERE bot_hash=? AND platform=? AND (%s)
             ORDER BY updated_at DESC LIMIT ?
-        ''', (str(OlivaAIAgent.conf.dataBotHash(bot_hash)), str(platform), str(group_id), fetch_limit)).fetchall()
+        ''' % conditions, params).fetchall()
     finally:
         conn.close()
     if not rows:
@@ -345,7 +399,7 @@ def searchFacts(bot_hash, platform, group_id, query, top_k=None):
                 continue
             vector_score = None
             score = 0.9 * keyword_score + 0.1 * recency
-        found.append({
+        item = {
             'subject': row['subject'],
             'content': row['content'],
             'keywords': keywords,
@@ -355,7 +409,12 @@ def searchFacts(bot_hash, platform, group_id, query, top_k=None):
             'source_reference_id': row['source_reference_id'],
             'source_event_id': row['source_event_id'],
             'source_time': row['source_time'],
-        })
+        }
+        if row['scope_type'] == SCOPE_USER:
+            # 让模型知道这条是跟人跨群的个人事实，而不是本群剧情。
+            item['scope'] = SCOPE_USER
+            item['user_id'] = row['scope_id']
+        found.append(item)
     found = [
         item for item in found
         if not OlivaAIAgent.contentSafety.blocked(
@@ -363,10 +422,19 @@ def searchFacts(bot_hash, platform, group_id, query, top_k=None):
         )
     ]
     found.sort(key=lambda item: item['score'], reverse=True)
-    return found[:limit]
+    # 同一条事实可能同时存在群作用域与用户作用域，只保留分数更高的一条。
+    unique = []
+    seen = set()
+    for item in found:
+        key = (item['subject'], item['content'])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique[:limit]
 
 
-def countFacts(bot_hash=None, platform=None, group_id=None):
+def countFacts(bot_hash=None, platform=None, group_id=None, scope_type=None, scope_id=None):
     clauses = []
     params = []
     if bot_hash is not None:
@@ -378,6 +446,12 @@ def countFacts(bot_hash=None, platform=None, group_id=None):
     if group_id is not None:
         clauses.append('scope_id=?')
         params.append(str(group_id))
+    if scope_type is not None:
+        clauses.append('scope_type=?')
+        params.append(str(scope_type))
+    if scope_id is not None:
+        clauses.append('scope_id=?')
+        params.append(str(scope_id))
     sql = 'SELECT COUNT(*) FROM facts'
     if clauses:
         sql += ' WHERE ' + ' AND '.join(clauses)

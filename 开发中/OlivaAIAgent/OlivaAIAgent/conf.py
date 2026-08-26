@@ -178,6 +178,9 @@ DEFAULT_CONF = {
         '_说明': '检测到 OlivaDiceCore 时，把本插件成功发送的文本、Markdown、图片说明和语音原文送入 Core msgHook，'
                '供 OlivaDiceLogger 写入当前团日志；关闭后不补记，不影响消息发送。',
         'enabled': True,
+        'record_other_plugin_messages': True,
+        '_record_other_plugin_messages说明': '反向桥接：把骰系插件（骰点/剧情/娱乐等）经 OlivaDiceCore 发出的群消息补进潜行上下文，'
+                                          'AI 就能知道刚才骰出了什么；只覆盖走 Core 发送的插件，直接调用 OlivOS 接口的第三方插件无法捕获',
     },
     'whitelist': {
         'enabled': False,
