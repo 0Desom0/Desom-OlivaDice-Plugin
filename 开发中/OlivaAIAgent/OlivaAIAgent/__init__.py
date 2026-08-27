@@ -24,6 +24,7 @@ from OlivaAIAgent import mcp  # noqa: F401
 from OlivaAIAgent import voice  # noqa: F401
 from OlivaAIAgent import tools  # noqa: F401
 from OlivaAIAgent import preflight  # noqa: F401
+from OlivaAIAgent import research  # noqa: F401
 from OlivaAIAgent import ambient  # noqa: F401
 from OlivaAIAgent import msgReply  # noqa: F401
 from OlivaAIAgent import gui  # noqa: F401

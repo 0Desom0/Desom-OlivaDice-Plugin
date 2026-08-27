@@ -259,6 +259,29 @@ DEFAULT_CONF = {
         'fetch_url_max_bytes': 2097152,
         'allow_private_network': False,
     },
+    'research': {
+        '_说明': '前置检索：由便宜的前置模型决定要不要联网、写什么搜索词，插件直接执行只读检索，'
+               '只把压缩后的结论交给主模型。主模型少跑一到两轮完整 prompt，比让它自己 tool_call 更省 token。'
+               '只覆盖只读检索；骰点(run_command)、OlivOS 接口、写记忆/知识库、发语音仍由主模型决定。'
+               '任何一步失败都会把对应工具放回主模型，能力不会因此缩水',
+        'enable': True,
+        'mode': 'auto',
+        '_mode说明': 'auto(默认)=配好 ambient.intent_api 前置模型才前置化，没配就完全退回主模型自己调工具；'
+                  'always=没有前置模型也用主模型做规划与压缩(调用次数更多，通常更贵，一般不用)；off=关闭',
+        'max_queries': 2,
+        '_max_queries说明': '单轮最多几条搜索词；前置模型会把口语问题改写成精确关键词',
+        'max_urls': 1,
+        'max_results': 5,
+        'allow_fetch': True,
+        '_allow_fetch说明': '是否允许前置阶段抓取消息里出现的网址正文；关闭后只做搜索',
+        'page_max_chars': 4000,
+        'readonly_tools': True,
+        '_readonly_tools说明': '是否把 kb_search / memory_list / list_reminders 这三个只读工具也交给前置执行',
+        'summary_max_chars': 600,
+        'prefer_provider_answer': True,
+        '_prefer_provider_answer说明': 'Tavily 已返回 answer 时直接采用，省掉一次结论压缩模型调用',
+        'timeout_sec': 30,
+    },
     'mcp': {
         '_说明': 'Model Context Protocol 工具连接；支持 Streamable HTTP 与 stdio。启用后远端工具会以 mcp_ 前缀提供给AI',
         'enabled': False,

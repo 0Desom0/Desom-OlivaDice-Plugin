@@ -1,3 +1,4 @@
+import copy
 import difflib
 import hashlib
 import html
@@ -60,6 +61,12 @@ gPreviewOcrEngine = None
 gPreviewOcrUnavailable = False
 gWbiMixinKey = None
 gWbiMixinKeyTime = 0.0
+gHttpThrottleLock = threading.Lock()
+gHttpLastRequestTime = 0.0
+gHttpBlockedContext = ContextVar('BiliShareInfo_http_blocked', default=None)
+gParseNoticeContext = ContextVar('BiliShareInfo_parse_notice', default=None)
+gApiCache = {}
+gApiCacheLock = threading.RLock()
 
 # 命令与解析常量
 COMMAND_PREFIXES = ('.', '/', '。')
@@ -73,6 +80,20 @@ CARD_SEARCH_CANDIDATE_LIMIT = 20
 OWNER_EXACT_DETAIL_LIMIT = 8
 LIVE_ROOM_API = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo'
 WBI_KEY_CACHE_TTL_SECONDS = 3600
+# B 站公开接口按 IP 限流，超额时直接返回 412，需要重试并控制请求节奏。
+HTTP_RETRY_STATUS_SET = frozenset({412, 429, 500, 502, 503, 504})
+HTTP_MAX_ATTEMPTS = 4
+HTTP_RETRY_BASE_DELAY_SECONDS = 0.45
+HTTP_MIN_REQUEST_INTERVAL_SECONDS = 0.15
+# 命中一次就缓存一段时间，重复分享同一个视频不再重复触发风控。
+API_CACHE_TTL_SECONDS = 300
+API_CACHE_MAX_ENTRIES = 256
+# 卡片没有 BV/av 号时只能靠标题反查，标题对不上的候选一律不作为结果。
+CARD_TITLE_MATCH_MIN_RATIO = 0.72
+CARD_TITLE_MATCH_MIN_ORDERED_COVERAGE = 0.8
+CARD_TITLE_MATCH_MIN_PREFIX_LENGTH = 6
+PARSE_FAILURE_NOTICE_LIMIT = 3
+TITLE_TRAILING_ELLIPSIS_PATTERN = re.compile(r'(?:\.{2,}|。{2,}|…+)\s*$')
 WBI_MIXIN_KEY_TABLE = (
     46, 47, 18, 2, 53, 8, 23, 32,
     15, 50, 10, 31, 58, 3, 45, 35,
@@ -283,6 +304,8 @@ class Event:
 
 def handle_message(plugin_event, is_group: bool) -> None:
     debug_token = None
+    blocked_token = None
+    notice_token = None
     try:
         message = safe_str(plugin_event.data.message)
         command_message = parse_command_message(plugin_event, message)
@@ -305,6 +328,8 @@ def handle_message(plugin_event, is_group: bool) -> None:
             return
 
         debug_token = gParseDebugContext.set(is_parse_debug_enabled(plugin_event))
+        blocked_token = gHttpBlockedContext.set([])
+        notice_token = gParseNoticeContext.set([])
         parse_log(
             f'开始处理候选消息 group={is_group} '
             f'group_key={get_group_key(plugin_event)} '
@@ -326,6 +351,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
         )
         parse_log(f'消息引用提取完成 count={len(video_ref_list)} refs={format_video_ref_list(video_ref_list)}')
         if not video_ref_list:
+            send_parse_failure_notice(plugin_event)
             return
 
         video_info_list = []
@@ -341,17 +367,20 @@ def handle_message(plugin_event, is_group: bool) -> None:
                 video_info = fetch_video_info(video_ref)
             if not video_info:
                 parse_log(f'媒体信息获取失败 ref={format_video_ref(video_ref)}')
+                add_parse_notice(build_fetch_failure_notice(video_ref))
                 continue
             video_info_list.append(video_info)
             sent_dedupe_key_list.append(dedupe_key)
 
         if not video_info_list:
+            send_parse_failure_notice(plugin_event)
             return
 
         send_video_info_list(plugin_event, video_info_list)
         parse_log(f'媒体信息发送完成 count={len(video_info_list)}')
         for dedupe_key in sent_dedupe_key_list:
             mark_recent_key(dedupe_key)
+        send_parse_failure_notice(plugin_event)
     except Exception as exception_object:
         parse_log(
             f'处理消息异常 error={type(exception_object).__name__}: '
@@ -360,6 +389,81 @@ def handle_message(plugin_event, is_group: bool) -> None:
     finally:
         if debug_token is not None:
             gParseDebugContext.reset(debug_token)
+        if blocked_token is not None:
+            gHttpBlockedContext.reset(blocked_token)
+        if notice_token is not None:
+            gParseNoticeContext.reset(notice_token)
+
+
+def add_parse_notice(notice_text: str) -> None:
+    """登记一条待回复的解析失败提示，避免同一条消息重复提示。"""
+    notice_text = safe_str(notice_text).strip()
+    if not notice_text:
+        return
+    notice_list = gParseNoticeContext.get()
+    if notice_list is None:
+        return
+    if notice_text not in notice_list:
+        notice_list.append(notice_text)
+
+
+def send_parse_failure_notice(plugin_event) -> None:
+    """把本次解析累积的失败原因回复给用户，而不是静默什么都不做。"""
+    notice_list = gParseNoticeContext.get()
+    if not notice_list:
+        return
+    del notice_list[PARSE_FAILURE_NOTICE_LIMIT:]
+
+    dedupe_key = build_notice_dedupe_key(plugin_event, notice_list)
+    if is_recent_duplicate(dedupe_key):
+        parse_log(f'跳过近期重复的解析失败提示 count={len(notice_list)}')
+        notice_list.clear()
+        return
+
+    reply_message(plugin_event, '\n'.join(notice_list))
+    mark_recent_key(dedupe_key)
+    bili_log(f'已回复解析失败提示 count={len(notice_list)}', 2)
+    notice_list.clear()
+
+
+def build_card_failure_notice(title_hint: str) -> str:
+    card_title = shorten_text(clean_search_keyword(title_hint), 40)
+    title_part = f'「{card_title}」' if card_title else '该分享'
+    if has_http_blocked():
+        return (
+            f'B站解析失败：{title_part}没有携带BV号，'
+            f'反查时B站接口被限流，稍后再发一次即可。'
+        )
+    return (
+        f'B站解析失败：{title_part}没有携带BV号，'
+        f'也没有找到标题完全一致的视频，无法确认是哪一个。'
+    )
+
+
+def build_fetch_failure_notice(video_ref: dict[str, str]) -> str:
+    if video_ref.get('live_id'):
+        target = f'直播间 {video_ref["live_id"]}'
+    elif video_ref.get('bvid'):
+        target = safe_str(video_ref['bvid'])
+    elif video_ref.get('aid'):
+        target = f'av{video_ref["aid"]}'
+    else:
+        target = '该链接'
+    if has_http_blocked():
+        return f'B站解析失败：{target} 的信息获取被B站限流，稍后再发一次即可。'
+    return f'B站解析失败：没能获取到 {target} 的信息。'
+
+
+def build_notice_dedupe_key(plugin_event, notice_list: list[str]) -> str:
+    try:
+        bot_hash = get_config_bot_hash_from_event(plugin_event)
+        group_key = get_group_key(plugin_event)
+        notice_digest = hashlib.md5(
+            '\n'.join(notice_list).encode('utf-8')
+        ).hexdigest()
+        return f'notice|{bot_hash}|{group_key}|{notice_digest}'
+    except Exception:
+        return 'notice|unknown'
 
 
 def bili_log(message_text: str, level: int = 2) -> None:
@@ -605,6 +709,7 @@ def build_help_message(plugin_event, is_group: bool) -> str:
             '帮助：.bili help',
             '未单独设置的群会使用本群默认开关。',
             '开启后会自动解析群内的B站小程序/链接分享并回复视频或直播信息。',
+            '小程序卡片没带BV号且无法确认视频时，会回复解析失败原因。',
         ]
     )
 
@@ -1354,7 +1459,17 @@ def add_video_refs_from_card(
             title_hint,
             preview_ocr_enable=preview_ocr_enable,
         )
-        parse_log(f'{card_label} OCR/标题对比结果 ref={format_video_ref(video_ref)}')
+        parse_log(
+            f'{card_label} OCR/标题对比结果 ref={format_video_ref(video_ref)} '
+            f'http_blocked={format_http_blocked_log()}'
+        )
+        if not video_ref:
+            add_parse_notice(build_card_failure_notice(title_hint))
+            bili_log(
+                f'小程序卡片无法确认视频 blocked={has_http_blocked()} '
+                f'title={shorten_text(clean_search_keyword(title_hint), 60)}',
+                2,
+            )
         add_video_ref(video_ref_list, seen_key_set, video_ref)
     elif not card_video_ref_list:
         parse_log(f'{card_label} 消息中已有视频引用，跳过卡片标题搜索')
@@ -1892,9 +2007,23 @@ def choose_card_search_result(
         parse_log('卡片候选逐条对比无可用结果')
         return None
     selected_score, _, selected_ref, selected_candidate, _ = compared_candidate_list[0]
+    selected_title = clean_search_result_title(selected_candidate.get('title', ''))
+    match_level, match_ratio = evaluate_title_match(title_hint, selected_title)
+    if match_level not in ['exact', 'strong']:
+        # 卡片没有 BV/av 号，标题对不上就无法确认是同一个视频；
+        # 宁可不回复，也不要把标题无关的视频当成分享结果发出去。
+        parse_log(
+            f'卡片候选标题置信度不足，放弃解析 level={match_level} ratio={match_ratio:.2f} '
+            f'keyword={shorten_log_text(title_hint, 120)} '
+            f'candidate_title={shorten_log_text(selected_title, 120)} '
+            f'ref={format_video_ref(selected_ref)} score={selected_score} '
+            f'http_blocked={format_http_blocked_log()}'
+        )
+        return None
     parse_log(
         f'卡片候选评分选择 source={safe_str(selected_candidate.get("_search_source", "title"))} '
-        f'ref={format_video_ref(selected_ref)} score={selected_score}'
+        f'ref={format_video_ref(selected_ref)} score={selected_score} '
+        f'title_level={match_level} title_ratio={match_ratio:.2f}'
     )
     return selected_ref
 
@@ -2304,6 +2433,14 @@ def format_preview_stat_log(metadata: dict[str, Any]) -> str:
 
 
 def search_bili_user_mid(owner_name: str) -> str | None:
+    cache_key = f'user_mid:{safe_str(owner_name).strip().casefold()}'
+    cached_mid = get_api_cache(cache_key, missing='')
+    if cached_mid != '':
+        parse_log(
+            f'UP主搜索命中缓存 owner={shorten_log_text(owner_name, 80)} mid={cached_mid}'
+        )
+        return cached_mid or None
+
     search_url_list = [
         'https://api.bilibili.com/x/web-interface/search/type?'
         + urllib.parse.urlencode(
@@ -2342,12 +2479,12 @@ def search_bili_user_mid(owner_name: str) -> str | None:
                     f'UP主搜索命中 api={api_index} owner={shorten_log_text(owner_name, 80)} '
                     f'mid={owner_mid} exact=True'
                 )
+                set_api_cache(cache_key, owner_mid)
                 return owner_mid or None
         except Exception as exception_object:
             parse_log(
                 f'UP主搜索API#{api_index}失败 owner={shorten_log_text(owner_name, 80)} '
-                f'error={type(exception_object).__name__}: '
-                f'{shorten_log_text(exception_object, 180)}'
+                f'error={describe_http_error(exception_object)}'
             )
     fuzzy_candidate_list = []
     for candidate in fallback_candidates:
@@ -2367,8 +2504,12 @@ def search_bili_user_mid(owner_name: str) -> str | None:
             f'candidate={shorten_log_text(selected.get("uname", ""), 80)} '
             f'mid={owner_mid} ratio={best_ratio:.2f}'
         )
+        set_api_cache(cache_key, owner_mid)
         return owner_mid or None
-    parse_log(f'UP主搜索无可靠候选 owner={shorten_log_text(owner_name, 80)}')
+    parse_log(
+        f'UP主搜索无可靠候选 owner={shorten_log_text(owner_name, 80)} '
+        f'http_blocked={format_http_blocked_log()}'
+    )
     return None
 
 
@@ -2397,6 +2538,11 @@ def search_video_by_owner_metadata(
     title_hint: str,
     preview_metadata: dict[str, Any],
 ) -> dict[str, str] | None:
+    if not normalize_search_match_text(title_hint):
+        # 没有标题时无法判断是这个 UP 主的哪一个投稿，猜测只会给出错误结果。
+        parse_log(f'卡片没有可用标题，跳过UP主投稿匹配 mid={owner_mid}')
+        return None
+
     candidate_list = []
     for page in range(1, 4):
         page_candidates = fetch_owner_archive_candidates(
@@ -2427,10 +2573,10 @@ def search_video_by_owner_metadata(
             if has_exact_title_candidate(title_hint, owner_candidates):
                 break
 
-    if not candidate_list and not title_hint:
-        candidate_list = fetch_owner_archive_candidates(owner_mid, '', 'click', 1)
     if not candidate_list:
-        parse_log(f'UP主投稿列表为空 mid={owner_mid}')
+        parse_log(
+            f'UP主投稿列表为空 mid={owner_mid} http_blocked={format_http_blocked_log()}'
+        )
         return None
 
     candidate_list = merge_search_candidates(candidate_list)
@@ -2469,9 +2615,22 @@ def search_video_by_owner_metadata(
     if not scored_candidates:
         return None
     selected = scored_candidates[0][1]
+    selected_title = clean_search_result_title(safe_str(selected.get('title', '')))
+    match_level, match_ratio = evaluate_title_match(title_hint, selected_title)
+    if match_level not in ['exact', 'strong']:
+        # 同一个 UP 主往往有大量投稿，标题对不上时命中的只是“同作者的另一个视频”。
+        parse_log(
+            f'UP主投稿标题置信度不足，放弃OCR结果 mid={owner_mid} level={match_level} '
+            f'ratio={match_ratio:.2f} keyword={shorten_log_text(title_hint, 120)} '
+            f'candidate_title={shorten_log_text(selected_title, 120)} '
+            f'bvid={safe_str(selected.get("bvid", ""))} '
+            f'http_blocked={format_http_blocked_log()}'
+        )
+        return None
     parse_log(
         f'UP主投稿统计/标题模糊命中 bvid={safe_str(selected.get("bvid", ""))} '
-        f'score={scored_candidates[0][0]}'
+        f'score={scored_candidates[0][0]} title_level={match_level} '
+        f'title_ratio={match_ratio:.2f}'
     )
     return build_video_ref_from_archive_candidate(selected)
 
@@ -2543,7 +2702,7 @@ def fetch_owner_search_candidates(owner_name: str, page: int) -> list[dict[str, 
     except Exception as exception_object:
         parse_log(
             f'UP主视频搜索失败 owner={shorten_log_text(owner_name, 80)} page={page} '
-            f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 180)}'
+            f'error={describe_http_error(exception_object)}'
         )
         return []
 
@@ -2553,11 +2712,21 @@ def fetch_owner_keyword_archive_candidates(
     title_hint: str,
     order: str,
     page: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
+    """返回 (候选列表, 结果是否可信)。请求被风控时第二项为 False。"""
+    keyword = clean_search_keyword(title_hint)
+    cache_key = f'owner_keyword:{owner_mid}:{order}:{page}:{keyword}'
+    cached_result = get_api_cache(cache_key)
+    if cached_result is not None:
+        parse_log(
+            f'UP主关键词投稿命中缓存 mid={owner_mid} page={page} count={len(cached_result)}'
+        )
+        return cached_result, True
+
     api_url = 'https://api.bilibili.com/x/series/recArchivesByKeywords?' + urllib.parse.urlencode(
         {
             'mid': owner_mid,
-            'keywords': clean_search_keyword(title_hint),
+            'keywords': keyword,
             'ps': 20,
             'pn': page,
             'orderby': 'views' if order == 'click' else order,
@@ -2581,7 +2750,8 @@ def fetch_owner_keyword_archive_candidates(
             f'code={response_code} count={len(archive_list)}'
         )
         if response_code != 0:
-            return []
+            mark_http_blocked(f'recArchivesByKeywords code={response_code}')
+            return [], False
 
         result = []
         for result_rank, archive in enumerate(archive_list, start=1):
@@ -2596,14 +2766,14 @@ def fetch_owner_keyword_archive_candidates(
             candidate['_search_source'] = 'owner_keyword_api'
             candidate['_search_rank'] = (page - 1) * 20 + result_rank
             result.append(candidate)
-        return result
+        set_api_cache(cache_key, result)
+        return result, True
     except Exception as exception_object:
         parse_log(
             f'UP主关键词投稿API请求失败 mid={owner_mid} page={page} '
-            f'error={type(exception_object).__name__}: '
-            f'{shorten_log_text(exception_object, 180)}'
+            f'error={describe_http_error(exception_object)}'
         )
-        return []
+        return [], False
 
 
 def get_wbi_mixin_key() -> str | None:
@@ -2678,7 +2848,7 @@ def fetch_owner_archive_candidates(
     order: str,
     page: int,
 ) -> list[dict[str, Any]]:
-    keyword_archive_list = fetch_owner_keyword_archive_candidates(
+    keyword_archive_list, keyword_api_trusted = fetch_owner_keyword_archive_candidates(
         owner_mid,
         title_hint,
         order,
@@ -2686,6 +2856,13 @@ def fetch_owner_archive_candidates(
     )
     if keyword_archive_list:
         return keyword_archive_list
+    if keyword_api_trusted and title_hint:
+        # 关键词投稿接口已明确回复该 UP 主没有匹配投稿，
+        # 再打空间接口只会增加请求量并提高被限流的概率。
+        parse_log(
+            f'UP主关键词投稿接口明确无匹配，跳过空间投稿接口 mid={owner_mid} page={page}'
+        )
+        return []
 
     params = {
         'mid': owner_mid,
@@ -2799,11 +2976,20 @@ def search_video_by_keyword(keyword: str) -> dict[str, str] | None:
         return video_ref
 
     selected = candidate_list[0]
+    selected_title = clean_search_result_title(selected.get('title', ''))
+    match_level, match_ratio = evaluate_title_match(keyword, selected_title)
+    if match_level not in ['exact', 'strong']:
+        parse_log(
+            f'标题搜索候选置信度不足，放弃解析 level={match_level} ratio={match_ratio:.2f} '
+            f'title={shorten_log_text(selected_title, 120)}'
+        )
+        return None
     video_ref = build_video_ref_from_archive_candidate(selected)
     parse_log(
         f'标题搜索模糊命中 ref={format_video_ref(video_ref)} '
         f'score={safe_str(selected.get("_search_score", 0))} '
-        f'title={shorten_log_text(selected.get("title", ""), 120)}'
+        f'title_level={match_level} '
+        f'title={shorten_log_text(selected_title, 120)}'
     )
     return video_ref
 
@@ -2837,6 +3023,15 @@ def search_video_candidates_by_keyword(
         return []
 
     normalized_keyword = normalize_search_match_text(keyword)
+    cache_key = f'title_search:{limit}:{keyword}'
+    cached_candidate_list = get_api_cache(cache_key)
+    if cached_candidate_list is not None:
+        parse_log(
+            f'标题搜索命中缓存 keyword={shorten_log_text(keyword, 120)} '
+            f'count={len(cached_candidate_list)}'
+        )
+        return cached_candidate_list
+
     parse_log(
         f'开始标题搜索 keyword={shorten_log_text(keyword, 120)} '
         f'normalized={normalized_keyword} length={len(normalized_keyword)}'
@@ -2858,6 +3053,10 @@ def search_video_candidates_by_keyword(
     ]
     raw_candidate_list = []
     for api_index, api_url in enumerate(search_url_list, start=1):
+        if any(candidate.get('_search_exact') for candidate in raw_candidate_list):
+            # 已经拿到完整标题匹配，第二个搜索接口只会增加被限流的概率。
+            parse_log(f'标题搜索已命中完整匹配，跳过搜索接口#{api_index}')
+            break
         try:
             response_text = http_get_json_text(api_url, referer='https://search.bilibili.com/')
             response_data = json.loads(response_text)
@@ -2874,7 +3073,7 @@ def search_video_candidates_by_keyword(
         except Exception as exception_object:
             parse_log(
                 f'标题搜索请求失败 url={shorten_log_text(api_url, 180)} '
-                f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 160)}'
+                f'error={describe_http_error(exception_object)}'
             )
             continue
 
@@ -2925,6 +3124,8 @@ def search_video_candidates_by_keyword(
         f'标题搜索候选池完成 raw={len(raw_candidate_list)} '
         f'unique_selected={len(candidate_list)} limit={limit}'
     )
+    if candidate_list:
+        set_api_cache(cache_key, candidate_list)
     return candidate_list
 
 
@@ -3076,6 +3277,59 @@ def normalize_exact_search_match_text(text: str) -> str:
     return html.unescape(safe_str(text)).strip()
 
 
+def strip_title_ellipsis(text: str) -> str:
+    """QQ 卡片标题过长时会以省略号截断，比较前先去掉尾部省略号。"""
+    return TITLE_TRAILING_ELLIPSIS_PATTERN.sub('', safe_str(text)).strip()
+
+
+def evaluate_title_match(title_hint: str, candidate_title: str) -> tuple[str, float]:
+    """判断候选标题与卡片标题的匹配等级。
+
+    返回 (level, ratio)，level 取 exact / strong / weak / none。
+    卡片没有 BV/av 号时标题是唯一权威信号，只有 exact 或 strong 才能作为结果。
+    """
+    exact_hint = normalize_exact_search_match_text(title_hint)
+    exact_candidate = normalize_exact_search_match_text(candidate_title)
+    normalized_hint = normalize_search_match_text(title_hint)
+    normalized_candidate = normalize_search_match_text(candidate_title)
+    if not normalized_hint or not normalized_candidate:
+        return 'none', 0.0
+
+    similarity_ratio = difflib.SequenceMatcher(
+        None,
+        normalized_hint,
+        normalized_candidate,
+    ).ratio()
+    if exact_hint == exact_candidate or normalized_hint == normalized_candidate:
+        return 'exact', 1.0
+
+    trimmed_hint = normalize_search_match_text(strip_title_ellipsis(title_hint))
+    trimmed_candidate = normalize_search_match_text(strip_title_ellipsis(candidate_title))
+    if trimmed_hint and trimmed_candidate:
+        if trimmed_hint == trimmed_candidate:
+            return 'exact', 1.0
+        shorter_text, longer_text = sorted([trimmed_hint, trimmed_candidate], key=len)
+        # 被截断的标题是完整标题的前缀，前缀足够长时同样视为可靠匹配。
+        if (
+            longer_text.startswith(shorter_text)
+            and len(shorter_text) >= CARD_TITLE_MATCH_MIN_PREFIX_LENGTH
+        ):
+            return 'strong', similarity_ratio
+
+    ordered_coverage = calculate_ordered_character_coverage(
+        normalized_hint,
+        normalized_candidate,
+    )
+    if (
+        similarity_ratio >= CARD_TITLE_MATCH_MIN_RATIO
+        and ordered_coverage >= CARD_TITLE_MATCH_MIN_ORDERED_COVERAGE
+    ):
+        return 'strong', similarity_ratio
+    if similarity_ratio >= CARD_TITLE_MATCH_MIN_RATIO / 2:
+        return 'weak', similarity_ratio
+    return 'none', similarity_ratio
+
+
 def fetch_video_info(video_ref: dict[str, str]) -> dict[str, Any] | None:
     try:
         if video_ref.get('bvid'):
@@ -3085,6 +3339,12 @@ def fetch_video_info(video_ref: dict[str, str]) -> dict[str, Any] | None:
         else:
             parse_log(f'获取视频信息跳过：引用格式无效 ref={safe_str(video_ref)}')
             return None
+
+        cache_key = f'video_info:{query}'
+        cached_info = get_api_cache(cache_key)
+        if cached_info is not None:
+            parse_log(f'视频信息命中缓存 ref={format_video_ref(video_ref)}')
+            return cached_info
 
         api_url = f'https://api.bilibili.com/x/web-interface/view?{query}'
         parse_log(f'开始获取视频信息 ref={format_video_ref(video_ref)} url={api_url}')
@@ -3109,11 +3369,12 @@ def fetch_video_info(video_ref: dict[str, str]) -> dict[str, Any] | None:
             f'视频信息API解析成功 bvid={safe_str(data.get("bvid", ""))} '
             f'title={shorten_log_text(data.get("title", ""), 120)}'
         )
+        set_api_cache(cache_key, data)
         return data
     except Exception as exception_object:
         parse_log(
             f'获取视频信息异常 ref={format_video_ref(video_ref)} '
-            f'error={type(exception_object).__name__}: {shorten_log_text(exception_object, 200)}'
+            f'error={describe_http_error(exception_object)}'
         )
         return None
 
@@ -3183,8 +3444,10 @@ def fetch_live_info(live_ref: dict[str, str]) -> dict[str, Any] | None:
 
 
 def http_get_text(url: str, allow_response_body: bool = False) -> tuple[str, str]:
-    request = urllib.request.Request(url, headers=get_http_headers())
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+    def build_request():
+        return urllib.request.Request(url, headers=get_http_headers())
+
+    with open_http_with_retry(build_request) as response:
         response_url = response.geturl()
         if not allow_response_body:
             return response_url, ''
@@ -3195,8 +3458,10 @@ def http_get_text(url: str, allow_response_body: bool = False) -> tuple[str, str
 
 
 def http_get_binary(url: str, max_bytes: int) -> bytes:
-    request = urllib.request.Request(url, headers=get_http_headers())
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+    def build_request():
+        return urllib.request.Request(url, headers=get_http_headers())
+
+    with open_http_with_retry(build_request) as response:
         content = response.read(max_bytes + 1)
         if len(content) > max_bytes:
             raise ValueError(f'响应图片过大：{len(content)} bytes')
@@ -3208,13 +3473,120 @@ def http_get_json_text(
     referer: str = 'https://www.bilibili.com/',
     include_origin: bool = True,
 ) -> str:
-    headers = get_http_headers()
-    headers['Referer'] = referer
-    if not include_origin:
-        headers.pop('Origin', None)
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+    def build_request():
+        headers = get_http_headers()
+        headers['Referer'] = referer
+        if not include_origin:
+            headers.pop('Origin', None)
+        return urllib.request.Request(url, headers=headers)
+
+    with open_http_with_retry(build_request) as response:
         return response.read().decode('utf-8', errors='ignore')
+
+
+def open_http_with_retry(request_factory):
+    """B 站风控会随机返回 412，重试可避免单次抖动让解析静默降级为错误结果。"""
+    last_exception = None
+    for attempt in range(1, HTTP_MAX_ATTEMPTS + 1):
+        throttle_http_request()
+        try:
+            return urllib.request.urlopen(request_factory(), timeout=HTTP_TIMEOUT)
+        except Exception as exception_object:
+            last_exception = exception_object
+            if not is_transient_http_error(exception_object):
+                raise
+            if attempt >= HTTP_MAX_ATTEMPTS:
+                break
+            retry_delay = HTTP_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            retry_delay += random.uniform(0, HTTP_RETRY_BASE_DELAY_SECONDS / 2)
+            parse_log(
+                f'请求被限流，{retry_delay:.2f}s后重试 attempt={attempt}/{HTTP_MAX_ATTEMPTS} '
+                f'error={describe_http_error(exception_object)}'
+            )
+            time.sleep(retry_delay)
+    mark_http_blocked(describe_http_error(last_exception))
+    raise last_exception
+
+
+def throttle_http_request() -> None:
+    """串行化并留出最小请求间隔，避免插件自己把 IP 打进限流窗口。"""
+    global gHttpLastRequestTime
+    with gHttpThrottleLock:
+        wait_seconds = (
+            gHttpLastRequestTime + HTTP_MIN_REQUEST_INTERVAL_SECONDS - time.monotonic()
+        )
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        gHttpLastRequestTime = time.monotonic()
+
+
+def is_transient_http_error(exception_object: BaseException) -> bool:
+    if isinstance(exception_object, urllib.error.HTTPError):
+        return exception_object.code in HTTP_RETRY_STATUS_SET
+    return isinstance(
+        exception_object,
+        (urllib.error.URLError, TimeoutError, ConnectionError),
+    )
+
+
+def describe_http_error(exception_object: BaseException | None) -> str:
+    if isinstance(exception_object, urllib.error.HTTPError):
+        return f'HTTP {exception_object.code}'
+    if exception_object is None:
+        return 'unknown'
+    return f'{type(exception_object).__name__}: {shorten_log_text(exception_object, 120)}'
+
+
+def mark_http_blocked(reason: str) -> None:
+    """记录本次解析里未能恢复的风控失败，供置信度判定和日志使用。"""
+    blocked_reason_list = gHttpBlockedContext.get()
+    if blocked_reason_list is None:
+        return
+    if reason not in blocked_reason_list:
+        blocked_reason_list.append(reason)
+
+
+def has_http_blocked() -> bool:
+    blocked_reason_list = gHttpBlockedContext.get()
+    return bool(blocked_reason_list)
+
+
+def format_http_blocked_log() -> str:
+    blocked_reason_list = gHttpBlockedContext.get() or []
+    return format_log_list(blocked_reason_list, 4) if blocked_reason_list else 'none'
+
+
+def get_api_cache(cache_key: str, missing=None):
+    """短期缓存 B 站接口结果，减少请求量并让重复分享得到一致结果。"""
+    with gApiCacheLock:
+        cache_entry = gApiCache.get(cache_key)
+        if cache_entry is None:
+            return missing
+        cached_time, cached_value = cache_entry
+        if time.monotonic() - cached_time > API_CACHE_TTL_SECONDS:
+            gApiCache.pop(cache_key, None)
+            return missing
+    return copy.deepcopy(cached_value)
+
+
+def set_api_cache(cache_key: str, cache_value) -> None:
+    with gApiCacheLock:
+        expire_api_cache()
+        if len(gApiCache) >= API_CACHE_MAX_ENTRIES:
+            oldest_key = min(gApiCache, key=lambda key: gApiCache[key][0])
+            gApiCache.pop(oldest_key, None)
+        gApiCache[cache_key] = (time.monotonic(), copy.deepcopy(cache_value))
+
+
+def expire_api_cache() -> None:
+    now = time.monotonic()
+    with gApiCacheLock:
+        for cache_key in [
+            cache_key
+            for cache_key, (cached_time, _) in gApiCache.items()
+            if now - cached_time > API_CACHE_TTL_SECONDS
+        ]:
+            gApiCache.pop(cache_key, None)
 
 
 def get_http_headers() -> dict[str, str]:

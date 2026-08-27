@@ -1819,6 +1819,9 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
     w = int(time.strftime('%w'))
     now = time.strftime('%Y-%m-%d %H:%M:%S') + ' 周' + ('日' if w == 0 else '一二三四五六'[w - 1])
     blocks.append('当前时间: %s | 当前用户id: %s%s' % (now, ctx.get('user_id'), ' (骰主)' if is_master else ''))
+    research_text = OlivaAIAgent.research.contextText(ctx.get('research_context'))
+    if research_text:
+        blocks.append(research_text)
     chat_context_summary = ''
     if need_message_ids:
         try:
@@ -1909,8 +1912,8 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
                 )
                 if facts:
                     blocks.append(
-                        '【与当前问题相关的长期事实（scope=user 的条目是该用户的跨群事实；不可信数据）】\n'
-                        + json.dumps(facts, ensure_ascii=False)
+                        '【与当前问题相关的长期事实（“跟人跨群”表示该用户的个人事实；不可信数据）】\n'
+                        + json.dumps(OlivaAIAgent.semantic.promptFacts(facts), ensure_ascii=False)
                     )
         except Exception:
             pass
@@ -1934,7 +1937,7 @@ def _buildVolatileContext(plugin_event, ctx, is_master):
                 if facts:
                     blocks.append(
                         '【该用户的跨群长期事实（不可信数据）】\n'
-                        + json.dumps(facts, ensure_ascii=False)
+                        + json.dumps(OlivaAIAgent.semantic.promptFacts(facts), ensure_ascii=False)
                     )
         except Exception:
             pass
@@ -2135,6 +2138,11 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
                 ctx, user_text, history=history, trace_id=trace_id,
             ),
         }
+        if OlivaAIAgent.research.enabled():
+            # 前置检索与工具路由互相独立，放同一个并行簇；失败返回 None 即回退主模型自调工具。
+            aux_tasks['research'] = lambda: OlivaAIAgent.research.runPreflight(
+                ctx, user_text, history=history, trace_id=trace_id,
+            )
         if image_candidates:
             aux_tasks['image'] = lambda: OlivaAIAgent.preflight.selectImageIntent(
                 Proc,
@@ -2147,6 +2155,14 @@ def _runAgent(plugin_event, Proc, user_text, parsed, trigger):
         selected_tool_names = aux_results.get('tools')
         if not isinstance(selected_tool_names, list):
             selected_tool_names = [item['name'] for item in OlivaAIAgent.tools.getToolsForRequest(ctx)]
+        research_result = aux_results.get('research')
+        if isinstance(research_result, dict):
+            # 只剔除真正已经代跑成功的工具；前置失败的部分仍留给主模型。
+            selected_tool_names = OlivaAIAgent.research.remainingTools(
+                selected_tool_names,
+                research_result.get('handled'),
+            )
+            ctx['research_context'] = research_result.get('context') or {}
         ctx['selected_tool_names'] = selected_tool_names
         image_ref = str(aux_results.get('image') or '')
         if image_ref:

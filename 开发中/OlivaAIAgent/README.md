@@ -224,6 +224,23 @@ GUI 新增“OlivaDice 团日志”分类，`olivadice_logger.enabled` 默认 `t
 - 主模型只读取配置的常态历史窗口，额外缓存窗口继续供前置判定与后台记忆使用；协议接口、消息 ID、骰系速查和插件列表也只在对应工具入选时注入。
 - DeepSeek V4 官方接口会按 `thinking.type` 显式关闭默认思考，避免短回复产生大量不可见推理 Token。
 
+## 前置检索：把工具决策链下放给便宜模型（v2.21）
+
+配好 `ambient.intent_api` 前置模型后，`research` 段默认接管整条只读检索链：
+
+- **规划**（`research.planResearch`）：前置模型判断本轮要不要联网、把口语问题改写成 1~2 条精确搜索词，并判断是否需要查共享知识库、长期记忆列表、已有提醒。与工具路由、图片建议、参与判断同在 `preflight.runCluster` 里并行。
+- **执行**（`research.runResearch`）：插件用 `tools.execToolRaw` 直接跑 `web_search`/`fetch_url`/`kb_search`/`memory_list`/`list_reminders`，保留权限与内容安全检查，但不做 `tool_result_max_chars` 裸截。
+- **压缩**（`research.summarizeResearch`）：结果压成 ≤`summary_max_chars` 的结论 + 来源 URL 注入主模型。Tavily 自带 `answer` 时默认直接采用，省掉这次模型调用。
+- 被代跑的工具从本轮工具列表摘掉（在 `_TOOL_FAMILIES` 家族扩展之后摘，不会被成对加回），提示词注明"已由前置模型完成，不必重复调用工具"。
+
+省的是主模型的重复往返：原来一次联网要花掉"出 tool_call → 工具结果回灌 → 再组织答案 → JSON 收尾"三四次完整 prompt，现在主模型只跑一轮。
+
+**只下放只读、可重试、无副作用的调用。** 骰点 `run_command`、OlivOS 接口 `olivos_call`、写库 `memory_save`/`kb_save`、发语音 `send_voice` 仍由主模型决定——这些参数错了会真的骰错检定或产生副作用。
+
+**回退语义与既有约定一致（前置失败不削能力）**：规划失败/非 JSON → 整条链放弃，工具原样留给主模型；搜索无结果 → 联网工具放回主模型；压缩失败 → 退 Tavily `answer` → 再退原始摘要限长。`mode=auto` 时没配前置模型就完全退回主模型自调工具，而不是用主模型多做两次小调用（那样通常更贵）。
+
+长期事实注入也顺带瘦身：`semantic.promptFacts` 只保留主题、内容、跟人跨群标记和来源消息 ID，`score`/`vector_score`/`source_event_id` 等排序字段不再进提示词。
+
 ## 人设锁定与提示注入防护（v2.13）
 
 - `prompt.system` 是机器人身份、性格、语气、称呼习惯与行为边界的唯一全局配置来源。用户可以提出正常问题、操作和一次性输出格式要求，但不能用“以后改成文言文”“每次先叫昵称”“忘掉原人设”等话术永久改写机器人。

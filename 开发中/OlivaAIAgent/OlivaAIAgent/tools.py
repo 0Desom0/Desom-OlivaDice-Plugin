@@ -114,8 +114,12 @@ def callerIsGroupAdmin(ctx):
         return False
 
 
-def execTool(name, args, ctx):
-    '''执行工具，返回字符串结果(给模型)'''
+def execToolRaw(name, args, ctx):
+    '''执行工具并返回原始结果对象；权限与内容安全检查一致，但不做 tool_result_max_chars 截断。
+
+    供前置检索链使用：原始结果不会直接进主模型，而是先由辅助模型压成结论，
+    所以不需要按工具结果上限裸截 JSON（裸截会把合法 JSON 砍成残缺文本）。
+    '''
     started = time.perf_counter()
     trace_id = ctx.get('trace_id')
     OlivaAIAgent.conf.traceLog(
@@ -134,7 +138,7 @@ def execTool(name, args, ctx):
             item = {'name': name, 'danger': bool(mcp_item.get('danger', True))}
     if item is None:
         OlivaAIAgent.conf.traceLog(ctx.get('Proc'), 'tool.unknown', trace_id, name=name)
-        return _trunc({'error': '未知工具: %s' % name})
+        return {'error': '未知工具: %s' % name}
     argument_text = json.dumps(args or {}, ensure_ascii=False, default=str)
     bot_hash = _bot_hash(ctx)
     matched = OlivaAIAgent.contentSafety.match(argument_text, bot_hash=bot_hash)
@@ -143,11 +147,11 @@ def execTool(name, args, ctx):
             ctx.get('Proc'), 'security.content.blocked', trace_id,
             direction='tool', scene=name, source=matched,
         )
-        return _trunc({'error': '该工具参数不在可处理的话题范围内'})
+        return {'error': '该工具参数不在可处理的话题范围内'}
     allowed, why = isToolAllowed(item, ctx)
     if not allowed:
         OlivaAIAgent.conf.traceLog(ctx.get('Proc'), 'tool.denied', trace_id, name=name, reason=why)
-        return _trunc({'error': '权限不足: %s' % why})
+        return {'error': '权限不足: %s' % why}
     try:
         if mcp_item is not None:
             result = OlivaAIAgent.mcp.execute(name, args or {}, ctx)
@@ -182,7 +186,7 @@ def execTool(name, args, ctx):
             elapsed_ms=int((time.perf_counter() - started) * 1000),
             name=name,
         )
-        return _trunc(result)
+        return result
     except Exception as e:
         OlivaAIAgent.conf.traceLog(
             ctx.get('Proc'),
@@ -192,7 +196,13 @@ def execTool(name, args, ctx):
             error='%s: %s' % (type(e).__name__, e),
             name=name,
         )
-        return _trunc({'error': '工具执行异常: %s: %s' % (type(e).__name__, e)})
+        return {'error': '工具执行异常: %s: %s' % (type(e).__name__, e)}
+
+
+def execTool(name, args, ctx):
+    '''执行工具，返回字符串结果(给模型)'''
+    return _trunc(execToolRaw(name, args, ctx))
+
 
 
 def getToolsForRequest(ctx, voice_only=False, names=None):

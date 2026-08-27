@@ -434,6 +434,21 @@ def searchFacts(bot_hash, platform, group_id, query, top_k=None, user_id=None, u
     return unique[:limit]
 
 
+def promptFacts(facts):
+    '''把检索结果压成注入用的精简结构：score/vector_score/事件ID 只对插件排序有意义，不进提示词。'''
+    lean = []
+    for item in facts or []:
+        if not isinstance(item, dict):
+            continue
+        entry = {'主题': item.get('subject', ''), '内容': item.get('content', '')}
+        if item.get('scope') == SCOPE_USER and item.get('user_id') not in [None, '']:
+            entry['跟人跨群'] = str(item['user_id'])
+        if item.get('source_message_id') not in [None, '']:
+            entry['来源消息ID'] = str(item['source_message_id'])
+        lean.append(entry)
+    return lean
+
+
 def countFacts(bot_hash=None, platform=None, group_id=None, scope_type=None, scope_id=None):
     clauses = []
     params = []

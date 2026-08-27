@@ -1211,6 +1211,11 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         aux_tasks['tools'] = lambda: OlivaAIAgent.tools.selectToolNames(
             runtime_tool_ctx, message, history=history, trace_id=trace_id,
         )
+    if allow_tools and runtime_tool_ctx is not None and OlivaAIAgent.research.enabled():
+        # 前置检索只在本轮允许工具时有意义；失败返回 None 即回退主模型自调工具。
+        aux_tasks['research'] = lambda: OlivaAIAgent.research.runPreflight(
+            runtime_tool_ctx, message, history=history, trace_id=trace_id,
+        )
     if _shouldFirstThink(cfg('first_thinking', False), skip_first_thinking):
         aux_tasks['reply'] = lambda: _firstThink(
             Proc,
@@ -1251,6 +1256,14 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         ] if allow_tools else []
     if not allow_tools and voice_ready:
         selected_tool_names = ['send_voice']
+    research_context = {}
+    research_result = aux_results.get('research')
+    if isinstance(research_result, dict):
+        selected_tool_names = OlivaAIAgent.research.remainingTools(
+            selected_tool_names,
+            research_result.get('handled'),
+        )
+        research_context = research_result.get('context') or {}
     image_ref = str(aux_results.get('image') or '')
     tool_defs = OlivaAIAgent.tools.getToolsForRequest(
         runtime_tool_ctx,
@@ -1262,6 +1275,11 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         tool_hint = ('\n- 如需外部操作或查询，可调用当前列出的工具，拿到结果后再组织成群聊口吻的回复')
         if 'run_command' in selected_tool_set:
             tool_hint += '\n- 骰点/检定必须用 run_command 执行真实指令，禁止编造结果'
+    if research_context:
+        tool_hint += (
+            '\n- 动态上下文里的「%s」是前置模型已经查好的只读检索结果，直接据此作答；'
+            '不要说要去搜、也不要重复调用检索工具' % OlivaAIAgent.research.CONTEXT_KEY
+        )
 
     system_content = '''# 规则
 - 你以普通群友的方式参与这场日常群聊，而不是客服、旁白或对每条消息都要响应的机器人
@@ -1356,6 +1374,9 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     }
     if chat_context_summary:
         patch['当前会话接口参数'] = chat_context_summary
+    if research_context:
+        patch[OlivaAIAgent.research.CONTEXT_KEY] = dict(research_context)
+        patch[OlivaAIAgent.research.CONTEXT_KEY]['说明'] = '只读检索已由前置模型完成，不必重复调用工具'
     if {'olivos_discover', 'olivos_call'} & selected_tool_set:
         message_ids = messageIdContext(history)
         if message_ids:
@@ -1364,7 +1385,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         if registry_ids:
             patch['插件消息标识注册表'] = registry_ids
     if semantic_facts:
-        patch['当前记忆']['长期事实'] = semantic_facts
+        patch['当前记忆']['长期事实'] = OlivaAIAgent.semantic.promptFacts(semantic_facts)
     if agent_mem:
         patch['当前记忆']['互通记忆'] = agent_mem
     handoff_records = [

@@ -113,10 +113,16 @@ def getBackendConf():
     return bc
 
 
+def auxiliaryReady():
+    '''前置辅助模型是否真的配置好了；未配置时 getAuxiliaryBackendConf 会静默回退主后端。'''
+    ic = OlivaAIAgent.conf.get('ambient', 'intent_api', default={}) or {}
+    return bool(ic.get('enable') and ic.get('api_url') and ic.get('api_key'))
+
+
 def getAuxiliaryBackendConf(max_tokens=512, temperature=0.0):
     '''优先复用前置便宜模型处理路由、提炼和翻译；未配置时才回退主后端。'''
     ic = OlivaAIAgent.conf.get('ambient', 'intent_api', default={}) or {}
-    if ic.get('enable') and ic.get('api_url') and ic.get('api_key'):
+    if auxiliaryReady():
         # 保留辅助模型自己的兼容协议、请求头/请求体和 Anthropic 版本等适配项。
         bc = dict(ic)
         bc['wire'] = _detectWire(ic)
