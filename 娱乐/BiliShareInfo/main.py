@@ -109,9 +109,28 @@ AT_SEGMENT_PATTERN = re.compile(
     r'^\[(?:OP|CQ):at,(?P<params>[^\]]*)\]',
     re.IGNORECASE,
 )
+# 消息段类型取自 OlivOS/core/core/messageAPI.py 的 PARA 定义，
+# olivos_string 用 [OP:类型,键=值]，old_string 用 [CQ:类型,键=值]。
+MESSAGE_SEGMENT_TYPE_SET = frozenset({
+    'text', 'face', 'image', 'record', 'video', 'at', 'rps', 'dice',
+    'shake', 'poke', 'anonymous', 'share', 'contact', 'location',
+    'music', 'reply', 'forward', 'node', 'xml', 'json',
+})
+# 这几类消息段真的可能携带 B 站分享，内容需要保留参与解析。
+SHARE_BEARING_SEGMENT_TYPE_SET = frozenset({'text', 'share', 'music', 'xml', 'json'})
+MESSAGE_SEGMENT_PATTERN = re.compile(
+    r'\[(?:OP|CQ):(?P<type>[A-Za-z_]+)(?:,[^\]]*)?\]',
+    re.IGNORECASE,
+)
+BVID_REFERENCE_PATTERN = re.compile(
+    r'(?<![0-9A-Za-z_])(BV[0-9A-Za-z]{10})(?![0-9A-Za-z_])'
+)
 AV_REFERENCE_PATTERN = re.compile(
     r'(?<![A-Za-z0-9_-])(?:av|aid\s*=\s*)(\d+)(?![A-Za-z0-9])',
     re.IGNORECASE,
+)
+ANY_URL_PATTERN = re.compile(
+    r'(?i)[a-z][a-z0-9+.-]*://[^\s"\'<>]+'
 )
 LIVE_ROOM_ID_PATTERN = re.compile(
     r'(?i)(?:https?://)?live\.bilibili\.com/(?:h5/)?(?P<room_id>\d+)'
@@ -192,8 +211,28 @@ def parse_command_message(plugin_event, message):
 def prepare_current_message(plugin_event, message: str) -> tuple[str, bool]:
     has_reference = has_message_reference(plugin_event, message)
     if not has_reference:
-        return message, False
-    return strip_leading_reply_context(message), True
+        return strip_non_parse_segments(message), False
+    return strip_non_parse_segments(strip_leading_reply_context(message)), True
+
+
+def strip_non_parse_segments(message: str) -> str:
+    """移除图片、表情等非文本消息段，只留下可能携带 B 站分享的内容。
+
+    OlivOS 会把图片、表情、语音等还原成 [OP:image,file=...] 这类消息段
+    （参见 OlivOS/core/core/messageAPI.py 的 PARA 定义）。这些段里的
+    file/url 是一长串随机字符，凑巧出现 BV+10 位字符的概率并不低，
+    直接扫描整条消息会把普通图片误认成视频分享。
+    """
+    def replace_segment(matched) -> str:
+        segment_type = safe_str(matched.group('type')).casefold()
+        if segment_type in SHARE_BEARING_SEGMENT_TYPE_SET:
+            return matched.group(0)
+        if segment_type in MESSAGE_SEGMENT_TYPE_SET:
+            return ' '
+        # 未知类型 OlivOS 会当作普通文本，这里同样原样保留。
+        return matched.group(0)
+
+    return MESSAGE_SEGMENT_PATTERN.sub(replace_segment, safe_str(message))
 
 
 def has_message_reference(plugin_event, message: str) -> bool:
@@ -1535,13 +1574,29 @@ def extract_video_refs_from_text(text: str) -> list[dict[str, str]]:
         text_candidates.append(decoded_text)
 
     for text_candidate in text_candidates:
-        for bvid_match in re.finditer(r'(BV[0-9A-Za-z]{10})', text_candidate):
-            add_video_ref(video_ref_list, seen_key_set, {'bvid': bvid_match.group(1)})
+        for scan_text in build_reference_scan_texts(text_candidate):
+            for bvid_match in BVID_REFERENCE_PATTERN.finditer(scan_text):
+                add_video_ref(video_ref_list, seen_key_set, {'bvid': bvid_match.group(1)})
 
-        for aid_match in AV_REFERENCE_PATTERN.finditer(text_candidate):
-            add_video_ref(video_ref_list, seen_key_set, {'aid': aid_match.group(1)})
+            for aid_match in AV_REFERENCE_PATTERN.finditer(scan_text):
+                add_video_ref(video_ref_list, seen_key_set, {'aid': aid_match.group(1)})
 
     return video_ref_list
+
+
+def build_reference_scan_texts(text: str) -> list[str]:
+    """把文本拆成「去掉所有 URL 的正文」加「B 站域名的 URL 片段」。
+
+    图片、头像、预览图之类的 URL 里是一长串随机字符，凑巧包含 BV+10 位
+    字符的概率约 1.5%，因此非 B 站域名的 URL 一律不参与 BV/av 号提取。
+    """
+    # 卡片原文里的 URL 常被转义成 https:\/\/，先还原才能识别成 URL。
+    normalized_text = safe_str(text).replace('\\/', '/')
+    scan_text_list = [ANY_URL_PATTERN.sub(' ', normalized_text)]
+    for url in extract_urls(normalized_text):
+        if url not in scan_text_list:
+            scan_text_list.append(url)
+    return scan_text_list
 
 
 def add_video_ref(
