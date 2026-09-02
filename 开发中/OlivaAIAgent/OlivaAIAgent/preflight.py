@@ -46,9 +46,42 @@ def runCluster(tasks, Proc=None, trace_id=None):
     return results
 
 
-def _recentContext(history, limit=4):
+def resolveAuxiliaryHistoryLimit(history, limit=None):
+    '''0=与当前传入的群聊历史同步；正数超过现有条数时按现有条数截断。'''
+    available = len(list(history or []))
+    raw = limit
+    if raw is None:
+        raw = OlivaAIAgent.conf.get('ambient', 'intent_history_size', default=0)
+    try:
+        configured = int(raw)
+    except (TypeError, ValueError):
+        configured = 0
+    if configured <= 0:
+        return available
+    return min(configured, available)
+
+
+def _sliceHistory(entries, limit):
+    if limit <= 0:
+        return []
+    return list(entries or [])[-limit:]
+
+
+def _recentContext(history, limit=None, exclude_text=None):
+    entries = list(history or [])
+    excluded = str(exclude_text or '').strip()
+    if excluded:
+        # 群聊统一管线会先把当前消息写入滚动历史，避免前置模型重复计费。
+        for index in range(len(entries) - 1, -1, -1):
+            item = entries[index]
+            if not isinstance(item, dict):
+                continue
+            value = item.get('message') or item.get('content') or ''
+            if str(value).strip() == excluded:
+                entries.pop(index)
+                break
     recent = []
-    for item in list(history or [])[-limit:]:
+    for item in _sliceHistory(entries, resolveAuxiliaryHistoryLimit(entries, limit)):
         if not isinstance(item, dict):
             continue
         recent.append({
@@ -56,6 +89,15 @@ def _recentContext(history, limit=4):
             'text': item.get('message') or item.get('content') or '',
         })
     return recent
+
+
+def auxiliaryRequestContext(current_text, history, history_limit=None):
+    '''统一构造前置小模型输入：当前消息单独标明，历史只用于补全语境。'''
+    current = str(current_text or '').strip()
+    return {
+        '当前消息': current[:2000],
+        '最近历史': _recentContext(history, limit=history_limit, exclude_text=current),
+    }
 
 
 def _imageValue(raw, candidates=None):
@@ -124,8 +166,7 @@ def selectImageIntent(Proc, query_text, history, image_candidates, trace_id=None
             'role': 'user',
             'content': json.dumps(
                 {
-                    '当前消息': str(query_text or '')[:2000],
-                    '最近上下文': _recentContext(history),
+                    **auxiliaryRequestContext(query_text, history),
                     '候选图片': candidates,
                 },
                 ensure_ascii=False,

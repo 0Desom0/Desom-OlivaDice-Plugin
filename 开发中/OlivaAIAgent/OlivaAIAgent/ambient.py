@@ -1856,7 +1856,13 @@ def _firstThink(
 - 最新消息只有[表情包:...]且没有定向信号、文字问题或请求时，通常视为群友对前文的反应并判 SKIP；只有确实在邀请你接话时才判 NEXT
 - 表情包附带实际文字问题/请求，或本轮有明确@你、引用你的定向信号时，按完整语境判 NEXT
 - 不判断工具和回复内容，不要解释'''
-        messages = buildContextMessages(sys_prompt, list(history or [])[-8:], {})
+        visible = list(history or [])
+        history_limit = OlivaAIAgent.preflight.resolveAuxiliaryHistoryLimit(visible)
+        messages = buildContextMessages(
+            sys_prompt,
+            visible[-history_limit:] if history_limit else [],
+            {},
+        )
         directed_hint = (
             '本轮有明确的@你或引用你的定向信号。'
             if directed

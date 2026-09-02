@@ -117,6 +117,7 @@ FIELD_LABELS = {
     'ignore_prefixes': '潜行忽略前缀',
     'integrate_hard_trigger': '定向触发整合全部能力',
     'history_size': '潜行历史条数',
+    'intent_history_size': '辅助模型历史条数',
     'history_size_min': '最少群历史条数',
     'history_dynamic': '动态历史窗口',
     'history_dynamic_size': '动态窗口上限',

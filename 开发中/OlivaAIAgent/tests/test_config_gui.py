@@ -49,6 +49,7 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual(8, default_conf['memory']['max_rounds'])
         self.assertEqual(16, default_conf['memory']['prompt_cache_max_rounds'])
         self.assertEqual(8, default_conf['ambient']['history_size'])
+        self.assertEqual(0, default_conf['ambient']['intent_history_size'])
         self.assertEqual(16, default_conf['ambient']['prompt_cache_history_size'])
         self.assertTrue(default_conf['security']['use_olivadice_censor'])
         self.assertEqual('骰主', default_conf['masters']['default_title'])

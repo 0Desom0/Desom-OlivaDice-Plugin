@@ -98,6 +98,111 @@ class TokenOptimizationTest(unittest.TestCase):
         self.assertIn('web_search', names)
         self.assertIn('fetch_url', names)
 
+    def test_research_planner_receives_current_message_and_history_together(self):
+        response = {
+            'ok': True,
+            'text': json.dumps({
+                'web': True,
+                'queries': ['星穹铁道 3.7 版本更新时间'],
+                'urls': [],
+                'knowledge': False,
+                'kb_query': '',
+                'memory': False,
+                'reminders': False,
+            }, ensure_ascii=False),
+        }
+        history = [
+            {'nickname': '群友甲', 'message': '我们刚才聊到星穹铁道的新版本'},
+            {'nickname': 'Desom-fu', 'message': '它什么时候更新？'},
+        ]
+        with (
+            mock.patch.object(OlivaAIAgent.aiClient, 'chat', return_value=response) as chat,
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+        ):
+            plan = OlivaAIAgent.research.planResearch(
+                {'Proc': None, 'func_type': 'group_message'},
+                '它什么时候更新？',
+                history=history,
+                trace_id='trace-research-context',
+            )
+
+        request = json.loads(chat.call_args.args[0][1]['content'])
+        self.assertEqual('它什么时候更新？', request['当前消息'])
+        self.assertEqual(
+            [{'sender': '群友甲', 'text': '我们刚才聊到星穹铁道的新版本'}],
+            request['最近历史'],
+        )
+        self.assertEqual(['星穹铁道 3.7 版本更新时间'], plan['queries'])
+
+    def test_auxiliary_history_zero_syncs_with_current_group_history(self):
+        history = [
+            {'nickname': '甲', 'message': '第一条'},
+            {'nickname': '乙', 'message': '第二条'},
+            {'nickname': '丙', 'message': '第三条'},
+            {'nickname': '丁', 'message': '当前消息'},
+        ]
+        OlivaAIAgent.conf.gConf['ambient']['intent_history_size'] = 0
+
+        context = OlivaAIAgent.preflight.auxiliaryRequestContext('当前消息', history)
+
+        self.assertEqual(
+            [
+                {'sender': '甲', 'text': '第一条'},
+                {'sender': '乙', 'text': '第二条'},
+                {'sender': '丙', 'text': '第三条'},
+            ],
+            context['最近历史'],
+        )
+
+    def test_auxiliary_history_caps_to_existing_group_history(self):
+        history = [
+            {'nickname': '甲', 'message': '旧话题'},
+            {'nickname': '乙', 'message': '新话题'},
+            {'nickname': '丙', 'message': '当前消息'},
+        ]
+        OlivaAIAgent.conf.gConf['ambient']['intent_history_size'] = 99
+
+        context = OlivaAIAgent.preflight.auxiliaryRequestContext('当前消息', history)
+
+        self.assertEqual(
+            [
+                {'sender': '甲', 'text': '旧话题'},
+                {'sender': '乙', 'text': '新话题'},
+            ],
+            context['最近历史'],
+        )
+
+    def test_auxiliary_history_positive_limit_keeps_recent_entries(self):
+        history = [
+            {'nickname': '甲', 'message': '更早'},
+            {'nickname': '乙', 'message': '刚才'},
+            {'nickname': '丙', 'message': '当前消息'},
+        ]
+        OlivaAIAgent.conf.gConf['ambient']['intent_history_size'] = 1
+
+        context = OlivaAIAgent.preflight.auxiliaryRequestContext('当前消息', history)
+
+        self.assertEqual([{'sender': '乙', 'text': '刚才'}], context['最近历史'])
+
+    def test_tool_router_uses_history_to_disambiguate_current_request(self):
+        response = {'ok': True, 'text': json.dumps({'tools': ['web_search']})}
+        history = [{'nickname': '群友甲', 'message': '刚才说的是今天的赛事结果'}]
+        with (
+            mock.patch.object(OlivaAIAgent.aiClient, 'chat', return_value=response) as chat,
+            mock.patch.object(OlivaAIAgent.voice, 'getStatus', return_value={'ready': False}),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+        ):
+            names = OlivaAIAgent.tools.selectToolNames(
+                {},
+                '帮我查一下这个',
+                history=history,
+            )
+
+        request = json.loads(chat.call_args.args[0][1]['content'])
+        self.assertEqual('帮我查一下这个', request['当前消息'])
+        self.assertEqual(history[0]['message'], request['最近历史'][0]['text'])
+        self.assertIn('web_search', names)
+
     def test_tool_router_retries_malformed_small_model_output(self):
         responses = [
             {'ok': True, 'text': '{"d":"NEXT"}'},

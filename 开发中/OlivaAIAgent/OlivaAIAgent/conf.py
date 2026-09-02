@@ -307,6 +307,9 @@ DEFAULT_CONF = {
         'history_size_min': 4,
         'history_dynamic': False,
         'history_dynamic_size': 16,
+        'intent_history_size': 0,
+        '_intent_history_size说明': '前置辅助模型(参与判定/图片/工具路由/检索规划)读取的最近群历史条数；'
+                                 '0=与当前群聊历史同步，填写值超过现有历史时按现有历史截断',
         'prompt_cache_optimized': True,
         'prompt_cache_history_size': 16,
         'slack_time': 5,

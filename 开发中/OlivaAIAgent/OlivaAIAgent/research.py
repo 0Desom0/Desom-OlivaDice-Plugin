@@ -60,7 +60,7 @@ def _summaryBackend(max_tokens):
     return OlivaAIAgent.aiClient.getAuxiliaryBackendConf(max_tokens=max_tokens, temperature=0.2)
 
 
-def _recentContext(history, limit=4):
+def _recentContext(history, limit=None):
     return OlivaAIAgent.preflight._recentContext(history, limit=limit)
 
 
@@ -109,6 +109,8 @@ PLANNER_PROMPT = (
     '- web：需要外部实时信息（新闻、版本、价格、赛事、当前事实）才为 true；'
     '常识、闲聊、角色扮演、骰点、群内话题一律 false\n'
     '- queries：把用户口语改写成 1~2 条精确、可检索的关键词短语，不要照抄整句；web 为 false 时给空数组\n'
+    '- 输入同时包含当前消息和最近历史；当前消息是本轮任务边界，历史只用于补全代词、省略主语、时间范围和实体关系\n'
+    '- 先合并理解两部分，再生成自洽的 queries、urls 和 kb_query；不要把“这个、那个、它、上面说的”等指代词原样当搜索词\n'
     '- urls：只有消息里出现了具体网址、或需要读取某个已知页面时才填\n'
     '- knowledge：涉及本群设定、群内梗、跑团约定、以前聊过的内容时为 true，kb_query 给检索词\n'
     '- memory：用户在问"你记得什么/我的记忆"这类内容时为 true\n'
@@ -128,8 +130,7 @@ def planResearch(ctx, query_text, history=None, trace_id=None):
             'role': 'user',
             'content': json.dumps(
                 {
-                    '当前请求': text[:2000],
-                    '最近上下文': _recentContext(history),
+                    **OlivaAIAgent.preflight.auxiliaryRequestContext(text, history),
                     '场景': '群聊' if ctx.get('func_type') == 'group_message' else '私聊',
                 },
                 ensure_ascii=False,
