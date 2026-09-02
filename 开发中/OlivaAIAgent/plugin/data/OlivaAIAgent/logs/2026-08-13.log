@@ -1,5 +1,0 @@
-2026-08-13 11:38:46 [INFO] [OlivaAIAgent] MCP 连接完成 | 服务=demo | 工具=1
-2026-08-13 19:59:43 [INFO] [OlivaAIAgent] 流程 | 运行时接口已注入提示词 | 编号=trace-prompt | 接口数=0
-2026-08-13 19:59:43 [INFO] [OlivaAIAgent] 流程 | 机器人消息发送完成 | 消息ID=sent-1 | message_ids=<列表:1项> | message_index=无 | 成功=是
-2026-08-13 19:59:43 [INFO] [OlivaAIAgent] MCP 连接完成 | 服务=demo | 工具=1
-2026-08-13 19:59:44 [INFO] [OlivaAIAgent] 潜行 JSON解析失败,立即兜底: 直接回复内容
