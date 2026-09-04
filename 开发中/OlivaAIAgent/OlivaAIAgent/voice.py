@@ -36,11 +36,52 @@ _CONTENT_TYPE_FORMATS = {
 }
 _DASHSCOPE_PROVIDER = 'dashscope_multimodal'
 _OPENAI_PROVIDER = 'openai_compatible'
+_MIMO_PROVIDER = 'mimo_tts'
+_DASHSCOPE_DEFAULT_URL = (
+    'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
+)
+_MIMO_DEFAULT_URL = 'https://api.xiaomimimo.com/v1/chat/completions'
+_MIMO_CLONE_MAX_B64 = 10 * 1024 * 1024
+_MIMO_PRESET_VOICES = (
+    'mimo_default',
+    '冰糖',
+    '茉莉',
+    '苏打',
+    '白桦',
+    'Mia',
+    'Chloe',
+    'Milo',
+    'Dean',
+)
+_MIMO_MODE_ALIASES = {
+    'default': 'default',
+    'tts': 'default',
+    'preset': 'default',
+    'clone': 'clone',
+    'voiceclone': 'clone',
+    'voice_clone': 'clone',
+    'design': 'design',
+    'voicedesign': 'design',
+    'voice_design': 'design',
+}
+_MIMO_MODE_MODELS = {
+    'default': 'mimo-v2.5-tts',
+    'clone': 'mimo-v2.5-tts-voiceclone',
+    'design': 'mimo-v2.5-tts-voicedesign',
+}
+_MIMO_FORMATS = ('wav', 'mp3', 'pcm', 'pcm16')
+_DASHSCOPE_VOICE_FALLBACKS = (
+    'cherry', 'bella', 'serena', 'chelsie', 'ethan', 'vivian', 'moon', 'maia', 'katerina', 'ryan',
+)
 _PROVIDER_ALIASES = {
     'dashscope': _DASHSCOPE_PROVIDER,
     _DASHSCOPE_PROVIDER: _DASHSCOPE_PROVIDER,
     'openai': _OPENAI_PROVIDER,
     _OPENAI_PROVIDER: _OPENAI_PROVIDER,
+    'mimo': _MIMO_PROVIDER,
+    'mimo_tts': _MIMO_PROVIDER,
+    'xiaomi_mimo': _MIMO_PROVIDER,
+    'xiaomimimo': _MIMO_PROVIDER,
 }
 _VOICE_DEDUPE_CTX_KEY = '_oliva_ai_voice_texts'
 _VOICE_SENT_CTX_KEY = '_oliva_ai_voice_sent'
@@ -126,9 +167,28 @@ def getStatus():
     voice = str(cfg.get('voice', '')).strip()
     provider_value = str(cfg.get('provider', _DASHSCOPE_PROVIDER)).strip().lower()
     provider = _PROVIDER_ALIASES.get(provider_value, provider_value)
-    provider_ready = provider in [_DASHSCOPE_PROVIDER, _OPENAI_PROVIDER]
+    mimo_mode = _resolveMimoMode(cfg) if provider == _MIMO_PROVIDER else ''
+    clone_audio = str(cfg.get('clone_audio', '')).strip()
+    design_prompt = str(cfg.get('design_prompt', '')).strip()
+    response_format = str(cfg.get('response_format', 'mp3')).strip().lower()
+    if provider == _MIMO_PROVIDER:
+        api_url = _resolveMimoApiUrl(api_url)
+        model = _MIMO_MODE_MODELS.get(mimo_mode) or model
+        response_format = _resolveMimoFormat(response_format)
+        if mimo_mode == 'default':
+            voice = _resolveMimoPresetVoice(voice)
+        elif mimo_mode == 'design' and not design_prompt:
+            design_prompt = personaVoiceDesignPrompt()
+    provider_ready = provider in [_DASHSCOPE_PROVIDER, _OPENAI_PROVIDER, _MIMO_PROVIDER]
     if provider == _DASHSCOPE_PROVIDER:
         provider_ready = provider_ready and bool(voice)
+    elif provider == _MIMO_PROVIDER:
+        if mimo_mode == 'clone':
+            provider_ready = provider_ready and bool(clone_audio)
+        elif mimo_mode == 'design':
+            provider_ready = provider_ready and bool(design_prompt)
+        else:
+            provider_ready = provider_ready and bool(voice)
     return {
         'enabled': enabled,
         'ready': enabled and provider_ready and bool(api_url and model),
@@ -136,8 +196,12 @@ def getStatus():
         'api_url': api_url,
         'model': model,
         'voice': voice,
+        'mimo_mode': mimo_mode,
+        'clone_audio': clone_audio,
+        'design_prompt': design_prompt,
         'language_type': str(cfg.get('language_type', 'Chinese')).strip(),
-        'response_format': str(cfg.get('response_format', 'mp3')).strip().lower(),
+        'response_format': response_format,
+        'optimize_text_preview': bool(cfg.get('optimize_text_preview', False)),
     }
 
 
@@ -274,6 +338,28 @@ def _findAudioValue(value):
     return None
 
 
+def _audioFromChatCompletion(data):
+    if not isinstance(data, dict):
+        return None
+    choices = data.get('choices')
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    message = first.get('message') or first.get('delta') or {}
+    if not isinstance(message, dict):
+        return None
+    audio = message.get('audio')
+    if not isinstance(audio, dict):
+        return None
+    raw = audio.get('data')
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    content = _decodeBase64(raw)
+    if not content:
+        return None
+    return content, _formatFromBytes(content)
+
+
 def _audioFromResponse(response, timeout):
     content_type = str(response.headers.get('Content-Type', '')).lower()
     if content_type.startswith('audio/') or 'application/octet-stream' in content_type:
@@ -282,6 +368,9 @@ def _audioFromResponse(response, timeout):
         data = response.json()
     except Exception as e:
         raise ValueError('语音接口返回的不是音频或有效 JSON') from e
+    chat_audio = _audioFromChatCompletion(data)
+    if chat_audio:
+        return chat_audio
     found = _findAudioValue(data)
     if not found:
         if isinstance(data, dict):
@@ -343,11 +432,191 @@ def _openaiPayload(status, cfg, content):
     return payload
 
 
+def _mimoModeFromModel(model):
+    name = str(model or '').strip().lower().replace('-', '_')
+    if 'voiceclone' in name or 'voice_clone' in name:
+        return 'clone'
+    if 'voicedesign' in name or 'voice_design' in name:
+        return 'design'
+    if 'mimo' in name and 'tts' in name:
+        return 'default'
+    return ''
+
+
+def _resolveMimoMode(cfg):
+    raw = str(cfg.get('mimo_mode', '') or '').strip().lower().replace('-', '_')
+    if raw in _MIMO_MODE_ALIASES:
+        return _MIMO_MODE_ALIASES[raw]
+    return _mimoModeFromModel(cfg.get('model', '')) or 'default'
+
+
+def _resolveMimoApiUrl(api_url):
+    url = str(api_url or '').strip()
+    if not url:
+        return _MIMO_DEFAULT_URL
+    normalized = url.rstrip('/')
+    if normalized == _DASHSCOPE_DEFAULT_URL.rstrip('/'):
+        return _MIMO_DEFAULT_URL
+    if '/audio/speech' in normalized:
+        return _MIMO_DEFAULT_URL
+    return url
+
+
+def _resolveMimoPresetVoice(voice):
+    value = str(voice or '').strip()
+    if value in _MIMO_PRESET_VOICES:
+        return value
+    if not value or value.lower() in _DASHSCOPE_VOICE_FALLBACKS:
+        return '冰糖'
+    return value
+
+
+def _resolveMimoFormat(value):
+    fmt = _normalizeFormat(value)
+    if fmt == 'pcm':
+        return 'wav'
+    if fmt in _MIMO_FORMATS:
+        return fmt
+    return 'wav'
+
+
+def personaVoiceDesignPrompt(system_prompt=''):
+    '''根据当前人设生成 MIMO voicedesign 用的音色描述; 不把人设全文塞进接口.'''
+    text = str(
+        system_prompt
+        or OlivaAIAgent.conf.get('prompt', 'system', default='')
+        or ''
+    )
+    if any(token in text for token in ('芙萝妮娅', '小芙', 'Fronia', 'fronia')):
+        return (
+            '年轻少女声, 听起来大约十五六岁, 娇小但口齿清脆. '
+            '音色偏亮、略带奶气和一点软乎乎的婴儿肥感, 不是幼齿童声, 也不是成熟御姐. '
+            '语速偏快但不赶, 尾音常轻轻上扬或带一点拖腔, 活泼元气里夹着傲娇和得意, 偶尔故意嘴硬. '
+            '说话像群聊里的狐娘, 咬字轻巧、口语化, 不播音腔也不夹子过头.'
+        )
+    if '女' in text or '少女' in text:
+        return (
+            '年轻女性声音, 口齿清晰, 语速自然偏快, 语气口语化, '
+            '带一点亲近感, 不播音腔, 不做作.'
+        )
+    if '男' in text or '少年' in text:
+        return (
+            '年轻男性声音, 口齿清晰, 语速自然, 语气口语化, '
+            '沉稳里带一点轻松, 不播音腔.'
+        )
+    return (
+        '年轻清晰的中文口语声, 语速自然, 语气轻松亲近, '
+        '适合即时通讯短句, 不播音腔也不机械.'
+    )
+
+
+def _pluginRoot():
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _cloneAudioCandidates(value):
+    yield value
+    yield os.path.join(OlivaAIAgent.conf.dataPath, value)
+    yield os.path.join(OlivaAIAgent.conf.dataPath, 'voice', value)
+    yield os.path.join(_pluginRoot(), value)
+    yield os.path.join(_pluginRoot(), 'tts_samples', value)
+
+
+def _cloneMime(path, content):
+    ext = _normalizeFormat(os.path.splitext(str(path or ''))[1])
+    fmt = ext if ext in ('mp3', 'wav') else (_formatFromBytes(content) or '')
+    if fmt == 'mp3':
+        return 'audio/mpeg'
+    if fmt == 'wav':
+        return 'audio/wav'
+    raise ValueError('音色克隆只支持 mp3 或 wav 参考音频')
+
+
+def _loadCloneVoice(cfg):
+    value = str(cfg.get('clone_audio', '') or '').strip()
+    if not value:
+        raise ValueError('音色克隆需要配置 clone_audio (wav/mp3 路径或 data URL)')
+    if value.startswith('data:') and ';base64,' in value:
+        encoded = value.split(',', 1)[1]
+        if len(encoded) > _MIMO_CLONE_MAX_B64:
+            raise ValueError('音色克隆参考音频 Base64 超过 10MB 限制')
+        return value
+    path = ''
+    for candidate in _cloneAudioCandidates(value):
+        if candidate and os.path.isfile(candidate):
+            path = candidate
+            break
+    if not path:
+        content = _decodeBase64(value)
+        if not content:
+            raise ValueError('找不到音色克隆参考音频: %s' % value)
+        mime = _cloneMime('', content)
+        encoded = base64.b64encode(content).decode('ascii')
+        if len(encoded) > _MIMO_CLONE_MAX_B64:
+            raise ValueError('音色克隆参考音频 Base64 超过 10MB 限制')
+        return 'data:%s;base64,%s' % (mime, encoded)
+    try:
+        with open(path, 'rb') as file_obj:
+            content = file_obj.read()
+    except Exception as e:
+        raise OSError('读取音色克隆参考音频失败: %s' % e) from e
+    if not content:
+        raise ValueError('音色克隆参考音频为空')
+    mime = _cloneMime(path, content)
+    encoded = base64.b64encode(content).decode('ascii')
+    if len(encoded) > _MIMO_CLONE_MAX_B64:
+        raise ValueError('音色克隆参考音频 Base64 超过 10MB 限制')
+    return 'data:%s;base64,%s' % (mime, encoded)
+
+
+def _mimoUserContent(mode, cfg, instructions, design_prompt):
+    performance = str(instructions or '').strip()
+    if mode == 'design':
+        design = str(design_prompt or '').strip() or personaVoiceDesignPrompt()
+        if performance:
+            return '%s\n\n本次朗读指导：%s' % (design, performance)
+        return design
+    return performance
+
+
+def _mimoPayload(status, cfg, content, instructions):
+    mode = status.get('mimo_mode') or 'default'
+    extra_body = cfg.get('extra_body', {})
+    payload = dict(extra_body) if isinstance(extra_body, dict) else {}
+    messages = []
+    user_content = _mimoUserContent(mode, cfg, instructions, status.get('design_prompt', ''))
+    if user_content or mode == 'design':
+        messages.append({'role': 'user', 'content': user_content})
+    messages.append({'role': 'assistant', 'content': content})
+    audio = {'format': status.get('response_format') or 'wav'}
+    if mode == 'default':
+        audio['voice'] = status.get('voice') or '冰糖'
+    elif mode == 'clone':
+        audio['voice'] = _loadCloneVoice(cfg)
+    elif mode == 'design':
+        if status.get('optimize_text_preview') or cfg.get('optimize_text_preview'):
+            audio['optimize_text_preview'] = True
+        audio.pop('voice', None)
+    else:
+        raise ValueError('不支持的小米 MIMO 语音模式: %s' % mode)
+    payload.update({
+        'model': status['model'],
+        'messages': messages,
+        'audio': audio,
+        'stream': False,
+    })
+    return payload
+
+
 def synthesize(text, instructions=''):
     status = getStatus()
     if not status['enabled']:
         raise RuntimeError('语音模型未启用')
     if not status['ready']:
+        if status['provider'] == _MIMO_PROVIDER and status.get('mimo_mode') == 'clone':
+            raise RuntimeError('小米 MIMO 音色克隆需要配置 clone_audio (wav/mp3 路径或 data URL)')
+        if status['provider'] == _MIMO_PROVIDER and status.get('mimo_mode') == 'design':
+            raise RuntimeError('小米 MIMO 音色设计需要配置 design_prompt 或可用的人设文本')
         raise RuntimeError('语音模型的接口类型、api_url、model 或 voice 配置不完整')
     cfg = OlivaAIAgent.conf.get('voice', default={}) or {}
     max_chars = max(1, int(cfg.get('max_chars', 500)))
@@ -360,6 +629,8 @@ def synthesize(text, instructions=''):
     api_key = str(cfg.get('api_key', '')).strip()
     if api_key:
         headers['Authorization'] = 'Bearer ' + api_key
+        if status['provider'] == _MIMO_PROVIDER:
+            headers['api-key'] = api_key
     extra_headers = cfg.get('extra_headers', {})
     if isinstance(extra_headers, dict):
         headers.update({str(key): str(value) for key, value in extra_headers.items()})
@@ -367,6 +638,8 @@ def synthesize(text, instructions=''):
         payload = _dashscopePayload(status, cfg, content, instructions)
     elif status['provider'] == _OPENAI_PROVIDER:
         payload = _openaiPayload(status, cfg, content)
+    elif status['provider'] == _MIMO_PROVIDER:
+        payload = _mimoPayload(status, cfg, content, instructions)
     else:
         raise ValueError('不支持的语音接口类型: %s' % status['provider'])
     timeout = max(1.0, float(cfg.get('timeout_sec', 120)))
@@ -374,7 +647,9 @@ def synthesize(text, instructions=''):
     if response.status_code < 200 or response.status_code >= 300:
         raise RuntimeError('语音接口 HTTP %s: %s' % (response.status_code, str(response.text)[:300]))
     audio_content, audio_format = _audioFromResponse(response, timeout)
-    fallback_format = status['response_format'] if status['provider'] == _OPENAI_PROVIDER else ''
+    fallback_format = ''
+    if status['provider'] in [_OPENAI_PROVIDER, _MIMO_PROVIDER]:
+        fallback_format = status['response_format']
     return _saveAudio(audio_content, audio_format or fallback_format)
 
 

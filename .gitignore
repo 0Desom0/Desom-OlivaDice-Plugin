@@ -15,3 +15,5 @@ lanota_songs_preview.wikitext
 lanota_songs_preview.diff
 config.json
 *.log
+mimoapikey.txt
+tts_samples/

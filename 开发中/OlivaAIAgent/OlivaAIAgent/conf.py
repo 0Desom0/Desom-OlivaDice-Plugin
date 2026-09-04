@@ -408,15 +408,21 @@ DEFAULT_CONF = {
     },
     'voice': {
         '_说明': '默认使用阿里云百炼 DashScope MultiModalConversation 非流式语音合成；'
-               '也可切换为 OpenAI-compatible /audio/speech。AI 可自行调用 send_voice 发送语音。'
+               '也可切换为 OpenAI-compatible /audio/speech，或小米 MIMO mimo-v2.5-tts（default/clone/design）。'
+               'AI 可自行调用 send_voice 发送语音。'
                '每次语音的 instructions 由 AI 根据当前上下文随工具调用动态生成，不写入配置或记忆；'
-               '行为规则仍只来自 prompt.system',
+               '行为规则仍只来自 prompt.system。'
+               'MIMO design 的 design_prompt 是音色身份，不是第二套人格提示词。',
         'enabled': False,
         'provider': 'dashscope_multimodal',
         'api_url': 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
         'api_key': '',
         'model': 'qwen3-tts-instruct-flash',
         'voice': 'Cherry',
+        'mimo_mode': 'default',
+        'clone_audio': '',
+        'design_prompt': '',
+        'optimize_text_preview': False,
         'language_type': 'Chinese',
         'optimize_instructions': True,
         'response_format': 'mp3',
@@ -584,11 +590,24 @@ def _migrateVoiceProvider(cfg):
         voice.pop('instructions', None)
         if 'provider' not in voice:
             old_voice_url = str(voice.get('api_url', '')).lower()
-            if 'multimodal-generation/generation' in old_voice_url:
+            old_model = str(voice.get('model', '')).lower()
+            if 'xiaomimimo.com' in old_voice_url or old_model.startswith('mimo-'):
+                voice['provider'] = 'mimo_tts'
+            elif 'multimodal-generation/generation' in old_voice_url:
                 voice['provider'] = 'dashscope_multimodal'
             else:
                 # v2.19 及更早版本只有 OpenAI-compatible 报文，已有配置必须保留旧语义。
                 voice['provider'] = 'openai_compatible'
+        if str(voice.get('provider', '')).strip().lower() in ('mimo', 'mimo_tts', 'xiaomi_mimo', 'xiaomimimo'):
+            voice['provider'] = 'mimo_tts'
+            if not str(voice.get('mimo_mode', '')).strip():
+                model_name = str(voice.get('model', '')).lower()
+                if 'voiceclone' in model_name:
+                    voice['mimo_mode'] = 'clone'
+                elif 'voicedesign' in model_name:
+                    voice['mimo_mode'] = 'design'
+                else:
+                    voice['mimo_mode'] = 'default'
         try:
             voice['max_files'] = max(1, min(10, int(voice.get('max_files', 10))))
         except Exception:

@@ -236,6 +236,10 @@ FIELD_LABELS = {
     'voice': '音色',
     'language_type': '合成语种',
     'optimize_instructions': '优化 AI 动态语音表现指令',
+    'mimo_mode': 'MIMO 合成模式',
+    'clone_audio': 'MIMO 克隆参考音频',
+    'design_prompt': 'MIMO 音色设计描述',
+    'optimize_text_preview': 'MIMO 设计模式文本润色',
     'response_format': '兼容接口音频格式',
     'speed': '兼容接口语速',
     'max_files': '本地语音缓存数（最多10）',
@@ -271,6 +275,10 @@ PATH_LABELS = {
     ('voice', 'model'): '语音模型名称',
     ('voice', 'api_url'): '语音接口地址',
     ('voice', 'api_key'): '语音 API Key',
+    ('voice', 'mimo_mode'): 'MIMO 合成模式（default/clone/design）',
+    ('voice', 'clone_audio'): 'MIMO 克隆参考音频（wav/mp3 路径或 data URL）',
+    ('voice', 'design_prompt'): 'MIMO 音色设计描述（design 模式 user 消息）',
+    ('voice', 'optimize_text_preview'): 'MIMO design 是否润色朗读文本',
     ('mcp', 'timeout_sec'): 'MCP 请求超时（秒）',
     ('research', 'enable'): '启用前置检索',
     ('research', 'mode'): '前置检索模式',
@@ -301,7 +309,8 @@ ENUM_VALUES = {
     ('media', 'audio', 'main_mode'): ('base64', 'url'),
     ('media', 'video', 'mode'): ('base64', 'url'),
     ('media', 'video', 'main_mode'): ('base64', 'url'),
-    ('voice', 'provider'): ('dashscope_multimodal', 'openai_compatible'),
+    ('voice', 'provider'): ('dashscope_multimodal', 'openai_compatible', 'mimo_tts'),
+    ('voice', 'mimo_mode'): ('default', 'clone', 'design'),
     ('voice', 'response_format'): ('mp3', 'wav', 'opus', 'ogg', 'aac', 'flac', 'pcm'),
     ('skills', 'translate_from'): ('auto', 'zh', 'en', 'ja', 'ko'),
     ('skills', 'translate_to'): ('zh', 'en', 'ja', 'ko'),
@@ -1178,7 +1187,11 @@ class ConfigWindow:
             '语音模型: {} / {} / {}'.format(
                 '就绪' if voice.get('ready') else ('已启用但未就绪' if voice.get('enabled') else '关闭'),
                 voice.get('model') or '-',
-                voice.get('voice') or '-',
+                (
+                    '%s/%s' % (voice.get('mimo_mode') or 'default', voice.get('voice') or '-')
+                    if voice.get('provider') == 'mimo_tts'
+                    else (voice.get('voice') or '-')
+                ),
             ),
             'MCP: {} / 服务 {}/{} / 工具 {}'.format(
                 '启用' if mcp.get('enabled') else '关闭',

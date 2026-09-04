@@ -67,7 +67,11 @@ class Event(object):
                 '语音配置：启用=%s | 就绪=%s | 接口=%s | 模型=%s | 音色=%s | 格式=%s' % (
                     '是' if voice_status['enabled'] else '否',
                     '是' if voice_status['ready'] else '否',
-                    voice_status['provider'] or '-',
+                    (
+                        '%s/%s' % (voice_status['provider'], voice_status.get('mimo_mode') or 'default')
+                        if voice_status['provider'] == 'mimo_tts'
+                        else (voice_status['provider'] or '-')
+                    ),
                     voice_status['model'] or '-',
                     voice_status['voice'] or '-',
                     '自动识别' if voice_status['provider'] == 'dashscope_multimodal'

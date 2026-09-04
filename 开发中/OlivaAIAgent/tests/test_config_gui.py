@@ -44,6 +44,10 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual('Chinese', default_conf['voice']['language_type'])
         self.assertTrue(default_conf['voice']['optimize_instructions'])
         self.assertEqual(10, default_conf['voice']['max_files'])
+        self.assertEqual('default', default_conf['voice']['mimo_mode'])
+        self.assertEqual('', default_conf['voice']['clone_audio'])
+        self.assertEqual('', default_conf['voice']['design_prompt'])
+        self.assertFalse(default_conf['voice']['optimize_text_preview'])
         self.assertNotIn('instructions', default_conf['voice'])
         self.assertNotIn('groups', default_conf['whitelist'])
         self.assertEqual(8, default_conf['memory']['max_rounds'])
@@ -100,6 +104,20 @@ class ConfigMigrationTest(unittest.TestCase):
         self.assertEqual('openai_compatible', config['voice']['provider'])
         self.assertNotIn('instructions', config['voice'])
         self.assertEqual(10, config['voice']['max_files'])
+
+    def test_mimo_url_migrates_to_mimo_tts_provider(self):
+        config = {
+            'prompt': {},
+            'ambient': {},
+            'permissions': {},
+            'voice': {
+                'api_url': 'https://api.xiaomimimo.com/v1/chat/completions',
+                'model': 'mimo-v2.5-tts-voicedesign',
+            },
+        }
+        OlivaAIAgent.conf._migrate(config)
+        self.assertEqual('mimo_tts', config['voice']['provider'])
+        self.assertEqual('design', config['voice']['mimo_mode'])
 
     def test_legacy_media_switch_is_removed_and_not_inherited(self):
         config = {'media': {'enable': True}}
@@ -346,8 +364,12 @@ class ConfigGuiSchemaTest(unittest.TestCase):
             OlivaAIAgent.gui.PATH_LABELS[('media', 'video', 'enable')],
         )
         self.assertEqual(
-            ('dashscope_multimodal', 'openai_compatible'),
+            ('dashscope_multimodal', 'openai_compatible', 'mimo_tts'),
             OlivaAIAgent.gui.ENUM_VALUES[('voice', 'provider')],
+        )
+        self.assertEqual(
+            ('default', 'clone', 'design'),
+            OlivaAIAgent.gui.ENUM_VALUES[('voice', 'mimo_mode')],
         )
         self.assertEqual(
             [{'name': 'demo', 'transport': 'streamable_http'}],
