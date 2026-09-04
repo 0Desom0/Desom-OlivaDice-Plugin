@@ -130,6 +130,14 @@ class AmbientReplyParsingTest(unittest.TestCase):
             ),
         )
 
+    def test_immediately_repeated_reply_text_is_collapsed(self):
+        line = '哇，这位金发的小姐姐看着好可爱！这是哪家公会的新队员吗？长得真标致~'
+        self.assertEqual(line, OlivaAIAgent.replyStyle.cleanReplyText(line + line))
+        self.assertEqual(
+            [line],
+            OlivaAIAgent.ambient._replyWash([line + line, line]),
+        )
+
     def test_plain_tail_content_is_not_removed(self):
         self.assertEqual('小芙的尾巴是设定里的装饰。', OlivaAIAgent.replyStyle.cleanReplyText(
             '小芙的尾巴是设定里的装饰。',

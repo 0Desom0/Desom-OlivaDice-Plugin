@@ -126,25 +126,7 @@ def _markVoiceSent(ctx):
 
 
 def collapseRepeatedSpeech(text):
-    '''压掉紧挨着重复一遍的朗读稿, 例如同一句被拼了两次.'''
-    value = str(text or '').strip()
-    if len(value) < 8:
-        return value
-    if len(value) % 2 == 0:
-        half = len(value) // 2
-        if value[:half] == value[half:]:
-            return value[:half].strip()
-    for separator in ('\n\n', '\n', ' ', '　'):
-        parts = value.split(separator)
-        if len(parts) == 2 and parts[0].strip() and parts[0].strip() == parts[1].strip():
-            return parts[0].strip()
-    for copies in (3, 2):
-        if len(value) % copies == 0:
-            size = len(value) // copies
-            chunk = value[:size]
-            if size >= 8 and value == chunk * copies:
-                return chunk.strip()
-    return value
+    return OlivaAIAgent.replyStyle.collapseRepeatedText(text)
 
 
 def sanitizeVoiceInstructions(text, instructions):

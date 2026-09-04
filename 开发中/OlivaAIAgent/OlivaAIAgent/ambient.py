@@ -1645,7 +1645,7 @@ def _replyWash(reply_list, plugin_event=None):
                 s = re.sub(r'\([^)]*\)', '', s)
                 s = re.sub(r'（[^）]*）', '', s)
             s = OlivaAIAgent.msgReply.sanitizeSenderAddress(s.strip(), plugin_event)
-            if s:
+            if s and (not res or res[-1] != s):
                 res.append(s)
     return res
 

@@ -60,6 +60,28 @@ def containsInternalDeliberation(text):
     return any(pattern.search(value) for pattern in _INTERNAL_DELIBERATION_PATTERNS)
 
 
+def collapseRepeatedText(text):
+    '''压掉紧挨着重复一遍的正文, 例如同一句被拼进一条消息两次.'''
+    value = str(text or '').strip()
+    if len(value) < 8:
+        return value
+    if len(value) % 2 == 0:
+        half = len(value) // 2
+        if value[:half] == value[half:]:
+            return value[:half].strip()
+    for separator in ('\n\n', '\n', ' ', '　'):
+        parts = value.split(separator)
+        if len(parts) == 2 and parts[0].strip() and parts[0].strip() == parts[1].strip():
+            return parts[0].strip()
+    for copies in (3, 2):
+        if len(value) % copies == 0:
+            size = len(value) // copies
+            chunk = value[:size]
+            if size >= 8 and value == chunk * copies:
+                return chunk.strip()
+    return value
+
+
 def cleanReplyText(text):
     '''Remove explicit self-directed stage directions while preserving content.'''
     value = str(text or '').replace('\r\n', '\n').replace('\r', '\n')
@@ -79,7 +101,7 @@ def cleanReplyText(text):
         if _STANDALONE_ACTION.fullmatch(line):
             continue
         lines.append(line.rstrip())
-    return '\n'.join(lines).strip()
+    return collapseRepeatedText('\n'.join(lines).strip())
 
 
 def cleanReplyParts(parts):
@@ -87,6 +109,6 @@ def cleanReplyParts(parts):
     result = []
     for part in parts or []:
         cleaned = cleanReplyText(part)
-        if cleaned:
+        if cleaned and (not result or result[-1] != cleaned):
             result.append(cleaned)
     return result
