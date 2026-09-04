@@ -446,6 +446,7 @@ class QuoteContextTest(unittest.TestCase):
         process.assert_called_once()
         self.assertTrue(process.call_args.kwargs['force'])
         self.assertTrue(process.call_args.kwargs['skip_first_thinking'])
+        self.assertFalse(process.call_args.kwargs['require_reply'])
 
     def test_group_prefix_still_routes_when_ambient_is_disabled(self):
         event = FakeEvent('.ai 你好')

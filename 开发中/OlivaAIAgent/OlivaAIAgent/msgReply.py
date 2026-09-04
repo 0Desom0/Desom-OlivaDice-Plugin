@@ -1138,6 +1138,7 @@ def _onGroupMessage(plugin_event, Proc):
             tools=hard_tools,
             attempt=True,
             skip_first_thinking=True,
+            require_reply=False,
         )
         plugin_event.set_block()
         return
