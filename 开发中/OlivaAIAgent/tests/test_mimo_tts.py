@@ -205,6 +205,24 @@ class MimoTtsTest(unittest.TestCase):
         self.assertEqual('冰糖', status['voice'])
         self.assertTrue(status['ready'])
 
+    def test_mimo_drops_user_message_when_instructions_copy_spoken_text(self):
+        line = '哇，这位金发的小姐姐看着好可爱！这是哪家公会的新队员吗？长得真标致~'
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(OlivaAIAgent.voice, 'outputDir', return_value=directory), \
+                mock.patch.object(OlivaAIAgent.voice, '_cleanOldFiles', return_value=0), \
+                mock.patch.object(
+                    OlivaAIAgent.voice.requests,
+                    'post',
+                    return_value=self._mimoAudioResponse(),
+                ) as post:
+            OlivaAIAgent.voice.synthesize(line + line, line)
+
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(
+            [{'role': 'assistant', 'content': line}],
+            payload['messages'],
+        )
+
     def test_create_alias_maps_to_design_mode(self):
         OlivaAIAgent.conf.gConf['voice']['mimo_mode'] = 'create'
         status = OlivaAIAgent.voice.getStatus()

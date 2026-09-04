@@ -326,6 +326,22 @@ class McpVoiceTest(unittest.TestCase):
         self.assertTrue(result['active'])
         synthesize.assert_called_once_with('答案是猫。', instructions='自然地朗读。')
 
+    def test_send_voice_collapses_immediately_repeated_speech(self):
+        OlivaAIAgent.conf.gConf['voice']['enabled'] = True
+        event = FakeVoiceEvent()
+        ctx = {'plugin_event': event, 'Proc': None, 'trace_id': 'voice-repeat-test'}
+        line = '哇，这位金发的小姐姐看着好可爱！这是哪家公会的新队员吗？长得真标致~'
+
+        with mock.patch.object(
+            OlivaAIAgent.voice,
+            'synthesize',
+            return_value=os.path.abspath('generated.mp3'),
+        ) as synthesize, mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'):
+            result = OlivaAIAgent.voice.sendVoice(ctx, line + line, line)
+
+        self.assertTrue(result['active'])
+        synthesize.assert_called_once_with(line, instructions='')
+
     def test_failed_voice_generation_can_be_retried(self):
         OlivaAIAgent.conf.gConf['voice']['enabled'] = True
         event = FakeVoiceEvent()

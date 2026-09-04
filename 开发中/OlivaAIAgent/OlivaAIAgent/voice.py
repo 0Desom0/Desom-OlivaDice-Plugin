@@ -125,6 +125,45 @@ def _markVoiceSent(ctx):
         ctx[_VOICE_SENT_CTX_KEY] = True
 
 
+def collapseRepeatedSpeech(text):
+    '''压掉紧挨着重复一遍的朗读稿, 例如同一句被拼了两次.'''
+    value = str(text or '').strip()
+    if len(value) < 8:
+        return value
+    if len(value) % 2 == 0:
+        half = len(value) // 2
+        if value[:half] == value[half:]:
+            return value[:half].strip()
+    for separator in ('\n\n', '\n', ' ', '　'):
+        parts = value.split(separator)
+        if len(parts) == 2 and parts[0].strip() and parts[0].strip() == parts[1].strip():
+            return parts[0].strip()
+    for copies in (3, 2):
+        if len(value) % copies == 0:
+            size = len(value) // copies
+            chunk = value[:size]
+            if size >= 8 and value == chunk * copies:
+                return chunk.strip()
+    return value
+
+
+def sanitizeVoiceInstructions(text, instructions):
+    '''朗读指示里如果原样抄了正文, 就丢掉, 避免 TTS 把同一句再念一遍.'''
+    spoken = str(text or '').strip()
+    performance = str(instructions or '').strip()
+    if not performance:
+        return ''
+    if spoken and performance == spoken:
+        return ''
+    if spoken and len(spoken) >= 8 and spoken in performance:
+        leftover = performance.replace(spoken, ' ').strip(' \n\t:：,，;；-—')
+        leftover = re.sub(r'\s+', ' ', leftover).strip()
+        if len(leftover) < 4:
+            return ''
+        return leftover
+    return performance
+
+
 def simulatedVoiceText(text):
     '''提取模型用普通文字模拟的整条语音；普通正文中的媒体说明不处理。'''
     value = str(text or '')
@@ -613,8 +652,8 @@ def _loadCloneVoice(cfg):
     return 'data:%s;base64,%s' % (mime, encoded)
 
 
-def _mimoUserContent(mode, cfg, instructions, design_prompt):
-    performance = str(instructions or '').strip()
+def _mimoUserContent(mode, cfg, instructions, design_prompt, content=''):
+    performance = sanitizeVoiceInstructions(content, instructions)
     if mode == 'design':
         design = str(design_prompt or '').strip() or personaVoiceDesignPrompt()
         if performance:
@@ -628,7 +667,13 @@ def _mimoPayload(status, cfg, content, instructions):
     extra_body = cfg.get('extra_body', {})
     payload = dict(extra_body) if isinstance(extra_body, dict) else {}
     messages = []
-    user_content = _mimoUserContent(mode, cfg, instructions, status.get('design_prompt', ''))
+    user_content = _mimoUserContent(
+        mode,
+        cfg,
+        instructions,
+        status.get('design_prompt', ''),
+        content=content,
+    )
     if user_content or mode == 'design':
         messages.append({'role': 'user', 'content': user_content})
     messages.append({'role': 'assistant', 'content': content})
@@ -664,7 +709,8 @@ def synthesize(text, instructions=''):
         raise RuntimeError('语音模型的接口类型、api_url、model 或 voice 配置不完整')
     cfg = OlivaAIAgent.conf.get('voice', default={}) or {}
     max_chars = max(1, int(cfg.get('max_chars', 500)))
-    content = str(text or '').strip()
+    content = collapseRepeatedSpeech(str(text or '').strip())
+    instructions = sanitizeVoiceInstructions(content, instructions)
     if not content:
         raise ValueError('语音文本不能为空')
     if len(content) > max_chars:
@@ -713,7 +759,8 @@ def sendVoice(ctx, text, instructions=''):
         return {'error': '当前上下文没有可用的消息事件，无法发送语音'}
     bot_info = getattr(plugin_event, 'bot_info', None)
     bot_hash = bot_info.hash if bot_info is not None else 'unity'
-    text = OlivaAIAgent.replyStyle.cleanReplyText(text)
+    text = collapseRepeatedSpeech(OlivaAIAgent.replyStyle.cleanReplyText(text))
+    instructions = sanitizeVoiceInstructions(text, instructions)
     if not text:
         return {'active': False, 'data': {'error': '语音内容清洗后为空'}}
     source = OlivaAIAgent.contentSafety.match(text, outgoing=True, bot_hash=bot_hash)
