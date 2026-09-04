@@ -10,7 +10,7 @@ import json
 import os
 import threading
 import tkinter
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import OlivaAIAgent
 
@@ -275,9 +275,10 @@ PATH_LABELS = {
     ('voice', 'model'): '语音模型名称',
     ('voice', 'api_url'): '语音接口地址',
     ('voice', 'api_key'): '语音 API Key',
-    ('voice', 'mimo_mode'): 'MIMO 合成模式（default/clone/design）',
-    ('voice', 'clone_audio'): 'MIMO 克隆参考音频（wav/mp3 路径或 data URL）',
-    ('voice', 'design_prompt'): 'MIMO 音色设计描述（design 模式 user 消息）',
+    ('voice', 'voice'): '音色（default=预置名；百炼 Cherry/Bella，MIMO 冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean）',
+    ('voice', 'mimo_mode'): 'MIMO 合成模式（default选音色 / clone选文件 / design写prompt）',
+    ('voice', 'clone_audio'): 'MIMO 克隆参考音频（绝对或相对 wav/mp3 路径，也可 data URL）',
+    ('voice', 'design_prompt'): 'MIMO 音色设计描述（design/create 自己写 prompt）',
     ('voice', 'optimize_text_preview'): 'MIMO design 是否润色朗读文本',
     ('mcp', 'timeout_sec'): 'MCP 请求超时（秒）',
     ('research', 'enable'): '启用前置检索',
@@ -915,10 +916,43 @@ class ConfigWindow:
                     command=lambda target=widget: target.configure(show='' if target.cget('show') else '*'),
                 )
                 reveal.grid(row=row, column=2, sticky='w', padx=(6, 0))
+            elif path == ('voice', 'clone_audio'):
+                browse = ttk.Button(
+                    self.form_frame,
+                    text='浏览',
+                    command=lambda var=variable: self._browseCloneAudio(var),
+                )
+                browse.grid(row=row, column=2, sticky='w', padx=(6, 0))
             widget.grid(row=row, column=1, sticky='ew', pady=(5, 4))
             binding.update({'kind': 'scalar', 'variable': variable})
         self.bindings.append(binding)
         return row + 1
+
+    def _browseCloneAudio(self, variable):
+        current = str(variable.get() or '').strip().strip('"').strip("'")
+        plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(OlivaAIAgent.voice.__file__)))
+        initial = plugin_root
+        if os.path.isfile(current):
+            initial = os.path.dirname(os.path.abspath(current))
+        elif os.path.isdir(current):
+            initial = current
+        else:
+            resolved = OlivaAIAgent.voice.resolveCloneAudioPath(current)
+            if resolved:
+                initial = os.path.dirname(resolved)
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title='选择克隆参考音频',
+            initialdir=initial,
+            filetypes=[
+                ('音频', '*.wav *.mp3'),
+                ('WAV', '*.wav'),
+                ('MP3', '*.mp3'),
+                ('全部', '*.*'),
+            ],
+        )
+        if path:
+            variable.set(os.path.abspath(path))
 
     def _commitCurrent(self, show_error=False):
         errors = []

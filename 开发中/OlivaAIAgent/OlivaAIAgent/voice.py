@@ -61,6 +61,7 @@ _MIMO_MODE_ALIASES = {
     'voiceclone': 'clone',
     'voice_clone': 'clone',
     'design': 'design',
+    'create': 'design',
     'voicedesign': 'design',
     'voice_design': 'design',
 }
@@ -514,12 +515,59 @@ def _pluginRoot():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _cloneAudioCandidates(value):
-    yield value
-    yield os.path.join(OlivaAIAgent.conf.dataPath, value)
-    yield os.path.join(OlivaAIAgent.conf.dataPath, 'voice', value)
-    yield os.path.join(_pluginRoot(), value)
-    yield os.path.join(_pluginRoot(), 'tts_samples', value)
+def _cloneSearchRoots():
+    plugin_root = _pluginRoot()
+    config_path = str(getattr(OlivaAIAgent.conf, 'CONFIG_PATH', '') or '')
+    roots = [
+        os.getcwd(),
+        plugin_root,
+        os.path.dirname(os.path.abspath(config_path)) if config_path else '',
+        OlivaAIAgent.conf.dataPath,
+        os.path.join(OlivaAIAgent.conf.dataPath, 'voice'),
+        os.path.join(plugin_root, 'tts_samples'),
+        os.path.join(plugin_root, 'voice'),
+    ]
+    try:
+        for name in os.listdir(plugin_root):
+            path = os.path.join(plugin_root, name)
+            if os.path.isdir(path) and name.startswith('试听'):
+                roots.append(path)
+    except Exception:
+        pass
+    seen = set()
+    for root in roots:
+        text = str(root or '').strip()
+        if not text:
+            continue
+        key = os.path.normcase(os.path.abspath(text))
+        if key in seen:
+            continue
+        seen.add(key)
+        yield text
+
+
+def resolveCloneAudioPath(value):
+    '''把 clone_audio 解析成已存在的本地文件, 同时接受绝对路径和相对路径.'''
+    text = str(value or '').strip().strip('"').strip("'")
+    if not text or text.startswith('data:'):
+        return ''
+    candidates = []
+    normalized = os.path.normpath(text)
+    candidates.append(normalized)
+    if not os.path.isabs(normalized):
+        for root in _cloneSearchRoots():
+            candidates.append(os.path.normpath(os.path.join(root, normalized)))
+    seen = set()
+    for path in candidates:
+        if not path:
+            continue
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isfile(path):
+            return os.path.abspath(path)
+    return ''
 
 
 def _cloneMime(path, content):
@@ -541,11 +589,7 @@ def _loadCloneVoice(cfg):
         if len(encoded) > _MIMO_CLONE_MAX_B64:
             raise ValueError('音色克隆参考音频 Base64 超过 10MB 限制')
         return value
-    path = ''
-    for candidate in _cloneAudioCandidates(value):
-        if candidate and os.path.isfile(candidate):
-            path = candidate
-            break
+    path = resolveCloneAudioPath(value)
     if not path:
         content = _decodeBase64(value)
         if not content:

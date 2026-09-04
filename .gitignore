@@ -17,3 +17,4 @@ config.json
 *.log
 mimoapikey.txt
 tts_samples/
+试听_*/

@@ -205,6 +205,47 @@ class MimoTtsTest(unittest.TestCase):
         self.assertEqual('冰糖', status['voice'])
         self.assertTrue(status['ready'])
 
+    def test_create_alias_maps_to_design_mode(self):
+        OlivaAIAgent.conf.gConf['voice']['mimo_mode'] = 'create'
+        status = OlivaAIAgent.voice.getStatus()
+        self.assertEqual('design', status['mimo_mode'])
+        self.assertEqual('mimo-v2.5-tts-voicedesign', status['model'])
+
+    def test_clone_audio_accepts_absolute_and_relative_paths(self):
+        wav_bytes = _tiny_wav()
+        plugin_root = OlivaAIAgent.voice._pluginRoot()
+        listen_dir = os.path.join(plugin_root, '试听_路径解析测试')
+        os.makedirs(listen_dir, exist_ok=True)
+        try:
+            absolute = os.path.join(listen_dir, 'ref_abs.wav')
+            with open(absolute, 'wb') as file_obj:
+                file_obj.write(wav_bytes)
+            relative_name = os.path.join('试听_路径解析测试', 'ref_abs.wav')
+            self.assertEqual(os.path.abspath(absolute), OlivaAIAgent.voice.resolveCloneAudioPath(absolute))
+            self.assertEqual(
+                os.path.abspath(absolute),
+                OlivaAIAgent.voice.resolveCloneAudioPath('"%s"' % relative_name.replace('\\', '/')),
+            )
+            OlivaAIAgent.conf.gConf['voice']['mimo_mode'] = 'clone'
+            OlivaAIAgent.conf.gConf['voice']['clone_audio'] = relative_name
+            with tempfile.TemporaryDirectory() as directory, \
+                    mock.patch.object(OlivaAIAgent.voice, 'outputDir', return_value=directory), \
+                    mock.patch.object(OlivaAIAgent.voice, '_cleanOldFiles', return_value=0), \
+                    mock.patch.object(
+                        OlivaAIAgent.voice.requests,
+                        'post',
+                        return_value=self._mimoAudioResponse(wav_bytes),
+                    ) as post:
+                OlivaAIAgent.voice.synthesize('相对路径克隆。', '自然地朗读。')
+            voice_value = post.call_args.kwargs['json']['audio']['voice']
+            self.assertTrue(voice_value.startswith('data:audio/wav;base64,'))
+        finally:
+            try:
+                os.remove(os.path.join(listen_dir, 'ref_abs.wav'))
+                os.rmdir(listen_dir)
+            except Exception:
+                pass
+
     def test_persona_design_prompt_detects_fronia(self):
         prompt = OlivaAIAgent.voice.personaVoiceDesignPrompt()
         self.assertIn('年轻少女声', prompt)

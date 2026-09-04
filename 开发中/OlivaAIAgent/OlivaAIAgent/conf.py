@@ -408,7 +408,9 @@ DEFAULT_CONF = {
     },
     'voice': {
         '_说明': '默认使用阿里云百炼 DashScope MultiModalConversation 非流式语音合成；'
-               '也可切换为 OpenAI-compatible /audio/speech，或小米 MIMO mimo-v2.5-tts（default/clone/design）。'
+               '也可切换为 OpenAI-compatible /audio/speech，或小米 MIMO mimo-v2.5-tts。'
+               'MIMO mimo_mode：default=选预置音色，clone=选参考音频文件，design/create=自己写音色 prompt。'
+               'clone_audio 支持绝对路径或相对路径（相对插件目录、data/voice、试听_* 等）。'
                'AI 可自行调用 send_voice 发送语音。'
                '每次语音的 instructions 由 AI 根据当前上下文随工具调用动态生成，不写入配置或记忆；'
                '行为规则仍只来自 prompt.system。'

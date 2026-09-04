@@ -371,6 +371,8 @@ class ConfigGuiSchemaTest(unittest.TestCase):
             ('default', 'clone', 'design'),
             OlivaAIAgent.gui.ENUM_VALUES[('voice', 'mimo_mode')],
         )
+        self.assertIn('绝对或相对', OlivaAIAgent.gui.PATH_LABELS[('voice', 'clone_audio')])
+        self.assertIn('选文件', OlivaAIAgent.gui.PATH_LABELS[('voice', 'mimo_mode')])
         self.assertEqual(
             [{'name': 'demo', 'transport': 'streamable_http'}],
             OlivaAIAgent.gui._parseValue(
