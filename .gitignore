@@ -14,8 +14,10 @@ __pycache__
 lanota_songs_preview.wikitext
 lanota_songs_preview.diff
 config.json
+config-1.json
 *.log
 mimoapikey.txt
 tts_samples/
 试听_*/
 voice
+tts_debug/
