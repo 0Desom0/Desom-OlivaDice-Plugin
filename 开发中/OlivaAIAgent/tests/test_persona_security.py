@@ -113,12 +113,11 @@ class PersonaSecurityTest(unittest.TestCase):
         self.assertIn('角色卡职业是调查记者', formatted)
         self.assertNotIn('先叫我的昵称', formatted)
 
-    def test_main_model_decides_again_unless_reply_is_required(self):
+    def test_main_model_decides_again_only_for_non_force_message(self):
         normal_task = OlivaAIAgent.ambient._mainDecisionTask(False)
         forced_task = OlivaAIAgent.ambient._mainDecisionTask(True)
-        self.assertIn('二次判断', normal_task)
-        self.assertIn('默认保持沉默', normal_task)
-        self.assertIn('{"r":[]}', normal_task)
+        self.assertIn('再次判断是否加入对话', normal_task)
+        self.assertIn('不想参与就让 r 为空列表', normal_task)
         self.assertIn('必须回应', forced_task)
         self.assertIn('r 不得为空列表', forced_task)
 

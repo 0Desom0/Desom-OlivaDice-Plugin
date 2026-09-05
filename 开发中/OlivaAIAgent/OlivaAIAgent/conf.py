@@ -162,7 +162,7 @@ DEFAULT_CONF = {
         'prefix': ['.ai', '。ai', '/ai'],
         'at_trigger': True,
         'keywords': [],
-        '_keywords说明': '所有群共用的触发关键词；潜行开/关都生效，命中即跳过概率和前置小模型进入主模型，主模型仍可判断是否开口。',
+        '_keywords说明': '所有群共用的触发关键词；潜行开/关都生效，命中即强制回复。',
         'private_chat': True,
         '_private_chat说明': '私聊/单聊总开关：false=私聊完全不可用；true=私聊可用(默认仅骰主，见 private_master_only)',
         'private_master_only': True,

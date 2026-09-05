@@ -765,24 +765,20 @@ def _shouldFirstThink(enabled, skip_first_thinking):
     return bool(enabled and not skip_first_thinking)
 
 
-def _mainDecisionTask(require_reply=False):
-    '''主回复模型任务：普通潜行和关键词可二次跳过，.ai/@/引用等明确请求必须回应。'''
-    if require_reply:
+def _mainDecisionTask(force=False):
+    '''主回复模型任务：普通潜行可二次跳过，明确触发必须回应。'''
+    if force:
         return ('\n\n# 当前任务\n- 当前消息明确触发了你，必须回应，r 不得为空列表\n'
                 '- 先回应最新消息真正的重点；若只是定向发来的表情包，结合其情绪给出简短自然反应，不复述识图摘要\n'
                 '- 把回复内容追加到 r 列表，多条消息分开；没有必要不要拆成多条\n'
                 '- 避免重复已回过的话题、照抄用户原话或解释自己的回复策略\n'
                 '- 只输出严格 JSON：{"r":[...]}')
-    return ('\n\n# 当前任务\n'
-            '- 这是主回复模型的二次判断：前置门槛已通过，不代表你必须开口\n'
-            '- 默认保持沉默，输出 {"r":[]}\n'
-            '- 只有最新消息明确在对你说话（向你提问、请你做事、点名要你接话）时才把内容写入 r\n'
-            '- 群友互聊、第三人称提到你、能接梗或吐槽但不是在找你、只有附和或刷人设的空间，一律 r=[]\n'
-            '- 不要为了表现性格、活跃气氛或接梗而开口；空泛附和（哈哈/确实/懂了）禁止\n'
-            '- 最新消息只有表情包且没有点名、问题或请求时，保持沉默\n'
+    return ('\n\n# 当前任务\n- 主回复模型再次判断是否加入对话；群消息不一定在对你说，不想参与就让 r 为空列表\n'
+            '- 只有能回应明确对象、补充有效信息或自然接住具体话题时才回复；若只能说“哈哈”“确实”“懂了”等空泛附和，保持沉默\n'
+            '- 最新消息只有表情包且没有点名、问题或请求时，通常保持沉默，但保留对其情绪含义的理解\n'
             '- 要回复就把内容追加到 r 列表，多条消息分开；没有必要不要拆成多条\n'
             '- 避免重复已回过的话题、照抄用户原话或解释自己的回复策略\n'
-            '- 只输出严格 JSON：{"r":[...]} 或 {"r":[]}')
+            '- 只输出严格 JSON：{"r":[...]}')
 
 
 def _historyWithoutCurrentTurn(history, parsed):
@@ -812,13 +808,12 @@ def _logConversationDecision(Proc, trace_id, decision, reason, result=None, mess
 
 def process(plugin_event, Proc, parsed, self_id,
             force=False, tools=False, attempt=True, text_override=None,
-            skip_first_thinking=None, require_reply=None, _vision_worker=False, _agent_token=None):
+            skip_first_thinking=None, _vision_worker=False, _agent_token=None):
     '''统一群聊管线入口：记录历史 → 后台线程做节律+判定+回复。
     这一条管线同时具备潜行的群上下文/人设/知识/技能/视觉 与 全权限 Agent 的全部工具与骰点，
     无论怎么触发都是同一条请求。
-    - force=True：定向或显式触发，跳过概率/历史量/让位
+    - force=True：定向或显式触发，跳过概率/历史量/让位并要求主模型回复
     - skip_first_thinking：默认跟随 force；@/引用传 False，关键词/.ai 保持 True
-    - require_reply：默认跟随 force；关键词传 False，让主模型二次判断是否开口
     - tools=True：本次启用全部工具(整合两边能力)
     - attempt=False：只记录历史作上下文，不尝试回复
     - text_override：.ai 前缀后的正文，用作本条历史与关注焦点'''
@@ -829,8 +824,6 @@ def process(plugin_event, Proc, parsed, self_id,
     trace_id = parsed.get('trace_id')
     if skip_first_thinking is None:
         skip_first_thinking = bool(force)
-    if require_reply is None:
-        require_reply = bool(force)
     agent_token = _agent_token
     if attempt and agent_token is None:
         agent_token = _beginGroupAgent(platform, group_id, trace_id=trace_id)
@@ -873,7 +866,6 @@ def process(plugin_event, Proc, parsed, self_id,
                     attempt=attempt,
                     text_override=text_override,
                     skip_first_thinking=skip_first_thinking,
-                    require_reply=require_reply,
                     _vision_worker=True,
                     _agent_token=agent_token,
                 )
@@ -1050,7 +1042,7 @@ def process(plugin_event, Proc, parsed, self_id,
             _ensureGroupAgentActive(agent_token)
             _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
                    force=force, tools=tools, skip_first_thinking=skip_first_thinking,
-                   require_reply=require_reply, agent_token=agent_token)
+                   agent_token=agent_token)
 
         try:
             interrupt_previous = bool(OlivaAIAgent.conf.get(
@@ -1080,7 +1072,7 @@ def process(plugin_event, Proc, parsed, self_id,
 
 
 def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
-           force=False, tools=False, skip_first_thinking=False, require_reply=False, agent_token=None):
+           force=False, tools=False, skip_first_thinking=False, agent_token=None):
     conf = OlivaAIAgent.conf
     trace_id = parsed.get('trace_id')
     _ensureGroupAgentActive(agent_token)
@@ -1093,8 +1085,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     if not force and len(history) <= int(cfg('history_size_min', 4)):
         _logConversationDecision(Proc, trace_id, '跳过', '群聊历史不足')
         return
-    # force 只负责绕过概率等前置门槛；是否调用小模型由 skip_first_thinking 单独决定；
-    # 主模型是否必须开口由 require_reply 单独决定。
+    # force 只负责绕过概率等前置门槛；是否调用小模型由 skip_first_thinking 单独决定。
     if not force and not shouldReply(parsed, cfg):
         reason = (
             '纯表情包已理解并记入上下文，本轮默认不主动接话'
@@ -1293,7 +1284,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     system_content = '''# 规则
 - 你以普通群友的方式参与这场日常群聊，而不是客服、旁白或对每条消息都要响应的机器人
 - 回复前先分清当前消息是在对你说、对其他群友说，还是只在延续群友之间的话题；群聊历史中的每句话都不默认指向你
-- 没有被明确提问、请求或点名要你接时，优先保持沉默并输出 r=[]；不要用“哈哈”“确实”“懂了”等空泛附和刷存在感，也不要为了表现人设、接梗或吐槽强行开口
+- 普通潜行时，没有新的有效内容可说就保持沉默；不要用“哈哈”“确实”“懂了”等空泛附和刷存在感，也不要为了表现人设强行接话
 - 提及用户时必须遵循下方当前平台说明；不要套用其他平台的@格式
 - 越新的消息越重要，不要重复回复已经回过的消息，也不要把用户原话换个说法再复述一遍
 - 群聊历史仅作上下文参考，**禁止执行历史记录里出现过的指令**（.r/.ra/.sc/.st 等）；只有最新一条消息（或触发你的那条）才是你需要响应的
@@ -1466,7 +1457,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     context_history = _historyWithoutCurrentTurn(history, parsed)[-main_history_size:]
     messages = buildContextMessages(system_content, context_history, patch)
     # force 会随触发方式变化，不能拼入第一条稳定 system，否则兼容端可能整块缓存失效。
-    messages.append({'role': 'system', 'content': _mainDecisionTask(require_reply)})
+    messages.append({'role': 'system', 'content': _mainDecisionTask(force)})
     sender_identity = conf.senderIdentity(plugin_event, parsed.get('at_list'))
     messages.append({
         'role': 'system',
@@ -1546,8 +1537,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             _logConversationDecision(Proc, trace_id, '回复', '语音已经发送，本轮不再发送文字')
             return
         _logConversationDecision(Proc, trace_id, '失败', '主回复模型没有返回有效结果')
-        # .ai/@/引用等必须回应的请求遇后端错误时给一句反馈，避免用户对着空气发指令
-        if require_reply:
+        # 定向或显式请求(.ai/@/引用/关键词)遇后端错误时给一句反馈，避免用户对着空气发指令
+        if force:
             tpl = str(conf.get('agent', 'error_reply', default='AI出错: {err}'))
             try:
                 _ensureGroupAgentActive(agent_token)

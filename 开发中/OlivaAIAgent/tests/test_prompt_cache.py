@@ -79,11 +79,8 @@ class PromptCacheTest(unittest.TestCase):
     def test_force_task_is_not_part_of_stable_system_prompt(self):
         source = __import__('inspect').getsource(OlivaAIAgent.ambient._reply)
 
-        self.assertNotIn('system_content += _mainDecisionTask', source)
-        self.assertIn(
-            "messages.append({'role': 'system', 'content': _mainDecisionTask(require_reply)})",
-            source,
-        )
+        self.assertNotIn('system_content += _mainDecisionTask(force)', source)
+        self.assertIn("messages.append({'role': 'system', 'content': _mainDecisionTask(force)})", source)
 
 
 if __name__ == '__main__':
