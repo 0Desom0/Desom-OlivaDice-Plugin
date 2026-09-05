@@ -1119,7 +1119,7 @@ def _onGroupMessage(plugin_event, Proc):
         plugin_event.set_block()
         return
 
-    # 关键词不受潜行开关影响，命中后跳过概率与前置小模型。
+    # 关键词不受潜行开关影响，命中后跳过概率，但仍进入前置小模型判断。
     keyword_hit = _keywordHit(text, _unionKeywords(platform, group_id))
     if keyword_hit:
         if _blockContentInput(plugin_event, Proc, parsed, reply=True, scene='group_keyword'):
@@ -1129,6 +1129,10 @@ def _onGroupMessage(plugin_event, Proc):
             OlivaAIAgent.conf.get('ambient', 'integrate_hard_trigger', default=True)
             or OlivaAIAgent.conf.get('ambient', 'allow_tools', default=False)
         )
+        keyword_directed = bool(
+            parsed.get('at_me')
+            and OlivaAIAgent.conf.get('trigger', 'at_trigger', default=True)
+        ) or bool(parsed.get('reply_to_me'))
         OlivaAIAgent.ambient.process(
             plugin_event,
             Proc,
@@ -1137,7 +1141,8 @@ def _onGroupMessage(plugin_event, Proc):
             force=True,
             tools=hard_tools,
             attempt=True,
-            skip_first_thinking=True,
+            skip_first_thinking=False,
+            directed=keyword_directed,
         )
         plugin_event.set_block()
         return
@@ -1168,6 +1173,7 @@ def _onGroupMessage(plugin_event, Proc):
             tools=hard_tools,
             attempt=True,
             skip_first_thinking=False,
+            directed=True,
         )
         plugin_event.set_block()
         return

@@ -404,6 +404,7 @@ class QuoteContextTest(unittest.TestCase):
         process.assert_called_once()
         self.assertTrue(process.call_args.kwargs['force'])
         self.assertFalse(process.call_args.kwargs['skip_first_thinking'])
+        self.assertTrue(process.call_args.kwargs['directed'])
         self.assertTrue(event.blocked)
 
     def test_reply_to_bot_is_silent_when_ambient_is_disabled(self):
@@ -431,7 +432,7 @@ class QuoteContextTest(unittest.TestCase):
         process.assert_not_called()
         self.assertFalse(event.blocked)
 
-    def test_keyword_skips_first_thinking(self):
+    def test_keyword_skips_probability_but_enters_first_thinking(self):
         event = FakeEvent('小芙在吗')
         with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
@@ -445,7 +446,8 @@ class QuoteContextTest(unittest.TestCase):
 
         process.assert_called_once()
         self.assertTrue(process.call_args.kwargs['force'])
-        self.assertTrue(process.call_args.kwargs['skip_first_thinking'])
+        self.assertFalse(process.call_args.kwargs['skip_first_thinking'])
+        self.assertFalse(process.call_args.kwargs['directed'])
 
     def test_group_prefix_still_routes_when_ambient_is_disabled(self):
         event = FakeEvent('.ai 你好')

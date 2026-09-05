@@ -808,12 +808,13 @@ def _logConversationDecision(Proc, trace_id, decision, reason, result=None, mess
 
 def process(plugin_event, Proc, parsed, self_id,
             force=False, tools=False, attempt=True, text_override=None,
-            skip_first_thinking=None, _vision_worker=False, _agent_token=None):
+            skip_first_thinking=None, directed=False, _vision_worker=False, _agent_token=None):
     '''统一群聊管线入口：记录历史 → 后台线程做节律+判定+回复。
     这一条管线同时具备潜行的群上下文/人设/知识/技能/视觉 与 全权限 Agent 的全部工具与骰点，
     无论怎么触发都是同一条请求。
-    - force=True：定向或显式触发，跳过概率/历史量/让位并要求主模型回复
-    - skip_first_thinking：默认跟随 force；@/引用传 False，关键词/.ai 保持 True
+    - force=True：跳过概率/历史量/让位；前置 NEXT 后主模型必须回复
+    - skip_first_thinking：默认跟随 force；@/引用/关键词传 False，.ai 保持 True
+    - directed：仅 @/引用为 True，告诉前置模型这是定向信号；关键词命中不是定向
     - tools=True：本次启用全部工具(整合两边能力)
     - attempt=False：只记录历史作上下文，不尝试回复
     - text_override：.ai 前缀后的正文，用作本条历史与关注焦点'''
@@ -866,6 +867,7 @@ def process(plugin_event, Proc, parsed, self_id,
                     attempt=attempt,
                     text_override=text_override,
                     skip_first_thinking=skip_first_thinking,
+                    directed=directed,
                     _vision_worker=True,
                     _agent_token=agent_token,
                 )
@@ -1042,7 +1044,7 @@ def process(plugin_event, Proc, parsed, self_id,
             _ensureGroupAgentActive(agent_token)
             _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
                    force=force, tools=tools, skip_first_thinking=skip_first_thinking,
-                   agent_token=agent_token)
+                   directed=directed, agent_token=agent_token)
 
         try:
             interrupt_previous = bool(OlivaAIAgent.conf.get(
@@ -1072,7 +1074,7 @@ def process(plugin_event, Proc, parsed, self_id,
 
 
 def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lock, message,
-           force=False, tools=False, skip_first_thinking=False, agent_token=None):
+           force=False, tools=False, skip_first_thinking=False, directed=False, agent_token=None):
     conf = OlivaAIAgent.conf
     trace_id = parsed.get('trace_id')
     _ensureGroupAgentActive(agent_token)
@@ -1226,7 +1228,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             '',
             self_id,
             trace_id=trace_id,
-            directed=bool(force and not skip_first_thinking),
+            directed=bool(directed),
         )[0]
     if image_cache:
         aux_tasks['image'] = lambda: OlivaAIAgent.preflight.selectImageIntent(
@@ -1850,8 +1852,9 @@ def _firstThink(
     try:
         sys_prompt = '''# 你是二分类器，只判断最新一条群消息是否值得交给正式回复模型
 - 值得回复只输出 NEXT，不值得回复只输出 SKIP
-- NEXT: 最新消息@你/回复你/叫你名字/问候你/向你提问/要求你做事，或明显在邀请你接话
+- NEXT: 最新消息@你/回复你/正在叫你名字/问候你/向你提问/要求你做事，或明显在邀请你接话
 - SKIP: 只是群友互相闲聊、与你无关、纯语气词短句且你无合适接话点
+- 消息里出现你的名字或称呼时，先分清是在叫你，还是群友互聊时提到你；后者判 SKIP
 - [图片:...] 和 [表情包:...] 是已经识别出的正常视觉内容，必须理解其含义，不能当作看不到
 - 最新消息只有[表情包:...]且没有定向信号、文字问题或请求时，通常视为群友对前文的反应并判 SKIP；只有确实在邀请你接话时才判 NEXT
 - 表情包附带实际文字问题/请求，或本轮有明确@你、引用你的定向信号时，按完整语境判 NEXT
