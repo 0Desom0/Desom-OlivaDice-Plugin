@@ -246,7 +246,7 @@ class McpVoiceTest(unittest.TestCase):
             result = OlivaAIAgent.voice.sendVoice(
                 {'plugin_event': event, 'Proc': None, 'trace_id': 'dashscope-voice-test'},
                 '今晚八点开团。',
-                '语速轻快，语调自然上扬。',
+                'Brisk and light, naturally rising intonation.',
             )
 
         self.assertTrue(result['active'])
@@ -265,7 +265,7 @@ class McpVoiceTest(unittest.TestCase):
                 'language_type': 'Chinese',
             },
             'parameters': {
-                'instructions': '语速轻快，语调自然上扬。',
+                'instructions': 'Brisk and light, naturally rising intonation.',
                 'optimize_instructions': True,
                 'stream': False,
             },
@@ -283,8 +283,9 @@ class McpVoiceTest(unittest.TestCase):
         )
         self.assertEqual(['text', 'instructions'], definition['params']['required'])
         instruction_schema = definition['params']['properties']['instructions']
-        self.assertIn('当前上下文', instruction_schema['description'])
-        self.assertIn('语速', instruction_schema['description'])
+        self.assertIn('必须用英文', instruction_schema['description'])
+        self.assertIn('不要用中文', instruction_schema['description'])
+        self.assertNotIn('中文或英文', instruction_schema['description'])
 
     def test_duplicate_voice_text_is_skipped_but_distinct_segments_are_allowed(self):
         OlivaAIAgent.conf.gConf['voice']['enabled'] = True

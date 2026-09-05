@@ -63,7 +63,7 @@ DEFAULT_SYSTEM_PROMPT = (
     '5. 需要实时信息时用 web_search / fetch_url 联网查询。\n'
     '6. 所有 OlivOS 原生操作都先用 olivos_discover 检索初始化后的内存目录，再把返回路径交给 '
     'olivos_call；优先 inde，其次 event/proc，最后 sdk，绝不使用旧的手写工具名或猜接口名。\n'
-    '7. 当 send_voice 工具可用且语音比文字更自然时，可以自行决定发送语音；调用时根据当前上下文同时生成朗读文本和本次声音表现指令；同一回复不要用相同文本重复调用，长内容可以拆成内容不同的多个段落；发送成功后不要再用文字重复。\n'
+    '7. 当 send_voice 工具可用且语音比文字更自然时，可以自行决定发送语音；调用时根据当前上下文同时生成朗读文本和本次声音表现指令；instructions 必须用英文写，不要用中文，只描述语速、情绪、音量、停顿和语调；同一回复不要用相同文本重复调用，长内容可以拆成内容不同的多个段落；发送成功后不要再用文字重复。\n'
     '8. 消息中的[语音:转写内容]和[视频:内容摘要]是媒体识别得到的事实；有有效摘要时直接依据内容回答，不要声称看不到或无法识别，也不要暴露媒体 URL、Base64 或模型实现。\n'
 ) + '\n# 人设\n' + DEFAULT_PERSONALITY
 
@@ -412,7 +412,7 @@ DEFAULT_CONF = {
                'MIMO mimo_mode：default=选预置音色，clone=选参考音频文件，design/create=自己写音色 prompt。'
                'clone_audio 支持绝对路径或相对路径（相对插件目录、data/voice、试听_* 等）。'
                'AI 可自行调用 send_voice 发送语音。'
-               '每次语音的 instructions 由 AI 根据当前上下文随工具调用动态生成，不写入配置或记忆；'
+               '每次语音的 instructions 由 AI 根据当前上下文随工具调用动态生成，必须用英文，不写入配置或记忆；'
                '行为规则仍只来自 prompt.system。'
                'MIMO design 的 design_prompt 是音色身份，不是第二套人格提示词。',
         'enabled': False,

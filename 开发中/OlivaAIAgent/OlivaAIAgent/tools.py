@@ -406,6 +406,7 @@ def selectToolNames(ctx, query_text, history=None, trace_id=None):
 @_reg(
     'send_voice',
     '结合当前完整上下文生成语音文本及本次声音表现指令，再合成为语音并立即发送。'
+    'instructions 必须用英文，不要用中文。'
     '仅在语音比文字更自然时调用；同一回复不要用相同 text 重复调用。'
     '长内容可以拆成内容不同的多个段落分别调用；调用成功后，最终回复不要重复发送同样文字。'
     '需要发语音时必须调用本工具，禁止在最终文字中用[语音消息]或[语音:内容]模拟语音。',
@@ -413,8 +414,10 @@ def selectToolNames(ctx, query_text, history=None, trace_id=None):
         'text': _p('string', '要说出的自然口语文本，不要包含 CQ/OP 码、Markdown 或动作描写'),
         'instructions': _p(
             'string',
-            '根据当前上下文为这一次朗读生成的声音表现要求，只描述语速、情绪、音量、停顿和语调；'
-            '不要写人物身份、消息内容、动作描写或长期规则，使用一句简洁的中文或英文指令',
+            '这一次怎么念的声音表现要求，必须用英文写，不要用中文。'
+            '只描述 rate、emotion、volume、pauses、intonation；'
+            '不要写人物身份、消息正文、动作描写或长期规则。'
+            '例如: "Brisk and smug, slight upward lilt, clear diction, no announcer tone."',
         ),
     },
     required=['text', 'instructions'],

@@ -109,7 +109,7 @@ class MimoTtsTest(unittest.TestCase):
             result = OlivaAIAgent.voice.sendVoice(
                 {'plugin_event': event, 'Proc': None, 'trace_id': 'mimo-default'},
                 '主人, 今晚开团吗',
-                '语速轻快, 带着一点得意。',
+                'Brisk, a little smug and pleased.',
             )
 
         self.assertTrue(result['active'])
@@ -124,7 +124,7 @@ class MimoTtsTest(unittest.TestCase):
         self.assertEqual({
             'model': 'mimo-v2.5-tts',
             'messages': [
-                {'role': 'user', 'content': '语速轻快, 带着一点得意。'},
+                {'role': 'user', 'content': 'Brisk, a little smug and pleased.'},
                 {'role': 'assistant', 'content': '主人, 今晚开团吗'},
             ],
             'audio': {'format': 'wav', 'voice': '冰糖'},
@@ -175,7 +175,7 @@ class MimoTtsTest(unittest.TestCase):
                     'post',
                     return_value=self._mimoAudioResponse(),
                 ) as post:
-            OlivaAIAgent.voice.synthesize('耳朵和尾巴不许碰', '炸毛但口齿清楚。')
+            OlivaAIAgent.voice.synthesize('耳朵和尾巴不许碰', 'Tense and bristling, still clearly articulated.')
 
         payload = post.call_args.kwargs['json']
         self.assertEqual('mimo-v2.5-tts-voicedesign', payload['model'])
@@ -183,7 +183,7 @@ class MimoTtsTest(unittest.TestCase):
         self.assertTrue(payload['audio']['optimize_text_preview'])
         user_content = payload['messages'][0]['content']
         self.assertIn('年轻少女声', user_content)
-        self.assertIn('本次朗读指导：炸毛但口齿清楚。', user_content)
+        self.assertIn('Performance instructions: Tense and bristling, still clearly articulated.', user_content)
         self.assertEqual('耳朵和尾巴不许碰', payload['messages'][1]['content'])
 
     def test_clone_without_reference_is_not_ready(self):

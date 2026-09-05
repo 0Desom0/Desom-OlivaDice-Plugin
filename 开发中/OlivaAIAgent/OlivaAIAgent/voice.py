@@ -171,7 +171,7 @@ def sendSimulatedVoice(ctx, text):
     return sendVoice(
         ctx,
         content,
-        instructions='自然、贴合当前语气地说出这句话，保持正常语速和清晰停顿。',
+        instructions='Speak this naturally in the current tone, at a clear conversational pace.',
     )
 
 
@@ -639,7 +639,7 @@ def _mimoUserContent(mode, cfg, instructions, design_prompt, content=''):
     if mode == 'design':
         design = str(design_prompt or '').strip() or personaVoiceDesignPrompt()
         if performance:
-            return '%s\n\n本次朗读指导：%s' % (design, performance)
+            return '%s\n\nPerformance instructions: %s' % (design, performance)
         return design
     return performance
 
