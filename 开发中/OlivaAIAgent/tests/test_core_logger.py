@@ -270,5 +270,71 @@ class CoreLoggerTest(unittest.TestCase):
         self.assertIs(snapshot, self.calls[0][0])
 
 
+    def test_should_block_for_log_on_respects_switch_and_core_log_enable(self):
+        event = FakeEvent()
+        self.core_patch.stop()
+        fake_core = types.SimpleNamespace(
+            userConfig=types.SimpleNamespace(
+                getUserConfigByKey=mock.Mock(return_value=True),
+            )
+        )
+        with mock.patch.object(OlivaAIAgent.coreLogger, '_coreModule', return_value=fake_core):
+            OlivaAIAgent.conf.gConf['olivadice_logger']['block_when_log_on'] = False
+            self.assertFalse(OlivaAIAgent.coreLogger.shouldBlockForLogOn(event))
+
+            OlivaAIAgent.conf.gConf['olivadice_logger']['block_when_log_on'] = True
+            self.assertTrue(OlivaAIAgent.coreLogger.shouldBlockForLogOn(event))
+            fake_core.userConfig.getUserConfigByKey.assert_called()
+            kwargs = fake_core.userConfig.getUserConfigByKey.call_args.kwargs
+            self.assertEqual('20000', kwargs['userId'])
+            self.assertEqual('logEnable', kwargs['userConfigKey'])
+            self.assertEqual('bot-hash', kwargs['botHash'])
+
+            event.data.host_id = 'guild-1'
+            OlivaAIAgent.coreLogger.shouldBlockForLogOn(event)
+            self.assertEqual('guild-1|20000', fake_core.userConfig.getUserConfigByKey.call_args.kwargs['userId'])
+
+        with mock.patch.object(OlivaAIAgent.coreLogger, '_coreModule', return_value=None):
+            self.assertFalse(OlivaAIAgent.coreLogger.shouldBlockForLogOn(event))
+        self.core_patch.start()
+
+    def test_group_message_skips_ambient_when_log_on_block_enabled(self):
+        event = FakeEvent()
+        event.data.sender = {'name': '玩家', 'nickname': '玩家'}
+        event.base_info = {'self_id': '10000'}
+        event.set_block = mock.Mock()
+        parsed = {
+            'trace_id': 't1',
+            'text': '普通聊天',
+            'message_id': 'mid-1',
+            'at_me': False,
+            'reply_to_me': False,
+            'reference_message_id': None,
+            'event_id': None,
+            'msg_idx': None,
+            'ref_msg_idx': None,
+        }
+        proc = types.SimpleNamespace()
+        with mock.patch.object(OlivaAIAgent.msgReply, 'parseMessage', return_value=parsed), \
+             mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
+             mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
+             mock.patch.object(OlivaAIAgent.memberDirectory, 'recordIncoming'), \
+             mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
+             mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
+             mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
+             mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
+             mock.patch.object(OlivaAIAgent.msgReply, '_matchPrefix', return_value=None), \
+             mock.patch.object(OlivaAIAgent.coreLogger, 'shouldBlockForLogOn', return_value=True), \
+             mock.patch.object(OlivaAIAgent.ambient, 'process') as ambient_process, \
+             mock.patch.object(OlivaAIAgent.conf, 'traceLog') as trace_log:
+            OlivaAIAgent.msgReply._onGroupMessage(event, proc)
+        ambient_process.assert_not_called()
+        event.set_block.assert_not_called()
+        self.assertTrue(any(
+            call.args and call.args[1] == 'route.group.blocked_by_log_on'
+            for call in trace_log.mock_calls
+        ))
+
+
 if __name__ == '__main__':
     unittest.main()

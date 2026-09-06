@@ -245,6 +245,8 @@ class ConfigGuiSchemaTest(unittest.TestCase):
         self.assertIn('olivadice_logger', OlivaAIAgent.gui.SECTION_ORDER)
         self.assertEqual('OlivaDice 团日志', OlivaAIAgent.gui.SECTION_LABELS['olivadice_logger'])
         self.assertTrue(OlivaAIAgent.conf.DEFAULT_CONF['olivadice_logger']['enabled'])
+        self.assertFalse(OlivaAIAgent.conf.DEFAULT_CONF['olivadice_logger']['block_when_log_on'])
+        self.assertEqual('log on 时拦截 AI（不进前置）', labels['block_when_log_on'])
         self.assertEqual('骰主与专属称呼', OlivaAIAgent.gui.SECTION_LABELS['masters'])
         self.assertEqual('未单独设置时的骰主称呼', labels['default_title'])
         self.assertEqual('骰主专属称呼（JSON）', labels['titles'])
