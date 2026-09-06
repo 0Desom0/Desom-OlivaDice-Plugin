@@ -168,6 +168,7 @@ FIELD_LABELS = {
     'max_bytes': '媒体大小上限（字节）',
     'enabled': '启用',
     'record_other_plugin_messages': '骰系其他插件消息进上下文',
+    'block_when_log_on': 'log on 时拦截 AI（不进前置）',
     'tavily_api_url': 'Tavily 地址',
     'tavily_api_key': 'Tavily API Key',
     'max_results': '搜索结果上限',

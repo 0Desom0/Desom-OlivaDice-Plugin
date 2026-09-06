@@ -181,6 +181,10 @@ DEFAULT_CONF = {
         'record_other_plugin_messages': True,
         '_record_other_plugin_messages说明': '反向桥接：把骰系插件（骰点/剧情/娱乐等）经 OlivaDiceCore 发出的群消息补进潜行上下文，'
                                           'AI 就能知道刚才骰出了什么；只覆盖走 Core 发送的插件，直接调用 OlivOS 接口的第三方插件无法捕获',
+        'block_when_log_on': False,
+        '_block_when_log_on说明': '可选。开启后，若本群 OlivaDiceCore 的 logEnable 为 True（即 .log on），'
+                               '则静默跳过群聊 AI / 潜行 / 前置小模型，避免打断跑团；.ai 控制指令仍可用。'
+                               '未安装 OlivaDiceCore 时此开关无效，也不会报错。不 set_block，不影响 Logger 记 log。',
     },
     'whitelist': {
         'enabled': False,

@@ -1099,6 +1099,9 @@ def _onGroupMessage(plugin_event, Proc):
                 plugin_event.set_block()
         return
 
+    # 团日志进行中可选拦截：读 OlivaDiceCore logEnable；控制指令仍可用，不 set_block。
+    log_block = OlivaAIAgent.coreLogger.shouldBlockForLogOn(plugin_event)
+
     # 群级前缀：显式命令或 AI 对话。
     if rest is not None:
         OlivaAIAgent.conf.traceLog(Proc, 'route.group.prefix', trace_id, command_chars=len(rest))
@@ -1113,13 +1116,21 @@ def _onGroupMessage(plugin_event, Proc):
             plugin_event.reply(_helpText(is_master))
             plugin_event.set_block()
             return
+        if log_block:
+            OlivaAIAgent.conf.traceLog(Proc, 'route.group.blocked_by_log_on', trace_id, reason='prefix')
+            return
         # .ai <正文> → 统一管线，显式请求，强制回复并启用全部工具
         OlivaAIAgent.ambient.process(plugin_event, Proc, parsed, self_id,
                                      force=True, tools=True, attempt=True, text_override=rest)
         plugin_event.set_block()
         return
 
-    # 关键词不受潜行开关影响，命中后跳过概率，但仍进入前置小模型判断。
+    if log_block:
+        # 关键词 / @ / 潜行 / 前置小模型全部跳过，避免打断 .log on 跑团。
+        OlivaAIAgent.conf.traceLog(Proc, 'route.group.blocked_by_log_on', trace_id, reason='ambient')
+        return
+
+    # 关键词不受潜行开关影响，命中后跳过概率与前置小模型。
     keyword_hit = _keywordHit(text, _unionKeywords(platform, group_id))
     if keyword_hit:
         if _blockContentInput(plugin_event, Proc, parsed, reply=True, scene='group_keyword'):

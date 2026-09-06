@@ -25,6 +25,20 @@ def enabled():
     return bool(OlivaAIAgent.conf.get('olivadice_logger', 'enabled', default=True))
 
 
+def blockWhenLogOnEnabled():
+    return bool(OlivaAIAgent.conf.get('olivadice_logger', 'block_when_log_on', default=False))
+
+
+def _coreModule():
+    """Import OlivaDiceCore only; logEnable read does not need Logger msgHook."""
+    try:
+        import OlivaDiceCore
+
+        return OlivaDiceCore
+    except Exception:
+        return None
+
+
 def _core():
     try:
         import OlivaDiceCore
@@ -37,8 +51,54 @@ def _core():
     return None
 
 
+def _groupHagId(plugin_event):
+    data = getattr(plugin_event, 'data', None)
+    if data is None:
+        return None
+    group_id = getattr(data, 'group_id', None)
+    if group_id in (None, ''):
+        return None
+    host_id = getattr(data, 'host_id', None)
+    if host_id not in (None, ''):
+        return '%s|%s' % (str(host_id), str(group_id))
+    return str(group_id)
+
+
+def isGroupLogOn(plugin_event):
+    """Read OlivaDiceCore group logEnable (.log on / off). No Core => False."""
+    core = _coreModule()
+    if core is None:
+        return False
+    try:
+        hag_id = _groupHagId(plugin_event)
+        bot_hash = _botHash(plugin_event)
+        if hag_id is None or bot_hash in (None, ''):
+            return False
+        platform = plugin_event.platform.get('platform') if isinstance(plugin_event.platform, dict) else None
+        if not platform:
+            return False
+        return bool(
+            core.userConfig.getUserConfigByKey(
+                userId=hag_id,
+                userType='group',
+                platform=platform,
+                userConfigKey='logEnable',
+                botHash=bot_hash,
+                default=False,
+            )
+        )
+    except Exception:
+        return False
+
+
+def shouldBlockForLogOn(plugin_event):
+    """When switch is on and group is logging, skip group AI / preflight."""
+    return blockWhenLogOnEnabled() and isGroupLogOn(plugin_event)
+
+
 def getStatus(Proc=None):
     core = _core()
+    core_mod = _coreModule()
     plugins = OlivaAIAgent.conf.loadedPlugins(Proc or OlivaAIAgent.conf.gProc)
     logger_loaded = any(str(item).split('(', 1)[0] == 'OlivaDiceLogger' for item in plugins)
     logger_loaded = logger_loaded or 'OlivaDiceLogger' in sys.modules
@@ -48,10 +108,12 @@ def getStatus(Proc=None):
     return {
         'enabled': enabled(),
         'core_ready': core is not None,
+        'core_installed': core_mod is not None,
         'logger_loaded': logger_loaded,
         'active': enabled() and core is not None,
         'bridge_enabled': bridgeEnabled(),
         'bridge_installed': bridged,
+        'block_when_log_on': blockWhenLogOnEnabled(),
     }
 
 
