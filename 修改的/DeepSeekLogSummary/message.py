@@ -43,6 +43,7 @@ _default_plugin_config = {
     'api_url': config.DEFAULT_API_URL,
     'api_key': '',
     'model': config.DEFAULT_MODEL,
+    'api_format': config.DEFAULT_API_FORMAT,
     'thinking': config.DEFAULT_THINKING,
     'output_mode': config.DEFAULT_OUTPUT_MODE,
     'output_format': config.DEFAULT_OUTPUT_FORMAT,
@@ -310,7 +311,8 @@ def handle_group_message(plugin_event, Proc) -> None:
 def _cmd_help(plugin_event) -> None:
     help_text = (
         '===== 跑团日志分析 =====\n'
-        '使用可配置的OpenAI兼容Chat Completions API分析跑团log。\n\n'
+        '使用自定义的OpenAI兼容API分析跑团log，\n'
+        '支持chat格式（Chat Completions）与response格式（Responses）两种请求方式。\n\n'
         '支持文件格式：\n'
         '  日志文件：.txt .log .md .json\n'
         '  压缩包：.zip（自动解压提取内部txt）\n'
@@ -322,13 +324,20 @@ def _cmd_help(plugin_event) -> None:
         '.分析总结 <文件名...>   分析指定的文件（骰主无需授权码）\n'
         '.分析总结 <文件名> <码> 非骰主凭授权码分析\n'
         '.分析码                 骰主生成一次性授权码\n'
-        '.分析设置 api <URL>     设置完整的Chat Completions接口地址\n'
+        '.分析设置 api <URL>     设置自定义API接口完整地址\n'
         '.分析设置 key <key>     设置API Key\n'
         '.分析设置 model <名称>  设置接口支持的模型名称\n'
+        '.分析设置 apiformat chat/response\n'
+        '                        切换请求格式（Chat Completions 或 Responses）\n'
         '.分析设置 thinking 开/关 切换思维链模式（默认开）\n'
         '.分析设置 output 合并/文件 设置合并转发或上传文件\n'
         '.分析设置 format txt/md 设置上传文件格式\n'
         '.分析设置 查看          查看当前配置\n\n'
+        '请求格式说明：\n'
+        'chat格式：标准 /chat/completions，使用messages构造请求\n'
+        'response格式：Responses风格，使用instructions+input构造请求\n'
+        '切换格式时，若API地址指向另一格式的端点会自动替换，\n'
+        '自定义路径的完整地址将按原样请求\n\n'
         '权限说明：\n'
         '骰主可无限制使用 .分析总结\n'
         '其他人需要骰主通过 .分析码 生成的一次性授权码\n'
@@ -441,19 +450,50 @@ def _cmd_set(plugin_event, arg: str) -> None:
         _reply(plugin_event, f'上传文件格式已设置为：{output_format}')
         return
 
+    if sub in ('apiformat', 'api_format', 'reqformat', '请求格式', '接口格式'):
+        if not val:
+            current_format = _normalize_api_format(plugin_cfg.get('api_format', config.DEFAULT_API_FORMAT))
+            _reply(
+                plugin_event,
+                f'请求格式当前为：{_api_format_display(current_format)}\n'
+                '请用 .分析设置 apiformat chat 或 .分析设置 apiformat response',
+            )
+            return
+        new_format = _normalize_api_format(val)
+        if _safe_str(val).strip().lower() not in ('response', 'responses', 'resp', '响应', 'chat', 'chat/completions', '聊天'):
+            _reply(
+                plugin_event,
+                '无法识别的格式，请用 .分析设置 apiformat chat（Chat Completions）或 .分析设置 apiformat response（Responses）',
+            )
+            return
+        plugin_cfg['api_format'] = new_format
+        _save_config(plugin_cfg)
+        effective_url = _resolve_api_url(plugin_cfg['api_url'], new_format)
+        notice = ''
+        if effective_url != plugin_cfg['api_url'].strip():
+            notice = f'\n（检测到原地址指向另一格式的端点，实际请求将使用：{effective_url}）'
+        _reply(
+            plugin_event,
+            f'请求格式已设置为：{_api_format_display(new_format)}{notice}\n'
+            f'当前API地址：{plugin_cfg["api_url"]}',
+        )
+        return
+
     if sub == '查看' or sub == '':
         api_key_masked = plugin_cfg['api_key'][:8] + '****' if len(plugin_cfg['api_key']) > 8 else '未设置'
         thinking_status = '开' if plugin_cfg.get('thinking', True) else '关'
         output_mode = '合并转发' if plugin_cfg.get('output_mode') == 'forward' else '上传文件'
+        current_format = _normalize_api_format(plugin_cfg.get('api_format', config.DEFAULT_API_FORMAT))
         _reply(
             plugin_event,
             f'当前配置：\nAPI地址: {plugin_cfg["api_url"]}\nAPI Key: {api_key_masked}\n'
-            f'模型: {plugin_cfg["model"]}\n思维链: {thinking_status}\n'
+            f'模型: {plugin_cfg["model"]}\n请求格式: {_api_format_display(current_format)}\n'
+            f'思维链: {thinking_status}\n'
             f'输出: {output_mode}\n文件格式: {plugin_cfg.get("output_format", "txt")}',
         )
         return
 
-    _reply(plugin_event, '支持的设置项：api / key / model / thinking / output / format / 查看')
+    _reply(plugin_event, '支持的设置项：api / key / model / apiformat / thinking / output / format / 查看')
 
 
 def _collect_group_files(plugin_event, group_id, folder_id=None, depth=0, max_depth=3):
@@ -529,28 +569,127 @@ def _split_log(text: str, chunk_size: int = CHUNK_CHARS) -> list[str]:
     return chunks
 
 
-def _post_chat(plugin_cfg: dict[str, Any], messages: list[dict[str, str]], max_tokens: int) -> str:
-    """调用可配置的OpenAI兼容Chat Completions接口。"""
-    headers = {
-        'Authorization': f'Bearer {plugin_cfg["api_key"]}',
-        'Content-Type': 'application/json',
-    }
-    payload: dict[str, Any] = {
-        'model': plugin_cfg['model'],
+def _normalize_api_format(value: Any) -> str:
+    """将任意输入归一化为合法的请求格式；非法值回退到默认 chat。"""
+    text = _safe_str(value).strip().lower()
+    if text in ('response', 'responses', 'resp', '响应'):
+        return 'response'
+    if text in ('chat', 'chat/completions', '聊天'):
+        return 'chat'
+    return config.DEFAULT_API_FORMAT
+
+
+def _api_format_display(api_format: str) -> str:
+    return 'response格式（Responses）' if api_format == 'response' else 'chat格式（Chat Completions）'
+
+
+def _resolve_api_url(api_url: str, api_format: str) -> str:
+    """根据请求格式解析实际请求地址。
+
+    - URL已指向当前格式的端点：原样使用
+    - URL指向另一种格式的端点：自动替换为当前格式的端点
+    - 其他自定义完整地址：原样使用（尊重骰主的自定义路径）
+    """
+    url = _safe_str(api_url).strip()
+    suffix = config.RESPONSE_ENDPOINT_SUFFIX if api_format == 'response' else config.CHAT_ENDPOINT_SUFFIX
+    other = config.CHAT_ENDPOINT_SUFFIX if api_format == 'response' else config.RESPONSE_ENDPOINT_SUFFIX
+    mismatch_pattern = re.compile(re.escape(other) + r'/?$', re.IGNORECASE)
+    if mismatch_pattern.search(url):
+        return mismatch_pattern.sub(suffix, url)
+    return url
+
+
+def _build_request_payload(
+    api_format: str,
+    plugin_cfg: dict[str, Any],
+    messages: list[dict[str, str]],
+    max_tokens: int,
+) -> dict[str, Any]:
+    """按配置的请求格式构造请求体。"""
+    model = plugin_cfg['model']
+    thinking_enabled = bool(plugin_cfg.get('thinking', config.DEFAULT_THINKING))
+
+    if api_format == 'response':
+        instructions = '\n\n'.join(
+            item['content'] for item in messages if item.get('role') == 'system' and item.get('content')
+        )
+        input_messages = [item for item in messages if item.get('role') != 'system']
+        payload: dict[str, Any] = {
+            'model': model,
+            'input': input_messages,
+            'max_output_tokens': max_tokens,
+            'temperature': 0.7,
+        }
+        if instructions:
+            payload['instructions'] = instructions
+        if thinking_enabled:
+            payload['reasoning'] = {'effort': 'medium'}
+        return payload
+
+    payload = {
+        'model': model,
         'messages': messages,
         'max_tokens': max_tokens,
         'temperature': 0.7,
     }
-    if plugin_cfg.get('thinking', True):
+    if thinking_enabled:
         payload['thinking'] = {'type': 'enabled'}
         payload['reasoning_effort'] = 'medium'
+    return payload
+
+
+def _extract_reply_content(data: dict[str, Any]) -> str:
+    """统一解析两种格式的响应，取首个非空文本。
+
+    chat格式：choices[0].message.content
+    response格式：output_text 或 output[].content[].text（type=output_text）
+    """
+    choices = data.get('choices')
+    if isinstance(choices, list) and choices:
+        message_block = choices[0].get('message', {}) if isinstance(choices[0], dict) else {}
+        content = message_block.get('content') if isinstance(message_block, dict) else None
+        if content is not None and _safe_str(content).strip():
+            return _safe_str(content)
+
+    output_text = data.get('output_text')
+    if output_text is not None and _safe_str(output_text).strip():
+        return _safe_str(output_text)
+
+    output = data.get('output')
+    if isinstance(output, list):
+        parts = []
+        for item in output:
+            if not isinstance(item, dict) or item.get('type') == 'reasoning':
+                continue
+            content_block = item.get('content')
+            if isinstance(content_block, list):
+                for piece in content_block:
+                    if isinstance(piece, dict) and piece.get('type') == 'output_text':
+                        parts.append(_safe_str(piece.get('text', '')))
+        joined = ''.join(parts)
+        if joined.strip():
+            return joined
+
+    return ''
+
+
+def _post_api(plugin_cfg: dict[str, Any], messages: list[dict[str, str]], max_tokens: int) -> str:
+    """按配置的请求格式调用OpenAI兼容接口（chat格式或response格式）。"""
+    api_format = _normalize_api_format(plugin_cfg.get('api_format', config.DEFAULT_API_FORMAT))
+    request_url = _resolve_api_url(plugin_cfg['api_url'], api_format)
+    headers = {
+        'Authorization': f'Bearer {plugin_cfg["api_key"]}',
+        'Content-Type': 'application/json',
+    }
+    payload = _build_request_payload(api_format, plugin_cfg, messages, max_tokens)
+    thinking_keys = ('reasoning',) if api_format == 'response' else ('thinking', 'reasoning_effort')
 
     last_error: Exception | None = None
     thinking_fallback_used = False
     for attempt in range(config.API_RETRIES + 1):
         try:
             response = requests.post(
-                plugin_cfg['api_url'],
+                request_url,
                 headers=headers,
                 json=payload,
                 timeout=config.API_TIMEOUT,
@@ -563,15 +702,16 @@ def _post_chat(plugin_cfg: dict[str, Any], messages: list[dict[str, str]], max_t
                     data = response.json()
                 except Exception as exception_object:
                     raise RuntimeError(f'API返回的JSON无法解析：{exception_object}') from exception_object
-                choices = data.get('choices', [])
-                if not choices:
-                    raise RuntimeError('API返回中没有choices')
-                content = choices[0].get('message', {}).get('content') or ''
-                return _safe_str(content)
+                content = _extract_reply_content(data)
+                if content.strip():
+                    return content
+                raise RuntimeError('API返回中未找到有效的回复内容')
 
-            if response.status_code in (400, 422) and 'thinking' in payload and not thinking_fallback_used:
-                payload.pop('thinking', None)
-                payload.pop('reasoning_effort', None)
+            if response.status_code in (400, 422) and not thinking_fallback_used and any(
+                key in payload for key in thinking_keys
+            ):
+                for key in thinking_keys:
+                    payload.pop(key, None)
                 thinking_fallback_used = True
                 _log(2, '当前API不接受思维链扩展参数，已自动关闭扩展参数并重试。')
                 continue
@@ -617,7 +757,7 @@ def _call_api_chunked(
             {'role': 'user', 'content': f'请分析以下日志内容：\n\n{chunk}'},
         ]
         try:
-            content = _post_chat(plugin_cfg, messages, config.CHUNK_API_TOKENS)
+            content = _post_api(plugin_cfg, messages, config.CHUNK_API_TOKENS)
         except Exception as exception_object:
             raise RuntimeError(f'第{i + 1}部分分析失败：{exception_object}') from exception_object
         part_results.append(content)
@@ -634,7 +774,7 @@ def _call_api_chunked(
     if plugin_event:
         _reply(plugin_event, f'正在合并 {total} 部分分析结果，生成最终总结...')
     try:
-        final = _post_chat(
+        final = _post_api(
             plugin_cfg,
             [
                 {'role': 'system', 'content': summary_prompt},

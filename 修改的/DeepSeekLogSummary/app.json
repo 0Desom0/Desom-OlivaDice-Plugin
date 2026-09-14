@@ -3,9 +3,9 @@
   "author": "歌靡",
   "namespace": "DeepSeekLogSummary",
   "message_mode": "olivos_string",
-  "info": "使用可配置的OpenAI兼容API分析跑团日志，支持群文件与qqGuildv2附件输入，并可输出合并转发或txt/md文件",
-  "version": "1.1.0",
-  "svn": 2,
+  "info": "使用可自定义的OpenAI兼容API分析跑团日志，支持chat/response两种请求格式与自定义API地址，支持群文件与qqGuildv2附件输入，并可输出合并转发或txt/md文件",
+  "version": "1.2.0",
+  "svn": 3,
   "compatible_svn": 190,
   "priority": 30000,
   "support": [

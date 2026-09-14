@@ -2,6 +2,12 @@ plugin_name = 'DeepSeekLogSummary'
 
 DEFAULT_API_URL = 'https://api.deepseek.com/chat/completions'
 DEFAULT_MODEL = 'deepseek-v4-flash'
+# 请求格式：'chat' = Chat Completions（messages）；'response' = Responses（input/instructions）
+DEFAULT_API_FORMAT = 'chat'
+API_FORMATS = ('chat', 'response')
+# 两种格式的默认端点后缀，切换格式时若URL指向另一种端点会自动替换
+CHAT_ENDPOINT_SUFFIX = '/chat/completions'
+RESPONSE_ENDPOINT_SUFFIX = '/responses'
 DEFAULT_THINKING = True
 DEFAULT_OUTPUT_MODE = 'forward'
 DEFAULT_OUTPUT_FORMAT = 'txt'
