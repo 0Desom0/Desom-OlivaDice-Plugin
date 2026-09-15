@@ -29,7 +29,7 @@ import copy
 import re
 import random
 
-
+SANCHI_ONEDICE_EXPR_CHARS = set('0123456789dD+-*/().^')
 
 _RD_RECORD_CONTEXT = None
 
@@ -268,6 +268,80 @@ def handle_negative_dice(expr_str):
     # 处理 0dX
     expr_str = re.sub(r'(?:\b0|\(0\))[dD]\d+\b', '0', expr_str)
     return expr_str
+
+def can_roll_expression(expr_str, tmp_template_customDefault=None):
+    """
+    判断字符串是否为可直接投掷的骰点表达式（只含数字、骰子、括号与运算符）
+    """
+    if expr_str in [None, '']:
+        return False
+    expr_str = str(expr_str).replace(' ', '')
+    if expr_str == '':
+        return False
+    if expr_str.isdecimal():
+        return True
+    bracket_count = 0
+    for ch in expr_str:
+        if ch not in SANCHI_ONEDICE_EXPR_CHARS:
+            return False
+        if ch == '(':
+            bracket_count += 1
+        elif ch == ')':
+            bracket_count -= 1
+            if bracket_count < 0:
+                return False
+    if bracket_count != 0:
+        return False
+    if expr_str[-1] in ['+', '-', '*', '/', '^', 'd', 'D', '(']:
+        return False
+    return True
+
+def can_roll_front_prefix(expr_str, tmp_template_customDefault=None):
+    """
+    判断字符串是否可作为前式使用（前式不能以 * / 开头，它们需要与上一段骰点拼接）
+    """
+    if expr_str in [None, '']:
+        return False
+    expr_str = str(expr_str).replace(' ', '')
+    if expr_str == '':
+        return False
+    if expr_str.isdecimal():
+        return True
+    if expr_str[0] in ['*', '/']:
+        return False
+    return can_roll_expression(expr_str, tmp_template_customDefault)
+
+def has_non_ignorable_suffix(rest_str):
+    """
+    判断被裁掉的尾部文字中是否含有骰点相关内容（数字或骰子运算符）
+    """
+    rest_str = str(rest_str).strip()
+    if rest_str == '':
+        return False
+    return re.search(r'[0-9dD+\-*/()]', rest_str) is not None
+
+def trim_front_expr_greedy(expr_str, skill_valueTable, tmp_pcCardRule, tmp_template_customDefault=None):
+    """
+    与狩魂者模块保持一致：从后往前裁掉不影响投掷的说明文字
+    返回可投掷的表达式；若整段都是说明文字则返回 None
+    """
+    expr_str = str(expr_str).strip()
+    if expr_str == '':
+        return None
+    for i in range(len(expr_str), 0, -1):
+        prefix = expr_str[:i].strip()
+        suffix = expr_str[i:]
+        if prefix == '':
+            continue
+        replaced_expr, _ = replace_skills(prefix.replace('=', '').replace(' ', ''), skill_valueTable, tmp_pcCardRule)
+        if not can_roll_front_prefix(replaced_expr, tmp_template_customDefault):
+            continue
+        if has_non_ignorable_suffix(suffix):
+            return expr_str
+        return prefix
+    if has_non_ignorable_suffix(expr_str):
+        return expr_str
+    return None
 
 def parse_bp_parameters(expr_str):
     """
@@ -745,6 +819,9 @@ def unity_reply(plugin_event, Proc):
             my_part_cleaned, my_b_count, my_p_count, my_u_count, my_d_count = parse_bp_parameters(my_part)
             # 解析对方的参数
             other_part_cleaned, other_b_count, other_p_count, other_u_count, other_d_count = parse_bp_parameters(other_part)
+            # 与狩魂者模块保持一致：忽略末尾的非技能说明文字
+            my_part_cleaned = trim_front_expr_greedy(my_part_cleaned, my_skill_valueTable, tmp_pcCardRule) or ''
+            other_part_cleaned = trim_front_expr_greedy(other_part_cleaned, other_skill_valueTable, tmp_pcCardRule) or ''
             my_b_count, my_p_count = normalize_bp_counts(my_b_count, my_p_count)
             other_b_count, other_p_count = normalize_bp_counts(other_b_count, other_p_count)
             
@@ -925,6 +1002,10 @@ def unity_reply(plugin_event, Proc):
             parts = tmp_reast_str.split('#', 1)
             attr_part = parts[0].strip()
             difficulty_part = parts[1].strip()
+            
+            # 与狩魂者模块保持一致：忽略末尾的非技能说明文字
+            attr_part = trim_front_expr_greedy(attr_part, skill_valueTable, tmp_pcCardRule) or ''
+            difficulty_part = trim_front_expr_greedy(difficulty_part, skill_valueTable, tmp_pcCardRule) or ''
             
             # 计算属性值
             attr_value = 0
@@ -1407,6 +1488,9 @@ def unity_reply(plugin_event, Proc):
                     
                     # 在后半部分解析b/p/u/d参数
                     back_part, b_count, p_count, u_count, d_count = parse_bp_parameters(back_part)
+
+                    # 与狩魂者模块保持一致：忽略末尾的非技能说明文字
+                    back_part = trim_front_expr_greedy(back_part, skill_valueTable, tmp_pcCardRule) or ''
                     
                     # 处理后半部分剩余的（铜钱数）
                     if back_part:
@@ -1436,7 +1520,7 @@ def unity_reply(plugin_event, Proc):
                                     raise ValueError("表达式解析错误")
                             except Exception as e:
                                 dictTValue['tRollPara'] = back_part
-                                if hasattr(rd, 'resError') and rd.resError:
+                                if 'rd' in locals() and hasattr(rd, 'resError') and rd.resError:
                                     error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd.resError, dictStrCustom, dictTValue) if hasattr(OlivaDiceCore.msgReplyModel, 'get_SkillCheckError') else str(rd.resError)
                                 else:
                                     error_msg = str(e)
@@ -1450,6 +1534,9 @@ def unity_reply(plugin_event, Proc):
                 else:
                     # 没有#号的情况，在整个字符串中解析b/p/u/d参数
                     tmp_reast_str, b_count, p_count, u_count, d_count = parse_bp_parameters(tmp_reast_str)
+
+                    # 与狩魂者模块保持一致：忽略末尾的非技能说明文字
+                    tmp_reast_str = trim_front_expr_greedy(tmp_reast_str, skill_valueTable, tmp_pcCardRule) or ''
                     
                     if tmp_reast_str:
                         if tmp_reast_str.isdigit():
@@ -1478,7 +1565,7 @@ def unity_reply(plugin_event, Proc):
                                     raise ValueError("表达式解析错误")
                             except Exception as e:
                                 dictTValue['tRollPara'] = tmp_reast_str
-                                if hasattr(rd, 'resError') and rd.resError:
+                                if 'rd' in locals() and hasattr(rd, 'resError') and rd.resError:
                                     error_msg = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd.resError, dictStrCustom, dictTValue) if hasattr(OlivaDiceCore.msgReplyModel, 'get_SkillCheckError') else str(rd.resError)
                                 else:
                                     error_msg = str(e)
