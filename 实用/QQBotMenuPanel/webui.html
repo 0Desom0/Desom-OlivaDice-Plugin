@@ -67,7 +67,11 @@
       border-left: 1px solid #ddd;
       min-height: 0;
       height: 100%;
-      overflow: auto;
+      overflow: hidden;
+    }
+    #previewMenu, #previewPanel {
+      height: 100%;
+      min-height: 0;
     }
     .preview-wrap.hidden { display: none; }
     .tabs { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -169,13 +173,16 @@
     .official-menu {
       background: var(--menu-stage);
       border-radius: 16px;
-      min-height: 100%;
+      height: 100%;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       justify-content: flex-end;
       padding: 28px 12px 20px;
+      overflow: visible;
     }
     .menu-dock { position: relative; }
+    .pill-stage { position: relative; }
     .pills {
       display: flex;
       gap: 8px;
@@ -243,17 +250,20 @@
       background: #fff;
       border-radius: 12px;
       min-width: 168px;
-      overflow: hidden;
-      box-shadow: 0 10px 28px rgba(0,0,0,.12);
-      z-index: 2;
+      max-width: calc(100% - 8px);
+      max-height: min(280px, 46vh);
+      overflow-x: hidden;
+      overflow-y: auto;
+      box-shadow: 0 10px 28px rgba(0,0,0,.16);
+      z-index: 8;
     }
     .subpop::after {
       content: "";
       position: absolute;
       left: 50%;
-      bottom: -6px;
-      width: 12px;
-      height: 12px;
+      bottom: -5px;
+      width: 10px;
+      height: 10px;
       background: #fff;
       transform: translateX(-50%) rotate(45deg);
       box-shadow: 2px 2px 4px rgba(0,0,0,.04);
@@ -266,6 +276,7 @@
       font-size: 13px;
       cursor: pointer;
       background: #fff;
+      white-space: nowrap;
     }
     .subpop div:first-child { border-top: 0; }
     .subpop div:hover { background: #f7f8fa; }
@@ -572,8 +583,10 @@
       <div id="previewMenu">
         <div class="official-menu">
           <div class="menu-dock">
-            <div class="subpop" id="menuSub" hidden></div>
-            <div class="pills" id="menuPills"></div>
+            <div class="pill-stage">
+              <div class="subpop" id="menuSub" hidden></div>
+              <div class="pills" id="menuPills"></div>
+            </div>
             <div class="composer" id="menuComposer"></div>
             <div class="toolbar">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -918,8 +931,11 @@ function renderPreview() {
     $("menuSub").innerHTML = (expanded.sub_menu_items||[]).map((sub, index) =>
       `<div onclick="clickSub(${expandedMenu},${index})">${escapeHtml(sub.name||sub.type)}</div>`
     ).join("") || "<div>还没有子项</div>";
+    placeSubmenu(expandedMenu);
   } else {
     $("menuSub").hidden = true;
+    $("menuSub").style.left = "50%";
+    $("menuSub").style.transform = "translateX(-50%)";
   }
   $("previewScopeTabs").innerHTML = SCOPE_ORDER.map(([key, label]) =>
     `<span class="${key===scope?'active':''}" onclick="changeScope('${key}')">${label}</span>`
@@ -1123,6 +1139,20 @@ function moveItem(delta) {
   [panel.items[itemIndex], panel.items[next]] = [panel.items[next], panel.items[itemIndex]];
   itemIndex = next;
   render();
+}
+function placeSubmenu(index) {
+  const pop = $("menuSub");
+  const stage = pop && pop.parentElement;
+  const pills = $("menuPills") ? $("menuPills").children : [];
+  const pill = pills[index];
+  if (!pop || !stage || !pill) return;
+  const stageBox = stage.getBoundingClientRect();
+  const pillBox = pill.getBoundingClientRect();
+  let left = pillBox.left - stageBox.left + pillBox.width / 2;
+  const half = Math.max(pop.offsetWidth / 2, 84);
+  left = Math.max(half + 4, Math.min(stageBox.width - half - 4, left));
+  pop.style.left = left + "px";
+  pop.style.transform = "translateX(-50%)";
 }
 function clickMenu(index) {
   const item = state.menu_draft.items[index];
