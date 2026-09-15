@@ -1,0 +1,1301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QQ 自定义菜单与指令面板</title>
+  <style>
+    :root {
+      --blue: #2b8cff;
+      --blue-soft: #e8f1ff;
+      --switch: #5b8def;
+      --switch-bg: #e7f0fe;
+      --switch-border: #c5dcff;
+      --text: #1f1f1f;
+      --sub: #9aa0a6;
+      --muted: #a8a8a8;
+      --line: #f0f0f0;
+      --bg: #f3f4f6;
+      --card: #ffffff;
+      --menu-stage: #f5f6f8;
+      --pill-border: #e3e4e8;
+      --icon: #6f6f6f;
+      --phone-bar: #9a9a9a;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .topbar {
+      flex: 0 0 56px;
+      height: 56px;
+      background: #00a0ea;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 18px;
+    }
+    .topbar h1 { font-size: 16px; margin: 0; font-weight: 700; }
+    .topbar select, .topbar button {
+      border: 0;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    .topbar .url { margin-left: auto; font-size: 12px; opacity: .9; }
+    .layout {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(400px, 1fr) 520px;
+      overflow: hidden;
+    }
+    .layout.no-preview { grid-template-columns: 1fr; }
+    .editor { padding: 16px 18px 80px; overflow-y: auto; min-height: 0; }
+    .preview-wrap {
+      background: #ececec;
+      padding: 16px;
+      border-left: 1px solid #ddd;
+      min-height: 0;
+      height: 100%;
+      overflow: auto;
+    }
+    .preview-wrap.hidden { display: none; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    .tabs button {
+      border: 0;
+      background: #fff;
+      padding: 8px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: #666;
+    }
+    .tabs button.active { background: var(--blue); color: #fff; }
+    .card { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+    .card h3 { margin: 0 0 10px; font-size: 14px; }
+    label { display: block; font-size: 12px; color: #666; margin: 8px 0 4px; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    textarea { min-height: 72px; font-family: inherit; }
+    .hint { font-size: 12px; color: #8aa; margin-top: 6px; line-height: 1.5; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .btn {
+      border: 0;
+      background: #40c3ff;
+      color: #fff;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .btn.gray { background: #9aa4b2; }
+    .btn.danger { background: #e85d5d; }
+    .list-item, .mini-item {
+      border: 1px solid #eee;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .list-item.active, .mini-item.active { border-color: var(--blue); background: var(--blue-soft); }
+    .result {
+      white-space: pre-wrap;
+      background: #111827;
+      color: #d1fae5;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 12px;
+      min-height: 72px;
+    }
+    .check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 8px 0; }
+    .check input { width: auto; }
+    .help { font-size: 14px; line-height: 1.75; color: #222; }
+    .help h1 { font-size: 22px; margin: 0 0 12px; }
+    .help h2 { font-size: 17px; margin: 22px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
+    .help h3 { font-size: 15px; margin: 16px 0 8px; }
+    .help p { margin: 8px 0; }
+    .help ul, .help ol { margin: 8px 0; padding-left: 1.4em; }
+    .help li { margin: 4px 0; }
+    .help a { color: var(--blue); }
+    .help code { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+    .help pre { background: #111827; color: #d1fae5; padding: 12px; border-radius: 8px; overflow: auto; }
+    .help pre code { background: transparent; color: inherit; padding: 0; }
+    .help table { border-collapse: collapse; width: 100%; margin: 10px 0 16px; font-size: 13px; }
+    .help th, .help td { border: 1px solid #eee; padding: 8px 10px; text-align: left; vertical-align: top; }
+    .help th { background: #f7f8fa; }
+    .help hr { border: 0; border-top: 1px solid #eee; margin: 18px 0; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.38);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+      padding: 16px;
+    }
+    .modal[hidden] { display: none; }
+    .modal-card {
+      width: min(460px, 100%);
+      background: #fff;
+      border-radius: 14px;
+      padding: 18px 18px 16px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.18);
+    }
+    .modal-card h3 { margin: 0 0 10px; font-size: 16px; }
+    .modal-card p { margin: 0 0 10px; font-size: 14px; }
+    .modal-card .ok { color: #16a34a; font-weight: 700; }
+    .modal-card .fail { color: #dc2626; font-weight: 700; }
+    .modal-list { max-height: 240px; overflow: auto; margin: 8px 0 14px; }
+    .modal-list div { font-size: 13px; padding: 6px 0; border-top: 1px solid #f2f2f2; }
+    .count { float: right; color: #9aa0a6; font-weight: 400; }
+    .type-only { display: none; }
+    .type-only.show { display: block; }
+
+    .official-menu {
+      background: var(--menu-stage);
+      border-radius: 16px;
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 28px 12px 20px;
+    }
+    .menu-dock { position: relative; }
+    .pills {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin: 0 0 12px;
+    }
+    .pill {
+      background: #fff;
+      border: 1px solid var(--pill-border);
+      border-radius: 999px;
+      padding: 8px 11px;
+      font-size: 13px;
+      color: #333;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      line-height: 1;
+      box-shadow: 0 1px 0 rgba(0,0,0,.02);
+      user-select: none;
+      white-space: nowrap;
+    }
+    .pill svg { width: 14px; height: 14px; color: #666; flex: 0 0 auto; }
+    .pill.switch-on {
+      background: var(--switch-bg);
+      border-color: var(--switch-border);
+      color: var(--switch);
+    }
+    .pill.switch-on svg { color: var(--switch); }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--switch);
+      display: inline-block;
+      margin-left: 2px;
+    }
+    .composer {
+      height: 44px;
+      background: #fff;
+      border-radius: 10px;
+      margin: 0 4px 14px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      color: #333;
+      font-size: 14px;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .toolbar {
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      color: var(--icon);
+      padding: 2px 8px 2px;
+    }
+    .toolbar svg { width: 26px; height: 26px; }
+    .subpop {
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 10px);
+      transform: translateX(-50%);
+      background: #fff;
+      border-radius: 12px;
+      min-width: 168px;
+      overflow: hidden;
+      box-shadow: 0 10px 28px rgba(0,0,0,.12);
+      z-index: 2;
+    }
+    .subpop::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -6px;
+      width: 12px;
+      height: 12px;
+      background: #fff;
+      transform: translateX(-50%) rotate(45deg);
+      box-shadow: 2px 2px 4px rgba(0,0,0,.04);
+    }
+    .subpop div {
+      position: relative;
+      z-index: 1;
+      padding: 12px 16px;
+      border-top: 1px solid #f3f3f3;
+      font-size: 13px;
+      cursor: pointer;
+      background: #fff;
+    }
+    .subpop div:first-child { border-top: 0; }
+    .subpop div:hover { background: #f7f8fa; }
+
+    .official-panel {
+      background: #fff;
+      border-radius: 16px;
+      min-height: 100%;
+      padding: 18px 12px 24px;
+    }
+    .panel-tabs {
+      display: flex;
+      width: 318px;
+      margin: 0 auto;
+      padding: 2px 0 18px;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 15px;
+    }
+    .panel-tabs span {
+      color: #9aa0a6;
+      cursor: pointer;
+      padding: 4px 2px;
+      user-select: none;
+    }
+    .panel-tabs span.active {
+      color: var(--blue);
+      font-weight: 500;
+    }
+    .phone {
+      width: 318px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 26px;
+      overflow: hidden;
+      box-shadow: 0 10px 28px rgba(0,0,0,.08);
+      border: 1px solid #f0f0f0;
+    }
+    .phone-bar {
+      height: 46px;
+      background: var(--phone-bar);
+    }
+    .phone-body {
+      background: #fff;
+      min-height: 430px;
+      display: flex;
+      flex-direction: column;
+    }
+    .bot-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 16px 10px;
+      font-size: 12px;
+      color: #8c8c8c;
+    }
+    .avatar, .mini-avatar {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 35% 30%, #fff 0 18%, transparent 19%),
+        linear-gradient(180deg, #9fd2ff, #4aa7ff);
+      flex: 0 0 auto;
+    }
+    .cmd-list { flex: 1; }
+    .cmd-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 13px 16px;
+      border-top: 1px solid #f2f2f2;
+      font-size: 15px;
+      cursor: pointer;
+      gap: 12px;
+    }
+    .cmd-row .left { color: #222; }
+    .cmd-row .right {
+      color: #a0a0a0;
+      font-size: 13px;
+      text-align: right;
+      max-width: 58%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .phone-foot {
+      display: flex;
+      justify-content: flex-start;
+      padding: 14px 18px 16px;
+    }
+    .mini-avatar {
+      width: 28px;
+      height: 28px;
+      box-shadow: 0 3px 0 -1px var(--blue);
+    }
+    .empty-hint {
+      padding: 18px 16px;
+      color: #bbb;
+      font-size: 13px;
+    }
+    @media (max-width: 980px) {
+      html, body { height: auto; overflow: auto; }
+      body { display: block; }
+      .layout { display: block; overflow: visible; }
+      .preview-wrap { border-left: 0; border-top: 1px solid #ddd; height: auto; min-height: 560px; }
+      .official-menu, .official-panel { min-height: 520px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>QQ 自定义菜单与指令面板</h1>
+    <select id="botSelect"></select>
+    <button type="button" onclick="bootstrap()">刷新</button>
+    <span class="url" id="urlText"></span>
+  </div>
+  <div class="layout" id="layout">
+    <div class="editor">
+      <div class="tabs">
+        <button class="active" data-tab="menu" onclick="showTab('menu')">自定义菜单</button>
+        <button data-tab="panel" onclick="showTab('panel')">指令面板</button>
+        <button data-tab="browse" onclick="showTab('browse')">指令浏览</button>
+        <button data-tab="settings" onclick="showTab('settings')">全局设置</button>
+        <button data-tab="help" onclick="showTab('help')">帮助文档</button>
+      </div>
+
+      <section id="tab-menu">
+        <div class="card">
+          <h3>菜单项 items（最多 10 个，从左到右）</h3>
+          <div id="menuList"></div>
+          <div class="row">
+            <button class="btn" onclick="addMenu()">新增</button>
+            <button class="btn gray" onclick="delMenu()">删除</button>
+            <button class="btn gray" onclick="moveMenu(-1)">上移</button>
+            <button class="btn gray" onclick="moveMenu(1)">下移</button>
+            <button class="btn gray" onclick="fillExample('menu')">填入示例</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>菜单项编辑</h3>
+          <label>名称 name <span class="count" id="menuNameCount">0/10</span></label>
+          <input id="menuName" oninput="applyMenu()" />
+          <label>类型 type</label>
+          <select id="menuType" onchange="applyMenu()"></select>
+          <div class="type-only" id="boxMenuSend">
+            <label>发送内容 send_message</label>
+            <input id="menuSend" oninput="applyMenu()" />
+          </div>
+          <div class="type-only" id="boxMenuLink">
+            <label>链接 link</label>
+            <input id="menuLink" oninput="applyMenu()" />
+          </div>
+          <div class="type-only" id="boxMenuSwitch">
+            <label>开关标识 switch_id</label>
+            <input id="menuSwitchId" oninput="applyMenu()" />
+            <label>开关默认 default</label>
+            <select id="menuSwitchDefault" onchange="applyMenu()">
+              <option value="false">关闭 False</option>
+              <option value="true">开启 True</option>
+            </select>
+          </div>
+          <div class="hint" id="menuHint"></div>
+          <div class="type-only" id="boxMenuSub">
+            <h3 style="margin-top:16px">子菜单 sub_menu_items（仅类型=子菜单，最多 5 项）</h3>
+            <div id="subList"></div>
+            <div class="row">
+              <button class="btn" onclick="addSub()">新增子项</button>
+              <button class="btn gray" onclick="delSub()">删除子项</button>
+            </div>
+            <label>子项名称 name</label>
+            <input id="subName" oninput="applySub()" />
+            <label>子项类型 type</label>
+            <select id="subType" onchange="applySub()"></select>
+            <label>子项发送内容 send_message</label>
+            <input id="subSend" oninput="applySub()" />
+            <label>子项链接 link</label>
+            <input id="subLink" oninput="applySub()" />
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn" onclick="pullMenu()">拉取当前菜单</button>
+          <button class="btn" onclick="saveDraft()">保存草稿</button>
+          <button class="btn" onclick="sendMenu()">确认发送到平台</button>
+        </div>
+      </section>
+
+      <section id="tab-panel" hidden>
+        <label class="check">
+          <input type="checkbox" id="unified" onchange="onUnified()" />
+          统一配置 unified（四个场景共用一份内容）
+        </label>
+        <div class="card">
+          <h3>当前场景的指令面板（每机器人最多 20 个）</h3>
+          <div id="panelList"></div>
+          <div class="row">
+            <button class="btn" onclick="addPanel()">新建面板</button>
+            <button class="btn gray" onclick="delPanel()">删除面板</button>
+            <button class="btn gray" onclick="fillExample('panel')">填入示例</button>
+          </div>
+          <label>备注 remark</label>
+          <input id="panelRemark" oninput="applyPanel()" />
+          <label>面板ID panel_id</label>
+          <input id="panelId" oninput="applyPanel()" />
+          <label>作用范围 target_type</label>
+          <select id="targetType" onchange="applyPanel()"></select>
+          <div class="hint" id="panelHint"></div>
+          <label>关联对象 openid（每行一个：c2c 用户 / group 群）</label>
+          <textarea id="openidBox" oninput="applyPanel()"></textarea>
+          <div class="row">
+            <button class="btn" onclick="sendTarget('add')">确认添加关联</button>
+            <button class="btn gray" onclick="sendTarget('del')">确认移除关联</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>面板元素 items（最多 20 个）</h3>
+          <div id="itemList"></div>
+          <div class="row">
+            <button class="btn" onclick="addItem()">新增元素</button>
+            <button class="btn gray" onclick="delItem()">删除元素</button>
+            <button class="btn gray" onclick="moveItem(-1)">上移</button>
+            <button class="btn gray" onclick="moveItem(1)">下移</button>
+          </div>
+          <label>名称 name <span class="count" id="itemNameCount">0/14</span></label>
+          <input id="itemName" oninput="applyItem()" />
+          <label>描述 desc <span class="count" id="itemDescCount">0/30</span></label>
+          <input id="itemDesc" oninput="applyItem()" />
+          <label>类型 type</label>
+          <select id="itemType" onchange="applyItem()"></select>
+          <div class="type-only" id="boxItemLink">
+            <label>链接 link</label>
+            <input id="itemLink" oninput="applyItem()" />
+          </div>
+          <label>仅管理员 only_admin</label>
+          <select id="itemAdmin" onchange="applyItem()">
+            <option value="false">关闭 False</option>
+            <option value="true">开启 True</option>
+          </select>
+          <div class="hint" id="itemHint"></div>
+        </div>
+        <div class="row">
+          <button class="btn" onclick="pullPanel(false)">拉取当前场景</button>
+          <button class="btn" onclick="pullPanel(true)">拉取全部场景</button>
+          <button class="btn" onclick="saveDraft()">保存草稿</button>
+          <button class="btn" onclick="sendPanel()">确认发送当前面板</button>
+          <button class="btn danger" onclick="deleteRemote()">确认删除平台面板</button>
+        </div>
+      </section>
+
+      <section id="tab-browse" hidden>
+        <div class="card">
+          <h3>浏览当前草稿里的每一个指令</h3>
+          <input id="browseKey" placeholder="搜索名称/类型/描述" oninput="renderBrowse()" />
+          <div id="browseList" style="margin-top:10px"></div>
+        </div>
+      </section>
+
+      <section id="tab-settings" hidden>
+        <div class="card">
+          <h3>开关</h3>
+          <label>全局启用</label>
+          <select id="globalEnable">
+            <option value="true">开启 True</option>
+            <option value="false">关闭 False</option>
+          </select>
+          <label>全局调试模式</label>
+          <select id="globalDebug">
+            <option value="true">开启 True</option>
+            <option value="false">关闭 False</option>
+          </select>
+          <label>当前 Bot 启用</label>
+          <select id="botEnable">
+            <option value="true">开启 True</option>
+            <option value="false">关闭 False</option>
+          </select>
+          <label>WebUI 监听地址 host</label>
+          <input id="webuiHost" placeholder="127.0.0.1，外网可填 0.0.0.0" />
+          <label>WebUI 端口 port</label>
+          <input id="webuiPort" placeholder="3738" />
+          <div class="hint">默认 127.0.0.1:3738。局域网或外部访问可填 0.0.0.0。改地址后会重启 WebUI，请用新地址重新打开。</div>
+          <div class="row"><button class="btn" onclick="saveGlobal()">保存全局设置</button></div>
+        </div>
+        <div class="card">
+          <h3>全局骰主列表（OlivaDiceCore，只读）</h3>
+          <div id="coreMasters"></div>
+        </div>
+        <div class="card">
+          <h3>本插件骰主列表（可添加/删除）</h3>
+          <div id="pluginMasters"></div>
+          <div class="row">
+            <input id="masterId" placeholder="骰主 ID" style="max-width:220px" />
+            <button class="btn" onclick="addMaster()">添加骰主</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-help" hidden>
+        <div class="card help" id="helpBox"></div>
+      </section>
+      <div class="card" style="margin-top:12px"><div class="result" id="resultBox">等待操作</div></div>
+    </div>
+
+    <div class="preview-wrap" id="previewWrap">
+      <div id="previewMenu">
+        <div class="official-menu">
+          <div class="menu-dock">
+            <div class="subpop" id="menuSub" hidden></div>
+            <div class="pills" id="menuPills"></div>
+            <div class="composer" id="menuComposer"></div>
+            <div class="toolbar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="2.5" width="6" height="11" rx="3"></rect>
+                <path d="M6 11a6 6 0 0 0 12 0"></path>
+                <path d="M12 17v3.5"></path>
+                <path d="M9 20.5h6"></path>
+              </svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3.5" y="5" width="17" height="14" rx="2.2"></rect>
+                <circle cx="8.2" cy="9.4" r="1.2"></circle>
+                <path d="M3.8 16.5l4.8-4.2 3.1 2.6 3.3-3.6 5.2 5.2"></path>
+              </svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 8.5h3.1l1.2-2.2h7.4l1.2 2.2H20a1.5 1.5 0 0 1 1.5 1.5v8.2A1.5 1.5 0 0 1 20 19.7H4a1.5 1.5 0 0 1-1.5-1.5V10A1.5 1.5 0 0 1 4 8.5z"></path>
+                <circle cx="12" cy="13.4" r="3.2"></circle>
+              </svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.2"></circle>
+                <circle cx="9" cy="10" r=".9" fill="currentColor" stroke="none"></circle>
+                <circle cx="15" cy="10" r=".9" fill="currentColor" stroke="none"></circle>
+                <path d="M8.6 14.3c1 .9 2.2 1.4 3.4 1.4s2.4-.5 3.4-1.4"></path>
+              </svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.2"></circle>
+                <path d="M12 8v8M8 12h8"></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="previewPanel" hidden>
+        <div class="official-panel">
+          <div class="panel-tabs" id="previewScopeTabs"></div>
+          <div class="phone">
+            <div class="phone-bar"></div>
+            <div class="phone-body">
+              <div class="bot-row">
+                <div class="avatar"></div>
+                <div id="botName">官方机器人</div>
+              </div>
+              <div class="cmd-list" id="panelRows"></div>
+              <div class="phone-foot"><div class="mini-avatar"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="modal" id="resultModal" hidden>
+    <div class="modal-card">
+      <h3 id="modalTitle">发送结果</h3>
+      <p id="modalSummary"></p>
+      <div class="modal-list" id="modalList"></div>
+      <div class="row"><button class="btn" onclick="closeModal()">确定</button></div>
+    </div>
+  </div>
+<script>
+const SCOPE_ORDER = [
+  ["channel", "QQ频道"],
+  ["dm", "频道私信"],
+  ["group", "QQ群"],
+  ["c2c", "消息列表"],
+];
+const ICON_SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7"/><path d="M9 7h8v8"/></svg>';
+const ICON_LINK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l1-1a5 5 0 0 0-7.07-7.07l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.54-.54l-1 1a5 5 0 0 0 7.07 7.07l1.1-1.1"/></svg>';
+const ICON_MENU = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6.4" height="6.4" rx="1.3"/><rect x="13.6" y="4" width="6.4" height="6.4" rx="1.3"/><rect x="4" y="13.6" width="6.4" height="6.4" rx="1.3"/><rect x="13.6" y="13.6" width="6.4" height="6.4" rx="1.3"/></svg>';
+
+let state = null;
+let botHash = "";
+let tab = "menu";
+let menuIndex = 0;
+let subIndex = 0;
+let panelIndex = 0;
+let itemIndex = 0;
+let scope = "channel";
+let expandedMenu = -1;
+let switchPreview = {};
+
+function $(id) { return document.getElementById(id); }
+function escapeHtml(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[ch]));
+}
+function qqWidth(text) {
+  let width = 0;
+  for (const ch of String(text || "")) width += ch.charCodeAt(0) <= 0x7F ? 1 : 2;
+  return width;
+}
+async function api(url, body) {
+  const res = await fetch(url, {
+    method: body ? "POST" : "GET",
+    headers: {"Content-Type": "application/json"},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.message || "请求失败");
+  return data;
+}
+function showTab(name) {
+  tab = name;
+  const showPreview = name === "menu" || name === "panel";
+  document.querySelectorAll(".tabs button").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === name));
+  ["menu","panel","browse","settings","help"].forEach(id => $("tab-"+id).hidden = id !== name);
+  $("previewMenu").hidden = name !== "menu";
+  $("previewPanel").hidden = name !== "panel";
+  $("previewWrap").hidden = !showPreview;
+  $("previewWrap").classList.toggle("hidden", !showPreview);
+  $("layout").classList.toggle("no-preview", !showPreview);
+  render();
+}
+function renderMarkdown(src) {
+  const raw = String(src || "").replace(/\r\n/g, "\n");
+  const fences = [];
+  let text = raw.replace(/```[\w-]*\n([\s\S]*?)```/g, (_, code) => {
+    const token = "%%FENCE" + fences.length + "%%";
+    fences.push("<pre><code>" + escapeHtml(code.replace(/\n$/, "")) + "</code></pre>");
+    return "\n" + token + "\n";
+  });
+  function inline(value) {
+    let out = escapeHtml(value);
+    out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+    out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    out = out.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return out;
+  }
+  const lines = text.split("\n");
+  const html = [];
+  let paragraph = [];
+  let listType = "";
+  let tableRows = [];
+  function flushParagraph() {
+    if (paragraph.length) {
+      html.push("<p>" + inline(paragraph.join(" ")) + "</p>");
+      paragraph = [];
+    }
+  }
+  function flushList() {
+    if (listType) {
+      html.push(listType === "ol" ? "</ol>" : "</ul>");
+      listType = "";
+    }
+  }
+  function flushTable() {
+    if (!tableRows.length) return;
+    const rows = tableRows.slice();
+    tableRows = [];
+    if (rows.length >= 2 && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(rows[1])) {
+      const header = rows[0];
+      const body = rows.slice(2);
+      const cells = (line) => line.replace(/^\|/, "").replace(/\|$/, "").split("|").map(item => item.trim());
+      let table = "<table><thead><tr>" + cells(header).map(item => "<th>" + inline(item) + "</th>").join("") + "</tr></thead><tbody>";
+      body.forEach(line => {
+        table += "<tr>" + cells(line).map(item => "<td>" + inline(item) + "</td>").join("") + "</tr>";
+      });
+      html.push(table + "</tbody></table>");
+      return;
+    }
+    rows.forEach(line => paragraph.push(line));
+    flushParagraph();
+  }
+  function openList(nextType) {
+    if (listType !== nextType) {
+      flushList();
+      listType = nextType;
+      html.push(nextType === "ol" ? "<ol>" : "<ul>");
+    }
+  }
+  lines.forEach(line => {
+    const fence = line.trim().match(/^%%FENCE(\d+)%%$/);
+    if (fence) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      html.push(fences[Number(fence[1])] || "");
+      return;
+    }
+    if (/^\s*\|.+\|\s*$/.test(line)) {
+      flushParagraph();
+      flushList();
+      tableRows.push(line);
+      return;
+    }
+    if (tableRows.length) flushTable();
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      html.push("<h" + level + ">" + inline(heading[2]) + "</h" + level + ">");
+      return;
+    }
+    if (/^---+$/.test(line.trim())) {
+      flushParagraph();
+      flushList();
+      html.push("<hr />");
+      return;
+    }
+    const ul = line.match(/^\s*[-*]\s+(.+)$/);
+    if (ul) {
+      flushParagraph();
+      openList("ul");
+      html.push("<li>" + inline(ul[1]) + "</li>");
+      return;
+    }
+    const ol = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (ol) {
+      flushParagraph();
+      openList("ol");
+      html.push("<li>" + inline(ol[1]) + "</li>");
+      return;
+    }
+    flushList();
+    paragraph.push(line);
+  });
+  flushParagraph();
+  flushList();
+  flushTable();
+  return html.join("\n");
+}
+function currentMenu() {
+  const items = (state.menu_draft && state.menu_draft.items) || [];
+  return items[menuIndex] || null;
+}
+function currentPanels() {
+  return ((state.panel_drafts || {})[scope]) || [];
+}
+function currentPanel() {
+  return currentPanels()[panelIndex] || null;
+}
+function currentItem() {
+  const panel = currentPanel();
+  return panel && panel.items ? panel.items[itemIndex] : null;
+}
+function fillSelect(id, options, value) {
+  const el = $(id);
+  el.innerHTML = (options || []).map(opt => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("");
+  el.value = value;
+}
+function setTypeBox(id, show) {
+  $(id).classList.toggle("show", !!show);
+}
+function renderBots() {
+  $("botSelect").innerHTML = (state.bots || []).map(bot =>
+    `<option value="${escapeHtml(bot.hash)}">${escapeHtml(bot.display)}</option>`
+  ).join("");
+  $("botSelect").value = botHash;
+  $("urlText").textContent = state.url || "";
+  const bot = (state.bots || []).find(item => item.hash === botHash);
+  $("botName").textContent = bot ? (bot.name || bot.display) : "官方机器人";
+}
+function renderMenuList() {
+  const items = (state.menu_draft && state.menu_draft.items) || [];
+  $("menuList").innerHTML = items.map((item, index) => {
+    const extra = item.type === "menu"
+      ? ((item.sub_menu_items||[]).length + " 个子项")
+      : (item.send_message || item.link || (item.switch||{}).switch_id || "");
+    return `<div class="list-item ${index===menuIndex?'active':''}" onclick="selectMenu(${index})">${index+1}. ${escapeHtml(item.name||'未命名')} [${escapeHtml(item.type)}] ${escapeHtml(extra)}</div>`;
+  }).join("") || "<div class='hint'>还没有菜单项</div>";
+  const item = currentMenu() || {name:"",type:"send_message",send_message:"",link:"",switch:{switch_id:"",default:false},sub_menu_items:[]};
+  $("menuName").value = item.name || "";
+  $("menuNameCount").textContent = qqWidth(item.name || "") + "/10";
+  fillSelect("menuType", state.menu_type_options, item.type);
+  $("menuSend").value = item.send_message || "";
+  $("menuLink").value = item.link || "";
+  $("menuSwitchId").value = (item.switch||{}).switch_id || "";
+  $("menuSwitchDefault").value = (item.switch||{}).default ? "true" : "false";
+  const hintKey = item.type === "link" ? "menu_link" : item.type === "switch" ? "menu_switch_id" : item.type === "menu" ? "menu_type" : "menu_send";
+  $("menuHint").textContent = (state.field_hints||{})[hintKey] || "";
+  setTypeBox("boxMenuSend", item.type === "send_message");
+  setTypeBox("boxMenuLink", item.type === "link");
+  setTypeBox("boxMenuSwitch", item.type === "switch");
+  setTypeBox("boxMenuSub", item.type === "menu");
+  const subs = item.sub_menu_items || [];
+  $("subList").innerHTML = subs.map((sub, index) =>
+    `<div class="mini-item ${index===subIndex?'active':''}" onclick="subIndex=${index};render()">${index+1}. ${escapeHtml(sub.name||'未命名')} [${escapeHtml(sub.type)}]</div>`
+  ).join("");
+  const sub = subs[subIndex] || {name:"",type:"send_message",send_message:"",link:""};
+  $("subName").value = sub.name || "";
+  fillSelect("subType", state.sub_menu_type_options, sub.type);
+  $("subSend").value = sub.send_message || "";
+  $("subLink").value = sub.link || "";
+}
+function renderPanelList() {
+  $("unified").checked = !!state.unified_panel_mode;
+  const panels = currentPanels();
+  $("panelList").innerHTML = panels.map((panel, index) =>
+    `<div class="list-item ${index===panelIndex?'active':''}" onclick="panelIndex=${index};itemIndex=0;render()">${index+1}. ${escapeHtml(panel.remark||'未备注')} | ${escapeHtml(panel.target_type)} | ${(panel.items||[]).length}项 | ${escapeHtml(panel.panel_id||'未提交')}</div>`
+  ).join("") || "<div class='hint'>还没有指令面板</div>";
+  const panel = currentPanel() || {remark:"",panel_id:"",target_type:"all",user_openids:[],group_openids:[],items:[]};
+  $("panelRemark").value = panel.remark || "";
+  $("panelId").value = panel.panel_id || "";
+  fillSelect("targetType", state.target_type_options, panel.target_type || "all");
+  $("panelHint").textContent = (state.field_hints||{}).target_type || "";
+  const openids = scope === "c2c" ? (panel.user_openids||[]) : (panel.group_openids||[]);
+  $("openidBox").value = openids.join("\n");
+  const items = panel.items || [];
+  $("itemList").innerHTML = items.map((item, index) =>
+    `<div class="mini-item ${index===itemIndex?'active':''}" onclick="itemIndex=${index};render()">${index+1}. ${escapeHtml(item.name||'未命名')} [${escapeHtml(item.type)}] ${escapeHtml(item.desc||"")}${item.only_admin?" [管理员]":""}</div>`
+  ).join("");
+  const item = items[itemIndex] || {name:"",desc:"",type:"command",link:"",only_admin:false};
+  $("itemName").value = item.name || "";
+  $("itemDesc").value = item.desc || "";
+  $("itemNameCount").textContent = qqWidth(item.name || "") + "/14";
+  $("itemDescCount").textContent = qqWidth(item.desc || "") + "/30";
+  fillSelect("itemType", state.panel_item_type_options, item.type || "command");
+  $("itemLink").value = item.link || "";
+  $("itemAdmin").value = item.only_admin ? "true" : "false";
+  $("itemHint").textContent = (state.field_hints||{})[item.type === "link" ? "panel_item_link" : "panel_item_name"] || "";
+  setTypeBox("boxItemLink", item.type === "link");
+}
+function commandName(item) {
+  const name = item.name || "";
+  if (item.type === "command" && name && name[0] !== "/") return "/" + name;
+  return name;
+}
+function renderPreview() {
+  const items = (state.menu_draft && state.menu_draft.items) || [];
+  $("menuPills").innerHTML = items.map((item, index) => {
+    const switchId = (item.switch && item.switch.switch_id) || ("sw"+index);
+    const on = item.type === "switch" && (Object.prototype.hasOwnProperty.call(switchPreview, switchId)
+      ? switchPreview[switchId]
+      : !!(item.switch && item.switch.default));
+    let icon = "";
+    if (item.type === "send_message") icon = ICON_SEND;
+    else if (item.type === "link") icon = ICON_LINK;
+    else if (item.type === "menu") icon = ICON_MENU;
+    const extra = on ? '<span class="dot"></span>' : "";
+    const cls = ["pill"];
+    if (on) cls.push("switch-on");
+    return `<div class="${cls.join(" ")}" onclick="clickMenu(${index})">${icon}<span>${escapeHtml(item.name||item.type)}</span>${extra}</div>`;
+  }).join("");
+  const expanded = items[expandedMenu];
+  if (expanded && expanded.type === "menu") {
+    $("menuSub").hidden = false;
+    $("menuSub").innerHTML = (expanded.sub_menu_items||[]).map((sub, index) =>
+      `<div onclick="clickSub(${expandedMenu},${index})">${escapeHtml(sub.name||sub.type)}</div>`
+    ).join("") || "<div>还没有子项</div>";
+  } else {
+    $("menuSub").hidden = true;
+  }
+  $("previewScopeTabs").innerHTML = SCOPE_ORDER.map(([key, label]) =>
+    `<span class="${key===scope?'active':''}" onclick="changeScope('${key}')">${label}</span>`
+  ).join("");
+  const panel = currentPanel();
+  const rows = (panel && panel.items) || [];
+  $("panelRows").innerHTML = rows.map((item, index) => {
+    const name = commandName(item);
+    const desc = item.desc || (item.type === "link" ? (item.link || "链接跳转") : "");
+    return `<div class="cmd-row" onclick="itemIndex=${index};render()"><span class="left">${escapeHtml(name)}</span><span class="right">${escapeHtml(desc)}</span></div>`;
+  }).join("") || `<div class="empty-hint">还没有指令</div>`;
+}
+function renderBrowse() {
+  const key = ($("browseKey").value || "").toLowerCase();
+  const rows = [];
+  ((state.menu_draft && state.menu_draft.items) || []).forEach(item => {
+    rows.push({source:"自定义菜单", scope:"c2c", name:item.name, type:item.type, desc:item.send_message||item.link||(item.switch||{}).switch_id||""});
+    (item.sub_menu_items||[]).forEach(sub => rows.push({source:"自定义菜单/子菜单", scope:"c2c", name:sub.name, type:sub.type, desc:sub.send_message||sub.link||""}));
+  });
+  Object.keys(state.panel_drafts||{}).forEach(sc => {
+    (state.panel_drafts[sc]||[]).forEach(panel => {
+      (panel.items||[]).forEach(item => rows.push({source:"指令面板", scope:sc, name:item.name, type:item.type, desc:item.desc||item.link||"", admin:item.only_admin, panel_id:panel.panel_id}));
+    });
+  });
+  $("browseList").innerHTML = rows.filter(row => JSON.stringify(row).toLowerCase().includes(key)).map(row =>
+    `<div class="list-item">${escapeHtml(row.source)} / ${escapeHtml(row.scope)} / ${escapeHtml(row.name)} [${escapeHtml(row.type)}] ${escapeHtml(row.desc||"")}</div>`
+  ).join("");
+}
+function renderSettings() {
+  $("globalEnable").value = state.global_enable_switch ? "true" : "false";
+  $("globalDebug").value = state.global_debug_mode_switch ? "true" : "false";
+  $("botEnable").value = state.bot_enable_switch ? "true" : "false";
+  $("webuiHost").value = state.host || "127.0.0.1";
+  $("webuiPort").value = state.port || 3738;
+  const core = state.core_masters || [];
+  $("coreMasters").innerHTML = !state.has_olivadice
+    ? "未检测到 OlivaDiceCore"
+    : (core.length ? core.map(id => `<div class="list-item">${escapeHtml(id)}</div>`).join("") : "当前没有全局骰主");
+  $("pluginMasters").innerHTML = (state.plugin_masters||[]).map(id =>
+    `<div class="list-item">${escapeHtml(id)} <button class="btn gray" onclick="delMaster('${escapeHtml(id)}')">删除</button></div>`
+  ).join("") || "还没有插件骰主";
+}
+function render() {
+  if (!state) return;
+  renderBots();
+  renderMenuList();
+  renderPanelList();
+  renderPreview();
+  renderBrowse();
+  renderSettings();
+  $("helpBox").innerHTML = renderMarkdown(state.help_text || "");
+}
+function selectMenu(index) {
+  menuIndex = index;
+  subIndex = 0;
+  render();
+}
+function changeScope(nextScope) {
+  scope = nextScope;
+  panelIndex = 0;
+  itemIndex = 0;
+  render();
+}
+function applyMenu() {
+  const items = (state.menu_draft && state.menu_draft.items) || [];
+  if (!items[menuIndex]) return;
+  items[menuIndex].name = $("menuName").value;
+  items[menuIndex].type = $("menuType").value;
+  items[menuIndex].send_message = $("menuSend").value;
+  items[menuIndex].link = $("menuLink").value;
+  items[menuIndex].switch = {switch_id: $("menuSwitchId").value, default: $("menuSwitchDefault").value === "true"};
+  $("menuNameCount").textContent = qqWidth(items[menuIndex].name || "") + "/10";
+  renderPreview();
+  renderMenuList();
+}
+function applySub() {
+  const item = currentMenu();
+  if (!item || !item.sub_menu_items || !item.sub_menu_items[subIndex]) return;
+  const sub = item.sub_menu_items[subIndex];
+  sub.name = $("subName").value;
+  sub.type = $("subType").value;
+  sub.send_message = $("subSend").value;
+  sub.link = $("subLink").value;
+  renderPreview();
+  renderMenuList();
+}
+function applyPanel() {
+  const panel = currentPanel();
+  if (!panel) return;
+  panel.remark = $("panelRemark").value;
+  panel.panel_id = $("panelId").value;
+  panel.target_type = $("targetType").value;
+  panel.scope = scope;
+  const openids = $("openidBox").value.split(/[\s,;，；]+/).map(s => s.trim()).filter(Boolean);
+  if (scope === "c2c") panel.user_openids = openids;
+  if (scope === "group") panel.group_openids = openids;
+  if (["channel","dm"].includes(scope)) panel.target_type = "all";
+  if (state.unified_panel_mode) syncUnified(panel);
+  renderPreview();
+}
+function applyItem() {
+  const item = currentItem();
+  if (!item) return;
+  item.name = $("itemName").value;
+  item.desc = $("itemDesc").value;
+  item.type = $("itemType").value;
+  item.link = $("itemLink").value;
+  item.only_admin = $("itemAdmin").value === "true";
+  if (state.unified_panel_mode && currentPanel()) syncUnified(currentPanel());
+  render();
+}
+function syncUnified(source) {
+  SCOPE_ORDER.forEach(([key]) => {
+    const copy = JSON.parse(JSON.stringify(source));
+    copy.scope = key;
+    if (["channel","dm"].includes(key)) { copy.target_type = "all"; copy.user_openids=[]; copy.group_openids=[]; }
+    const exist = (state.panel_drafts[key]||[])[0];
+    if (exist) { copy.panel_id = exist.panel_id; copy.local_id = exist.local_id; copy.version = exist.version; state.panel_drafts[key][0] = copy; }
+    else state.panel_drafts[key] = [copy];
+  });
+}
+function onUnified() {
+  state.unified_panel_mode = $("unified").checked;
+  if (state.unified_panel_mode && currentPanel()) syncUnified(currentPanel());
+  render();
+}
+function addMenu() {
+  state.menu_draft.items = state.menu_draft.items || [];
+  if (state.menu_draft.items.length >= (state.limits.menu_item_max||10)) return alert("最多 10 项");
+  state.menu_draft.items.push({name:"",type:"send_message",send_message:"",link:"",switch:{switch_id:"",default:false},sub_menu_items:[]});
+  menuIndex = state.menu_draft.items.length - 1;
+  render();
+}
+function delMenu() {
+  const items = state.menu_draft.items || [];
+  if (!items.length) return;
+  items.splice(menuIndex, 1);
+  menuIndex = Math.max(0, menuIndex-1);
+  expandedMenu = -1;
+  render();
+}
+function moveMenu(delta) {
+  const items = state.menu_draft.items || [];
+  const next = menuIndex + delta;
+  if (next < 0 || next >= items.length) return;
+  [items[menuIndex], items[next]] = [items[next], items[menuIndex]];
+  menuIndex = next;
+  render();
+}
+function addSub() {
+  const item = currentMenu();
+  if (!item || item.type !== "menu") return alert("只有子菜单类型才能添加子项");
+  item.sub_menu_items = item.sub_menu_items || [];
+  if (item.sub_menu_items.length >= 5) return alert("子菜单最多 5 项");
+  item.sub_menu_items.push({name:"",type:"send_message",send_message:"",link:""});
+  subIndex = item.sub_menu_items.length - 1;
+  render();
+}
+function delSub() {
+  const item = currentMenu();
+  if (!item || !item.sub_menu_items) return;
+  item.sub_menu_items.splice(subIndex, 1);
+  subIndex = Math.max(0, subIndex-1);
+  render();
+}
+function addPanel() {
+  state.panel_drafts[scope] = state.panel_drafts[scope] || [];
+  if (state.panel_drafts[scope].length >= 20) return alert("最多 20 个面板");
+  state.panel_drafts[scope].push({local_id:"local_"+Date.now(), panel_id:"", scope, target_type:"all", remark:"", items:[], user_openids:[], group_openids:[]});
+  panelIndex = state.panel_drafts[scope].length - 1;
+  render();
+}
+function delPanel() {
+  const panels = currentPanels();
+  if (!panels.length) return;
+  panels.splice(panelIndex, 1);
+  panelIndex = Math.max(0, panelIndex-1);
+  render();
+}
+function addItem() {
+  const panel = currentPanel();
+  if (!panel) return alert("请先新建面板");
+  panel.items = panel.items || [];
+  if (panel.items.length >= 20) return alert("最多 20 个元素");
+  panel.items.push({name:"",desc:"",type:"command",only_admin:false,link:""});
+  itemIndex = panel.items.length - 1;
+  render();
+}
+function delItem() {
+  const panel = currentPanel();
+  if (!panel || !panel.items) return;
+  panel.items.splice(itemIndex, 1);
+  itemIndex = Math.max(0, itemIndex-1);
+  render();
+}
+function moveItem(delta) {
+  const panel = currentPanel();
+  if (!panel) return;
+  const next = itemIndex + delta;
+  if (next < 0 || next >= panel.items.length) return;
+  [panel.items[itemIndex], panel.items[next]] = [panel.items[next], panel.items[itemIndex]];
+  itemIndex = next;
+  render();
+}
+function clickMenu(index) {
+  const item = state.menu_draft.items[index];
+  if (!item) return;
+  menuIndex = index;
+  if (item.type === "switch") {
+    const id = (item.switch && item.switch.switch_id) || ("sw"+index);
+    const current = Object.prototype.hasOwnProperty.call(switchPreview, id) ? switchPreview[id] : !!(item.switch && item.switch.default);
+    switchPreview[id] = !current;
+  } else if (item.type === "menu") {
+    expandedMenu = expandedMenu === index ? -1 : index;
+  } else if (item.type === "send_message") {
+    $("menuComposer").textContent = item.send_message || "";
+    expandedMenu = -1;
+  } else if (item.type === "link") {
+    $("menuComposer").textContent = item.link || "";
+    expandedMenu = -1;
+  }
+  render();
+}
+function clickSub(parentIndex, index) {
+  const item = ((state.menu_draft && state.menu_draft.items) || [])[parentIndex];
+  const sub = item && item.sub_menu_items ? item.sub_menu_items[index] : null;
+  if (!sub) return;
+  subIndex = index;
+  if (sub.type === "send_message") $("menuComposer").textContent = sub.send_message || "";
+  if (sub.type === "link") $("menuComposer").textContent = sub.link || "";
+  render();
+}
+function draftBody() {
+  return {
+    bot_hash: botHash,
+    menu_draft: state.menu_draft,
+    panel_drafts: state.panel_drafts,
+    unified_panel_mode: state.unified_panel_mode,
+    chat_current_scope: scope,
+    bot_enable_switch: state.bot_enable_switch,
+  };
+}
+function showResult(data) {
+  $("resultBox").textContent = JSON.stringify(data.api_result || data, null, 2);
+}
+function closeModal() {
+  $("resultModal").hidden = true;
+}
+function showSendDialog(title, data) {
+  const summary = (data && data.send_summary) || {success: 0, failed: 0, total: 0, items: []};
+  $("modalTitle").textContent = title;
+  $("modalSummary").innerHTML = '成功 <span class="ok">' + summary.success + '</span> 个，失败 <span class="fail">' + summary.failed + '</span> 个';
+  $("modalList").innerHTML = (summary.items || []).map(item => {
+    const mark = item.ok ? "成功" : "失败";
+    return "<div>" + escapeHtml(item.label || "请求") + "：" + mark + (item.detail ? " · " + escapeHtml(String(item.detail)) : "") + "</div>";
+  }).join("") || "<div>没有可统计的返回项</div>";
+  $("resultModal").hidden = false;
+  showResult(data);
+}
+async function reloadState() {
+  const query = botHash ? ("?bot_hash="+encodeURIComponent(botHash)) : "";
+  const data = await api("/api/state"+query);
+  state = data.data;
+  if (!botHash && state.current_bot_hash) botHash = state.current_bot_hash;
+  scope = state.chat_current_scope || scope;
+  render();
+}
+async function bootstrap() {
+  $("resultBox").textContent = "正在读取本地草稿…";
+  await reloadState();
+  if (!botHash) {
+    $("resultBox").textContent = "没有可管理的 qqGuildV2 Bot";
+    return;
+  }
+  $("resultBox").textContent = "正在拉取平台当前配置…";
+  try {
+    const data = await api("/api/bootstrap", {bot_hash: botHash});
+    state = data.data;
+    if (!botHash && state.current_bot_hash) botHash = state.current_bot_hash;
+    scope = state.chat_current_scope || scope;
+    menuIndex = 0;
+    panelIndex = 0;
+    itemIndex = 0;
+    render();
+    const detail = data.data && data.data.api_result ? JSON.stringify(data.data.api_result, null, 2) : "";
+    $("resultBox").textContent = (data.message || "已拉取") + (detail ? "\n" + detail : "");
+  } catch (err) {
+    $("resultBox").textContent = "拉取失败，已显示本地草稿：" + err.message;
+  }
+}
+async function saveDraft() {
+  const data = await api("/api/draft", draftBody());
+  state = data.data;
+  $("resultBox").textContent = data.message;
+  render();
+}
+async function pullMenu() {
+  const data = await api("/api/menu/pull", {bot_hash: botHash});
+  state = data.data; menuIndex = 0; showResult(data.data); render();
+}
+async function sendMenu() {
+  if (!confirm("即将覆盖该机器人的全局自定义菜单，是否确认发送？")) return;
+  const data = await api("/api/menu/send", draftBody());
+  state = data.data; showSendDialog("自定义菜单发送结果", data.data); render();
+}
+async function pullPanel(all) {
+  const data = await api("/api/panel/pull", {bot_hash: botHash, scopes: all ? ["all"] : [scope]});
+  state = data.data; panelIndex = 0; showResult(data.data); render();
+}
+async function sendPanel() {
+  if (!confirm("即将提交当前指令面板到平台，是否确认发送？")) return;
+  const body = Object.assign(draftBody(), {scope, panel_index: panelIndex, unified_panel_mode: state.unified_panel_mode});
+  const data = await api("/api/panel/send", body);
+  state = data.data; showSendDialog("指令面板发送结果", data.data); render();
+}
+async function deleteRemote() {
+  const panel = currentPanel();
+  if (!panel || !panel.panel_id) return alert("没有 panel_id");
+  if (!confirm("即将删除平台面板 "+panel.panel_id+"，是否确认？")) return;
+  const data = await api("/api/panel/delete", {bot_hash: botHash, panel_id: panel.panel_id});
+  state = data.data; showSendDialog("删除平台面板结果", data.data); render();
+}
+async function sendTarget(op) {
+  if (!confirm("即将对当前面板执行关联对象 "+op+"，是否确认？")) return;
+  const body = Object.assign(draftBody(), {scope, panel_index: panelIndex, op});
+  const data = await api("/api/panel/target", body);
+  state = data.data; showSendDialog("修改关联对象结果", data.data); render();
+}
+async function fillExample(kind) {
+  const data = await api("/api/example", {bot_hash: botHash, kind, scope});
+  state = data.data; render();
+}
+async function saveGlobal() {
+  const data = await api("/api/global", {
+    bot_hash: botHash,
+    global_enable_switch: $("globalEnable").value === "true",
+    global_debug_mode_switch: $("globalDebug").value === "true",
+    webui_host: $("webuiHost").value,
+    webui_port: $("webuiPort").value,
+  });
+  await api("/api/draft", Object.assign(draftBody(), {bot_enable_switch: $("botEnable").value === "true"}));
+  state = data.data;
+  $("resultBox").textContent = data.message || "全局设置已保存";
+  render();
+  if (data.data && data.data.restarted) {
+    alert(data.message + "\n新地址：" + (data.data.url || ""));
+  }
+}
+async function addMaster() {
+  const id = $("masterId").value.trim();
+  if (!id) return;
+  const data = await api("/api/master", {bot_hash: botHash, op:"add", master_id:id});
+  state = data.data; $("masterId").value=""; render();
+}
+async function delMaster(id) {
+  const data = await api("/api/master", {bot_hash: botHash, op:"del", master_id:id});
+  state = data.data; render();
+}
+$("botSelect").addEventListener("change", async () => {
+  botHash = $("botSelect").value;
+  await bootstrap();
+});
+function applyQueryTab() {
+  const params = new URLSearchParams(location.search);
+  const nextTab = params.get("tab");
+  if (nextTab) showTab(nextTab);
+}
+if (window.__DEMO__) {
+  state = window.__DEMO__;
+  botHash = state.current_bot_hash || "";
+  scope = state.chat_current_scope || scope;
+  render();
+  applyQueryTab();
+} else {
+  bootstrap().then(applyQueryTab).catch(err => $("resultBox").textContent = err.message);
+}
+</script>
+</body>
+</html>
