@@ -9,9 +9,9 @@
 5. 所有初始化统一转交给 utils.py。
 """
 
-from . import gui
 from . import message
 from . import utils
+from . import webui
 
 
 class Event(object):
@@ -63,5 +63,13 @@ class Event(object):
         message.handle_save(plugin_event, Proc)
 
     def menu(plugin_event, Proc):
-        """菜单事件入口"""
+        """分发网页请求与桌面菜单；仅打开桌面面板时加载 Tkinter。"""
+        if isinstance(getattr(plugin_event.data, 'webui', None), dict):
+            webui.handle_menu_event(plugin_event, Proc)
+            return
+        try:
+            from . import gui
+        except ImportError:
+            utils.error_log(Proc, '当前环境无法加载 Tkinter，请使用 OlivOS WebUI 配置页面。')
+            return
         gui.handle_menu_event(plugin_event, Proc)

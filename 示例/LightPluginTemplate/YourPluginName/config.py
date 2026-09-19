@@ -22,6 +22,9 @@ plugin_name = 'YourPluginName'
 menu_title_open_config = '打开插件配置'
 menu_event_open_config = 'YourPluginName_Menu_001'
 
+# 网页业务事件通过 Event.menu 分发，不需要放进 menu_config。
+webui_event = 'YourPluginName_WebUI_Config'
+
 # 插件数据目录统一放在 plugin/data/YourPluginName/ 下。
 # 注意这里不要使用 __file__ 反推真实磁盘路径，避免插件被临时复制到
 # plugin/tmp 之类目录时把数据写到错误位置。

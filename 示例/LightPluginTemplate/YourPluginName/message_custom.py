@@ -123,8 +123,9 @@ help_document_dict = {
 15. .tplecho silent 你好
 纯净回复，不主动调用日志记录钩子。
 
-16. GUI 的 Bot 配置页
-可直接编辑当前 Bot 的自定义回复词。
+16. GUI / WebUI 的 Bot 配置页
+可编辑当前 Bot 的自定义回复词和本插件配置骰主。
+WebUI 入口位于 OlivOS 侧栏“插件页面”中的“轻量级插件配置”。
 
 17. utils.send_message_force(...)
 用于在没有当前消息事件对象时主动发消息。

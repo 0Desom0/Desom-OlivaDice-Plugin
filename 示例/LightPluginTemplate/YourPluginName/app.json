@@ -20,6 +20,13 @@
       "model": "all"
     }
   ],
+  "webui_config": [
+    {
+      "title": "轻量级插件配置",
+      "type": "iframe",
+      "path": "webui/index.html"
+    }
+  ],
   "menu_config": [
     {
       "title": "打开插件配置",

@@ -1,0 +1,1052 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>轻量级插件配置</title>
+
+    <!--
+        模板修改指南
+        1. 页面名称、事件名、默认页签、功能区显示：修改下面的 PAGE_CONFIG。
+        2. 配色、字体、宽度、圆角：修改 CSS 开头的 :root 变量。
+        3. 按钮名称、字段标签和布局：修改 body 中对应的 HTML 分区。
+        4. 按钮行为：在底部脚本搜索 handleSaveGlobalClick 等具名函数。
+        5. 新增实际配置字段：同时修改 webui.py 的读取、校验和保存逻辑。
+
+        CSS 和 JavaScript 保留在本文件中，方便直接打包进 .opk，
+        并适配 OlivOS 插件 iframe 的沙箱限制，无需前端构建工具。
+    -->
+    <script>
+        'use strict';
+
+        // 页面常用配置：基于模板制作自己的插件时，优先修改这里。
+        const PAGE_CONFIG = {
+            // 必须与 config.py 中的 webui_event 完全一致。
+            eventName: 'YourPluginName_WebUI_Config',
+
+            // 同时用于浏览器标题和页面标题；设为空字符串则使用后端插件名称。
+            title: '轻量级插件配置',
+            description: '管理全局开关、Bot 配置和自定义回复。',
+
+            // 请求等待时间，单位为毫秒。超时后提示用户刷新，不自动重试保存。
+            requestTimeoutMs: 15000,
+
+            // 首次打开的页签：'global' 为全局设置，'bot' 为 Bot 配置。
+            defaultTab: 'global',
+
+            // 仅控制页面显示，不改变后端权限或删除已经保存的数据。
+            features: {
+                replies: true,       // 显示回复词编辑、恢复和删除操作。
+                masters: true,       // 显示本插件配置骰主的添加与删除操作。
+                directories: true,   // 显示服务器数据目录，供用户选中复制。
+            },
+        };
+    </script>
+
+    <style>
+        /* ==================== 1. 可调整的外观参数 ==================== */
+        :root {
+            color-scheme: light dark;
+
+            /* 浅色配色。深色配色在下一个 @media 中设置。 */
+            --page-background: #f3f7fb;
+            --card-background: #ffffff;
+            --text-color: #203248;
+            --muted-color: #596b80;
+            --border-color: #d3deea;
+            --accent-color: #0674aa;
+            --accent-background: #e7f4fc;
+            --error-color: #b33243;
+
+            /* 常用尺寸。窄屏断点在样式末尾的 @media 中调整。 */
+            --font-family: system-ui, 'Microsoft YaHei', sans-serif;
+            --font-size: 15px;
+            --page-max-width: 1120px;
+            --page-padding: 28px;
+            --card-padding: 22px;
+            --card-radius: 12px;
+            --control-radius: 8px;
+            --section-gap: 18px;
+            --reply-editor-height: 190px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --page-background: #141d28;
+                --card-background: #1d2a39;
+                --text-color: #e8f0f9;
+                --muted-color: #a9bbce;
+                --border-color: #415269;
+                --accent-color: #7acbff;
+                --accent-background: #233f54;
+                --error-color: #ffabb5;
+            }
+        }
+
+        /* ==================== 2. 页面、页签和卡片布局 ==================== */
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--page-background);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            font-size: var(--font-size);
+            line-height: 1.6;
+        }
+
+        main {
+            max-width: var(--page-max-width);
+            margin: auto;
+            padding: var(--page-padding);
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        header > div {
+            min-width: 0;
+        }
+
+        header > button {
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 24px;
+            overflow-wrap: anywhere;
+        }
+
+        h2 {
+            margin: 0 0 14px;
+            font-size: 18px;
+        }
+
+        p {
+            margin: 8px 0 16px;
+        }
+
+        .muted,
+        .hint {
+            color: var(--muted-color);
+        }
+
+        .hint {
+            font-size: 13px;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin: 20px 0;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .card {
+            margin-bottom: var(--section-gap);
+            padding: var(--card-padding);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-radius);
+            background: var(--card-background);
+        }
+
+        /* Bot 页下方默认左右排列回复词和骰主管理；只启用一块时自动占满。 */
+        .columns {
+            display: grid;
+            grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+            gap: var(--section-gap);
+        }
+
+        .columns.single-column {
+            grid-template-columns: 1fr;
+        }
+
+        .columns .card {
+            margin: 0;
+        }
+
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        /* ==================== 3. 通用表单控件 ==================== */
+        button,
+        input,
+        select,
+        textarea {
+            font: inherit;
+        }
+
+        button {
+            padding: 8px 14px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--control-radius);
+            background: var(--card-background);
+            color: var(--text-color);
+            cursor: pointer;
+        }
+
+        button:hover:enabled {
+            border-color: var(--accent-color);
+            background: var(--accent-background);
+        }
+
+        button.primary,
+        button[aria-selected="true"] {
+            border-color: var(--accent-color);
+            background: var(--accent-background);
+            color: var(--accent-color);
+        }
+
+        button.danger {
+            color: var(--error-color);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        :focus-visible {
+            outline: 2px solid var(--accent-color);
+            outline-offset: 3px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+        }
+
+        label.switch {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 16px 0;
+        }
+
+        input[type="checkbox"] {
+            width: 19px;
+            height: 19px;
+            accent-color: var(--accent-color);
+        }
+
+        input[type="text"],
+        select,
+        textarea {
+            width: 100%;
+            max-width: 100%;
+            padding: 9px 11px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--control-radius);
+            background: var(--card-background);
+            color: var(--text-color);
+        }
+
+        textarea {
+            min-height: var(--reply-editor-height);
+            resize: vertical;
+            line-height: 1.65;
+        }
+
+        select[multiple] {
+            min-height: 170px;
+        }
+
+        input.path {
+            font-family: ui-monospace, Consolas, monospace;
+            font-size: 13px;
+        }
+
+        .spaced-label {
+            margin-top: 20px;
+        }
+
+        details {
+            margin-top: 18px;
+        }
+
+        summary {
+            color: var(--muted-color);
+            cursor: pointer;
+        }
+
+        details label {
+            margin-top: 12px;
+        }
+
+        /* ==================== 4. 状态提示与页面内确认框 ==================== */
+        #status {
+            min-height: 28px;
+            margin: 12px 0;
+            color: var(--muted-color);
+            overflow-wrap: anywhere;
+        }
+
+        #status[data-error="true"] {
+            color: var(--error-color);
+        }
+
+        #linked-hint {
+            padding: 10px 12px;
+            border-radius: var(--control-radius);
+            background: var(--accent-background);
+        }
+
+        /* 保证脚本设置的 hidden 不会被其他布局规则覆盖。 */
+        [hidden] {
+            display: none !important;
+        }
+
+        dialog {
+            width: min(460px, calc(100% - 32px));
+            padding: 24px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-radius);
+            background: var(--card-background);
+            color: var(--text-color);
+        }
+
+        dialog::backdrop {
+            background: #07132580;
+        }
+
+        #confirm-message {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        /* 窄屏时压缩留白，回复词和骰主面板改成上下排列。 */
+        @media (max-width: 740px) {
+            :root {
+                --page-padding: 16px;
+                --card-padding: 16px;
+            }
+
+            header {
+                align-items: flex-start;
+            }
+
+            h1 {
+                font-size: 21px;
+            }
+
+            .columns {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!--
+        HTML 控件约定
+        - id：用于下面脚本查找控件；改名时需要一起修改对应的 getElement 调用。
+        - data-control：请求处理中暂时禁用，避免重复提交。
+        - data-bot-control：额外要求已经选中一个可用 Bot。
+        - data-directory：由 PAGE_CONFIG.features.directories 控制显示。
+        静态按钮文案直接写在对应控件中，修改时可就地编辑。
+    -->
+    <main>
+        <!-- 页面标题与刷新入口。标题、简介会在初始化时读取 PAGE_CONFIG。 -->
+        <header>
+            <div>
+                <h1 id="title">轻量级插件配置</h1>
+                <p id="description" class="muted">管理全局开关、Bot 配置和自定义回复。</p>
+            </div>
+            <button id="refresh" type="button" data-control>
+                刷新配置
+            </button>
+        </header>
+
+        <!-- 所有操作共用这个状态区，aria-live 让读屏软件也能读到结果。 -->
+        <div id="status" role="status" aria-live="polite">
+            正在读取配置…
+        </div>
+
+        <nav class="tabs" role="tablist" aria-label="配置分类">
+            <button
+                id="global-tab"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="global-panel"
+            >
+                全局设置
+            </button>
+            <button
+                id="bot-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="bot-panel"
+                tabindex="-1"
+            >
+                Bot 配置
+            </button>
+        </nav>
+
+        <!-- ==================== 全局设置：所有 Bot 共用 ==================== -->
+        <section id="global-panel" role="tabpanel" aria-labelledby="global-tab">
+            <div class="card">
+                <h2>全局设置</h2>
+                <p class="muted">所有 Bot 共用。关闭插件后仍可在这里重新启用。</p>
+
+                <!-- 扩展全局字段时，同步修改 renderGlobalSettings 和 handleSaveGlobalClick。 -->
+                <label class="switch">
+                    <input id="global-enable" type="checkbox" data-control>
+                    启用插件
+                </label>
+                <label class="switch">
+                    <input id="global-debug" type="checkbox" data-control>
+                    开启调试模式
+                </label>
+
+                <div class="row">
+                    <button id="save-global" type="button" class="primary" data-control>
+                        保存全局设置
+                    </button>
+                </div>
+
+                <details data-directory>
+                    <summary>数据目录</summary>
+                    <label for="global-path">服务器上的插件总目录（点击选中后可复制）</label>
+                    <input id="global-path" class="path" type="text" readonly>
+                </details>
+            </div>
+        </section>
+
+        <!-- ==================== Bot 设置：先选账号，再编辑对应数据 ==================== -->
+        <section id="bot-panel" role="tabpanel" aria-labelledby="bot-tab" hidden>
+            <div class="card">
+                <label for="bot-select">选择 Bot</label>
+                <select id="bot-select" data-control data-bot-control></select>
+
+                <p id="bot-summary" class="hint">当前未检测到 Bot。</p>
+                <p id="linked-hint" class="hint" hidden></p>
+
+                <!-- Bot 开关按原始账号保存，不跟随回复词的主从关系。 -->
+                <label class="switch">
+                    <input id="bot-enable" type="checkbox" data-control data-bot-control>
+                    启用当前 Bot
+                </label>
+                <div class="row">
+                    <button id="save-bot" type="button" class="primary" data-control data-bot-control>
+                        保存 Bot 设置
+                    </button>
+                </div>
+
+                <details data-directory>
+                    <summary>配置与回复目录</summary>
+                    <label for="bot-path">当前 Bot 的配置目录（点击选中后可复制）</label>
+                    <input id="bot-path" class="path" type="text" readonly>
+
+                    <label for="reply-path">回复词实际使用的目录（点击选中后可复制）</label>
+                    <input id="reply-path" class="path" type="text" readonly>
+                </details>
+            </div>
+
+            <div id="bot-tools" class="columns">
+                <!-- 回复词面板：数据目录由后端解析群链，页面只传当前 Bot 的原始 hash。 -->
+                <section id="reply-card" class="card" aria-labelledby="replies-title">
+                    <h2 id="replies-title">回复词管理</h2>
+
+                    <label for="reply-key">回复词条目</label>
+                    <select id="reply-key" data-control data-bot-control></select>
+                    <p id="reply-note" class="hint"></p>
+
+                    <label for="reply-value">回复内容</label>
+                    <!-- 32768 对应 webui.py 的文本长度上限，调整时前后端保持一致。 -->
+                    <textarea
+                        id="reply-value"
+                        maxlength="32768"
+                        spellcheck="false"
+                        data-control
+                        data-bot-control
+                    ></textarea>
+
+                    <div class="row">
+                        <button id="save-reply" type="button" class="primary" data-control data-bot-control>
+                            保存回复词
+                        </button>
+                        <button id="reset-reply" type="button" data-control data-bot-control>
+                            恢复 / 删除
+                        </button>
+                    </div>
+                    <div class="row">
+                        <button id="reset-replies" type="button" class="danger" data-control data-bot-control>
+                            恢复全部默认回复
+                        </button>
+                    </div>
+                </section>
+
+                <!-- 骰主面板：列表属于当前原始 Bot，不随群链共享。 -->
+                <section id="master-card" class="card" aria-labelledby="masters-title">
+                    <h2 id="masters-title">骰主列表</h2>
+                    <p class="hint">仅属于当前 Bot，不跟随群链。可按 Ctrl / Command 或 Shift 多选。</p>
+
+                    <label for="master-list">已配置骰主</label>
+                    <select id="master-list" multiple size="6" data-control data-bot-control></select>
+                    <div class="row">
+                        <button id="remove-masters" type="button" data-control data-bot-control>
+                            删除选中骰主
+                        </button>
+                    </div>
+
+                    <label for="master-input" class="spaced-label">添加数字用户 ID</label>
+                    <input
+                        id="master-input"
+                        type="text"
+                        placeholder="多个 ID 用空格或逗号分隔"
+                        autocomplete="off"
+                        data-control
+                        data-bot-control
+                    >
+                    <div class="row">
+                        <button id="add-masters" type="button" class="primary" data-control data-bot-control>
+                            添加骰主
+                        </button>
+                    </div>
+                </section>
+            </div>
+        </section>
+    </main>
+
+    <!-- 沙箱中使用页面内 dialog，不使用需要 allow-modals 的 window.confirm()。 -->
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">确认操作</h2>
+        <p id="confirm-message"></p>
+        <div class="row">
+            <button id="confirm-cancel" type="button" autofocus>取消</button>
+            <button id="confirm-ok" type="button" class="primary">确认</button>
+        </div>
+    </dialog>
+
+    <script>
+        'use strict';
+
+        // ==================== 1. 页面状态与小工具 ====================
+        // pageState 是最近一次成功读取的后端状态；未保存的草稿仍保存在表单控件中。
+        let pageState = null;
+        let isBusy = false;
+        let selectedReplyKey = '';
+        let requestSequence = 0;
+
+        // 按请求 ID 保存 Promise 回调和计时器，用于匹配回包并处理超时。
+        const pendingRequests = new Map();
+
+        // 三块表单独立记录是否有草稿，保存某一块时不清空其他块的修改。
+        const unsavedChanges = {
+            global: false,
+            bot: false,
+            reply: false,
+        };
+
+        function getElement(id) {
+            return document.getElementById(id);
+        }
+
+        function showStatus(text, isError = false) {
+            getElement('status').textContent = text;
+            getElement('status').dataset.error = String(isError);
+        }
+
+        // data-control 与 data-bot-control 的含义见 body 开头的控件约定。
+        function updateControlStates() {
+            document.querySelectorAll('[data-control]').forEach((control) => {
+                const waitingForFirstLoad = !pageState && control.id !== 'refresh';
+                const missingBot = control.hasAttribute('data-bot-control') && !pageState?.bot;
+                control.disabled = isBusy || waitingForFirstLoad || missingBot;
+            });
+
+            if (!selectedReplyKey) {
+                for (const id of ['save-reply', 'reset-reply', 'reply-value']) {
+                    getElement(id).disabled = true;
+                }
+            }
+        }
+
+        function hasBotDraft() {
+            const hasMasterInput = getElement('master-input').value.trim() !== '';
+            return unsavedChanges.bot || unsavedChanges.reply || hasMasterInput;
+        }
+
+        // 下拉框内容统一使用文本节点，回复词和账号名称不会被当作 HTML 执行。
+        function populateOptions(select, items) {
+            const options = items.map((item) => {
+                const option = document.createElement('option');
+                option.value = item.value;
+                option.textContent = item.label;
+                return option;
+            });
+            select.replaceChildren(...options);
+        }
+
+        // ==================== 2. OlivOS 消息桥 ====================
+        // 所有读写都通过父窗口转发。不要在这里改为直接 fetch 核心 API 或读取 token。
+        function sendRequest(payload) {
+            if (window.parent === window) {
+                return Promise.reject(new Error('请登录 OlivOS WebUI，从“插件页面”打开此配置页。'));
+            }
+
+            const requestId = `${Date.now()}-${++requestSequence}`;
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    pendingRequests.delete(requestId);
+                    reject(new Error('请求超时，保存操作可能已经生效。请刷新配置确认后再操作。'));
+                }, PAGE_CONFIG.requestTimeoutMs);
+
+                pendingRequests.set(requestId, {resolve, reject, timer});
+
+                try {
+                    // type 是 OlivOS 协议字段，event 才是模板作者可配置的业务事件名。
+                    const message = {
+                        type: 'olivos:plugin_event',
+                        event: PAGE_CONFIG.eventName,
+                        request_id: requestId,
+                        payload: payload,
+                    };
+
+                    // iframe 为 opaque origin，按官方接口向指定的父窗口发送消息。
+                    window.parent.postMessage(message, '*');
+                } catch (_error) {
+                    clearTimeout(timer);
+                    pendingRequests.delete(requestId);
+                    reject(new Error('发送失败，请重新从 OlivOS WebUI 打开页面。'));
+                }
+            });
+        }
+
+        function handleHostReply(event) {
+            const message = event.data;
+
+            // 三项都要验证：来自父窗口、类型正确、对应一个尚未结束的请求。
+            if (event.source !== window.parent || !message || message.type !== 'olivos:plugin_reply') {
+                return;
+            }
+
+            const pendingRequest = pendingRequests.get(message.request_id);
+            if (!pendingRequest) {
+                return;
+            }
+
+            pendingRequests.delete(message.request_id);
+            clearTimeout(pendingRequest.timer);
+
+            // 宿主提交失败使用顶层 error；插件业务失败使用 payload.error。
+            if (typeof message.error === 'string') {
+                pendingRequest.reject(new Error(message.error));
+                return;
+            }
+
+            const result = message.payload;
+            if (!result || typeof result.ok !== 'boolean') {
+                pendingRequest.reject(new Error('回包格式错误，请刷新后重试。'));
+                return;
+            }
+
+            if (!result.ok) {
+                const errorText = typeof result.error === 'string' ? result.error : '操作失败。';
+                pendingRequest.reject(new Error(errorText));
+                return;
+            }
+
+            if (!result.state || !Array.isArray(result.state.bots) || !result.state.global_config) {
+                pendingRequest.reject(new Error('配置回包不完整，请刷新后重试。'));
+                return;
+            }
+
+            pendingRequest.resolve(result.state);
+        }
+
+        function cancelPendingRequests() {
+            for (const pendingRequest of pendingRequests.values()) {
+                clearTimeout(pendingRequest.timer);
+                pendingRequest.reject(new Error('页面已关闭，请重新打开后刷新配置。'));
+            }
+            pendingRequests.clear();
+        }
+
+        // 各按钮共用的操作流程：禁用控件 → 请求 → 刷新相关表单 → 提示结果。
+        // render 只更新当前操作对应的区域，避免覆盖其他区域尚未保存的草稿。
+        async function runAction(action, payload, render, successText) {
+            if (isBusy) {
+                return false;
+            }
+
+            isBusy = true;
+            updateControlStates();
+            showStatus(action === 'get_state' ? '正在读取配置…' : '正在保存…');
+
+            try {
+                const requestPayload = {
+                    action: action,
+                    bot_hash: pageState?.bot?.hash || '',
+                    ...payload,
+                };
+                const nextState = await sendRequest(requestPayload);
+
+                // 宿主可能移除账号或调整群链，此时必须一起更新表单和实际写入目标。
+                const botChanged = pageState?.bot?.hash !== nextState.bot?.hash;
+                const linkedBotChanged = pageState?.bot?.linked_hash !== nextState.bot?.linked_hash;
+                if (pageState && (botChanged || linkedBotChanged)) {
+                    renderBotSettings(nextState);
+                }
+
+                render(nextState);
+                pageState = nextState;
+                showStatus(successText);
+                return true;
+            } catch (error) {
+                // 保存失败时保留表单草稿，不把旧的服务器值写回输入框。
+                showStatus(error.message || '操作失败，请刷新后重试。', true);
+                return false;
+            } finally {
+                isBusy = false;
+                updateControlStates();
+            }
+        }
+
+        // ==================== 3. 确认框与表单显示 ====================
+        function confirmAction(text) {
+            const dialog = getElement('confirm-dialog');
+            if (dialog.open) {
+                return Promise.resolve(false);
+            }
+
+            getElement('confirm-message').textContent = text;
+            return new Promise((resolve) => {
+                function finish(answer) {
+                    dialog.close();
+                    resolve(answer);
+                }
+
+                getElement('confirm-ok').onclick = () => finish(true);
+                getElement('confirm-cancel').onclick = () => finish(false);
+                dialog.oncancel = (event) => {
+                    event.preventDefault();
+                    finish(false);
+                };
+                dialog.showModal();
+            });
+        }
+
+        function renderGlobalSettings(nextState) {
+            const pageTitle = PAGE_CONFIG.title || `${nextState.plugin_name} 配置`;
+            document.title = pageTitle;
+            getElement('title').textContent = pageTitle;
+            getElement('global-enable').checked = nextState.global_config.global_enable_switch;
+            getElement('global-debug').checked = nextState.global_config.global_debug_mode_switch;
+            getElement('global-path').value = nextState.global_directory;
+            unsavedChanges.global = false;
+        }
+
+        function renderReplyEditor(bot, key) {
+            const reply = bot?.replies.find((item) => item.key === key);
+            selectedReplyKey = reply?.key || '';
+            getElement('reply-key').value = selectedReplyKey;
+            getElement('reply-note').textContent = reply?.note || '当前没有可编辑的回复词。';
+            getElement('reply-value').value = reply?.value || '';
+            getElement('reset-reply').textContent = reply?.is_default ? '恢复这条默认回复' : '删除扩展回复词';
+            unsavedChanges.reply = false;
+        }
+
+        function renderReplyList(nextState) {
+            const replies = nextState.bot?.replies || [];
+            const options = replies.map((reply) => ({value: reply.key, label: reply.key}));
+            populateOptions(getElement('reply-key'), options);
+
+            // 保存后尽量保持原选中项；如果扩展词被删除，则选择列表中的第一项。
+            const selectionExists = replies.some((reply) => reply.key === selectedReplyKey);
+            const nextKey = selectionExists ? selectedReplyKey : replies[0]?.key;
+            renderReplyEditor(nextState.bot, nextKey);
+        }
+
+        function renderMasterList(nextState) {
+            const masters = nextState.bot?.masters || [];
+            const options = masters.map((masterId) => ({value: masterId, label: masterId}));
+            populateOptions(getElement('master-list'), options);
+        }
+
+        // 单独保存 Bot 开关时，只更新这个开关，不清除回复词和骰主输入框中的草稿。
+        function renderBotEnableSetting(nextState) {
+            getElement('bot-enable').checked = nextState.bot?.bot_enable_switch || false;
+            unsavedChanges.bot = false;
+        }
+
+        function renderBotSettings(nextState) {
+            const botOptions = nextState.bots.map((bot) => ({value: bot.hash, label: bot.label}));
+            populateOptions(getElement('bot-select'), botOptions);
+            getElement('bot-select').value = nextState.bot?.hash || '';
+
+            if (nextState.bot) {
+                getElement('bot-summary').textContent = `当前 Bot：${nextState.bot.label}`;
+            } else {
+                getElement('bot-summary').textContent = '当前未检测到 Bot，全局设置仍可使用。';
+            }
+
+            const isLinkedBot = nextState.bot && nextState.bot.linked_hash !== nextState.bot.hash;
+            getElement('linked-hint').hidden = !isLinkedBot;
+            getElement('linked-hint').textContent = '';
+            if (isLinkedBot) {
+                getElement('linked-hint').textContent =
+                    `回复词与主账号 ${nextState.bot.linked_label} 共用；Bot 开关和骰主列表仍属于当前账号。`;
+            }
+
+            getElement('bot-path').value = nextState.bot?.config_directory || '';
+            getElement('reply-path').value = nextState.bot?.reply_directory || '';
+            getElement('master-input').value = '';
+            renderBotEnableSetting(nextState);
+            renderReplyList(nextState);
+            renderMasterList(nextState);
+        }
+
+        function renderAllSettings(nextState) {
+            renderGlobalSettings(nextState);
+            renderBotSettings(nextState);
+        }
+
+        // ==================== 4. 各按钮的业务操作 ====================
+        // 这里的 action 名称对应 webui.py 中的 dispatch / save_bot_action 分支。
+        async function handleRefreshClick() {
+            if (unsavedChanges.global || hasBotDraft()) {
+                const confirmed = await confirmAction('刷新会丢弃页面中尚未保存的修改，继续吗？');
+                if (!confirmed) {
+                    return;
+                }
+            }
+            await runAction('get_state', {}, renderAllSettings, '已读取最新配置。');
+        }
+
+        async function handleSaveGlobalClick() {
+            const payload = {
+                global_enable_switch: getElement('global-enable').checked,
+                global_debug_mode_switch: getElement('global-debug').checked,
+            };
+            await runAction('save_global', payload, renderGlobalSettings, '全局设置已保存。');
+        }
+
+        async function handleSaveBotClick() {
+            const payload = {
+                bot_enable_switch: getElement('bot-enable').checked,
+            };
+            await runAction('save_bot', payload, renderBotEnableSetting, 'Bot 设置已保存。');
+        }
+
+        async function handleBotSelectionChange() {
+            const botHash = getElement('bot-select').value;
+
+            // 请求成功前仍展示旧账号，避免用户把旧表单误认为新账号的数据。
+            getElement('bot-select').value = pageState?.bot?.hash || '';
+            if (hasBotDraft()) {
+                const confirmed = await confirmAction('切换 Bot 会丢弃当前 Bot 尚未保存的修改，继续吗？');
+                if (!confirmed) {
+                    return;
+                }
+            }
+            await runAction('get_state', {bot_hash: botHash}, renderBotSettings, '已切换 Bot。');
+        }
+
+        async function handleReplySelectionChange() {
+            const key = getElement('reply-key').value;
+            getElement('reply-key').value = selectedReplyKey;
+
+            if (unsavedChanges.reply) {
+                const confirmed = await confirmAction('放弃当前回复词尚未保存的修改，切换条目吗？');
+                if (!confirmed) {
+                    return;
+                }
+            }
+
+            renderReplyEditor(pageState.bot, key);
+            updateControlStates();
+        }
+
+        async function handleSaveReplyClick() {
+            const payload = {
+                key: selectedReplyKey,
+                value: getElement('reply-value').value,
+            };
+            await runAction('save_reply', payload, renderReplyList, '回复词已保存。');
+        }
+
+        async function handleResetReplyClick() {
+            const reply = pageState.bot.replies.find((item) => item.key === selectedReplyKey);
+            if (!reply) {
+                showStatus('回复词条目已发生变化，请刷新后重新选择。', true);
+                return;
+            }
+
+            const operation = reply.is_default ? '恢复默认值' : '删除自定义内容';
+            const confirmText = `确定对 ${selectedReplyKey} ${operation}？\n共用这套回复词的主从账号都会生效。`;
+            if (!await confirmAction(confirmText)) {
+                return;
+            }
+
+            const payload = {key: selectedReplyKey, confirm: true};
+            await runAction('reset_reply', payload, renderReplyList, '回复词已恢复 / 删除。');
+        }
+
+        async function handleResetAllRepliesClick() {
+            const confirmText = '确定恢复全部默认回复，并删除扩展回复词？\n共用这套回复词的主从账号都会生效。';
+            if (!await confirmAction(confirmText)) {
+                return;
+            }
+            await runAction('reset_replies', {confirm: true}, renderReplyList, '已恢复全部默认回复。');
+        }
+
+        async function handleAddMastersClick() {
+            const input = getElement('master-input').value.trim();
+            const ids = input.split(/[\s,;，；]+/).filter(Boolean);
+
+            // 数量和长度与 webui.py 的 require_master_ids 一致；后端仍会再次校验。
+            const invalidCount = ids.length === 0 || ids.length > 100;
+            const invalidId = ids.some((id) => !/^[0-9]{1,32}$/.test(id));
+            if (invalidCount || invalidId) {
+                showStatus('请输入 1 至 100 个数字用户 ID，每个 ID 最多 32 位。', true);
+                return;
+            }
+
+            const saved = await runAction('add_masters', {ids: ids}, renderMasterList, '骰主列表已更新。');
+            if (saved) {
+                getElement('master-input').value = '';
+            }
+        }
+
+        async function handleRemoveMastersClick() {
+            const selectedOptions = Array.from(getElement('master-list').selectedOptions);
+            const ids = selectedOptions.map((option) => option.value);
+            if (ids.length === 0) {
+                showStatus('请先选择要删除的骰主。', true);
+                return;
+            }
+
+            if (!await confirmAction(`从当前 Bot 删除所选 ${ids.length} 位骰主吗？`)) {
+                return;
+            }
+            await runAction('remove_masters', {ids: ids}, renderMasterList, '骰主列表已更新。');
+        }
+
+        function handleMasterInputKeydown(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                getElement('add-masters').click();
+            }
+        }
+
+        // ==================== 5. 页签、页面配置与事件绑定 ====================
+        function setActiveTab(name) {
+            for (const tab of ['global', 'bot']) {
+                const isSelected = name === tab;
+                getElement(`${tab}-tab`).setAttribute('aria-selected', String(isSelected));
+                getElement(`${tab}-tab`).tabIndex = isSelected ? 0 : -1;
+                getElement(`${tab}-panel`).hidden = !isSelected;
+            }
+        }
+
+        function handleTabKeydown(event, currentTab) {
+            let targetTab;
+            if (event.key === 'Home') {
+                targetTab = 'global';
+            } else if (event.key === 'End') {
+                targetTab = 'bot';
+            } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                targetTab = currentTab === 'global' ? 'bot' : 'global';
+            } else {
+                return;
+            }
+
+            event.preventDefault();
+            setActiveTab(targetTab);
+            getElement(`${targetTab}-tab`).focus();
+        }
+
+        function applyPageConfig() {
+            if (PAGE_CONFIG.title) {
+                document.title = PAGE_CONFIG.title;
+                getElement('title').textContent = PAGE_CONFIG.title;
+            }
+            getElement('description').textContent = PAGE_CONFIG.description;
+
+            const features = PAGE_CONFIG.features;
+            getElement('reply-card').hidden = !features.replies;
+            getElement('master-card').hidden = !features.masters;
+            getElement('bot-tools').hidden = !features.replies && !features.masters;
+            getElement('bot-tools').classList.toggle('single-column', !features.replies || !features.masters);
+
+            document.querySelectorAll('[data-directory]').forEach((section) => {
+                section.hidden = !features.directories;
+            });
+
+            const initialTab = PAGE_CONFIG.defaultTab === 'bot' ? 'bot' : 'global';
+            setActiveTab(initialTab);
+        }
+
+        function bindPageEvents() {
+            // 消息监听必须先于首次请求注册，避免收到回包时还没有处理函数。
+            window.addEventListener('message', handleHostReply);
+            window.addEventListener('pagehide', cancelPendingRequests);
+
+            // 修改按钮行为时，从右侧函数名进入对应实现即可。
+            getElement('refresh').addEventListener('click', handleRefreshClick);
+            getElement('save-global').addEventListener('click', handleSaveGlobalClick);
+            getElement('save-bot').addEventListener('click', handleSaveBotClick);
+            getElement('bot-select').addEventListener('change', handleBotSelectionChange);
+            getElement('reply-key').addEventListener('change', handleReplySelectionChange);
+            getElement('save-reply').addEventListener('click', handleSaveReplyClick);
+            getElement('reset-reply').addEventListener('click', handleResetReplyClick);
+            getElement('reset-replies').addEventListener('click', handleResetAllRepliesClick);
+            getElement('add-masters').addEventListener('click', handleAddMastersClick);
+            getElement('remove-masters').addEventListener('click', handleRemoveMastersClick);
+            getElement('master-input').addEventListener('keydown', handleMasterInputKeydown);
+
+            // 仅记录表单是否有草稿，实际保存由各自的保存按钮触发。
+            for (const id of ['global-enable', 'global-debug']) {
+                getElement(id).addEventListener('change', () => {
+                    unsavedChanges.global = true;
+                });
+            }
+            getElement('bot-enable').addEventListener('change', () => {
+                unsavedChanges.bot = true;
+            });
+            getElement('reply-value').addEventListener('input', () => {
+                unsavedChanges.reply = true;
+            });
+
+            document.querySelectorAll('.path').forEach((input) => {
+                input.addEventListener('click', () => input.select());
+            });
+
+            for (const name of ['global', 'bot']) {
+                getElement(`${name}-tab`).addEventListener('click', () => setActiveTab(name));
+                getElement(`${name}-tab`).addEventListener('keydown', (event) => {
+                    handleTabKeydown(event, name);
+                });
+            }
+        }
+
+        // 初始化顺序：应用页面配置 → 注册监听与按钮 → 发出首次读取请求。
+        function initializePage() {
+            applyPageConfig();
+            bindPageEvents();
+            runAction('get_state', {}, renderAllSettings, '配置已加载。');
+        }
+
+        initializePage();
+    </script>
+</body>
+</html>
