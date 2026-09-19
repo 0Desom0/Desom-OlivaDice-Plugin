@@ -6,18 +6,14 @@ import os
 plugin_name = 'QQBotMenuPanel'
 plugin_display_name = 'QQ菜单与指令面板'
 
-menu_title_open_config = '打开菜单与指令面板'
-menu_event_open_config = 'QQBotMenuPanel_Menu_001'
+webui_event = 'QQBotMenuPanel_WebUI'
 
 plugin_data_dir = os.path.join('plugin', 'data', plugin_name)
 global_config_file_name = 'global_config.json'
 bot_config_file_name = 'bot_config.json'
 message_custom_file_name = 'message_custom.json'
 
-gui_window_title = 'QQ 自定义菜单与指令面板'
 qqguildv2_sdk = 'qqGuildv2_link'
-webui_default_host = '127.0.0.1'
-webui_default_port = 3738
 
 SCOPE_C2C = 'c2c'
 SCOPE_GROUP = 'group'
@@ -65,9 +61,6 @@ LINK_PREFIX = 'https://'
 default_global_config = {
     'global_enable_switch': True,
     'global_debug_mode_switch': False,
-    'webui_enable_switch': False,
-    'webui_host': webui_default_host,
-    'webui_port': webui_default_port,
 }
 
 default_bot_config = {

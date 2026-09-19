@@ -10,5 +10,5 @@ default_custom_variable_dict = {
 custom_message_note_dict = {}
 
 help_document_dict = {
-    'plugin_help': '在 OlivOS 插件菜单打开「打开菜单与指令面板」，启动 WebUI 后在浏览器里编辑并预览。',
+    'plugin_help': '在 OlivOS WebUI 的「插件页面」中打开「QQ菜单与指令面板」，编辑并预览。',
 }

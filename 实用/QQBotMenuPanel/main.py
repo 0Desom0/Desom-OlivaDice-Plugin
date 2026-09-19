@@ -1,9 +1,7 @@
 # -*- encoding: utf-8 -*-
 """OlivOS 事件入口。"""
 
-from . import gui
-from . import message
-from . import utils
+from . import message, utils, webui
 
 
 class Event(object):
@@ -19,4 +17,4 @@ class Event(object):
         message.handle_save(plugin_event, Proc)
 
     def menu(plugin_event, Proc):
-        gui.handle_menu_event(plugin_event, Proc)
+        webui.handle_menu_event(plugin_event, Proc)

@@ -3,7 +3,7 @@
     "author": "Desom-fu",
     "namespace": "QQBotMenuPanel",
     "message_mode": "olivos_string",
-    "info": "通过 OlivOS qqGuildV2 接口管理 QQ 官方机器人自定义菜单与指令面板。本地 WebUI 预览对照官方单聊菜单和指令面板，桌面 GUI 只保留开关。",
+    "info": "通过 OlivOS qqGuildV2 接口管理 QQ 官方机器人自定义菜单与指令面板，配置与实时预览集成在 OlivOS WebUI 的插件页面中。",
     "version": "1.0.0",
     "svn": 1,
     "compatible_svn": 190,
@@ -20,10 +20,12 @@
             "model": "all"
         }
     ],
-    "menu_config": [
+    "menu_config": [],
+    "webui_config": [
         {
-            "title": "打开菜单与指令面板",
-            "event": "QQBotMenuPanel_Menu_001"
+            "title": "QQ菜单与指令面板",
+            "type": "iframe",
+            "path": "webui/index.html"
         }
     ]
 }

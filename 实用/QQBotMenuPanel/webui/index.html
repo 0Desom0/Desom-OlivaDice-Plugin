@@ -552,11 +552,7 @@
             <option value="true">开启 True</option>
             <option value="false">关闭 False</option>
           </select>
-          <label>WebUI 监听地址 host</label>
-          <input id="webuiHost" placeholder="127.0.0.1，外网可填 0.0.0.0" />
-          <label>WebUI 端口 port</label>
-          <input id="webuiPort" placeholder="3738" />
-          <div class="hint">默认 127.0.0.1:3738。局域网或外部访问可填 0.0.0.0。改地址后会重启 WebUI，请用新地址重新打开。</div>
+          <div class="hint">本页面由 OlivOS WebUI 托管，访问地址和登录设置沿用 OlivOS。</div>
           <div class="row"><button class="btn" onclick="saveGlobal()">保存全局设置</button></div>
         </div>
         <div class="card">
@@ -644,6 +640,16 @@
       <div class="row"><button class="btn" onclick="closeModal()">确定</button></div>
     </div>
   </div>
+  <div class="modal" id="confirmModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <h3 id="confirmTitle">确认操作</h3>
+      <p id="confirmText"></p>
+      <div class="row">
+        <button class="btn gray" id="confirmCancel" onclick="finishConfirm(false)">取消</button>
+        <button class="btn" onclick="finishConfirm(true)">确认</button>
+      </div>
+    </div>
+  </div>
 <script>
 const SCOPE_ORDER = [
   ["channel", "QQ频道"],
@@ -677,16 +683,86 @@ function qqWidth(text) {
   for (const ch of String(text || "")) width += ch.charCodeAt(0) <= 0x7F ? 1 : 2;
   return width;
 }
-async function api(url, body) {
-  const res = await fetch(url, {
-    method: body ? "POST" : "GET",
-    headers: {"Content-Type": "application/json"},
-    body: body ? JSON.stringify(body) : undefined,
+const pendingRequests = new Map();
+let requestSequence = 0;
+const pageRequestId = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+window.addEventListener("message", event => {
+  if (event.source !== window.parent) return;
+  const reply = event.data;
+  if (!reply || reply.type !== "olivos:plugin_reply") return;
+  const pending = pendingRequests.get(reply.request_id);
+  if (!pending) return;
+  pendingRequests.delete(reply.request_id);
+  clearTimeout(pending.timer);
+  $("botSelect").disabled = false;
+  if (typeof reply.error === "string") {
+    pending.reject(new Error(reply.error));
+  } else if (!reply.payload || typeof reply.payload !== "object" || Array.isArray(reply.payload)) {
+    pending.reject(new Error("OlivOS 返回了无效的数据"));
+  } else if (reply.payload.ok !== true) {
+    pending.reject(new Error(reply.payload.message || "请求失败"));
+  } else {
+    pending.resolve(reply.payload);
+  }
+});
+function api(action, body = {}) {
+  if (window.parent === window) {
+    return Promise.reject(new Error("请从 OlivOS WebUI 的「插件页面」打开「QQ菜单与指令面板」"));
+  }
+  if (pendingRequests.size) {
+    return Promise.reject(new Error("正在处理上一项操作，请稍候"));
+  }
+  return new Promise((resolve, reject) => {
+    const requestId = pageRequestId + "-" + (++requestSequence);
+    const timer = setTimeout(() => {
+      pendingRequests.delete(requestId);
+      $("botSelect").disabled = false;
+      reject(new Error("请求超时，请刷新并核对结果后再操作；超时不代表操作未执行"));
+    }, 120000);
+    pendingRequests.set(requestId, {resolve, reject, timer});
+    $("botSelect").disabled = true;
+    try {
+      window.parent.postMessage({
+        type: "olivos:plugin_event",
+        event: "QQBotMenuPanel_WebUI",
+        request_id: requestId,
+        payload: Object.assign({}, body, {action}),
+      }, "*");
+    } catch (error) {
+      clearTimeout(timer);
+      pendingRequests.delete(requestId);
+      $("botSelect").disabled = false;
+      reject(error);
+    }
   });
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.message || "请求失败");
-  return data;
 }
+function showNotice(message) {
+  $("resultBox").textContent = message;
+}
+window.addEventListener("unhandledrejection", event => {
+  showNotice(event.reason instanceof Error ? event.reason.message : String(event.reason));
+  event.preventDefault();
+});
+let confirmResolve = null;
+let confirmTrigger = null;
+function confirmAction(message) {
+  if (confirmResolve) return Promise.resolve(false);
+  $("confirmText").textContent = message;
+  $("confirmModal").hidden = false;
+  confirmTrigger = document.activeElement;
+  $("confirmCancel").focus();
+  return new Promise(resolve => { confirmResolve = resolve; });
+}
+function finishConfirm(accepted) {
+  $("confirmModal").hidden = true;
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  if (confirmTrigger) confirmTrigger.focus();
+  if (resolve) resolve(accepted);
+}
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && confirmResolve) finishConfirm(false);
+});
 function showTab(name) {
   tab = name;
   const showPreview = name === "menu" || name === "panel";
@@ -840,7 +916,7 @@ function renderBots() {
     `<option value="${escapeHtml(bot.hash)}">${escapeHtml(bot.display)}</option>`
   ).join("");
   $("botSelect").value = botHash;
-  $("urlText").textContent = state.url || "";
+  $("urlText").textContent = "OlivOS 插件页面";
   const bot = (state.bots || []).find(item => item.hash === botHash);
   $("botName").textContent = bot ? (bot.name || bot.display) : "官方机器人";
 }
@@ -968,8 +1044,6 @@ function renderSettings() {
   $("globalEnable").value = state.global_enable_switch ? "true" : "false";
   $("globalDebug").value = state.global_debug_mode_switch ? "true" : "false";
   $("botEnable").value = state.bot_enable_switch ? "true" : "false";
-  $("webuiHost").value = state.host || "127.0.0.1";
-  $("webuiPort").value = state.port || 3738;
   const core = state.core_masters || [];
   $("coreMasters").innerHTML = !state.has_olivadice
     ? "未检测到 OlivaDiceCore"
@@ -1064,7 +1138,7 @@ function onUnified() {
 }
 function addMenu() {
   state.menu_draft.items = state.menu_draft.items || [];
-  if (state.menu_draft.items.length >= (state.limits.menu_item_max||10)) return alert("最多 10 项");
+  if (state.menu_draft.items.length >= (state.limits.menu_item_max||10)) return showNotice("最多 10 项");
   state.menu_draft.items.push({name:"",type:"send_message",send_message:"",link:"",switch:{switch_id:"",default:false},sub_menu_items:[]});
   menuIndex = state.menu_draft.items.length - 1;
   render();
@@ -1087,9 +1161,9 @@ function moveMenu(delta) {
 }
 function addSub() {
   const item = currentMenu();
-  if (!item || item.type !== "menu") return alert("只有子菜单类型才能添加子项");
+  if (!item || item.type !== "menu") return showNotice("只有子菜单类型才能添加子项");
   item.sub_menu_items = item.sub_menu_items || [];
-  if (item.sub_menu_items.length >= 5) return alert("子菜单最多 5 项");
+  if (item.sub_menu_items.length >= 5) return showNotice("子菜单最多 5 项");
   item.sub_menu_items.push({name:"",type:"send_message",send_message:"",link:""});
   subIndex = item.sub_menu_items.length - 1;
   render();
@@ -1103,7 +1177,7 @@ function delSub() {
 }
 function addPanel() {
   state.panel_drafts[scope] = state.panel_drafts[scope] || [];
-  if (state.panel_drafts[scope].length >= 20) return alert("最多 20 个面板");
+  if (state.panel_drafts[scope].length >= 20) return showNotice("最多 20 个面板");
   state.panel_drafts[scope].push({local_id:"local_"+Date.now(), panel_id:"", scope, target_type:"all", remark:"", items:[], user_openids:[], group_openids:[]});
   panelIndex = state.panel_drafts[scope].length - 1;
   render();
@@ -1117,9 +1191,9 @@ function delPanel() {
 }
 function addItem() {
   const panel = currentPanel();
-  if (!panel) return alert("请先新建面板");
+  if (!panel) return showNotice("请先新建面板");
   panel.items = panel.items || [];
-  if (panel.items.length >= 20) return alert("最多 20 个元素");
+  if (panel.items.length >= 20) return showNotice("最多 20 个元素");
   panel.items.push({name:"",desc:"",type:"command",only_admin:false,link:""});
   itemIndex = panel.items.length - 1;
   render();
@@ -1210,8 +1284,7 @@ function showSendDialog(title, data) {
   showResult(data);
 }
 async function reloadState() {
-  const query = botHash ? ("?bot_hash="+encodeURIComponent(botHash)) : "";
-  const data = await api("/api/state"+query);
+  const data = await api("state", {bot_hash: botHash});
   state = data.data;
   if (!botHash && state.current_bot_hash) botHash = state.current_bot_hash;
   scope = state.chat_current_scope || scope;
@@ -1226,7 +1299,7 @@ async function bootstrap() {
   }
   $("resultBox").textContent = "正在拉取平台当前配置…";
   try {
-    const data = await api("/api/bootstrap", {bot_hash: botHash});
+    const data = await api("bootstrap", {bot_hash: botHash});
     state = data.data;
     if (!botHash && state.current_bot_hash) botHash = state.current_bot_hash;
     scope = state.chat_current_scope || scope;
@@ -1241,71 +1314,70 @@ async function bootstrap() {
   }
 }
 async function saveDraft() {
-  const data = await api("/api/draft", draftBody());
+  const data = await api("draft", draftBody());
   state = data.data;
   $("resultBox").textContent = data.message;
   render();
 }
 async function pullMenu() {
-  const data = await api("/api/menu/pull", {bot_hash: botHash});
+  const data = await api("menu/pull", {bot_hash: botHash});
   state = data.data; menuIndex = 0; showResult(data.data); render();
 }
 async function sendMenu() {
-  if (!confirm("即将覆盖该机器人的全局自定义菜单，是否确认发送？")) return;
-  const data = await api("/api/menu/send", draftBody());
+  if (!await confirmAction("即将覆盖该机器人的全局自定义菜单，是否确认发送？")) return;
+  const data = await api("menu/send", draftBody());
   state = data.data; showSendDialog("自定义菜单发送结果", data.data); render();
 }
 async function pullPanel(all) {
-  const data = await api("/api/panel/pull", {bot_hash: botHash, scopes: all ? ["all"] : [scope]});
+  const data = await api("panel/pull", {bot_hash: botHash, scopes: all ? ["all"] : [scope]});
   state = data.data; panelIndex = 0; showResult(data.data); render();
 }
 async function sendPanel() {
-  if (!confirm("即将提交当前指令面板到平台，是否确认发送？")) return;
+  if (!await confirmAction("即将提交当前指令面板到平台，是否确认发送？")) return;
   const body = Object.assign(draftBody(), {scope, panel_index: panelIndex, unified_panel_mode: state.unified_panel_mode});
-  const data = await api("/api/panel/send", body);
+  const data = await api("panel/send", body);
   state = data.data; showSendDialog("指令面板发送结果", data.data); render();
 }
 async function deleteRemote() {
   const panel = currentPanel();
-  if (!panel || !panel.panel_id) return alert("没有 panel_id");
-  if (!confirm("即将删除平台面板 "+panel.panel_id+"，是否确认？")) return;
-  const data = await api("/api/panel/delete", {bot_hash: botHash, panel_id: panel.panel_id});
+  if (!panel || !panel.panel_id) return showNotice("没有 panel_id");
+  if (!await confirmAction("即将删除平台面板 "+panel.panel_id+"，是否确认？")) return;
+  const data = await api("panel/delete", {bot_hash: botHash, panel_id: panel.panel_id});
   state = data.data; showSendDialog("删除平台面板结果", data.data); render();
 }
 async function sendTarget(op) {
-  if (!confirm("即将对当前面板执行关联对象 "+op+"，是否确认？")) return;
+  if (!await confirmAction("即将对当前面板执行关联对象 "+op+"，是否确认？")) return;
   const body = Object.assign(draftBody(), {scope, panel_index: panelIndex, op});
-  const data = await api("/api/panel/target", body);
+  const data = await api("panel/target", body);
   state = data.data; showSendDialog("修改关联对象结果", data.data); render();
 }
 async function fillExample(kind) {
-  const data = await api("/api/example", {bot_hash: botHash, kind, scope});
+  const data = await api("example", {bot_hash: botHash, kind, scope});
   state = data.data; render();
 }
 async function saveGlobal() {
-  const data = await api("/api/global", {
+  const draft = Object.assign(draftBody(), {bot_enable_switch: $("botEnable").value === "true"});
+  const data = await api("global", {
     bot_hash: botHash,
     global_enable_switch: $("globalEnable").value === "true",
     global_debug_mode_switch: $("globalDebug").value === "true",
-    webui_host: $("webuiHost").value,
-    webui_port: $("webuiPort").value,
   });
-  await api("/api/draft", Object.assign(draftBody(), {bot_enable_switch: $("botEnable").value === "true"}));
   state = data.data;
+  if (botHash) {
+    const saved = await api("draft", draft);
+    state = saved.data;
+  }
   $("resultBox").textContent = data.message || "全局设置已保存";
   render();
-  if (data.data && data.data.restarted) {
-    alert(data.message + "\n新地址：" + (data.data.url || ""));
-  }
 }
 async function addMaster() {
   const id = $("masterId").value.trim();
   if (!id) return;
-  const data = await api("/api/master", {bot_hash: botHash, op:"add", master_id:id});
+  const data = await api("master", {bot_hash: botHash, op:"add", master_id:id});
   state = data.data; $("masterId").value=""; render();
 }
 async function delMaster(id) {
-  const data = await api("/api/master", {bot_hash: botHash, op:"del", master_id:id});
+  const data = await api("master", {bot_hash: botHash, op:"del", master_id:id});
   state = data.data; render();
 }
 $("botSelect").addEventListener("change", async () => {
