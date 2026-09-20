@@ -104,6 +104,54 @@ def isPersonaMutationText(text):
         return False
     return any(pattern.search(content) for pattern in _PERSONA_MUTATION_PATTERNS)
 
+
+def getPersonaPrompt(group_id=None):
+    '''对外复用入口：返回当前生效的人设文本（prompt.system，群聊再叠加 prompt.group_persona）。
+
+    让其它插件（如 FroniaSign）不必猜配置结构，直接与 OlivaAIAgent 共用同一份人设。
+    配置尚未加载时自动补一次 load()；任何异常只影响取到的部分，不向调用方抛出。'''
+    if not gConf:
+        try:
+            load()
+        except Exception:
+            pass
+    parts = []
+    try:
+        system = str(get('prompt', 'system', default='') or '').strip()
+    except Exception:
+        system = ''
+    if system:
+        parts.append(system)
+    if group_id is not None:
+        try:
+            persona_map = get('prompt', 'group_persona', default={}) or {}
+        except Exception:
+            persona_map = {}
+        if isinstance(persona_map, dict):
+            persona = str(persona_map.get(str(group_id), '') or '').strip()
+            if persona:
+                parts.append('【本群人设】\n' + persona)
+    return '\n\n'.join(parts)
+
+
+def getChatBackend():
+    '''对外复用入口：返回主后端配置（可直接作为 aiClient.chat 的 backend_conf）。
+    未配置 api_url/api_key 时返回 None，调用方据此回退到本地文案。'''
+    if not gConf:
+        try:
+            load()
+        except Exception:
+            pass
+    try:
+        import OlivaAIAgent
+        bc = OlivaAIAgent.aiClient.getBackendConf()
+    except Exception:
+        return None
+    if not str(bc.get('api_key', '')) and not str(bc.get('api_url', '')):
+        return None
+    return bc
+
+
 DEFAULT_CONF = {
     '_说明': '完整说明见插件目录 README.md；修改后发 .ai reload 或在托盘菜单点击重载配置生效',
     'backend': 'openai',

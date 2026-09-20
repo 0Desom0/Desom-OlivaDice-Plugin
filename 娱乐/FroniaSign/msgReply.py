@@ -17,16 +17,23 @@ import re
 from datetime import datetime
 
 
-has_ChatGPT = False
+has_OlivaAIAgent = False
 try:
-    import ChatGPT
-    has_ChatGPT = True
+    import OlivaAIAgent
+    has_OlivaAIAgent = True
 except Exception:
-    has_ChatGPT = False
+    has_OlivaAIAgent = False
 
 base_data_path = os.path.join('plugin', 'data', 'FroniaSign')
 
 MASTER_UIDS = ['121096913', '2946244126']
+MAX_BIND_DEPTH = 8
+# 绑定目标一律按 OneBot 平台名计算 user_hash。
+# 依据：OlivOS 各 OneBot 系适配器（onebotV11/OPQBot/milky/red）统一为 {'sdk': 'onebot', 'platform': 'qq'}；
+# 而 qqGuildv2 的用户标识是 openid / member_openid（见 OlivOS adapter/qqGuild/qqGuildv2SDKGroup.py），
+# 纯数字 QQ 号不可能来自 qqGuild。若不固定平台，在官方机器人会话里执行 .qdbind 会算出 qqGuild 前缀的 hash，
+# 与目标 QQ 平时在 OneBot 群里的 hash 对不上，绑定会静默失效。
+QQ_ONEBOT_PLATFORM = 'qq'
 SPECIAL_UIDS = {
     '3948837959': 'Fhloy',
     '3928744142': 'Foxeline'
@@ -174,6 +181,61 @@ def _save_user_data(bot_hash, user_hash, data):
     return _save_json(user_file, data)
 
 
+# ====== QQ 号绑定（.qdbind / .qdunbind）======
+# binds.json 结构：{"binds": {"<被绑 user_hash>": {"owner": "<归属 user_hash>", "qq": "被绑QQ",
+#                  "owner_qq": "操作者QQ", "bound_at": 时间戳}}}
+# 语义：被绑 QQ 号的签到数据并入归属账号；被绑账号不再单独出现在排行榜里。
+
+def _get_bind_file(bot_hash):
+    return os.path.join(_get_bot_dir(bot_hash), 'binds.json')
+
+
+def _load_binds(bot_hash):
+    data = _load_json(_get_bind_file(bot_hash), default={})
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(data.get('binds'), dict):
+        data['binds'] = {}
+    return data
+
+
+def _save_binds(bot_hash, data):
+    return _save_json(_get_bind_file(bot_hash), data)
+
+
+def _resolve_account_hash(bot_hash, user_hash, binds=None):
+    """沿绑定链上溯到真正的记账账号；带防环与深度保护，异常时返回入参。"""
+    try:
+        if binds is None:
+            binds = _load_binds(bot_hash).get('binds', {})
+        cur = _safe_str(user_hash)
+        seen = set()
+        for _ in range(MAX_BIND_DEPTH):
+            rec = binds.get(cur)
+            if not isinstance(rec, dict):
+                break
+            owner = _safe_str(rec.get('owner', ''))
+            if not owner or owner == cur or owner in seen:
+                break
+            seen.add(cur)
+            cur = owner
+        return cur
+    except Exception:
+        return _safe_str(user_hash)
+
+
+def _extract_target_qq(text):
+    """从命令参数里提取 QQ 号：支持 @某人 的 CQ 码，也支持直接写数字。"""
+    s = _safe_str(text)
+    m = re.search(r'\[CQ:at,[^\]]*?qq=(\d+)', s)
+    if m:
+        return m.group(1)
+    m = re.search(r'(\d{4,12})', s)
+    if m:
+        return m.group(1)
+    return ''
+
+
 def _touch_user_identity(data, plugin_event):
     uid = _safe_str(plugin_event.data.user_id)
     name = _safe_str(plugin_event.data.sender.get('name', ''))
@@ -205,45 +267,47 @@ def _calc_jrrp(plugin_event):
     return int(int(hash_tmp.hexdigest(), 16) % 100) + 1
 
 
-def _get_chatgpt_prompts_content(user_id=None, group_id=None):
-    """读取 ChatGPT 插件的默认 prompts（group/user -> global_prompts -> persona），用于“带上默认人设”。"""
-    if not has_ChatGPT:
+def _get_ai_persona_prompt(group_id=None):
+    """从 OlivaAIAgent 自动读取人设：prompt.system，群聊再叠加 prompt.group_persona。
+    具体读取逻辑收在 OlivaAIAgent.conf.getPersonaPrompt 里，这里只做容错调用。"""
+    if not has_OlivaAIAgent:
         return ''
     try:
-        default_config = ChatGPT.main.Event.load_default_config()
-        prompts_content = ''
-
-        # 优先使用 group/user 的 prompts
-        if group_id is not None:
-            prompts_content = default_config.get('prompts', {}).get('group', {}).get(str(group_id), '')
-        if not prompts_content and user_id is not None:
-            prompts_content = default_config.get('prompts', {}).get('user', {}).get(str(user_id), '')
-
-        # 回退到 global_prompts（可能是预设名字）
-        if not prompts_content:
-            prompts_content = default_config.get('global_prompts', '')
-
-        # 若 prompts_content 命中预设文件，则读取对应 .txt（与 ChatGPT 插件一致）
-        if prompts_content:
-            preset_file = os.path.join(ChatGPT.main.data_path, f"{prompts_content}.txt")
-            if os.path.exists(preset_file):
-                with open(preset_file, 'r', encoding='utf-8') as f:
-                    prompts_content = f.read().strip()
-            else:
-                # prompts_content 也可能直接就是内容
-                prompts_content = str(prompts_content).strip()
-
-        # 最后回退到 persona
-        if not prompts_content:
-            prompts_content = default_config.get('persona', '')
-            if prompts_content:
-                prompts_content = str(prompts_content).replace('\n', '')
-
-        if not prompts_content:
-            return ''
-        return str(prompts_content).strip()
+        return str(OlivaAIAgent.conf.getPersonaPrompt(group_id=group_id) or '').strip()
     except Exception:
         return ''
+
+
+def _ai_backend_ready():
+    """OlivaAIAgent 是否已配置可用后端（api_url / api_key 至少有一个）。"""
+    if not has_OlivaAIAgent:
+        return False
+    try:
+        return OlivaAIAgent.conf.getChatBackend() is not None
+    except Exception:
+        return False
+
+
+def _call_ai(messages, response_json=False, timeout=60):
+    """签到相关的 AI 请求统一走 OlivaAIAgent 后端（与 .ai 同一份模型配置）。
+    返回 (ok, text)；任何异常都返回 (False, '')，由调用方回退本地文案。"""
+    if not has_OlivaAIAgent:
+        return False, ''
+    # 后端未配置 api_url/api_key 时直接短路，省掉一次注定失败的调用与 prompt 构造
+    if not _ai_backend_ready():
+        return False, ''
+    try:
+        res = OlivaAIAgent.aiClient.chat(
+            messages=messages,
+            force_no_stream=True,
+            response_json=response_json,
+            timeout_override=timeout,
+        )
+    except Exception:
+        return False, ''
+    if not isinstance(res, dict) or not res.get('ok'):
+        return False, ''
+    return True, str(res.get('text') or '')
 
 
 def _clean_plain_text(text):
@@ -371,43 +435,53 @@ def _fallback_sign_text(name, now_dt, coin_delta, jrrp):
     return _truncate_200(pick + tail)
 
 
-def _try_ai_coin_json(plugin_event, now_dt, jrrp, extra_text='', name_tag=''):
-    """第一阶段：只生成 coins JSON。"""
-    if not has_ChatGPT:
+def _try_ai_sign(plugin_event, now_dt, jrrp, extra_text='', name_tag=''):
+    """一次调用主模型出结果：同一次请求返回 {"coins": 整数, "text": "签到短句"}。
+
+    人设与后端均取自 OlivaAIAgent（人设 → prompt.system + prompt.group_persona，
+    后端 → config.json 的 backend 段）。任何失败都返回 None，由调用方回退本地文案。
+    text 允许为空：此时调用方只对文案做本地回退，灵币仍沿用模型给的值。"""
+    if not has_OlivaAIAgent:
         return None
     try:
         hour = now_dt.hour
         time_str = now_dt.strftime('%Y-%m-%d %H:%M')
-        prompts_content = _get_chatgpt_prompts_content(
-            user_id=_safe_str(plugin_event.data.user_id),
-            group_id=_safe_str(getattr(plugin_event.data, 'group_id', None)) if plugin_event.plugin_info['func_type'] == 'group_message' else None
-        )
-        base_system = ChatGPT.main.Event.build_base_system_prompt(prompts_content)
+        uid = _safe_str(plugin_event.data.user_id)
+        is_master = uid in MASTER_UIDS
+        who = SPECIAL_UIDS.get(uid, '')
+        group_id = _safe_str(getattr(plugin_event.data, 'group_id', None)) if plugin_event.plugin_info['func_type'] == 'group_message' else None
+        persona = _get_ai_persona_prompt(group_id=group_id)
+
         sys_prompt = (
-            base_system
-            + "你是签到奖励计算模块。请根据时间段决定 coins。\n"
-            + "要求：只输出 JSON，且仅包含 coins 一个字段。\n"
-            + "coins 必须是 10-30 的整数；早上 6-9 点更容易给高 coins。\n"
-            + "输出示例：{\"coins\": 10}"
+            (persona + "\n\n" if persona else "")
+            + "本次任务：一次给出签到结果，包含本次发放的灵币与一段签到回应短句。\n"
+            + "【灵币 coins】必须是 10-30 的整数；早上 6-9 点更容易给高数值。\n"
+            + "【签到=早安】签到就是早安的意思，是用户向你问候。\n"
+            + "【不同时间段的回应】\n"
+            + "- 早上6-9点：回复早安，温暖问候新的一天开始\n"
+            + "- 中午/下午（10-18点）：可以善意调侃起晚了（如太阳晒屁股了、睡到现在才醒之类）\n"
+            + "- 晚上19-23点：提醒今天才来打卡，也许该早点休息\n"
+            + "- 深夜/凌晨：关心为什么这么晚/这么早还醒着，提醒注意休息\n"
+            + "【回应风格】100字以内，以符合人设的自然口吻回复，就像朋友间的日常问候；不要提及你是AI。\n"
+            + "系统会单独展示灵币数量与今日人品，短句里不要重复输出 coins 数字。\n"
+            + "只输出 JSON，且仅包含 coins（整数）与 text（字符串）两个字段，不要输出任何其它内容。\n"
+            + "输出示例：{\"coins\": 20, \"text\": \"早安呀，今天也要好好过~\"}"
         )
         user_prompt = (
+            f"用户名称：{_safe_str(name_tag)}\n"
             f"当前时间：{time_str}（{hour}点）\n"
             f"今日人品：{jrrp}\n"
-            f"用户名称：{_safe_str(name_tag)}\n"
             f"用户补充：{_safe_str(extra_text).strip()}\n"
+            f"是否主人：{str(is_master)}\n"
+            f"特殊身份：{who}\n"
             "请输出 JSON。"
         )
         messages = [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_prompt}
         ]
-        ok, answer_text, reasoning_content, err = ChatGPT.main.Event.call_api_with_failover(
-            messages=messages,
-            prompts_content=prompts_content,
-            user_message=user_prompt,
-            user_id=_safe_str(plugin_event.data.user_id),
-            group_id=_safe_str(getattr(plugin_event.data, 'group_id', None)) if plugin_event.plugin_info['func_type'] == 'group_message' else None
-        )
+        # 一次调用拿全部结果，response_format={"type":"json_object"} 兜底
+        ok, answer_text = _call_ai(messages, response_json=True)
         if not ok or not answer_text:
             return None
         m = re.search(r'\{[\s\S]*\}', str(answer_text))
@@ -417,83 +491,12 @@ def _try_ai_coin_json(plugin_event, now_dt, jrrp, extra_text='', name_tag=''):
         if not isinstance(obj, dict):
             return None
         coins = int(obj.get('coins'))
-        if coins < 10 or coins > 30:
-            return None
-        return coins
-    except Exception:
-        return None
-
-
-def _try_ai_sign_text(plugin_event, now_dt, jrrp, coins, extra_text='', name_tag=''):
-    """第二阶段：生成签到短句（普通文本，≤200字，无 markdown）。"""
-    if not has_ChatGPT:
-        return None
-    try:
-        hour = now_dt.hour
-        time_str = now_dt.strftime('%Y-%m-%d %H:%M')
-        uid = _safe_str(plugin_event.data.user_id)
-        is_master = uid in MASTER_UIDS
-        who = SPECIAL_UIDS.get(uid, '')
-        prompts_content = _get_chatgpt_prompts_content(
-            user_id=uid,
-            group_id=_safe_str(getattr(plugin_event.data, 'group_id', None)) if plugin_event.plugin_info['func_type'] == 'group_message' else None
-        )
-        base_system = ChatGPT.main.Event.build_base_system_prompt(prompts_content)
-
-        sys_prompt = (
-            base_system
-            + "本次任务：生成一段签到回应短句（100字以内即可），不要输出JSON，不要提及你是AI。语句要完全按照人设。\n"
-            + "【签到=早安】签到就是早安的意思，是用户向你问候。\n"
-            + "【不同时间段的回应】\n"
-            + "- 早上6-9点：回复早安，温暖问候新的一天开始\n"
-            + "- 中午/下午（10-18点）：可以善意调侃起晚了（如太阳晒屁股了、睡到现在才醒之类）\n"
-            + "- 晚上19-23点：提醒今天才来打卡，也许该早点休息\n"
-            + "- 深夜/凌晨：关心为什么这么晚/这么早还醒着，提醒注意休息\n"
-            + "【回应风格】以符合人设的自然口吻回复，就像朋友间的日常问候。\n"
-            + "系统会单独展示灵币数量与今日人品，你的短句里不要重复输出 coins 数字。"
-        )
-        user_prompt = (
-            f"用户名称：{_safe_str(name_tag)}\n"
-            f"当前时间：{time_str}（{hour}点）\n"
-            f"今日人品：{jrrp}\n"
-            f"本次发放灵币：{coins}\n"
-            f"用户补充：{_safe_str(extra_text).strip()}\n"
-            f"是否主人：{str(is_master)}\n"
-            f"特殊身份：{who}\n"
-            "请按规则生成签到语句。"
-        )
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        ok, answer_text, reasoning_content, err = ChatGPT.main.Event.call_api_with_failover(
-            messages=messages,
-            prompts_content=prompts_content,
-            user_message=user_prompt,
-            user_id=uid,
-            group_id=_safe_str(getattr(plugin_event.data, 'group_id', None)) if plugin_event.plugin_info['func_type'] == 'group_message' else None
-        )
-        if not ok or not answer_text:
-            return None
-        final_text = _truncate_200(answer_text)
-        if not final_text:
-            return None
-        return final_text
-    except Exception:
-        return None
-
-
-def _try_ai_sign(plugin_event, now_dt, jrrp, extra_text='', name_tag=''):
-    """两阶段生成：先 coins JSON，再生成短句。"""
-    if not has_ChatGPT:
-        return None
-    try:
-        coins = _try_ai_coin_json(plugin_event, now_dt, jrrp, extra_text=extra_text, name_tag=name_tag)
-        if coins is None:
-            return None
-        text = _try_ai_sign_text(plugin_event, now_dt, jrrp, coins, extra_text=extra_text, name_tag=name_tag)
-        if not text:
-            return None
+        if coins < 10:
+            coins = 10
+        elif coins > 30:
+            coins = 30
+        # 短句可能为空/格式异常，_truncate_200 内部已做清洗，空串交由调用方回退
+        text = _truncate_200(obj.get('text', ''))
         return {'coins': coins, 'text': text}
     except Exception:
         return None
@@ -540,17 +543,24 @@ def _get_member_name_from_list(group_member_list, user_id):
 
 
 def _get_all_user_entries(bot_hash):
-    """返回 [(user_hash, data_dict)]，扫描所有用户数据。"""
+    """返回 [(user_hash, data_dict)]，扫描所有用户数据。
+    已被绑定进其它账号的 user_hash 不再单独列出，避免排行榜出现重复的同一个人。"""
     entries = []
     bot_dir = _get_bot_dir(bot_hash)
+    try:
+        bound_hashes = set(_load_binds(bot_hash).get('binds', {}).keys())
+    except Exception:
+        bound_hashes = set()
     try:
         for name in os.listdir(bot_dir):
             p = os.path.join(bot_dir, name)
             if os.path.isdir(p):
+                if name in bound_hashes:
+                    continue
                 # 结构：<user_hash>/user.json
                 user_file = os.path.join(p, 'user.json')
                 data = _load_json(user_file, default=None)
-                if isinstance(data, dict):
+                if isinstance(data, dict) and not data.get('merged_into'):
                     entries.append((name, data))
     except Exception:
         pass
@@ -789,6 +799,157 @@ def unity_reply(plugin_event, Proc):
         if not flag_groupEnable and not flag_force_reply:
             return
         '''到这里为止，前面的都不动，后面进行你写的命令处理，以下则为.testcommand为例子，可以按照这里进行对应修改。'''
+        # ====== FroniaSign: QQ 号绑定 / 解绑 ======
+        if isMatchWordStart(tmp_reast_str, ['qdbind', 'qd绑定', '绑定qq'], isCommand=True):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['qdbind', 'qd绑定', '绑定qq'])
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
+            tmp_reast_str = tmp_reast_str.rstrip(' ')
+
+            target_qq = _extract_target_qq(tmp_reast_str)
+            dictTValue['tQdTargetQq'] = target_qq or _safe_str(tmp_reast_str).strip()
+            if not target_qq:
+                tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strQdUsage'], dictTValue)
+                if tmp_reply_str is not None:
+                    replyMsg(plugin_event, tmp_reply_str)
+                return
+
+            bot_hash = _get_bot_hash(plugin_event)
+            self_qq = _safe_str(plugin_event.data.user_id)
+            # 目标是 QQ 号 → 固定按 OneBot 平台算 hash，避免在 qqGuildv2 会话里绑错账号
+            target_hash = _calc_user_hash_by_user_id(target_qq, QQ_ONEBOT_PLATFORM)
+
+            binds_data = _load_binds(bot_hash)
+            binds = binds_data.get('binds', {})
+            root_hash = _resolve_account_hash(bot_hash, _get_user_hash(plugin_event), binds)
+
+            if target_hash == root_hash or target_hash == self_qq:
+                key = 'strQdBindSelf'
+            elif target_hash in binds:
+                # 唯一性：被绑定过的 QQ 号不能再次绑定
+                key = 'strQdBindDup'
+            elif any(
+                isinstance(_rec, dict) and _safe_str(_rec.get('owner', '')) == target_hash
+                for _rec in binds.values()
+            ):
+                key = 'strQdBindOwner'
+            else:
+                # 合并：把被绑账号的灵币与身份并进归属账号
+                owner_data = _load_user_data(bot_hash, root_hash, self_qq)
+                target_data = _load_user_data(bot_hash, target_hash, target_qq)
+                delta = int(target_data.get('anima_coin', 0) or 0)
+                owner_data['anima_coin'] = int(owner_data.get('anima_coin', 0) or 0) + delta
+                for _uid in (target_data.get('user_ids', []) or []):
+                    _uid = _safe_str(_uid)
+                    if _uid and _uid not in owner_data['user_ids']:
+                        owner_data['user_ids'].append(_uid)
+                if target_qq and target_qq not in owner_data['user_ids']:
+                    owner_data['user_ids'].append(target_qq)
+                for _gid in (target_data.get('groups', []) or []):
+                    _gid = _safe_str(_gid)
+                    if _gid and _gid not in owner_data['groups']:
+                        owner_data['groups'].append(_gid)
+                _touch_user_identity(owner_data, plugin_event)
+                if flag_is_from_group:
+                    _touch_user_group(owner_data, _safe_str(plugin_event.data.group_id))
+                _save_user_data(bot_hash, root_hash, owner_data)
+
+                # 被绑账号清空并打上归属标记（数据已并入归属账号，不再单独计榜）
+                # 保留昵称等身份字段，便于将来解绑后排行榜仍能显示昵称
+                merged_target = {
+                    'anima_coin': 0,
+                    'groups': list(target_data.get('groups', []) or []),
+                    'user_ids': list(target_data.get('user_ids', []) or []),
+                    'merged_into': root_hash,
+                    'merged_at': int(time.time()),
+                }
+                if _safe_str(target_data.get('last_user_id', '')):
+                    merged_target['last_user_id'] = _safe_str(target_data.get('last_user_id', ''))
+                if _safe_str(target_data.get('last_name', '')):
+                    merged_target['last_name'] = _safe_str(target_data.get('last_name', ''))
+                if target_qq and target_qq not in merged_target['user_ids']:
+                    merged_target['user_ids'].append(target_qq)
+                _save_user_data(bot_hash, target_hash, merged_target)
+                binds[target_hash] = {
+                    'owner': root_hash,
+                    'qq': target_qq,
+                    'owner_qq': self_qq,
+                    'bound_at': int(time.time()),
+                    # 并入时的灵币数额：解绑时按此额从归属账号扣回、退还给被解绑号
+                    'merged_coin': delta,
+                }
+                binds_data['binds'] = binds
+                _save_binds(bot_hash, binds_data)
+
+                dictTValue['tQdDelta'] = str(delta)
+                dictTValue['tCoinTotal'] = str(int(owner_data.get('anima_coin', 0) or 0))
+                key = 'strQdBindOk'
+
+            tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom[key], dictTValue)
+            if tmp_reply_str is not None:
+                replyMsg(plugin_event, tmp_reply_str)
+            return
+
+        if isMatchWordStart(tmp_reast_str, ['qdunbind', 'qd解绑', '解绑qq'], isCommand=True):
+            tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['qdunbind', 'qd解绑', '解绑qq'])
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
+            tmp_reast_str = tmp_reast_str.rstrip(' ')
+
+            target_qq = _extract_target_qq(tmp_reast_str)
+            dictTValue['tQdTargetQq'] = target_qq or _safe_str(tmp_reast_str).strip()
+            if not target_qq:
+                tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strQdUsage'], dictTValue)
+                if tmp_reply_str is not None:
+                    replyMsg(plugin_event, tmp_reply_str)
+                return
+
+            bot_hash = _get_bot_hash(plugin_event)
+            self_qq = _safe_str(plugin_event.data.user_id)
+            # 目标是 QQ 号 → 固定按 OneBot 平台算 hash，避免在 qqGuildv2 会话里绑错账号
+            target_hash = _calc_user_hash_by_user_id(target_qq, QQ_ONEBOT_PLATFORM)
+
+            binds_data = _load_binds(bot_hash)
+            binds = binds_data.get('binds', {})
+            rec = binds.get(target_hash)
+
+            if not isinstance(rec, dict):
+                key = 'strQdUnbindNone'
+            else:
+                root_hash = _resolve_account_hash(bot_hash, _get_user_hash(plugin_event), binds)
+                is_master_user = bool(flag_is_from_master) or (self_qq in MASTER_UIDS)
+                if _safe_str(rec.get('owner', '')) != root_hash and not is_master_user:
+                    key = 'strQdUnbindDeny'
+                else:
+                    owner_hash = _safe_str(rec.get('owner', ''))
+                    merged_coin = int(rec.get('merged_coin', 0) or 0)
+
+                    # 反向拆账：从归属账号扣回当初并入的等额灵币，退还给被解绑号
+                    # （未记录并入额的历史数据 merged_coin=0，退 0，行为同旧版；余额不足时按实际余额退）
+                    refund = 0
+                    if owner_hash and merged_coin > 0:
+                        owner_data = _load_user_data(bot_hash, owner_hash, '')
+                        owner_coin = int(owner_data.get('anima_coin', 0) or 0)
+                        refund = merged_coin if owner_coin >= merged_coin else max(owner_coin, 0)
+                        owner_data['anima_coin'] = owner_coin - refund
+                        _save_user_data(bot_hash, owner_hash, owner_data)
+
+                    binds.pop(target_hash, None)
+                    binds_data['binds'] = binds
+                    _save_binds(bot_hash, binds_data)
+
+                    target_data = _load_user_data(bot_hash, target_hash, target_qq)
+                    target_data.pop('merged_into', None)
+                    target_data.pop('merged_at', None)
+                    target_data['anima_coin'] = refund
+                    _save_user_data(bot_hash, target_hash, target_data)
+
+                    dictTValue['tQdRefund'] = str(refund)
+                    key = 'strQdUnbindOk'
+
+            tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom[key], dictTValue)
+            if tmp_reply_str is not None:
+                replyMsg(plugin_event, tmp_reply_str)
+            return
+
         # ====== FroniaSign: 签到/灵币/排行 ======
         if isMatchWordStart(tmp_reast_str, ['签到', '打卡', 'sign', '早安', '早'], isCommand=True):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['签到', '打卡', 'sign', '早安', '早'])
@@ -798,7 +959,8 @@ def unity_reply(plugin_event, Proc):
             extra_text = tmp_reast_str
 
             bot_hash = _get_bot_hash(plugin_event)
-            user_hash = _get_user_hash(plugin_event)
+            # 若当前 QQ 号已被绑定，签到记账落在归属账号上
+            user_hash = _resolve_account_hash(bot_hash, _get_user_hash(plugin_event))
             group_id = None
             if flag_is_from_group:
                 group_id = _safe_str(plugin_event.data.group_id)
@@ -856,13 +1018,17 @@ def unity_reply(plugin_event, Proc):
                 replyMsg(plugin_event, tmp_reply_str)
             return
 
-        if isMatchWordStart(tmp_reast_str, ['查询灵币', '灵币查询', 'coin'], isCommand=True):
+        # 注意：'灵币' 是 '灵币排行'/'灵币总榜' 的前缀，必须排除这两类，否则会被本分支抢先匹配
+        if (
+            not isMatchWordStart(tmp_reast_str, ['灵币排行', '灵币总榜'], isCommand=True)
+            and isMatchWordStart(tmp_reast_str, ['查询灵币', '灵币查询', '灵币', 'coin'], isCommand=True)
+        ):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['灵币查询', '灵币', 'coin'])
             tmp_reast_str = skipSpaceStart(tmp_reast_str)
             tmp_reast_str = tmp_reast_str.rstrip(' ')
 
             bot_hash = _get_bot_hash(plugin_event)
-            user_hash = _get_user_hash(plugin_event)
+            user_hash = _resolve_account_hash(bot_hash, _get_user_hash(plugin_event))
             data = _load_user_data(bot_hash, user_hash, plugin_event.data.user_id)
             _touch_user_identity(data, plugin_event)
             if flag_is_from_group:
@@ -881,7 +1047,7 @@ def unity_reply(plugin_event, Proc):
             tmp_reast_str = tmp_reast_str.rstrip(' ')
 
             bot_hash = _get_bot_hash(plugin_event)
-            user_hash = _get_user_hash(plugin_event)
+            user_hash = _resolve_account_hash(bot_hash, _get_user_hash(plugin_event))
             self_data = _load_user_data(bot_hash, user_hash, plugin_event.data.user_id)
             _touch_user_identity(self_data, plugin_event)
             if flag_is_from_group:
@@ -921,7 +1087,7 @@ def unity_reply(plugin_event, Proc):
 
             bot_hash = _get_bot_hash(plugin_event)
             group_id = _safe_str(plugin_event.data.group_id)
-            user_hash = _get_user_hash(plugin_event)
+            user_hash = _resolve_account_hash(bot_hash, _get_user_hash(plugin_event))
             self_data = _load_user_data(bot_hash, user_hash, plugin_event.data.user_id)
             _touch_user_identity(self_data, plugin_event)
 
