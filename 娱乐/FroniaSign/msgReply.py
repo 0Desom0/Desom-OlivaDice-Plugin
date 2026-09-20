@@ -279,13 +279,22 @@ def _get_ai_persona_prompt(group_id=None):
 
 
 def _ai_backend_ready():
-    """OlivaAIAgent 是否已配置可用后端（api_url / api_key 至少有一个）。"""
+    """OlivaAIAgent 是否已配置可用后端（api_url / api_key 至少有一个）。
+
+    语义要点：只有「明确知道没配好」才返回 False。
+    - 装了 OlivaAIAgent 且 getChatBackend() 返回 None → False（确定未配置）
+    - 旧版 OlivaAIAgent 没有 getChatBackend 接口 / 读取异常 → True（不做预判，交给实际调用判定）
+      否则一旦运行时装的是旧版包，这里会把签到 AI 静默一刀切掉，反而比不判断更糟。
+    """
     if not has_OlivaAIAgent:
         return False
+    get_chat_backend = getattr(getattr(OlivaAIAgent, 'conf', None), 'getChatBackend', None)
+    if get_chat_backend is None:
+        return True
     try:
-        return OlivaAIAgent.conf.getChatBackend() is not None
+        return get_chat_backend() is not None
     except Exception:
-        return False
+        return True
 
 
 def _call_ai(messages, response_json=False, timeout=60):

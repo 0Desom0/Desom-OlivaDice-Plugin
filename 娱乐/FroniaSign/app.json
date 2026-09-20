@@ -4,8 +4,8 @@
     "namespace" : "FroniaSign",
     "message_mode" : "old_string",
     "info" : "FroniaSign，小芙签到插件（AI 人设与模型走 OlivaAIAgent）",
-    "version" : "1.0.6",
-    "svn" : 7,
+    "version" : "1.0.7",
+    "svn" : 8,
     "compatible_svn" : 190,
     "priority" : 19990,
     "support" : [

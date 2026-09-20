@@ -486,6 +486,27 @@ check('短路条件与 _ai_backend_ready 一致', mrB._ai_backend_ready() is Fal
 _FakeConf.BACKEND = _saved_backend
 check('恢复后端配置后 _ai_backend_ready 恢复', mrB._ai_backend_ready() is True)
 
+# 旧版 OlivaAIAgent（conf 没有 getChatBackend 接口）→ 不预判，仍走实际调用
+class _LegacyConf:
+    @staticmethod
+    def getPersonaPrompt(group_id=None):
+        return '【旧版人设】'
+
+
+_saved_conf = fake_aia.conf
+_saved_client = fake_aia.aiClient
+fake_aia.conf = _LegacyConf
+fake_aia.aiClient = _FakeAiClient
+mrF = load_msgreply('F')
+CALLS.clear()
+CALL_KW.clear()
+check('旧版缺 getChatBackend 时不做预判（返回 True）', mrF._ai_backend_ready() is True)
+_r = say(mrF, 2006, '.签到')
+check('旧版包下签到仍实际调用模型', len(CALLS) == 1, '调用次数=%d' % len(CALLS))
+check('旧版包下签到仍拿到模型结果', '早安呀' in _r, _r.replace('\n', ' / ')[:90])
+fake_aia.conf = _saved_conf
+fake_aia.aiClient = _saved_client
+
 CALLS.clear()
 CALL_KW.clear()
 r = say(mrB, 2002, '.签到 今天很困')
