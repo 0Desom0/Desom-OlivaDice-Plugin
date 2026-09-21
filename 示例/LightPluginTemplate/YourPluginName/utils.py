@@ -1375,7 +1375,7 @@ def load_webui_assets() -> None:
     global _webui_assets
     if _webui_assets:
         return
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'webui')
+    root = os.path.join(_webui_root(Proc), 'webui')
     if not os.path.isdir(root):
         return
     for dir_path, _, file_names in os.walk(root):
@@ -1387,6 +1387,25 @@ def load_webui_assets() -> None:
                     _webui_assets[key] = handle.read()
             except OSError:
                 continue
+
+
+def _webui_root(Proc=None):
+    """优先使用宿主注册的 webui_root，它与 /plugin/<namespace>/ 路由同源。
+
+    .opk 插件的解包目录可能被宿主清理或改名，此时只有宿主记录的路径是权威的；
+    取不到时才退回本模块所在目录（文件夹模式）。
+    """
+    fallback = os.path.dirname(os.path.abspath(__file__))
+    if Proc is None:
+        return fallback
+    models = getattr(Proc, 'plugin_models_dict', None)
+    if not isinstance(models, dict):
+        return fallback
+    info = models.get(__name__.split('.')[0])
+    root = info.get('webui_root') if isinstance(info, dict) else None
+    if isinstance(root, str) and root and os.path.isdir(root):
+        return os.path.abspath(root)
+    return fallback
 
 
 def ensure_webui_assets(Proc=None) -> None:

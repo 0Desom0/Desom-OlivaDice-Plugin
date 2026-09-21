@@ -390,6 +390,25 @@ def load_webui_assets() -> None:
                 continue
 
 
+def _webui_root(Proc=None):
+    """优先使用宿主注册的 webui_root，它与 /plugin/<namespace>/ 路由同源。
+
+    .opk 插件的解包目录可能被宿主清理或改名，此时只有宿主记录的路径是权威的；
+    取不到时才退回本模块所在目录（文件夹模式）。
+    """
+    fallback = os.path.dirname(os.path.abspath(__file__))
+    if Proc is None:
+        return fallback
+    models = getattr(Proc, 'plugin_models_dict', None)
+    if not isinstance(models, dict):
+        return fallback
+    info = models.get(__name__.split('.')[0])
+    root = info.get('webui_root') if isinstance(info, dict) else None
+    if isinstance(root, str) and root and os.path.isdir(root):
+        return os.path.abspath(root)
+    return fallback
+
+
 def ensure_webui_assets(Proc=None) -> None:
     """WebUI 资源兜底：解包目录被宿主清理后，把缺失文件从内存快照写回。
 
@@ -397,7 +416,7 @@ def ensure_webui_assets(Proc=None) -> None:
     不要用文件锁阻止宿主清理 —— 那会让宿主的目录清理中途失败、留下残缺目录，
     反而导致页面 404。
     """
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'webui')
+    root = os.path.join(_webui_root(Proc), 'webui')
     restored = 0
     try:
         for key, content in list(_webui_assets.items()):
