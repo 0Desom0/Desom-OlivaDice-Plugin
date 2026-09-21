@@ -28,6 +28,7 @@ class Event(object):
         这里的事件时机是在所有插件都完成init后，适合做一些依赖其他插件的初始化。
         由于初始化没涉及到其他插件，所以pass掉。
         """
+        utils.ensure_webui_assets(Proc)
         message.handle_init_after(plugin_event, Proc)
 
     def private_message(plugin_event, Proc):

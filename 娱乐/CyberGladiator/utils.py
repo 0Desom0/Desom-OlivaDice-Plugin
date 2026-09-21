@@ -670,68 +670,57 @@ def initialize_bot_storage(bot_hash: Any, bot_id: Any = '') -> Dict[str, Any]:
     }
 
 
-_cached_webui_assets = {}
-_webui_lock_handles = []
+# WebUI 静态资源的内存快照：OPK 插件由宿主解包到 plugin/tmp 下，该目录随时可能被
+# 宿主清理，只有模块导入这一刻能保证文件还在，所以在这里把 webui/ 整体读进内存。
+_webui_assets = {}
+
+
+def load_webui_assets() -> None:
+    """模块导入时调用：把 webui/ 下的静态资源读进内存。"""
+    global _webui_assets
+    if _webui_assets:
+        return
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'webui')
+    if not os.path.isdir(root):
+        return
+    for dir_path, _, file_names in os.walk(root):
+        for file_name in file_names:
+            full_path = os.path.join(dir_path, file_name)
+            key = os.path.relpath(full_path, root).replace(os.sep, '/')
+            try:
+                with open(full_path, 'rb') as handle:
+                    _webui_assets[key] = handle.read()
+            except OSError:
+                continue
 
 
 def ensure_webui_assets(Proc=None) -> None:
-    """确保 WebUI 静态资源在各种部署模式（目录/OPK）下始终存在，防止 OlivOS 清理 tmp 造成 404。"""
-    global _cached_webui_assets, _webui_lock_handles
+    """WebUI 资源兜底：解包目录被宿主清理后，把缺失文件从内存快照写回。
+
+    宿主已为 /plugin/<namespace>/ 注册好 webui_root，这里只补文件、不改路径。
+    不要用文件锁阻止宿主清理 —— 那会让宿主的目录清理中途失败、留下残缺目录，
+    反而导致页面 404。
+    """
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'webui')
+    restored = 0
     try:
-        plugin_dir = os.path.dirname(os.path.abspath(__file__))
-        webui_dir = os.path.join(plugin_dir, 'webui')
-        index_path = os.path.join(webui_dir, 'index.html')
-
-        # 1. 优先将磁盘上现存的 index.html 载入内存缓存
-        if os.path.isfile(index_path):
-            if 'index.html' not in _cached_webui_assets:
-                with open(index_path, 'rb') as f:
-                    _cached_webui_assets['index.html'] = f.read()
-        # 2. 若磁盘文件已被清理（如 OlivOS 删除 plugin/tmp 缓存），从内存缓存还原
-        elif 'index.html' in _cached_webui_assets:
-            os.makedirs(webui_dir, exist_ok=True)
-            with open(index_path, 'wb') as f:
-                f.write(_cached_webui_assets['index.html'])
-        # 3. 若内存缓存未命中，尝试从上层可能的 .opk 包中直接解压恢复
-        else:
-            namespace = getattr(config, 'plugin_name', 'CyberGladiator')
-            candidate_dirs = [
-                os.path.abspath(os.path.join(plugin_dir, '..', '..', 'plugin', 'app')),
-                os.path.abspath(os.path.join(plugin_dir, '..', '..', 'plugin')),
-                os.path.abspath(os.path.join(plugin_dir, '..')),
-                plugin_dir,
-            ]
-            for c_dir in candidate_dirs:
-                c_opk = os.path.join(c_dir, f'{namespace}.opk')
-                if os.path.isfile(c_opk):
-                    try:
-                        import zipfile
-                        with zipfile.ZipFile(c_opk, 'r') as zf:
-                            for name in zf.namelist():
-                                if name.startswith('webui/') and not name.endswith('/'):
-                                    target_file = os.path.join(plugin_dir, name)
-                                    os.makedirs(os.path.dirname(target_file), exist_ok=True)
-                                    with zf.open(name) as src, open(target_file, 'wb') as dst:
-                                        content = src.read()
-                                        dst.write(content)
-                                        if name == 'webui/index.html':
-                                            _cached_webui_assets['index.html'] = content
-                    except Exception:
-                        pass
-                    break
-
-        # 4. 在 Windows 环境下，若运行于 tmp 临时目录，打开只读句柄锁定文件，
-        #    阻止 OlivOS 在 load_plugin_list 末尾的 removeDir 删除该目录
-        is_in_tmp = ('plugin' in plugin_dir.lower() and 'tmp' in plugin_dir.lower())
-        if is_in_tmp and os.name == 'nt' and os.path.isfile(index_path):
-            if not _webui_lock_handles:
-                try:
-                    _webui_lock_handles.append(open(index_path, 'rb'))
-                except Exception:
-                    pass
-    except Exception as e:
+        for key, content in list(_webui_assets.items()):
+            target = os.path.join(root, *key.split('/'))
+            if os.path.isfile(target):
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, 'wb') as handle:
+                handle.write(content)
+            restored += 1
+    except OSError as error:
         if Proc is not None:
-            debug_log(Proc, f'WebUI 资源保活异常: {e}')
+            Proc.log(4, 'WebUI 资源兜底失败: %s' % error)
+        return
+    if restored and Proc is not None:
+        Proc.log(2, 'WebUI 资源已从内存快照恢复 %d 个文件' % restored)
+
+
+load_webui_assets()
 
 
 def initialize_plugin(Proc) -> None:

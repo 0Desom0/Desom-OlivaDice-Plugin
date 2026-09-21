@@ -355,3 +355,56 @@ def handle_menu_event(plugin_event, Proc=None) -> None:
         plugin_event.send('webui', request_id, response)
     except Exception as error:
         OlivaAIAgent.conf.log(Proc, 3, f'WebUI 回包失败：{type(error).__name__}: {error}')
+
+
+# WebUI 静态资源的内存快照：OPK 插件由宿主解包到 plugin/tmp 下，该目录随时可能被宿主
+# 清理；只有模块导入这一刻能保证文件还在，而本模块会被 __init__.py 导入，所以在这里
+# 把 webui/ 整体读进内存。
+_webui_assets = {}
+
+
+def loadWebuiAssets():
+    """模块导入时调用：把 webui/ 下的静态资源读进内存。"""
+    global _webui_assets
+    if _webui_assets:
+        return
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'webui')
+    if not os.path.isdir(root):
+        return
+    for dir_path, _, file_names in os.walk(root):
+        for file_name in file_names:
+            full_path = os.path.join(dir_path, file_name)
+            key = os.path.relpath(full_path, root).replace(os.sep, '/')
+            try:
+                with open(full_path, 'rb') as handle:
+                    _webui_assets[key] = handle.read()
+            except OSError:
+                continue
+
+
+def ensureWebuiAssets(Proc=None):
+    """WebUI 资源兜底：解包目录被宿主清理后，把缺失文件从内存快照写回。
+
+    宿主已为 /plugin/<namespace>/ 注册好 webui_root，这里只补文件、不改路径。
+    不要用文件锁阻止宿主清理 —— 那会让宿主的目录清理中途失败、留下残缺目录，
+    反而导致页面 404。
+    """
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'webui')
+    restored = 0
+    try:
+        for key, content in list(_webui_assets.items()):
+            target = os.path.join(root, *key.split('/'))
+            if os.path.isfile(target):
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, 'wb') as handle:
+                handle.write(content)
+            restored += 1
+    except OSError as error:
+        OlivaAIAgent.conf.log(Proc, 4, 'WebUI 资源兜底失败: %s' % error)
+        return
+    if restored:
+        OlivaAIAgent.conf.log(Proc, 2, 'WebUI 资源已从内存快照恢复 %d 个文件' % restored)
+
+
+loadWebuiAssets()
