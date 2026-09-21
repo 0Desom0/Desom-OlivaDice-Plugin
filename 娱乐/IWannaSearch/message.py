@@ -19,6 +19,85 @@ selection_session_dict: Dict[str, Dict[str, Any]] = {}
 number_pattern = re.compile(r'^\d+$')
 random_tag_pattern = re.compile(r'--tag=(.*)')
 
+FLAG_KEY_MAP = {
+    'tag': 'tag',
+    'tags': 'tag',
+    'tag_not': 'tag_not',
+    'tags_not': 'tag_not',
+    'not_tag': 'tag_not',
+    'not_tags': 'tag_not',
+    'engine': 'engine',
+    'engines': 'engine',
+    'engine_not': 'engine_not',
+    'engines_not': 'engine_not',
+    'not_engine': 'engine_not',
+    'not_engines': 'engine_not',
+    'year': 'year',
+    'date_from': 'date_from',
+    'date_to': 'date_to',
+    'from_date': 'date_from',
+    'to_date': 'date_to',
+    'source': 'source',
+    'sources': 'source',
+    'source_not': 'source_not',
+    'sources_not': 'source_not',
+    'not_source': 'source_not',
+    'not_sources': 'source_not',
+}
+
+
+def parse_filter_flags(argument_text: str):
+    """从命令参数中提取过滤器（tag, engine, date, source 等）并返回清洗后的文本和过滤器字典。"""
+    raw = utils.safe_str(argument_text).strip()
+    if not raw:
+        return '', {}
+
+    try:
+        import shlex
+        tokens = shlex.split(raw)
+    except Exception:
+        tokens = raw.split()
+
+    filters: Dict[str, Any] = {}
+    remaining_tokens: List[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        flag_match = re.match(r'^(?:--|-|—+)([a-zA-Z0-9_\-]+)(?:=(.*))?$', token)
+        if flag_match:
+            raw_flag = flag_match.group(1).lower().replace('-', '_')
+            normalized_key = FLAG_KEY_MAP.get(raw_flag)
+            inline_val = flag_match.group(2)
+            if normalized_key:
+                val = ''
+                if inline_val is not None:
+                    val = inline_val.strip('\"\'')
+                    index += 1
+                elif index + 1 < len(tokens) and not re.match(r'^(?:--|-|—+)', tokens[index + 1]):
+                    val = tokens[index + 1].strip('\"\'')
+                    index += 2
+                else:
+                    val = 'true'
+                    index += 1
+
+                if normalized_key in {'tag', 'tag_not'}:
+                    if normalized_key in filters:
+                        existing = filters[normalized_key]
+                        if isinstance(existing, list):
+                            existing.append(val)
+                        else:
+                            filters[normalized_key] = [existing, val]
+                    else:
+                        filters[normalized_key] = val
+                else:
+                    filters[normalized_key] = val
+                continue
+        remaining_tokens.append(token)
+        index += 1
+
+    clean_text = ' '.join(remaining_tokens).strip()
+    return clean_text, filters
+
 
 def handle_init(plugin_event, Proc) -> None:
     utils.ensure_runtime_storage_by_event(plugin_event, Proc)
@@ -749,35 +828,47 @@ def handle_iw_download(plugin_event, query_text: str, Proc=None) -> None:
 
 
 def handle_iw_search(plugin_event, query_text: str) -> None:
-    game_name = utils.safe_str(query_text).strip()
-    if not game_name:
+    clean_query, filters = parse_filter_flags(query_text)
+    if clean_query:
+        filters['q'] = clean_query
+
+    if not filters:
         utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_empty_query'))
         return
+
     runtime_config = get_api_runtime_config()
-    payload = function.search_by_name(game_name, runtime_config['base_url'], runtime_config['timeout_seconds'])
+    payload = function.search_catalog(filters, runtime_config['base_url'], runtime_config['timeout_seconds'])
     reply_search_payload(plugin_event, payload)
 
 
 def parse_random_argument(argument_text: str) -> Dict[str, Any]:
-    source_text = utils.safe_str(argument_text).strip()
-    tag_text = ''
-    tag_match = random_tag_pattern.search(source_text)
-    if tag_match:
-        tag_text = utils.safe_str(tag_match.group(1)).strip()
-        source_text = f'{source_text[:tag_match.start()]} {source_text[tag_match.end():]}'.strip()
+    clean_text, filters = parse_filter_flags(argument_text)
+    count_val = 1
+    error_key = ''
+    if clean_text:
+        tokens = clean_text.split()
+        first_token = tokens[0]
+        if number_pattern.fullmatch(first_token):
+            count_num = int(first_token)
+            if count_num < 1:
+                error_key = 'reply_random_count_invalid'
+            elif count_num > 10:
+                error_key = 'reply_random_count_too_large'
+            else:
+                count_val = count_num
+            remaining_query = ' '.join(tokens[1:]).strip()
+            if remaining_query and 'q' not in filters:
+                filters['q'] = remaining_query
+        else:
+            if 'q' not in filters:
+                filters['q'] = clean_text
 
-    count_text = source_text.strip()
-    if not count_text:
-        return {'ok': True, 'count': 1, 'tag': tag_text, 'error_key': ''}
-    if not number_pattern.match(count_text):
-        return {'ok': False, 'count': 1, 'tag': tag_text, 'error_key': 'reply_random_count_invalid'}
-
-    count = int(count_text)
-    if count < 1:
-        return {'ok': False, 'count': 1, 'tag': tag_text, 'error_key': 'reply_random_count_invalid'}
-    if count > 10:
-        return {'ok': False, 'count': 10, 'tag': tag_text, 'error_key': 'reply_random_count_too_large'}
-    return {'ok': True, 'count': count, 'tag': tag_text, 'error_key': ''}
+    return {
+        'ok': not error_key,
+        'count': count_val,
+        'filters': filters,
+        'error_key': error_key,
+    }
 
 
 def reply_random_payload(plugin_event, payload: Dict[str, Any], requested_count: int) -> None:
@@ -808,12 +899,154 @@ def handle_iw_random(plugin_event, argument_text: str) -> None:
 
     runtime_config = get_api_runtime_config()
     payload = function.random_games(
-        random_argument['count'],
-        random_argument['tag'],
-        runtime_config['base_url'],
-        runtime_config['timeout_seconds'],
+        count=random_argument['count'],
+        base_url=runtime_config['base_url'],
+        timeout_seconds=runtime_config['timeout_seconds'],
+        **random_argument['filters'],
     )
     reply_random_payload(plugin_event, payload, random_argument['count'])
+
+
+def handle_iw_year(plugin_event, command_argument: str) -> None:
+    clean_text, filters = parse_filter_flags(command_argument)
+    tokens = clean_text.split()
+    if not tokens and 'year' not in filters and 'date_from' not in filters:
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_year_empty'))
+        return
+
+    if tokens:
+        year_token = tokens[0]
+        if not re.fullmatch(r'\d{4}', year_token):
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_year_invalid'))
+            return
+        filters['year'] = year_token
+        sub_query = ' '.join(tokens[1:]).strip()
+        if sub_query:
+            filters['q'] = sub_query
+
+    runtime_config = get_api_runtime_config()
+    payload = function.search_catalog(filters, runtime_config['base_url'], runtime_config['timeout_seconds'])
+    reply_search_payload(plugin_event, payload)
+
+
+def handle_iw_tag(plugin_event, command_argument: str) -> None:
+    clean_text, filters = parse_filter_flags(command_argument)
+    tag_name = clean_text.strip()
+    runtime_config = get_api_runtime_config()
+    if tag_name:
+        filters['tag'] = tag_name
+        payload = function.search_catalog(filters, runtime_config['base_url'], runtime_config['timeout_seconds'])
+        reply_search_payload(plugin_event, payload)
+        return
+
+    data = function.fetch_tags(runtime_config['base_url'], runtime_config['timeout_seconds'], **filters)
+    if not data.get('ok', False):
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_api_error', extra_value_dict=data))
+        return
+
+    tags = data.get('tags', [])
+    top_tags = tags[:25]
+    tag_items = '\n'.join(
+        f'{idx + 1}. {t.get("tag")} ({t.get("count")}部)' for idx, t in enumerate(top_tags)
+    ) or '暂无标签数据'
+    utils.reply_message(
+        plugin_event,
+        render_custom_message(
+            plugin_event,
+            'reply_tag_list',
+            extra_value_dict={'count': data.get('count', len(tags)), 'tag_items': tag_items},
+        ),
+    )
+
+
+def handle_iw_engine(plugin_event, command_argument: str) -> None:
+    clean_text, filters = parse_filter_flags(command_argument)
+    engine_name = clean_text.strip()
+    runtime_config = get_api_runtime_config()
+    if engine_name:
+        filters['engine'] = engine_name
+        payload = function.search_catalog(filters, runtime_config['base_url'], runtime_config['timeout_seconds'])
+        reply_search_payload(plugin_event, payload)
+        return
+
+    data = function.fetch_engines(runtime_config['base_url'], runtime_config['timeout_seconds'], **filters)
+    if not data.get('ok', False):
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_api_error', extra_value_dict=data))
+        return
+
+    engines = data.get('engines', [])
+    engine_items = '\n'.join(
+        f'{idx + 1}. {e.get("engine")} ({e.get("count")}部)' for idx, e in enumerate(engines)
+    ) or '暂无引擎数据'
+    utils.reply_message(
+        plugin_event,
+        render_custom_message(
+            plugin_event,
+            'reply_engine_list',
+            extra_value_dict={'count': data.get('count', len(engines)), 'engine_items': engine_items},
+        ),
+    )
+
+
+def handle_iw_date(plugin_event, command_argument: str) -> None:
+    _clean_text, filters = parse_filter_flags(command_argument)
+    runtime_config = get_api_runtime_config()
+    data = function.fetch_release_dates(runtime_config['base_url'], runtime_config['timeout_seconds'], **filters)
+    if not data.get('ok', False):
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_api_error', extra_value_dict=data))
+        return
+
+    by_year = data.get('by_year', [])
+    recent_years = by_year[-6:] if len(by_year) > 6 else by_year
+    year_items = '\n'.join(
+        f'· {y.get("year")} 年：{y.get("count")} 部' for y in reversed(recent_years)
+    ) or '暂无年度分布'
+    utils.reply_message(
+        plugin_event,
+        render_custom_message(
+            plugin_event,
+            'reply_date_summary',
+            extra_value_dict={
+                'dated': data.get('dated', 0),
+                'undated': data.get('undated', 0),
+                'earliest': data.get('earliest', '暂无'),
+                'latest': data.get('latest', '暂无'),
+                'year_items': year_items,
+            },
+        ),
+    )
+
+
+def handle_iw_catalog(plugin_event, command_argument: str) -> None:
+    _clean_text, filters = parse_filter_flags(command_argument)
+    runtime_config = get_api_runtime_config()
+    catalog_data = function.fetch_catalog_all(
+        runtime_config['base_url'],
+        runtime_config['timeout_seconds'],
+        limit=1,
+        **filters,
+    )
+    if not catalog_data.get('ok', False):
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_api_error', extra_value_dict=catalog_data))
+        return
+
+    date_data = function.fetch_release_dates(runtime_config['base_url'], runtime_config['timeout_seconds'])
+    engine_data = function.fetch_engines(runtime_config['base_url'], runtime_config['timeout_seconds'])
+    tag_data = function.fetch_tags(runtime_config['base_url'], runtime_config['timeout_seconds'])
+
+    utils.reply_message(
+        plugin_event,
+        render_custom_message(
+            plugin_event,
+            'reply_catalog_summary',
+            extra_value_dict={
+                'catalog_size': catalog_data.get('catalog_size', catalog_data.get('total', 0)),
+                'dated': date_data.get('dated', 0),
+                'engine_count': engine_data.get('count', 0),
+                'tag_count': tag_data.get('count', 0),
+            },
+        ),
+    )
 
 
 def load_today_cache(plugin_event) -> Dict[str, Any]:
@@ -1026,6 +1259,56 @@ def parse_iw_command(plugin_event, remaining_text: str, Proc=None) -> None:
     )
     if id_info['is_command']:
         handle_iw_id(plugin_event, id_info['command_argument'])
+        return
+
+    year_info = utils.parse_command(
+        command_argument,
+        prefix_list=[],
+        allow_no_prefix=True,
+        command_name=['year', '年份'],
+    )
+    if year_info['is_command']:
+        handle_iw_year(plugin_event, year_info['command_argument'])
+        return
+
+    tag_info = utils.parse_command(
+        command_argument,
+        prefix_list=[],
+        allow_no_prefix=True,
+        command_name=['tag', 'tags', '标签'],
+    )
+    if tag_info['is_command']:
+        handle_iw_tag(plugin_event, tag_info['command_argument'])
+        return
+
+    engine_info = utils.parse_command(
+        command_argument,
+        prefix_list=[],
+        allow_no_prefix=True,
+        command_name=['engine', 'engines', '引擎'],
+    )
+    if engine_info['is_command']:
+        handle_iw_engine(plugin_event, engine_info['command_argument'])
+        return
+
+    date_info = utils.parse_command(
+        command_argument,
+        prefix_list=[],
+        allow_no_prefix=True,
+        command_name=['date', 'dates', 'releasedate', '日期'],
+    )
+    if date_info['is_command']:
+        handle_iw_date(plugin_event, date_info['command_argument'])
+        return
+
+    catalog_info = utils.parse_command(
+        command_argument,
+        prefix_list=[],
+        allow_no_prefix=True,
+        command_name=['all', 'catalog', '全库', '概况'],
+    )
+    if catalog_info['is_command']:
+        handle_iw_catalog(plugin_event, catalog_info['command_argument'])
         return
 
     search_info = utils.parse_command(

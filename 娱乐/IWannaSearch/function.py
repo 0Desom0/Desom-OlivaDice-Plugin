@@ -147,28 +147,146 @@ def normalize_base_url(base_url: str) -> str:
     return source_url.rstrip('/')
 
 
+def normalize_filter_params(params: Optional[Dict[str, Any]]) -> List[tuple]:
+    """把各种灵活的过滤参数转换成 API 规范的 URL 参数元组列表。"""
+    if not params:
+        return []
+    result: List[tuple] = []
+
+    year_val = params.get('year')
+    date_from = params.get('date_from')
+    date_to = params.get('date_to')
+    if year_val and not date_from and not date_to:
+        year_str = safe_text(year_val).strip()
+        if re.fullmatch(r'\d{4}', year_str):
+            date_from = f'{year_str}-01-01'
+            date_to = f'{year_str}-12-31'
+
+    for key, value in params.items():
+        if value is None or key == 'year':
+            continue
+        key_lower = safe_text(key).strip().lower()
+        if key_lower in {'q', 'query', 'name', 'keyword'}:
+            val = safe_text(value).strip()
+            if val:
+                result.append(('q', val))
+        elif key_lower in {'id', 'game_id'}:
+            val = safe_text(value).strip()
+            if val:
+                result.append(('id', val))
+        elif key_lower in {'tag', 'tags'}:
+            if isinstance(value, (list, tuple, set)):
+                for t in value:
+                    t_str = safe_text(t).strip()
+                    if t_str:
+                        result.append(('tag', t_str))
+            else:
+                for t_str in safe_text(value).split(','):
+                    t_str = t_str.strip()
+                    if t_str:
+                        result.append(('tag', t_str))
+        elif key_lower in {'tag_not', 'tags_not', 'not_tag', 'not_tags'}:
+            if isinstance(value, (list, tuple, set)):
+                for t in value:
+                    t_str = safe_text(t).strip()
+                    if t_str:
+                        result.append(('tag_not', t_str))
+            else:
+                for t_str in safe_text(value).split(','):
+                    t_str = t_str.strip()
+                    if t_str:
+                        result.append(('tag_not', t_str))
+        elif key_lower in {'engine', 'engines'}:
+            val = safe_text(value).strip()
+            if val:
+                result.append(('engine', val))
+        elif key_lower in {'engine_not', 'engines_not', 'not_engine', 'not_engines'}:
+            val = safe_text(value).strip()
+            if val:
+                result.append(('engine_not', val))
+        elif key_lower in {'source', 'sources'}:
+            val = safe_text(value).strip().lower()
+            if val:
+                result.append(('source', val))
+        elif key_lower in {'source_not', 'sources_not', 'not_source', 'not_sources'}:
+            val = safe_text(value).strip().lower()
+            if val:
+                result.append(('source_not', val))
+        elif key_lower in {'date_from', 'from_date', 'start_date'}:
+            val = safe_text(value).strip()
+            if val:
+                result.append(('date_from', val))
+        elif key_lower in {'date_to', 'to_date', 'end_date'}:
+            val = safe_text(value).strip()
+            if val:
+                result.append(('date_to', val))
+        elif key_lower == 'count':
+            try:
+                cnt = int(value)
+                result.append(('count', cnt))
+            except Exception:
+                pass
+        elif key_lower in {'offset', 'limit'}:
+            try:
+                result.append((key_lower, int(value)))
+            except Exception:
+                pass
+
+    if date_from and not any(k == 'date_from' for k, _ in result):
+        result.append(('date_from', safe_text(date_from).strip()))
+    if date_to and not any(k == 'date_to' for k, _ in result):
+        result.append(('date_to', safe_text(date_to).strip()))
+
+    return result
+
+
+def build_query_url(endpoint_path: str, base_url: str, params: Optional[Dict[str, Any]] = None) -> str:
+    base = normalize_base_url(base_url)
+    endpoint = endpoint_path.strip('/')
+    query_tuples = normalize_filter_params(params)
+    if query_tuples:
+        encoded_query = urllib.parse.urlencode(query_tuples)
+        return f'{base}/{endpoint}?{encoded_query}'
+    return f'{base}/{endpoint}'
+
+
 def build_search_url(base_url: str, query_param: str, query_value: str) -> str:
-    encoded_query = urllib.parse.urlencode({query_param: query_value})
-    return f'{normalize_base_url(base_url)}/api/search?{encoded_query}'
+    return build_query_url('api/search', base_url, {query_param: query_value})
 
 
-def build_random_url(base_url: str, count: int = 1, tag: str = '') -> str:
-    random_url = f'{normalize_base_url(base_url)}/api/random?count={max(1, int(count))}'
-    safe_tag = safe_text(tag).strip()
-    if safe_tag:
-        random_url = f'{random_url}&tag={urllib.parse.quote(safe_tag, safe="")}'
-    return random_url
+def build_random_url(base_url: str, count: int = 1, tag: str = '', **filter_kwargs) -> str:
+    params = dict(filter_kwargs)
+    params['count'] = max(1, int(count))
+    if tag:
+        params['tag'] = tag
+    return build_query_url('api/random', base_url, params)
 
 
 def fetch_json(search_url: str, timeout_seconds: int) -> Dict[str, Any]:
     request = urllib.request.Request(search_url, headers={'User-Agent': 'IWannaSearch/1.0'})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response_object:
-        charset = response_object.headers.get_content_charset() or 'utf-8'
-        response_text = response_object.read().decode(charset, errors='replace')
-    parsed_data = json.loads(response_text)
-    if not isinstance(parsed_data, dict):
-        raise ValueError('API 返回值不是 JSON 对象')
-    return parsed_data
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response_object:
+            charset = response_object.headers.get_content_charset() or 'utf-8'
+            response_text = response_object.read().decode(charset, errors='replace')
+        parsed_data = json.loads(response_text)
+        if not isinstance(parsed_data, dict):
+            raise ValueError('API 返回值不是 JSON 对象')
+        return parsed_data
+    except urllib.error.HTTPError as exception_object:
+        err_msg = f'HTTP {exception_object.code}'
+        try:
+            charset = exception_object.headers.get_content_charset() or 'utf-8'
+            body = exception_object.read().decode(charset, errors='replace')
+            data = json.loads(body)
+            if isinstance(data, dict):
+                server_error = data.get('error')
+                if server_error:
+                    err_msg = f'{err_msg}：{server_error}'
+                elif data.get('errors'):
+                    err_msg = f'{err_msg}：{"; ".join(str(e) for e in data.get("errors", []))}'
+        except Exception:
+            pass
+        raise ValueError(err_msg) from exception_object
 
 
 def request_api_url(api_url: str, timeout_seconds: int) -> Dict[str, Any]:
@@ -180,11 +298,14 @@ def request_api_url(api_url: str, timeout_seconds: int) -> Dict[str, Any]:
         return {'ok': False, 'error': safe_text(exception_object.reason, '网络连接失败'), 'results': [], 'count': 0}
     except TimeoutError:
         return {'ok': False, 'error': '请求超时', 'results': [], 'count': 0}
+    except ValueError as exception_object:
+        return {'ok': False, 'error': safe_text(exception_object, 'API 错误'), 'results': [], 'count': 0}
     except Exception as exception_object:
         return {'ok': False, 'error': f'{type(exception_object).__name__}: {exception_object}', 'results': [], 'count': 0}
 
     if not api_data.get('success', False):
-        return {'ok': False, 'error': 'API 返回 success=false', 'results': [], 'count': 0}
+        error_text = api_data.get('error', 'API 返回 success=false')
+        return {'ok': False, 'error': error_text, 'results': [], 'count': 0}
 
     results = api_data.get('results', [])
     if not isinstance(results, list):
@@ -201,8 +322,25 @@ def request_api_url(api_url: str, timeout_seconds: int) -> Dict[str, Any]:
     return {'ok': True, 'error': '', 'results': normalized_results, 'count': count}
 
 
-def request_search(query_param: str, query_value: str, base_url: str, timeout_seconds: int) -> Dict[str, Any]:
-    search_url = build_search_url(base_url, query_param, query_value)
+def request_search(
+    query_param_or_filters: Any,
+    query_value: Any = None,
+    base_url: str = '',
+    timeout_seconds: int = 10,
+) -> Dict[str, Any]:
+    if isinstance(query_param_or_filters, dict):
+        filters = dict(query_param_or_filters)
+        target_base = safe_text(query_value or base_url)
+        target_timeout = timeout_seconds if query_value else (base_url or 10)
+        try:
+            target_timeout = int(target_timeout)
+        except Exception:
+            target_timeout = 10
+        search_url = build_query_url('api/search', target_base, filters)
+        return request_api_url(search_url, target_timeout)
+
+    filters = {safe_text(query_param_or_filters): query_value}
+    search_url = build_query_url('api/search', base_url, filters)
     return request_api_url(search_url, timeout_seconds)
 
 
@@ -210,12 +348,104 @@ def search_by_id(game_id: str, base_url: str, timeout_seconds: int) -> Dict[str,
     return request_search('id', safe_text(game_id).strip(), base_url, timeout_seconds)
 
 
-def search_by_name(game_name: str, base_url: str, timeout_seconds: int) -> Dict[str, Any]:
-    return request_search('q', safe_text(game_name).strip(), base_url, timeout_seconds)
+def search_by_name(game_name: str, base_url: str, timeout_seconds: int, **filter_kwargs) -> Dict[str, Any]:
+    filters = dict(filter_kwargs)
+    safe_name = safe_text(game_name).strip()
+    if safe_name:
+        filters['q'] = safe_name
+    return request_search(filters, base_url, timeout_seconds)
 
 
-def random_games(count: int, tag: str, base_url: str, timeout_seconds: int) -> Dict[str, Any]:
-    return request_api_url(build_random_url(base_url, count=count, tag=tag), timeout_seconds)
+def search_catalog(filters: Dict[str, Any], base_url: str, timeout_seconds: int) -> Dict[str, Any]:
+    return request_search(filters, base_url, timeout_seconds)
+
+
+def random_games(count: int = 1, tag: str = '', base_url: str = '', timeout_seconds: int = 10, **filter_kwargs) -> Dict[str, Any]:
+    params = dict(filter_kwargs)
+    params['count'] = max(1, int(count))
+    if tag:
+        params['tag'] = tag
+    return request_api_url(build_query_url('api/random', base_url, params), timeout_seconds)
+
+
+def fetch_catalog_all(base_url: str, timeout_seconds: int, **filter_kwargs) -> Dict[str, Any]:
+    query_url = build_query_url('api/all', base_url, filter_kwargs)
+    try:
+        data = fetch_json(query_url, timeout_seconds)
+    except Exception as exc:
+        return {'ok': False, 'error': safe_text(exc), 'results': [], 'count': 0, 'catalog_size': 0, 'total': 0}
+    if not data.get('success', False):
+        return {'ok': False, 'error': safe_text(data.get('error', 'API 返回 success=false')), 'results': [], 'count': 0, 'catalog_size': 0, 'total': 0}
+    results = data.get('results', [])
+    if not isinstance(results, list):
+        results = []
+    normalized = [normalize_game_item(item) for item in results if isinstance(item, dict)]
+    return {
+        'ok': True,
+        'error': '',
+        'catalog_size': int(data.get('catalog_size', len(normalized))),
+        'total': int(data.get('total', len(normalized))),
+        'count': int(data.get('count', len(normalized))),
+        'results': normalized,
+    }
+
+
+def fetch_tags(base_url: str, timeout_seconds: int, **filter_kwargs) -> Dict[str, Any]:
+    query_url = build_query_url('api/tag', base_url, filter_kwargs)
+    try:
+        data = fetch_json(query_url, timeout_seconds)
+    except Exception as exc:
+        return {'ok': False, 'error': safe_text(exc), 'tags': [], 'count': 0}
+    if not data.get('success', False):
+        return {'ok': False, 'error': safe_text(data.get('error', 'API 返回 success=false')), 'tags': [], 'count': 0}
+    tags = data.get('tags', [])
+    if not isinstance(tags, list):
+        tags = []
+    return {
+        'ok': True,
+        'error': '',
+        'count': int(data.get('count', len(tags))),
+        'tags': tags,
+    }
+
+
+def fetch_engines(base_url: str, timeout_seconds: int, **filter_kwargs) -> Dict[str, Any]:
+    query_url = build_query_url('api/engine', base_url, filter_kwargs)
+    try:
+        data = fetch_json(query_url, timeout_seconds)
+    except Exception as exc:
+        return {'ok': False, 'error': safe_text(exc), 'engines': [], 'count': 0}
+    if not data.get('success', False):
+        return {'ok': False, 'error': safe_text(data.get('error', 'API 返回 success=false')), 'engines': [], 'count': 0}
+    engines = data.get('engines', [])
+    if not isinstance(engines, list):
+        engines = []
+    return {
+        'ok': True,
+        'error': '',
+        'count': int(data.get('count', len(engines))),
+        'engines': engines,
+    }
+
+
+def fetch_release_dates(base_url: str, timeout_seconds: int, **filter_kwargs) -> Dict[str, Any]:
+    query_url = build_query_url('api/releasedate', base_url, filter_kwargs)
+    try:
+        data = fetch_json(query_url, timeout_seconds)
+    except Exception as exc:
+        return {'ok': False, 'error': safe_text(exc), 'dated': 0, 'undated': 0, 'earliest': default_empty_text, 'latest': default_empty_text, 'by_year': []}
+    if not data.get('success', False):
+        return {'ok': False, 'error': safe_text(data.get('error', 'API 返回 success=false')), 'dated': 0, 'undated': 0, 'earliest': default_empty_text, 'latest': default_empty_text, 'by_year': []}
+    return {
+        'ok': True,
+        'error': '',
+        'dated': int(data.get('dated', 0)),
+        'undated': int(data.get('undated', 0)),
+        'games_considered': int(data.get('games_considered', 0)),
+        'earliest': safe_text(data.get('earliest', default_empty_text), default_empty_text),
+        'latest': safe_text(data.get('latest', default_empty_text), default_empty_text),
+        'by_year': data.get('by_year', []) if isinstance(data.get('by_year'), list) else [],
+    }
 
 
 def parse_file_size_bytes(value: Any) -> Optional[int]:
@@ -364,8 +594,47 @@ def normalize_game_item(item: Dict[str, Any]) -> Dict[str, Any]:
     tags = item.get('tags', [])
     if not isinstance(tags, list):
         tags = []
+
+    source_list = item.get('source', [])
+    if not isinstance(source_list, list):
+        source_list = []
+
+    df_url = ''
+    wiki_url = ''
+    source_names = []
+    for s in source_list:
+        if isinstance(s, dict):
+            s_type = safe_text(s.get('type', '')).lower()
+            s_url = safe_text(s.get('url', ''))
+            s_site = safe_text(s.get('site', ''))
+            if s_type == 'df' or 'delicious-fruit' in s_url or 'delicious' in s_site.lower():
+                df_url = s_url
+                if 'Delicious Fruit' not in source_names:
+                    source_names.append('Delicious Fruit')
+            elif s_type == 'wiki' or 'iwannawiki' in s_url or 'wiki' in s_site.lower():
+                wiki_url = s_url
+                if 'IWanna Wiki' not in source_names:
+                    source_names.append('IWanna Wiki')
+            elif s_site and s_site not in source_names:
+                source_names.append(s_site)
+
+    ext_parts = []
+    if df_url:
+        ext_parts.append(f'DF: {df_url}')
+    if wiki_url:
+        ext_parts.append(f'Wiki: {wiki_url}')
+    external_urls = ' | '.join(ext_parts) if ext_parts else default_empty_text
+    sources_text = ', '.join(source_names) if source_names else default_empty_text
+
+    game_id = safe_text(item.get('id', default_empty_text), default_empty_text)
+    page_url = safe_text(item.get('page_url', ''))
+    if not page_url and game_id != default_empty_text:
+        page_url = f'https://fangame-archive.com/?game={game_id}'
+    if not page_url:
+        page_url = default_empty_text
+
     return {
-        'id': safe_text(item.get('id', default_empty_text), default_empty_text),
+        'id': game_id,
         'title': safe_text(item.get('title', default_empty_text), default_empty_text),
         'creator': safe_text(item.get('creator', default_empty_text), default_empty_text),
         'url': safe_text(item.get('url', default_empty_text), default_empty_text),
@@ -376,6 +645,11 @@ def normalize_game_item(item: Dict[str, Any]) -> Dict[str, Any]:
         'difficulty': item.get('difficulty'),
         'rating_count': item.get('rating_count'),
         'file_size': item.get('file_size'),
+        'page_url': page_url,
+        'df_url': df_url or default_empty_text,
+        'wiki_url': wiki_url or default_empty_text,
+        'sources': sources_text,
+        'external_urls': external_urls,
     }
 
 
@@ -436,6 +710,11 @@ def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict
         'engine': format_engine_value(game_item.get('engine')),
         'url': safe_text(game_item.get('url', default_empty_text), default_empty_text),
         'file_size': format_file_size(game_item.get('file_size')),
+        'page_url': safe_text(game_item.get('page_url', default_empty_text), default_empty_text),
+        'df_url': safe_text(game_item.get('df_url', default_empty_text), default_empty_text),
+        'wiki_url': safe_text(game_item.get('wiki_url', default_empty_text), default_empty_text),
+        'sources': safe_text(game_item.get('sources', default_empty_text), default_empty_text),
+        'external_urls': safe_text(game_item.get('external_urls', default_empty_text), default_empty_text),
     }
 
 

@@ -4,22 +4,41 @@
 
 default_custom_message_dict = {
     'reply_help': '''【I Wanna Search】
-.iw 游戏名
-按游戏名称查询 I Wanna。
+.iw 游戏名 [--tag=标签] [--not-tag=标签] [--engine=引擎] [--year=年份] [--source=wiki/df]
+按名称与条件多维筛选 I Wanna。
 
-.iw search 游戏名
-按游戏名称查询 I Wanna。
+.iw search 游戏名 [筛选参数]
+同上，支持名称模糊查询与自由组合过滤器。
 
 .iw id 游戏ID
 按游戏 ID 精确查询 I Wanna。
 
 .iw download 游戏ID
-检查 API 文件大小后下载并发送到当前会话，支持 OlivOS 文件上传接口（包括 OneBot V11、QQGuild）。
+检查 API 文件大小后下载并发送到当前会话（限 200 MB）。
 
-.iw random [个数] [--tag=标签]
-.iw rand [个数] [--tag=标签]
-随机查询 I Wanna。个数默认 1，最多 10；标签可省略且至多一个。
-示例：.iwrandom5--tag=needle
+.iw random [个数] [筛选参数]
+.iw rand [个数] [筛选参数]
+范围随机查询 I Wanna。个数默认 1，最多 10。
+支持所有筛选参数（--tag, --not-tag, --engine, --not-engine, --year, --source 等）。
+示例：.iw rand 3 --engine=Godot --year=2021
+
+.iw year 年份 [游戏名]
+查询指定年份发布的 I Wanna。
+示例：.iw year 2021 needle
+
+.iw tag [标签名]
+.iw tags
+查看热门标签分布；加标签名可直接按标签搜索。
+
+.iw engine [引擎名]
+.iw engines
+查看支持的游戏引擎统计；加引擎名可直接按引擎搜索。
+
+.iw date / .iw releasedate
+查看发行日期覆盖统计及近年代收录情况。
+
+.iw all / .iw catalog
+查看全库概况与收录数据统计。
 
 .iw today
 获取今日 I Wanna。每个用户每天固定一次，会缓存当天结果。
@@ -35,7 +54,7 @@ default_custom_message_dict = {
 .iw help
 查看本帮助。''',
     'reply_help_hint': '可使用 {prefix}iw help 查看 I Wanna 查询帮助。',
-    'reply_empty_query': '请输入要查询的 I Wanna 名称或 ID。',
+    'reply_empty_query': '请输入要查询的 I Wanna 名称或筛选参数。',
     'reply_not_found': '没有查询到符合条件的 I Wanna。',
     'reply_api_error': '查询失败：{error}',
     'reply_global_usage': '用法：.iwglobal status/on/off/debug on/debug off 或 .iwglobal concurrency [1-100]。',
@@ -60,6 +79,9 @@ default_custom_message_dict = {
 · 评分人数：{rating_count}
 · 标签：{tags}
 · 游戏引擎：{engine}
+· 文档来源：{sources}
+· 外部页面：{external_urls}
+· 档案页面：{page_url}
 · 下载链接：{url}
 · 文件大小：{file_size}''',
     'reply_multiple_header': '查询到了{count}个 I Wanna',
@@ -84,6 +106,31 @@ default_custom_message_dict = {
     'reply_permission_denied': '权限不足：只有 OlivaDiceCore 骰主或本插件配置骰主可以执行该操作。',
     'reply_global_status': '全局启用：{global_enable}，调试模式：{global_debug}，最大下载并发：{download_concurrency}。',
     'reply_bot_status': '当前 Bot：{bot_id}，Bot 开关：{bot_enable}，合并转发：{merge_forward}。',
+    'reply_tag_list': '''【I Wanna 热门标签】
+共统计到 {count} 个标签。热门标签：
+{tag_items}
+提示：输入 .iw tag <标签名> 或 .iw search --tag=<标签名> 筛选。''',
+    'reply_engine_list': '''【I Wanna 游戏引擎分布】
+共统计到 {count} 种引擎：
+{engine_items}
+提示：输入 .iw engine <引擎名> 或 .iw search --engine=<引擎名> 筛选。''',
+    'reply_date_summary': '''【I Wanna 发行日期统计】
+· 已知日期：{dated} 部
+· 未知日期：{undated} 部
+· 最早记录：{earliest}
+· 最近记录：{latest}
+近年收录概况：
+{year_items}
+提示：使用 .iw year <年份> 查询指定年份游戏。''',
+    'reply_catalog_summary': '''【I Wanna Archive 全库概况】
+· 总收录游戏：{catalog_size} 部
+· 已标注发行日期：{dated} 部
+· 统计引擎数：{engine_count} 种
+· 标签库数量：{tag_count} 个
+· 外部互通：Delicious Fruit、IWanna Wiki
+提示：使用 .iw help 查看全功能查询指令。''',
+    'reply_year_empty': '请输入要查询的 4 位年份，例如：.iw year 2021。',
+    'reply_year_invalid': '年份格式不正确，请输入 4 位数字年份（例如：2021）。',
 }
 
 
@@ -113,7 +160,7 @@ custom_message_note_dict = {
     'reply_download_failed': '【下载/上传失败】可用变量：{error}。',
     'reply_search_result_prefix': '【search/id 结果前缀】用于搜索或 ID 查询命中单个游戏时的前缀。',
     'reply_random_result_prefix': '【random/rand 结果前缀】用于随机游戏详情前缀。',
-    'reply_game_metadata': '【游戏元数据】可用变量：{id} {title} {creator} {release_date} {rating} {difficulty} {rating_count} {tags} {engine} {url} {file_size}',
+    'reply_game_metadata': '【游戏元数据】可用变量：{id} {title} {creator} {release_date} {rating} {difficulty} {rating_count} {tags} {engine} {sources} {external_urls} {page_url} {url} {file_size}',
     'reply_multiple_header': '【多个结果头部】可用变量：{count}',
     'reply_multiple_item': '【多个结果列表项】可用变量：{index} {id} {title} {creator} {tags} {url}',
     'reply_multiple_footer': '【多个结果页脚】结果不超过一页时的输入提示。可提示 end/结束 退出。',
@@ -136,6 +183,12 @@ custom_message_note_dict = {
     'reply_permission_denied': '【权限不足】管理命令权限不足时回复。',
     'reply_global_status': '【全局状态】可用变量：{global_enable} {global_debug} {download_concurrency}',
     'reply_bot_status': '【Bot 状态】可用变量：{bot_id} {bot_enable} {merge_forward}',
+    'reply_tag_list': '【热门标签列表】可用变量：{count} {tag_items}',
+    'reply_engine_list': '【引擎分布列表】可用变量：{count} {engine_items}',
+    'reply_date_summary': '【发行日期概况】可用变量：{dated} {undated} {earliest} {latest} {year_items}',
+    'reply_catalog_summary': '【全库概况】可用变量：{catalog_size} {dated} {engine_count} {tag_count}',
+    'reply_year_empty': '【年份查询为空】用户未输入年份时回复。',
+    'reply_year_invalid': '【年份格式错误】用户输入非 4 位年份时回复。',
 }
 
 
