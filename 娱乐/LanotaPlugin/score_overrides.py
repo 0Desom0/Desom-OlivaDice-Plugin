@@ -1592,12 +1592,19 @@ def list_text(plugin_event, region: str | None = None) -> str:
             f'单曲 Rating {float(row.get("single_rating", 0)):.2f} - '
             f'{portal.region_display_name(row.get("region"))}{score_text}{warning_text}'
         )
-    lines.append('删除：/la score delete <序号>；清空某区服：/la score delete all [cn|global]')
+    lines.append(
+        '删除：/la score del <序号> [cn|global]，或 /la score del <曲名/别名/章节号> [难度] [cn|global]；'
+        '曲名支持模糊匹配；清空某区服：/la score delete all [cn|global]'
+    )
     return '\n'.join(lines)
 
 
 def delete(plugin_event, argument: str) -> str:
     text = str(argument or '').strip()
+    usage = (
+        '用法：/la score del <序号> [cn|global]，或 /la score del <曲名/别名/章节号> [难度] [cn|global]。'
+        '曲名支持模糊匹配；序号请先用 /la score list 查看。'
+    )
     region = None
     for token, normalized in REGION_ALIASES.items():
         if text.casefold().endswith(f' {token}'):
@@ -1606,24 +1613,76 @@ def delete(plugin_event, argument: str) -> str:
     rows = load_overrides(plugin_event)
     if not rows:
         return '当前没有录入成绩。'
-    indexes = [index for index, row in enumerate(rows) if isinstance(row, dict) and (region is None or normalize_region(row.get('region')) == region)]
+    indexes = [
+        index for index, row in enumerate(rows)
+        if isinstance(row, dict) and (region is None or normalize_region(row.get('region')) == region)
+    ]
     if text.casefold() == 'all':
         for index in reversed(indexes):
             rows.pop(index)
         if not save_overrides(plugin_event, rows):
             return '删除失败：无法写入玩家档案。'
         return f'已删除 {len(indexes)} 条录入成绩。'
+    if not text:
+        return usage
     try:
         selected = int(text) - 1
-        if selected < 0:
-            raise IndexError
+    except ValueError:
+        # 使用完整曲库，避免未录入的精确曲名被误配到另一首已有成绩的歌。
+        songs = list(function.load_song_data())
+        chapters = {str(song.get('chapter') or '').strip().casefold() for song in songs}
+        for row in rows:
+            chapter = str(row.get('chapter') or '').strip().casefold()
+            if chapter and chapter not in chapters:
+                songs.append(dict(row, id=row.get('song_id', '')))
+                chapters.add(chapter)
+        aliases = function.load_alias_data()
+        matched, match_type, total = function.find_song_by_search_term(text, songs, aliases, len(songs))
+        difficulty = None
+        parts = text.rsplit(None, 1)
+        # 完整曲名优先，避免把曲名末尾的 Master 等词当成难度。
+        if match_type in {None, '打分制模糊搜索'} and len(parts) == 2:
+            difficulty = DIFFICULTY_MAP.get(parts[1].casefold())
+            if difficulty is not None:
+                text = parts[0]
+                matched, _match_type, total = function.find_song_by_search_term(text, songs, aliases, len(songs))
+        if not matched:
+            return f'没有匹配到曲名、别名或章节号“{text}”。\n{usage}'
+        if total > 1:
+            lines = [f'匹配到多首歌曲（{total} 首），请使用章节号指定要删除的歌曲：']
+            lines.extend(f'[{song.get("chapter", "未知")}] {song.get("title", "未知")}' for song in matched[:10])
+            lines.append('/la score del <章节号> [难度] [cn|global]')
+            return '\n'.join(lines)
+        song = matched[0]
+        chapter = str(song.get('chapter') or '').strip().casefold()
+        candidates = [
+            (position, index) for position, index in enumerate(indexes, 1)
+            if str(rows[index].get('chapter') or '').strip().casefold() == chapter
+            and (difficulty is None or _difficulty(str(rows[index].get('difficulty'))) == difficulty)
+        ]
+        if not candidates:
+            return f'{_matched_chart_summary(song, difficulty)}\n所选区服中没有该谱面的录入成绩。'
+        if len(candidates) > 1:
+            lines = ['匹配到多条录入成绩，请补充难度或使用 /la score del <序号> [cn|global]：']
+            lines.extend(
+                f'{position}. [{rows[index].get("chapter", "未知")}] {rows[index].get("title", "未知")} '
+                f'[{rows[index].get("difficulty_name", "未知")}] '
+                f'{portal.region_display_name(rows[index].get("region"))}'
+                for position, index in candidates
+            )
+            return '\n'.join(lines)
+        actual = candidates[0][1]
+    else:
+        if not 0 <= selected < len(indexes):
+            return usage
         actual = indexes[selected]
-    except (ValueError, IndexError):
-        return '用法：/la score delete <序号> [cn|global]，序号请先用 /la score list 查看。'
     removed = rows.pop(actual)
     if not save_overrides(plugin_event, rows):
         return '删除失败：无法写入玩家档案。'
-    return f'已删除：{removed.get("title", "未知")} [{removed.get("difficulty_name", "未知")}]。'
+    return (
+        f'已删除：{removed.get("title", "未知")} [{removed.get("difficulty_name", "未知")}]'
+        f'（章节号 {removed.get("chapter", "未知")}，{portal.region_display_name(removed.get("region"))}）。'
+    )
 
 
 def _find_override_chart(

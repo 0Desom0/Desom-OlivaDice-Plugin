@@ -700,5 +700,169 @@ class PaddleOCRPortalScreenshotTest(unittest.TestCase):
                     )
 
 
+class ScoreDeleteTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.event = SimpleNamespace()
+        self.songs = [
+            {'title': 'Apotheosis (Lanota Edit)', 'chapter': 'Event-110'},
+            {'title': 'Test Alpha', 'chapter': 'T-1'},
+            {'title': 'Test Beta', 'chapter': 'T-2'},
+            {'title': 'The Master', 'chapter': 'T-3'},
+        ]
+        self.rows = [
+            self._row(self.songs[1]),
+            self._row(self.songs[0], region='china'),
+            self._row(self.songs[0], difficulty=2),
+            self._row(self.songs[0]),
+            self._row(self.songs[2]),
+            self._row(self.songs[0], difficulty=0),
+        ]
+        self.save = self.enterContext(patch.object(score_overrides, 'save_overrides', return_value=True))
+        self.enterContext(patch.object(score_overrides, 'load_overrides', side_effect=lambda _event: list(self.rows)))
+        self.enterContext(patch.object(function, 'load_song_data', side_effect=lambda: list(self.songs)))
+        self.enterContext(patch.object(function, 'load_alias_data', return_value={'Apotheosis (Lanota Edit)': ['神化']}))
+
+    @staticmethod
+    def _row(song: dict, difficulty: int = 3, region: str = 'global') -> dict:
+        return {
+            **song,
+            'region': region,
+            'difficulty': difficulty,
+            'difficulty_name': ('Whisper', 'Acoustic', 'Ultra', 'Master')[difficulty],
+            'single_rating': 17.70,
+        }
+
+    def assert_removed(self, index: int) -> None:
+        self.save.assert_called_once_with(self.event, self.rows[:index] + self.rows[index + 1:])
+
+    def test_fuzzy_title_alias_and_chapter_delete_the_requested_chart(self) -> None:
+        for query in ('apoptheosis', 'Apotheosis', '神化', 'event-110'):
+            with self.subTest(query=query):
+                self.save.reset_mock()
+                result = score_overrides.delete(self.event, f'{query} master global')
+                self.assertIn('已删除：Apotheosis (Lanota Edit) [Master]', result)
+                self.assertIn('章节号 Event-110', result)
+                self.assert_removed(3)
+
+    def test_unique_record_needs_no_difficulty(self) -> None:
+        result = score_overrides.delete(self.event, 'Event-110 cn')
+        self.assertIn('已删除：', result)
+        self.assert_removed(1)
+
+    def test_difficulty_names_shorthands_and_numbers(self) -> None:
+        for difficulty in ('whisper', 'W', '0'):
+            with self.subTest(difficulty=difficulty):
+                self.save.reset_mock()
+                result = score_overrides.delete(self.event, f'Event-110 {difficulty} global')
+                self.assertIn('[Whisper]', result)
+                self.assert_removed(5)
+
+    def test_multiple_difficulties_show_region_list_indexes_without_deleting(self) -> None:
+        result = score_overrides.delete(self.event, 'Event-110 global')
+        self.assertIn('多条录入成绩', result)
+        self.assertIn('2. [Event-110] Apotheosis (Lanota Edit) [Ultra]', result)
+        self.assertIn('3. [Event-110] Apotheosis (Lanota Edit) [Master]', result)
+        self.assertIn('5. [Event-110] Apotheosis (Lanota Edit) [Whisper]', result)
+        self.save.assert_not_called()
+
+    def test_ambiguous_fuzzy_title_does_not_delete(self) -> None:
+        result = score_overrides.delete(self.event, 'Test master global')
+        self.assertIn('多首歌曲', result)
+        self.assertIn('[T-1] Test Alpha', result)
+        self.assertIn('[T-2] Test Beta', result)
+        self.save.assert_not_called()
+
+    def test_missing_match_does_not_delete(self) -> None:
+        result = score_overrides.delete(self.event, '完全不存在的歌曲 master global')
+        self.assertIn('没有匹配到', result)
+        self.save.assert_not_called()
+
+    def test_unrecorded_exact_song_does_not_fuzzy_match_another_record(self) -> None:
+        self.songs.append({'title': 'Test Alphabeta', 'chapter': 'T-4'})
+        result = score_overrides.delete(self.event, 'Test Alphabeta global')
+        self.assertIn('已匹配：Test Alphabeta', result)
+        self.assertIn('没有该谱面的录入成绩', result)
+        self.save.assert_not_called()
+
+    def test_wrong_region_or_difficulty_does_not_delete(self) -> None:
+        for query in ('T-1 cn', 'Event-110 acoustic global'):
+            with self.subTest(query=query):
+                result = score_overrides.delete(self.event, query)
+                self.assertIn('没有该谱面的录入成绩', result)
+                self.save.assert_not_called()
+
+    def test_missing_catalog_song_can_still_be_deleted(self) -> None:
+        self.songs.pop(0)
+        result = score_overrides.delete(self.event, 'event-110 master global')
+        self.assertIn('已删除：', result)
+        self.assert_removed(3)
+
+    def test_title_ending_in_difficulty_word_is_matched_whole(self) -> None:
+        self.rows.append(self._row(self.songs[3]))
+        result = score_overrides.delete(self.event, 'The Master global')
+        self.assertIn('已删除：The Master [Master]', result)
+        self.assert_removed(6)
+
+    def test_region_list_index_and_clear_remain_supported(self) -> None:
+        for query, index in (('3 global', 3), ('1 cn', 1), ('2', 1)):
+            with self.subTest(query=query):
+                self.save.reset_mock()
+                self.assertIn('已删除：', score_overrides.delete(self.event, query))
+                self.assert_removed(index)
+        self.save.reset_mock()
+        self.assertIn('已删除 1 条', score_overrides.delete(self.event, 'all cn'))
+        self.assert_removed(1)
+
+    def test_empty_or_invalid_index_does_not_delete(self) -> None:
+        for query in ('', '0 global', '-1 cn', '999 global'):
+            with self.subTest(query=query):
+                self.assertIn('用法：', score_overrides.delete(self.event, query))
+                self.save.assert_not_called()
+
+    def test_save_failure_is_reported(self) -> None:
+        self.save.return_value = False
+        result = score_overrides.delete(self.event, 'Event-110 cn')
+        self.assertEqual(result, '删除失败：无法写入玩家档案。')
+
+    def test_del_routing_uses_bound_region_and_explicit_region(self) -> None:
+        cases = (
+            ('del apoptheosis master', 1),
+            ('del Event-110 master global', 3),
+            ('global del Event-110 master', 3),
+            ('cn del Event-110', 1),
+        )
+        with (
+            patch.object(message.portal, 'get_bound_region', return_value='china'),
+            patch.object(message, 'reply_text') as reply,
+        ):
+            for argument, index in cases:
+                with self.subTest(argument=argument):
+                    self.save.reset_mock()
+                    message.handle_score(self.event, argument)
+                    self.assertIn('已删除：', reply.call_args.args[1])
+                    self.assert_removed(index)
+
+    def test_bare_del_shows_usage(self) -> None:
+        with (
+            patch.object(message.portal, 'get_bound_region', return_value='china'),
+            patch.object(message, 'reply_text') as reply,
+        ):
+            message.handle_score(self.event, 'del')
+        self.assertIn('用法：', reply.call_args.args[1])
+        self.save.assert_not_called()
+
+    def test_region_word_inside_title_does_not_change_bound_region(self) -> None:
+        song = {'title': 'Global Horizon', 'chapter': 'T-4'}
+        self.songs.append(song)
+        self.rows.extend([self._row(song), self._row(song, region='china')])
+        with (
+            patch.object(message.portal, 'get_bound_region', return_value='china'),
+            patch.object(message, 'reply_text') as reply,
+        ):
+            message.handle_score(self.event, 'del Global Horizon')
+        self.assertIn('已删除：Global Horizon', reply.call_args.args[1])
+        self.assert_removed(7)
+
+
 if __name__ == '__main__':
     unittest.main()

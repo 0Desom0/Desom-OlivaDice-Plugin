@@ -1663,6 +1663,17 @@ def handle_score(plugin_event, argument: str) -> None:
     text = utils.safe_str(argument).strip()
     region, remaining = portal.split_region_argument(text, greedy=True)
     selected_region = region or portal.get_bound_region(plugin_event) or 'global'
+    command_parts = remaining.split(None, 1)
+    if command_parts and command_parts[0].casefold() in {'delete', 'del', '删除'}:
+        delete_argument = command_parts[1] if len(command_parts) > 1 else ''
+        has_delete_region = any(
+            delete_argument.casefold().endswith(f' {alias}')
+            for alias in score_overrides.REGION_ALIASES
+        )
+        if delete_argument and not has_delete_region:
+            delete_argument = f'{delete_argument} {selected_region}'.strip()
+        reply_text(plugin_event, score_overrides.delete(plugin_event, delete_argument))
+        return
     if region is None:
         for alias, alias_region in score_overrides.REGION_ALIASES.items():
             if re.search(rf'(?<!\S){re.escape(alias)}(?!\S)', remaining, re.IGNORECASE):
@@ -1671,16 +1682,6 @@ def handle_score(plugin_event, argument: str) -> None:
     lower = remaining.casefold().strip()
     if lower in {'list', 'ls', '查看', '查询', ''}:
         reply_text(plugin_event, score_overrides.list_text(plugin_event, selected_region))
-        return
-    if lower.startswith(('delete ', 'del ', '删除 ')):
-        delete_argument = remaining.split(None, 1)[1] if len(remaining.split(None, 1)) > 1 else ''
-        has_delete_region = any(
-            re.search(rf'(?<!\S){re.escape(alias)}(?!\S)', delete_argument, re.IGNORECASE)
-            for alias in score_overrides.REGION_ALIASES
-        )
-        if not has_delete_region:
-            delete_argument = f'{delete_argument} {selected_region}'.strip()
-        reply_text(plugin_event, score_overrides.delete(plugin_event, delete_argument))
         return
 
     message_text = utils.get_message_text_from_event(plugin_event)
@@ -2103,6 +2104,7 @@ help_categories = {
             '/la score global list - 查看国际服录入成绩',
             '/la score cn list - 查看国服录入成绩',
             '/la score delete <序号> - 删除录入成绩',
+            '/la score del <曲名/别名/章节号> [难度] [cn|global] - 匹配并删除录入成绩，支持曲名模糊匹配',
             '/la score delete all cn - 清空国服录入成绩',
             '/la score delete all global - 清空国际服录入成绩',
             '/la score + 官网单曲/Rating 列表/4.0+ 游戏结算截图 - 自动 OCR 识别，可一次发送多张图片',
@@ -2113,12 +2115,15 @@ help_categories = {
             '只显示分数的 4.0+ 结算图会按曲目物量校验分数格式，通过后反推准度与 Single Rating。',
             '录入值只在其 Single Rating 高于官网值或官网记录格式异常时覆盖；确认后会自动清理较低录入。',
             '未写区服时优先使用当前绑定区服；只绑定国服时默认录入、查看和删除国服档案。',
+            '删除时匹配到多首歌曲需用章节号指定；同曲有多条难度成绩时需补充难度或使用列表序号。',
         ],
         'examples': [
             '/la score The Nightfall will be Conce... master 17.70',
             '/la score cn Immaculate master 18.18',
             '/la score list',
             '/la score delete 1',
+            '/la score del apoptheosis master',
+            '/la score del Event-110 master cn',
         ],
     },
     'stats': {
