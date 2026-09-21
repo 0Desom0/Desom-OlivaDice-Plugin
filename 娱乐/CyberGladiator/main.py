@@ -26,7 +26,6 @@ class Event(object):
 
     def init_after(plugin_event, Proc):
         """插件数据初始化入口。"""
-        utils.ensure_webui_assets(Proc)
         message.handle_init_after(plugin_event, Proc)
 
     def private_message(plugin_event, Proc):
@@ -43,4 +42,3 @@ class Event(object):
             webui.handle_menu_event(plugin_event, Proc)
         else:
             gui.handle_menu_event(plugin_event, Proc)
-

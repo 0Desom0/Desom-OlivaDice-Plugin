@@ -96,8 +96,17 @@ class CyberGladiatorWebUITest(unittest.TestCase):
         self.assertEqual(state['bot']['hash'], self.child_hash)
         self.assertEqual(state['bot']['linked_hash'], self.parent_hash)
 
+    def test_callbacks_do_not_recreate_removed_import_directory(self):
+        import_root = self.root / 'plugin/tmp/CyberGladiator'
+        with patch.object(self.utils, '__file__', str(import_root / 'utils.py')):
+            self.main.Event.init(None, self.proc)
+            self.main.Event.init_after(None, self.proc)
+            self.assertTrue(self.call('get_state')['ok'])
+        self.assertFalse(import_root.exists())
+
     def test_save_global(self):
-        res = self.call('save_global', global_enable_switch=False, global_debug_mode_switch=True, global_god_war_enable_switch=False)
+        res = self.call('save_global', global_enable_switch=False, global_debug_mode_switch=True,
+                        global_god_war_enable_switch=False)
         self.assertTrue(res['ok'])
         gc = res['state']['global_config']
         self.assertFalse(gc['global_enable_switch'])

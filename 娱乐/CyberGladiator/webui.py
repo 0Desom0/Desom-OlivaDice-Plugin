@@ -61,8 +61,10 @@ def get_state(Proc, requested_bot_hash: str = '') -> dict:
         'model': utils.safe_str(bot_config.get('model', '')),
         'request_timeout_seconds': int(bot_config.get('request_timeout_seconds', 600)),
         'temperature': float(bot_config.get('temperature', 0.9)),
-        'segment_delay_min_seconds': int(bot_config.get('segment_delay_min_seconds', config.default_segment_delay_min_seconds)),
-        'segment_delay_max_seconds': int(bot_config.get('segment_delay_max_seconds', config.default_segment_delay_max_seconds)),
+        'segment_delay_min_seconds': int(bot_config.get(
+            'segment_delay_min_seconds', config.default_segment_delay_min_seconds)),
+        'segment_delay_max_seconds': int(bot_config.get(
+            'segment_delay_max_seconds', config.default_segment_delay_max_seconds)),
         'normal_input_limit': int(bot_config.get('normal_input_limit', config.default_input_limit)),
         'god_war_input_limit': int(bot_config.get('god_war_input_limit', config.default_input_limit)),
         'qq_forward_message_switch': bool(bot_config.get('qq_forward_message_switch', False)),
@@ -157,13 +159,16 @@ def save_bot_action(action: str, payload: dict, bot_hash: str) -> bool:
         if 'model' in payload:
             bot_config['model'] = require_str(payload, 'model')
         if 'request_timeout_seconds' in payload:
-            bot_config['request_timeout_seconds'] = require_int(payload, 'request_timeout_seconds', min_val=5, max_val=3600)
+            bot_config['request_timeout_seconds'] = require_int(
+                payload, 'request_timeout_seconds', min_val=5, max_val=3600)
         if 'temperature' in payload:
             bot_config['temperature'] = require_float(payload, 'temperature', min_val=0.0, max_val=2.0)
         if 'segment_delay_min_seconds' in payload:
-            bot_config['segment_delay_min_seconds'] = require_int(payload, 'segment_delay_min_seconds', min_val=0, max_val=3600)
+            bot_config['segment_delay_min_seconds'] = require_int(
+                payload, 'segment_delay_min_seconds', min_val=0, max_val=3600)
         if 'segment_delay_max_seconds' in payload:
-            bot_config['segment_delay_max_seconds'] = require_int(payload, 'segment_delay_max_seconds', min_val=0, max_val=3600)
+            bot_config['segment_delay_max_seconds'] = require_int(
+                payload, 'segment_delay_max_seconds', min_val=0, max_val=3600)
         if bot_config['segment_delay_min_seconds'] > bot_config['segment_delay_max_seconds']:
             raise ValueError('分段发送最小延迟不能大于最大延迟。')
         if 'normal_input_limit' in payload:
@@ -243,7 +248,6 @@ def dispatch(payload: dict, Proc) -> dict:
 
 def handle_menu_event(plugin_event, Proc) -> None:
     """在原始网页事件上回包；不依赖 bot_info，不使用机器人 reply()。"""
-    utils.ensure_webui_assets(Proc)
     data = getattr(plugin_event, 'data', None)
     if getattr(data, 'namespace', None) != config.plugin_name:
         return
