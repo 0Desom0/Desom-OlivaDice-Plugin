@@ -1,4 +1,4 @@
-﻿# -*- encoding: utf-8 -*-
+# -*- encoding: utf-8 -*-
 """Lanota Fandom API 更新逻辑。
 
 本移植版只保留 MediaWiki API 方式：
@@ -41,7 +41,8 @@ def clean_ref(text: str) -> str:
 def clean_wiki_links(text: str) -> str:
     source = str(song_sync.strip_nowiki_markup(text))
     source = re.sub(r'\[\[(?:[^|\]]+\|)?([^\]]+)\]\]', r'\1', source)
-    return re.sub(r"'{2,}", '', source).strip()
+    source = re.sub(r"'{2,}", '', source)
+    return song_sync.strip_html_markup(source).strip()
 
 
 def replace_br(text: str) -> str:
@@ -62,7 +63,8 @@ def classify(chap_left: str) -> str:
 
 
 def wiki_title_to_url(title: str) -> str:
-    safe_title = quote(str(title).replace(' ', '_'), safe=':/()\'!-._~')
+    clean_title = song_sync.strip_html_markup(str(title)).strip()
+    safe_title = quote(clean_title.replace(' ', '_'), safe=':/()\'!-._~')
     return f'{config.api_base_url}/wiki/{safe_title}'
 
 
@@ -72,8 +74,10 @@ def wiki_url_to_page_name(url: str) -> str:
     if parsed_url.params:
         path = f'{path};{parsed_url.params}'
     if '/wiki/' in path:
-        return unquote(path.split('/wiki/', 1)[1]).replace('_', ' ')
-    return unquote(path.strip('/')).replace('_', ' ')
+        raw_name = unquote(path.split('/wiki/', 1)[1]).replace('_', ' ')
+    else:
+        raw_name = unquote(path.strip('/')).replace('_', ' ')
+    return song_sync.strip_html_markup(raw_name).strip()
 
 
 def is_song_list_link(title: str) -> bool:
@@ -96,6 +100,7 @@ def is_song_list_link(title: str) -> bool:
 
 def fetch_wikitext(session, page_name: str) -> str:
     page_name = str(page_name or '').split('#', 1)[0].strip()
+    page_name = song_sync.strip_html_markup(page_name).strip()
     if not page_name:
         return ''
 
@@ -122,6 +127,11 @@ def fetch_wikitext(session, page_name: str) -> str:
             content = main_slot.get('content') or revisions[0].get('content') or ''
             if content:
                 return str(content)
+    candidates = [page_name]
+    if re.search(r'[\[\]|{}]', page_name):
+        cleaned = re.sub(r'\s+', ' ', re.sub(r'[\[\]|{}]', '', page_name)).strip()
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
 
     parse_params = {
         'action': 'parse',
@@ -136,6 +146,54 @@ def fetch_wikitext(session, page_name: str) -> str:
     data = response.json()
     wikitext = ((data.get('parse') or {}).get('wikitext') or {}).get('*', '')
     return str(wikitext or '')
+    for target_title in candidates:
+        params = {
+            'action': 'query',
+            'prop': 'revisions',
+            'titles': target_title,
+            'rvprop': 'content',
+            'rvslots': 'main',
+            'redirects': 1,
+            'format': 'json',
+            'formatversion': 2,
+        }
+        try:
+            response = session.get(config.api_url, params=params, timeout=config.api_timeout_seconds)
+            if response.status_code == 200:
+                data = response.json()
+                pages = (data.get('query') or {}).get('pages') or []
+                for page in pages:
+                    if page.get('invalid'):
+                        continue
+                    revisions = page.get('revisions') or []
+                    if not revisions:
+                        continue
+                    slots = revisions[0].get('slots') or {}
+                    main_slot = slots.get('main') or {}
+                    content = main_slot.get('content') or revisions[0].get('content') or ''
+                    if content:
+                        return str(content)
+        except Exception:
+            pass
+
+        parse_params = {
+            'action': 'parse',
+            'page': target_title,
+            'prop': 'wikitext',
+            'redirects': 1,
+            'format': 'json',
+        }
+        try:
+            response = session.get(config.api_url, params=parse_params, timeout=config.api_timeout_seconds)
+            if response.status_code == 200:
+                data = response.json()
+                wikitext = ((data.get('parse') or {}).get('wikitext') or {}).get('*', '')
+                if wikitext:
+                    return str(wikitext)
+        except Exception:
+            pass
+
+    return ''
 
 
 def extract_song_links_from_wikitext(wikitext: str) -> list[dict[str, str]]:
@@ -157,10 +215,11 @@ def extract_song_links_from_wikitext(wikitext: str) -> list[dict[str, str]]:
         if first_link is None:
             continue
 
-        title = str(first_link.title).strip()
+        title = song_sync.strip_html_markup(str(first_link.title)).strip()
         display_title = clean_wiki_links(str(first_link.text or first_link.title)).strip()
         if not display_title:
             display_title = title.replace('_', ' ')
+        display_title = song_sync.strip_html_markup(display_title).strip()
         key = (title.lower(), display_title.lower())
         if key in seen:
             continue
@@ -491,10 +550,13 @@ def parse_song_from_wikitext(wikitext: str, info: dict[str, str], next_id: Any) 
     if chart_design.strip().upper() == 'SYM':
         chart_design = ''
 
-    field_title = get_template_field(template, 'Song')
-    display_title = info.get('display_title', '')
+    field_title = song_sync.strip_html_markup(get_template_field(template, 'Song'))
+    display_title = song_sync.strip_html_markup(info.get('display_title', ''))
     real_title = field_title if len(field_title) >= len(display_title) else display_title
-    source_url = info.get('href') or wiki_title_to_url(info.get('page_name', real_title))
+    if not real_title:
+        real_title = display_title or field_title
+    page_name = info.get('page_name') or wiki_url_to_page_name(info.get('href', '')) or real_title
+    source_url = info.get('href') or wiki_title_to_url(page_name)
 
     song = {
         'id': next_id,
@@ -1205,15 +1267,22 @@ def update_existing_song_from_wiki(
     before_missing = set(check_missing_fields(song))
     merged = dict(song)
     source_url = song.get('source_url')
+    page_name = ''
     if source_url:
-        wikitext = fetch_wikitext(session, wiki_url_to_page_name(source_url))
+        page_name = wiki_url_to_page_name(source_url)
+    if not page_name:
+        page_name = str(song.get('title_outside') or song.get('title') or '').strip()
+    if page_name:
+        wikitext = fetch_wikitext(session, page_name)
         if wikitext:
+            display_title = str(song.get('title_outside') or song.get('title') or page_name)
+            href = str(source_url or wiki_title_to_url(page_name))
             parsed_song = parse_song_from_wikitext(
                 wikitext,
                 {
-                    'display_title': str(song.get('title', '')),
-                    'href': str(source_url),
-                    'page_name': wiki_url_to_page_name(source_url),
+                    'display_title': display_title,
+                    'href': href,
+                    'page_name': page_name,
                 },
                 song.get('id', ''),
             )

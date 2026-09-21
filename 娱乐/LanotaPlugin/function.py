@@ -1,4 +1,4 @@
-﻿# -*- encoding: utf-8 -*-
+# -*- encoding: utf-8 -*-
 """Lanota 曲库业务逻辑与图片渲染。"""
 
 import datetime
@@ -61,11 +61,15 @@ category_name_map = {
 
 def load_song_data() -> list[dict[str, Any]]:
     data = utils.read_json_file(utils.get_song_list_path(), [])
-    return data if isinstance(data, list) else []
+    if isinstance(data, list):
+        from . import song_sync
+        return song_sync.sanitize_song_markup(data)
+    return []
 
 
 def save_song_data(song_data: list[dict[str, Any]]) -> bool:
-    return utils.save_json_file(utils.get_song_list_path(), song_data)
+    from . import song_sync
+    return utils.save_json_file(utils.get_song_list_path(), song_sync.sanitize_song_markup(song_data))
 
 
 def load_alias_data() -> dict[str, list[str]]:

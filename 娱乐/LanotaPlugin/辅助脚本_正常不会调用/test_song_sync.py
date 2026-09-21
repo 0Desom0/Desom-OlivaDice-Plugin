@@ -212,6 +212,28 @@ class SongSyncTest(unittest.TestCase):
             },
         )
 
+    def test_sanitize_song_markup_decodes_html_entities(self):
+        song = {
+            "title": "&#91;Oro Ara&#93;",
+            "pipe": "&#124;Act Casket&#124;",
+            "quotes": "cyanine&#39;s &quot;Apocalypse&quot;",
+            "nested_entities": "&amp;#91;Double Escaped&amp;#93;",
+            "nbsp": "word\xa0with\xa0nbsp",
+            "list": ["The Highway No.105 &#91;XXX&#93;", "A &amp; B"],
+        }
+        self.assertEqual(
+            song_sync.sanitize_song_markup(song),
+            {
+                "title": "[Oro Ara]",
+                "pipe": "|Act Casket|",
+                "quotes": "cyanine's \"Apocalypse\"",
+                "nested_entities": "[Double Escaped]",
+                "nbsp": "word with nbsp",
+                "list": ["The Highway No.105 [XXX]", "A & B"],
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+

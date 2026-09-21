@@ -80,30 +80,45 @@ class _VisibleHtmlTextParser(HTMLParser):
         self.handle_starttag(tag, attrs)
 
 
+def unescape_html_entities(text: str) -> str:
+    """解码 HTML 字符实体（支持多层/嵌套实体），并将不间断空格规整为标准空格。"""
+    if not isinstance(text, str) or ("&" not in text and "\xa0" not in text):
+        return text
+    current = text
+    for _ in range(3):
+        unescaped = html.unescape(current)
+        if unescaped == current:
+            break
+        current = unescaped
+    return current.replace("\xa0", " ")
+
+
 def strip_html_markup(value: Any) -> Any:
-    """递归移除 HTML 标签和注释，同时保留标签内可见文字。"""
+    """递归移除 HTML 标签、注释并解码 HTML 实体，保留标签内可见文字。"""
     if isinstance(value, dict):
         return {key: strip_html_markup(item) for key, item in value.items()}
     if isinstance(value, list):
         return [strip_html_markup(item) for item in value]
-    if not isinstance(value, str) or not HTML_MARKUP_PATTERN.search(value):
+    if not isinstance(value, str):
         return value
-    parser = _VisibleHtmlTextParser()
-    parser.feed(value)
-    parser.close()
-    return re.sub(r"\s+", " ", "".join(parser.parts)).strip()
+    text = value
+    if HTML_MARKUP_PATTERN.search(text):
+        parser = _VisibleHtmlTextParser()
+        parser.feed(text)
+        parser.close()
+        text = re.sub(r"\s+", " ", "".join(parser.parts)).strip()
+    return unescape_html_entities(text)
 
 
 def sanitize_song_markup(value: Any) -> Any:
-    """清理曲库中历史 nowiki/HTML 标记，供读取和落盘前统一调用。"""
+    """清理曲库中历史 nowiki/HTML 标记与实体，供读取和落盘前统一调用。"""
     return strip_html_markup(strip_nowiki_markup(value))
 
 
 def clean_title_text(value: Any) -> str:
     """去掉 Fandom 标题残留的 HTML/MediaWiki 标记并统一实体。"""
     text = str(strip_nowiki_markup(value or ""))
-    for _unused in range(2):
-        text = html.unescape(text)
+    text = strip_html_markup(text)
     text = MEDIAWIKI_TAG_PATTERN.sub("", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -123,7 +138,7 @@ def _source_title(song: dict[str, Any]) -> str:
         return ""
     path = unquote(urlparse(source_url).path)
     if "/wiki/" in path:
-        return path.split("/wiki/", 1)[1].replace("_", " ")
+        return strip_html_markup(path.split("/wiki/", 1)[1].replace("_", " "))
     return ""
 
 
