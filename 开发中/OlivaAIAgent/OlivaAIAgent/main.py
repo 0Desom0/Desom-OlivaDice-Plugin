@@ -22,7 +22,6 @@ class Event(object):
         gProc = Proc
         OlivaAIAgent.conf.gProc = Proc
         OlivaAIAgent.conf.traceLog(Proc, 'plugin.init_after.start')
-        OlivaAIAgent.webui.ensureWebuiAssets(Proc)
         try:
             vision_status = OlivaAIAgent.vision.getVisionStatus()
             OlivaAIAgent.conf.log(

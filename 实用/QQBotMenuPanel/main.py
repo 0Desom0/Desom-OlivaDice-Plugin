@@ -11,7 +11,6 @@ class Event(object):
         message.handle_init(plugin_event, Proc)
 
     def init_after(plugin_event, Proc):
-        utils.ensure_webui_assets(Proc)
         message.handle_init_after(plugin_event, Proc)
 
     def save(plugin_event, Proc):

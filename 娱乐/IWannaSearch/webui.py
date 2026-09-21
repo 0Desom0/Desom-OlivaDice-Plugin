@@ -197,7 +197,6 @@ def dispatch(payload: dict, Proc) -> dict:
 
 def handle_menu_event(plugin_event, Proc) -> None:
     """在原始网页事件上回包；不依赖 bot_info，不使用机器人 reply()。"""
-    utils.ensure_webui_assets(Proc)
     data = getattr(plugin_event, 'data', None)
     if getattr(data, 'namespace', None) != config.plugin_name:
         return
