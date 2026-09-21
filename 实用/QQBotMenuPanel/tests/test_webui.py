@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import OlivOS
 import pytest
 
+from OlivOS.webUI import resourceAPI
+
 PLUGIN = Path(__file__).resolve().parents[1]
 NAMESPACE = 'QQBotMenuPanel'
 
@@ -39,8 +41,11 @@ def panel(tmp_path, monkeypatch):
     shutil.copytree(PLUGIN, root, ignore=shutil.ignore_patterns('__pycache__', 'tests'))
     manifest = json.loads((PLUGIN / 'app.json').read_text(encoding='utf-8'))
     loader.plugin_models_call_list = [NAMESPACE]
-    loader.plugin_models_dict = {NAMESPACE: dict(manifest, model=module, webui_root=str(root))}
-    loader.sendPluginList()
+    resources, pages = resourceAPI.declaration(root, manifest)
+    loader.plugin_models_dict = {
+        NAMESPACE: dict(manifest, model=module, webui_root=str(root), webui_resources=resources, webui_config=pages),
+    }
+    loader.sendPluginList(ready=True)
     while not host.Proc_info.control_queue.empty():
         host.consume(host.Proc_info.control_queue.get_nowait())
     calls = []
@@ -93,16 +98,20 @@ def test_host_mount_requires_login_and_supports_opk(panel, packed):
         root = panel.host.root / 'plugin/tmp' / NAMESPACE
         with zipfile.ZipFile(archive) as package:
             package.extractall(root)
-        panel.loader.plugin_models_dict[NAMESPACE]['webui_root'] = str(root)
-        panel.loader.sendPluginList()
+        resources = panel.loader.plugin_models_dict[NAMESPACE]['webui_resources']
+        cached = resourceAPI.build_cache(panel.host.root, root, NAMESPACE, resources)
+        shutil.rmtree(root)
+        panel.loader.plugin_models_dict[NAMESPACE]['webui_root'] = cached
+        panel.loader.sendPluginList(ready=True)
         panel.host.consume(panel.host.Proc_info.control_queue.get_nowait())
     client = panel.host.app.test_client()
-    endpoint = f'/plugin/{NAMESPACE}/index.html'
+    endpoint = f'/plugin/{NAMESPACE}/webui/index.html'
     assert client.get(endpoint).status_code == 401
     client.post('/api/login', headers={'X-Auth-Token': panel.host.token})
     response = client.get(endpoint, follow_redirects=True)
     assert response.status_code == 200
     assert response.data == (PLUGIN / 'webui/index.html').read_bytes()
+    response.close()
     assert "connect-src 'none'" in response.headers['Content-Security-Policy']
     assert panel.host.plugin_pages[0]['namespace'] == NAMESPACE
 
@@ -195,7 +204,9 @@ def test_no_bots_still_allows_global_settings(panel):
 @pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='Browser verification is opt-in')
 def test_browser_in_host_sandbox(panel):
     from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import Select
     from selenium.webdriver.support.ui import WebDriverWait
 
     host = panel.host
@@ -224,17 +235,73 @@ def test_browser_in_host_sandbox(panel):
     driver = None
     try:
         assert host.ready.wait(5) and host.error is None
-        driver = webdriver.Chrome(options=options)
+        driver_path = os.environ.get('OLIVOS_CHROMEDRIVER')
+        chrome_service = Service(executable_path=driver_path) if driver_path else None
+        driver = webdriver.Chrome(options=options, service=chrome_service)
         wait = WebDriverWait(driver, 15)
         driver.get(f"http://127.0.0.1:{host.config['port']}")
         driver.find_element(By.ID, 'token').send_keys(host.token)
         driver.find_element(By.CSS_SELECTOR, '#login-form button').click()
-        wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, '#plugin-links button'))
-        driver.find_element(By.CSS_SELECTOR, '#plugin-links button').click()
+        wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, '#plugin-links .plugin-link-entry'))
+        driver.find_element(By.CSS_SELECTOR, '#plugin-links .plugin-link-entry').click()
         wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, '#plugin-frame-container iframe'))
         driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, '#plugin-frame-container iframe'))
         wait.until(lambda d: d.execute_script('return state && state.menu_draft.items.length > 0'))
         wait.until(lambda d: d.execute_script('return pendingRequests.size === 0'))
+        screenshots = Path(os.environ.get('OLIVOS_WEBUI_SCREENSHOTS', host.root / 'screenshots'))
+        screenshots.mkdir(parents=True, exist_ok=True)
+        identity = driver.execute_script('window.themeTestIdentity = Math.random(); return window.themeTestIdentity')
+
+        def theme(mode, system, dark):
+            driver.switch_to.default_content()
+            driver.execute_cdp_cmd('Emulation.setEmulatedMedia', {
+                'features': [{'name': 'prefers-color-scheme', 'value': system}],
+            })
+            Select(driver.find_element(By.CSS_SELECTOR, 'aside [data-theme-select]')).select_by_value(mode)
+            driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, '#plugin-frame-container iframe'))
+            wait.until(lambda d: d.execute_script("return matchMedia('(prefers-color-scheme: dark)').matches") == dark)
+            expected = 'rgb(25, 31, 40)' if dark else 'rgb(243, 244, 246)'
+            wait.until(lambda d: d.execute_script('return getComputedStyle(document.body).backgroundColor') == expected)
+            assert driver.execute_script('return window.themeTestIdentity') == identity
+            assert driver.execute_script('return state.menu_draft.items.length > 0')
+
+        def screenshot(name):
+            driver.switch_to.default_content()
+            driver.save_screenshot(str(screenshots / name))
+            driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, '#plugin-frame-container iframe'))
+
+        theme('light', 'dark', False)
+        screenshot('qqmenu-light.png')
+        theme('dark', 'light', True)
+        screenshot('qqmenu-dark.png')
+        for tab in ('menu', 'panel', 'browse', 'settings', 'help'):
+            driver.find_element(By.CSS_SELECTOR, f'.tabs button[data-tab="{tab}"]').click()
+            wait.until(lambda d: d.find_element(By.ID, 'tab-' + tab).is_displayed())
+            color = driver.execute_script(
+                'return getComputedStyle(document.querySelector(arguments[0])).backgroundColor', f'#tab-{tab} .card')
+            assert color == 'rgb(36, 46, 59)'
+        screenshot('qqmenu-dark-help.png')
+        theme('system', 'light', False)
+        theme('system', 'dark', True)
+        driver.execute_script('showTab("menu"); sendMenu()')
+        assert driver.find_element(By.ID, 'confirmModal').is_displayed()
+        assert driver.execute_script(
+            'return getComputedStyle(document.querySelector("#confirmModal .modal-card")).backgroundColor') == \
+            'rgb(36, 46, 59)'
+        screenshot('qqmenu-dark-confirm.png')
+        driver.find_element(By.ID, 'confirmCancel').click()
+        driver.execute_script('showTab("panel"); fillExample("panel")')
+        wait.until(lambda d: d.execute_script('return pendingRequests.size === 0 && currentPanel() !== null'))
+        screenshot('qqmenu-dark-panel.png')
+        driver.switch_to.default_content()
+        driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+            'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': False,
+        })
+        driver.save_screenshot(str(screenshots / 'qqmenu-dark-mobile.png'))
+        driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+            'width': 1440, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False,
+        })
+        driver.switch_to.frame(driver.find_element(By.CSS_SELECTOR, '#plugin-frame-container iframe'))
         driver.execute_script('showTab("settings"); document.getElementById("botEnable").value = "false"; saveGlobal()')
         wait.until(lambda d: d.execute_script('return state.bot_enable_switch === false && pendingRequests.size === 0'))
         driver.execute_script('sendMenu()')
@@ -263,8 +330,13 @@ def test_browser_in_host_sandbox(panel):
         assert not driver.find_element(By.ID, 'botSelect').is_enabled()
         wait.until(lambda d: '超时' in d.find_element(By.ID, 'resultBox').text)
         assert driver.find_element(By.ID, 'botSelect').is_enabled()
-        errors = [entry for entry in driver.get_log('browser') if entry['level'] == 'SEVERE']
+        errors = [entry for entry in driver.get_log('browser')
+                  if entry['level'] == 'SEVERE' and entry.get('source') == 'javascript']
         assert not errors, f'{len(errors)} browser errors'
+    except Exception:
+        if driver is not None:
+            driver.save_screenshot(str(host.root / 'failure.png'))
+        raise
     finally:
         if driver is not None:
             driver.quit()

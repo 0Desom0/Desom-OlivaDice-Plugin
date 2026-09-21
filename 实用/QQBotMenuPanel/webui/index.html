@@ -3,6 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
     <title>QQ 自定义菜单与指令面板</title>
 
     <!--
@@ -46,6 +47,7 @@
     <style>
         /* ==================== 1. 可调整的外观参数 ==================== */
         :root {
+            color-scheme: light dark;
             /* 主题色（按钮、选中态、开关） */
             --blue: #2b8cff;
             --blue-soft: #e8f1ff;
@@ -75,6 +77,7 @@
             --hint-color: #88aaaa;
             --count-color: #9aa0a6;
             --control-border: #e5e5e5;
+            --preview-border: #dddddd;
             --soft-border: #eeeeee;
             --divider: #f2f2f2;
             --hover-row: #f7f8fa;
@@ -92,6 +95,8 @@
             --pill-border: #e3e4e8;
             --icon: #6f6f6f;
             --phone-bar: #9a9a9a;
+            --success: #16a34a;
+            --error: #dc2626;
             --phone-width: 318px;
             --subpop-max-height: min(280px, 46vh);
 
@@ -104,6 +109,47 @@
             --mono-font: ui-monospace, Consolas, monospace;
             --card-radius: 12px;
             --control-radius: 8px;
+        }
+
+        /* iframe 的配色偏好跟随宿主 color-scheme；主页面切换主题时无需刷新。 */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --blue: #3b91db;
+                --blue-soft: #233d54;
+                --switch: #8bbaff;
+                --switch-bg: #273e5b;
+                --switch-border: #46658a;
+                --text: #e8edf4;
+                --sub: #a6b3c3;
+                --muted: #a6b3c3;
+                --line: #3a4552;
+                --bg: #191f28;
+                --card: #242e3b;
+                --topbar-bg: #164b6b;
+                --primary-button: #176e98;
+                --gray-button: #546476;
+                --danger-button: #a93d4c;
+                --label-color: #c3cedb;
+                --hint-color: #a6bbc9;
+                --count-color: #a6b3c3;
+                --control-border: #4a586a;
+                --preview-border: #394554;
+                --soft-border: #3a4552;
+                --divider: #354150;
+                --hover-row: #304051;
+                --code-bg: #182330;
+                --console-bg: #101820;
+                --console-text: #c8ecd9;
+                --preview-bg: #141c25;
+                --menu-stage: #1d2733;
+                --pill-border: #455369;
+                --icon: #b9c7d7;
+                --phone-bar: #45566b;
+                --success: #6ee7a0;
+                --error: #ff9ca8;
+                --overlay: rgba(0, 0, 0, .6);
+                --modal-shadow: 0 16px 40px rgba(0, 0, 0, .4);
+            }
         }
 
         /* ==================== 2. 页面骨架 ==================== */
@@ -196,7 +242,7 @@
             height: 100%;
             min-height: 0;
             padding: 16px;
-            border-left: 1px solid #dddddd;
+            border-left: 1px solid var(--preview-border);
             background: var(--preview-bg);
             overflow-x: hidden;
             overflow-y: auto;
@@ -224,7 +270,7 @@
             padding: 8px 14px;
             border: 0;
             border-radius: var(--control-radius);
-            background: #ffffff;
+            background: var(--card);
             color: var(--label-color);
             cursor: pointer;
         }
@@ -261,6 +307,8 @@
             border: 1px solid var(--control-border);
             border-radius: var(--control-radius);
             font-size: 13px;
+            background: var(--card);
+            color: var(--text);
         }
 
         textarea {
@@ -358,7 +406,7 @@
         .help {
             font-size: 14px;
             line-height: 1.75;
-            color: #222222;
+            color: var(--text);
         }
 
         .help h1 {
@@ -462,7 +510,7 @@
             width: min(460px, 100%);
             padding: 18px 18px 16px;
             border-radius: 14px;
-            background: #ffffff;
+            background: var(--card);
             box-shadow: var(--modal-shadow);
         }
 
@@ -477,12 +525,12 @@
         }
 
         .modal-card .ok {
-            color: #16a34a;
+            color: var(--success);
             font-weight: 700;
         }
 
         .modal-card .fail {
-            color: #dc2626;
+            color: var(--error);
             font-weight: 700;
         }
 
@@ -534,8 +582,8 @@
             gap: 5px;
             border: 1px solid var(--pill-border);
             border-radius: 999px;
-            background: #ffffff;
-            color: #333333;
+            background: var(--card);
+            color: var(--text);
             font-size: 13px;
             line-height: 1;
             white-space: nowrap;
@@ -577,8 +625,8 @@
             display: flex;
             align-items: center;
             border-radius: 10px;
-            background: #ffffff;
-            color: #333333;
+            background: var(--card);
+            color: var(--text);
             font-size: 14px;
             overflow: hidden;
             white-space: nowrap;
@@ -608,7 +656,7 @@
             max-width: calc(100% - 8px);
             max-height: var(--subpop-max-height);
             border-radius: var(--card-radius);
-            background: #ffffff;
+            background: var(--card);
             box-shadow: 0 10px 28px rgba(0, 0, 0, .16);
             overflow-x: hidden;
             overflow-y: auto;
@@ -621,7 +669,7 @@
             bottom: -5px;
             width: 10px;
             height: 10px;
-            background: #ffffff;
+            background: var(--card);
             transform: translateX(-50%) rotate(45deg);
             box-shadow: 2px 2px 4px rgba(0, 0, 0, .04);
         }
@@ -631,7 +679,7 @@
             z-index: 1;
             padding: 12px 16px;
             border-top: 1px solid var(--soft-border);
-            background: #ffffff;
+            background: var(--card);
             font-size: 13px;
             white-space: nowrap;
             cursor: pointer;
@@ -650,7 +698,7 @@
             min-height: 100%;
             padding: 18px 12px 24px;
             border-radius: 16px;
-            background: #ffffff;
+            background: var(--card);
         }
 
         .panel-tabs {
@@ -680,7 +728,7 @@
             margin: 0 auto;
             border: 1px solid var(--line);
             border-radius: 26px;
-            background: #ffffff;
+            background: var(--card);
             box-shadow: 0 10px 28px rgba(0, 0, 0, .08);
             overflow: hidden;
         }
@@ -694,7 +742,7 @@
             min-height: 430px;
             display: flex;
             flex-direction: column;
-            background: #ffffff;
+            background: var(--card);
         }
 
         .bot-row {
@@ -702,7 +750,7 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            color: #8c8c8c;
+            color: var(--sub);
             font-size: 12px;
         }
 
@@ -733,12 +781,12 @@
         }
 
         .cmd-row .left {
-            color: #222222;
+            color: var(--text);
         }
 
         .cmd-row .right {
             max-width: 58%;
-            color: #a0a0a0;
+            color: var(--muted);
             font-size: 13px;
             text-align: right;
             overflow: hidden;
@@ -760,7 +808,7 @@
 
         .empty-hint {
             padding: 18px 16px;
-            color: #bbbbbb;
+            color: var(--muted);
             font-size: 13px;
         }
 
@@ -785,13 +833,30 @@
             .preview-wrap {
                 height: auto;
                 min-height: 560px;
-                border-top: 1px solid #dddddd;
+                border-top: 1px solid var(--preview-border);
                 border-left: 0;
             }
 
             .official-menu,
             .official-panel {
                 min-height: 520px;
+            }
+        }
+        @media (max-width: 600px) {
+            .topbar {
+                height: auto;
+                min-height: 56px;
+                flex-wrap: wrap;
+                padding: 12px 18px;
+                gap: 8px;
+            }
+
+            .topbar h1 {
+                flex-basis: 100%;
+            }
+
+            .topbar .url {
+                flex-basis: 100%;
             }
         }
     </style>
