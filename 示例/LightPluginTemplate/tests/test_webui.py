@@ -225,6 +225,31 @@ class WebUITest(unittest.TestCase):
         self.main.Event.menu(event, self.proc)
         self.proc.log.assert_called()
 
+    def test_unknown_prefixed_command_is_silent(self):
+        event = types.SimpleNamespace()
+        global_config = self.config.default_global_config.copy()
+        bot_config = self.config.default_bot_config.copy()
+        with patch.object(self.main.message.utils, 'ensure_runtime_storage_by_event', return_value=self.child_hash), \
+                patch.object(self.main.message.utils, 'check_core_group_enable', return_value=True), \
+                patch.object(self.main.message.utils, 'get_message_text_from_event', return_value='.unknown'), \
+                patch.object(self.main.message.utils, 'load_global_config', return_value=global_config), \
+                patch.object(self.main.message.utils, 'load_bot_config', return_value=bot_config), \
+                patch.object(self.main.message.utils, 'is_group_disabled', return_value=False), \
+                patch.object(self.main.message.utils, 'reply_message') as reply_message:
+            self.main.message.handle_message(event, self.proc)
+        reply_message.assert_not_called()
+
+    def test_reply_message_does_not_quote_by_default(self):
+        event = types.SimpleNamespace(
+            data=types.SimpleNamespace(group_id='123', message_id='456'),
+            reply=Mock(return_value=True),
+        )
+        self.utils.reply_message(event, 'hello')
+        event.reply.assert_called_once_with('hello')
+        event.reply.reset_mock()
+        self.utils.reply_message(event, 'hello', quote_reply=True)
+        event.reply.assert_called_once_with('[OP:reply,id=456]hello')
+
 
 if __name__ == '__main__':
     unittest.main()

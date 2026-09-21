@@ -1316,7 +1316,7 @@ def reply_message(
     message_text: str,
     record_by_logger: bool = True,
     at_sender: bool = False,
-    quote_reply: bool = True,
+    quote_reply: bool = False,
 ) -> Any:
     """
     统一回复封装。
@@ -1325,8 +1325,8 @@ def reply_message(
     - record_by_logger=True：主动调用 Logger 钩子，便于被日志系统记录。
     - record_by_logger=False：不主动调用 Logger 钩子，只发送消息。
     - at_sender=True：在消息前追加一个 at 当前用户的 OP 码。
+    - quote_reply=False：发送消息，但不引用触发消息（默认）。
     - quote_reply=True：群聊中引用触发消息；私聊或无有效消息 ID 时不追加引用。
-    - quote_reply=False：发送消息，但不引用触发消息。
     """
     final_message = safe_str(message_text)
     if at_sender:

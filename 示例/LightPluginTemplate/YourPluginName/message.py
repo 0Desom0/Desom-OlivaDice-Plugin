@@ -576,4 +576,4 @@ def handle_message(plugin_event, Proc) -> None:
         handle_tplwhoami(plugin_event)
         return
 
-    utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_help_hint'))
+    return
