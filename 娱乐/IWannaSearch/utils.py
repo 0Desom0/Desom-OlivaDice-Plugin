@@ -685,6 +685,70 @@ def initialize_bot_storage(bot_hash: Any, bot_id: Any = '') -> Dict[str, Any]:
     }
 
 
+_cached_webui_assets = {}
+_webui_lock_handles = []
+
+
+def ensure_webui_assets(Proc=None) -> None:
+    """确保 WebUI 静态资源在各种部署模式（目录/OPK）下始终存在，防止 OlivOS 清理 tmp 造成 404。"""
+    global _cached_webui_assets, _webui_lock_handles
+    try:
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        webui_dir = os.path.join(plugin_dir, 'webui')
+        index_path = os.path.join(webui_dir, 'index.html')
+
+        # 1. 优先将磁盘上现存的 index.html 载入内存缓存
+        if os.path.isfile(index_path):
+            if 'index.html' not in _cached_webui_assets:
+                with open(index_path, 'rb') as f:
+                    _cached_webui_assets['index.html'] = f.read()
+        # 2. 若磁盘文件已被清理（如 OlivOS 删除 plugin/tmp 缓存），从内存缓存还原
+        elif 'index.html' in _cached_webui_assets:
+            os.makedirs(webui_dir, exist_ok=True)
+            with open(index_path, 'wb') as f:
+                f.write(_cached_webui_assets['index.html'])
+        # 3. 若内存缓存未命中，尝试从上层可能的 .opk 包中直接解压恢复
+        else:
+            namespace = getattr(config, 'plugin_name', 'IWannaSearch')
+            candidate_dirs = [
+                os.path.abspath(os.path.join(plugin_dir, '..', '..', 'plugin', 'app')),
+                os.path.abspath(os.path.join(plugin_dir, '..', '..', 'plugin')),
+                os.path.abspath(os.path.join(plugin_dir, '..')),
+                plugin_dir,
+            ]
+            for c_dir in candidate_dirs:
+                c_opk = os.path.join(c_dir, f'{namespace}.opk')
+                if os.path.isfile(c_opk):
+                    try:
+                        import zipfile
+                        with zipfile.ZipFile(c_opk, 'r') as zf:
+                            for name in zf.namelist():
+                                if name.startswith('webui/') and not name.endswith('/'):
+                                    target_file = os.path.join(plugin_dir, name)
+                                    os.makedirs(os.path.dirname(target_file), exist_ok=True)
+                                    with zf.open(name) as src, open(target_file, 'wb') as dst:
+                                        content = src.read()
+                                        dst.write(content)
+                                        if name == 'webui/index.html':
+                                            _cached_webui_assets['index.html'] = content
+                    except Exception:
+                        pass
+                    break
+
+        # 4. 在 Windows 环境下，若运行于 tmp 临时目录，打开只读句柄锁定文件，
+        #    阻止 OlivOS 在 load_plugin_list 末尾的 removeDir 删除该目录
+        is_in_tmp = ('plugin' in plugin_dir.lower() and 'tmp' in plugin_dir.lower())
+        if is_in_tmp and os.name == 'nt' and os.path.isfile(index_path):
+            if not _webui_lock_handles:
+                try:
+                    _webui_lock_handles.append(open(index_path, 'rb'))
+                except Exception:
+                    pass
+    except Exception as e:
+        if Proc is not None:
+            debug_log(Proc, f'WebUI 资源保活异常: {e}')
+
+
 def initialize_plugin(Proc) -> None:
     """
     初始化整个插件的数据目录。
@@ -693,6 +757,7 @@ def initialize_plugin(Proc) -> None:
     模板在这里把所有 bot 的目录预先建立好，后续 message.py 读取配置时
     就不会遇到“目录还没创建”的问题。
     """
+    ensure_webui_assets(Proc)
     ensure_folder(config.plugin_data_dir)
 
     bot_info_dict = {}
@@ -1267,4 +1332,8 @@ def add_reply_quote(plugin_event, message_text: str) -> str:
     if reply_segment_pattern.match(source.lstrip()):
         return source
     return f'{build_reply_quote_segment(plugin_event)}{source}'
+
+
+# 模块载入时立即执行 WebUI 资源嗅探与内存缓存/锁定
+ensure_webui_assets()
 
