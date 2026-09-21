@@ -16,6 +16,7 @@ plugin_display_name = '赛博角斗场'
 
 menu_title_open_config = '打开插件配置'
 menu_event_open_config = 'CyberGladiator_Menu_001'
+webui_event = 'CyberGladiator_WebUI_Config'
 
 plugin_data_dir = os.path.join('plugin', 'data', plugin_name)
 

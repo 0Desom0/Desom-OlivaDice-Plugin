@@ -7,6 +7,7 @@ plugin_name = 'IWannaSearch'
 
 menu_title_open_config = '打开插件配置'
 menu_event_open_config = 'IWannaSearch_Menu_001'
+webui_event = 'IWannaSearch_WebUI_Config'
 
 plugin_data_dir = os.path.join('plugin', 'data', plugin_name)
 

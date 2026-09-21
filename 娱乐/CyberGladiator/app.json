@@ -25,5 +25,12 @@
       "title": "打开插件配置",
       "event": "CyberGladiator_Menu_001"
     }
+  ],
+  "webui_config": [
+    {
+      "title": "赛博角斗场配置",
+      "type": "iframe",
+      "path": "webui/index.html"
+    }
   ]
 }

@@ -12,6 +12,7 @@
 from . import gui
 from . import message
 from . import utils
+from . import webui
 
 
 class Event(object):
@@ -48,5 +49,9 @@ class Event(object):
 
     def menu(plugin_event, Proc):
         """菜单事件入口"""
-        gui.handle_menu_event(plugin_event, Proc)
+        if getattr(getattr(plugin_event, 'data', None), 'webui', None) is not None:
+            webui.handle_menu_event(plugin_event, Proc)
+        else:
+            gui.handle_menu_event(plugin_event, Proc)
+
 

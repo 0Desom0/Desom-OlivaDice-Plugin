@@ -24,5 +24,12 @@
             "title": "重载配置",
             "event": "OlivaAIAgent_Menu_Reload"
         }
+    ],
+    "webui_config": [
+        {
+            "title": "OlivaAIAgent 设置",
+            "type": "iframe",
+            "path": "webui/index.html"
+        }
     ]
 }

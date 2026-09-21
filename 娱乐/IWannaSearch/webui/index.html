@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>IWannaSearch 配置</title>
+    <script>
+        'use strict';
+        const PAGE_CONFIG = {
+            eventName: 'IWannaSearch_WebUI_Config',
+            title: 'IWannaSearch 配置',
+            description: '管理 I Wanna Fangame Archive 查询插件的接口、下载参数、骰主与回复。',
+            requestTimeoutMs: 15000,
+            defaultTab: 'global',
+            features: {
+                replies: true,
+                masters: true,
+                directories: true,
+            },
+        };
+    </script>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --page-background: #f3f7fb;
+            --card-background: #ffffff;
+            --text-color: #203248;
+            --muted-color: #596b80;
+            --border-color: #d3deea;
+            --accent-color: #0674aa;
+            --accent-background: #e7f4fc;
+            --error-color: #b33243;
+            --font-family: system-ui, 'Microsoft YaHei', sans-serif;
+            --font-size: 14px;
+            --page-max-width: 1040px;
+            --page-padding: 24px;
+            --card-padding: 20px;
+            --card-radius: 10px;
+            --control-radius: 6px;
+            --section-gap: 16px;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --page-background: #141d28;
+                --card-background: #1d2a39;
+                --text-color: #e8f0f9;
+                --muted-color: #a9bbce;
+                --border-color: #415269;
+                --accent-color: #7acbff;
+                --accent-background: #233f54;
+                --error-color: #ffabb5;
+            }
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--page-background);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            font-size: var(--font-size);
+            line-height: 1.6;
+        }
+        main {
+            max-width: var(--page-max-width);
+            margin: auto;
+            padding: var(--page-padding);
+        }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+        header > div { min-width: 0; }
+        header > button { flex-shrink: 0; }
+        h1 { margin: 0; font-size: 22px; }
+        h2 { margin: 0 0 12px; font-size: 16px; }
+        p { margin: 6px 0 14px; }
+        .muted, .hint { color: var(--muted-color); }
+        .hint { font-size: 12px; }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin: 16px 0;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .card {
+            margin-bottom: var(--section-gap);
+            padding: var(--card-padding);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-radius);
+            background: var(--card-background);
+        }
+        .columns {
+            display: grid;
+            grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+            gap: var(--section-gap);
+        }
+        @media (max-width: 840px) {
+            .columns { grid-template-columns: 1fr; }
+        }
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            margin-top: 14px;
+        }
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+            margin-top: 12px;
+        }
+        button, input, select, textarea { font: inherit; }
+        button {
+            padding: 7px 14px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--control-radius);
+            background: var(--card-background);
+            color: inherit;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        button:hover:not(:disabled) { border-color: var(--accent-color); }
+        button.primary {
+            background: var(--accent-color);
+            color: #fff;
+            border-color: var(--accent-color);
+        }
+        button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+        button.tab-btn {
+            border: none;
+            background: transparent;
+            font-weight: bold;
+            padding: 8px 16px;
+            border-radius: var(--control-radius);
+        }
+        button.tab-btn.active {
+            background: var(--accent-background);
+            color: var(--accent-color);
+        }
+        input[type="text"], input[type="number"], select, textarea {
+            width: 100%;
+            padding: 7px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--control-radius);
+            background: var(--card-background);
+            color: inherit;
+        }
+        textarea { resize: vertical; min-height: 80px; }
+        .form-group { margin-bottom: 12px; }
+        .form-group label {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+        .checkbox-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .status-bar {
+            margin: 12px 0;
+            padding: 10px 14px;
+            border-radius: var(--control-radius);
+            background: var(--accent-background);
+            color: var(--accent-color);
+            font-size: 13px;
+            display: none;
+        }
+        .status-bar.error {
+            background: rgba(179, 50, 67, 0.15);
+            color: var(--error-color);
+        }
+        .tag-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 8px;
+            background: var(--accent-background);
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .tag button {
+            padding: 0;
+            border: none;
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <div>
+                <h1>IWannaSearch 配置</h1>
+                <p class="muted">管理 I Wanna Fangame Archive 查询插件的接口、下载参数、骰主与回复。</p>
+            </div>
+            <button onclick="fetchState()">刷新数据</button>
+        </header>
+
+        <div id="status-bar" class="status-bar"></div>
+
+        <div class="tabs">
+            <button id="tab-btn-global" class="tab-btn active" onclick="switchTab('global')">全局设置</button>
+            <button id="tab-btn-bot" class="tab-btn" onclick="switchTab('bot')">Bot 配置</button>
+        </div>
+
+        <!-- 全局设置页签 -->
+        <section id="tab-global">
+            <div class="card">
+                <h2>全局功能开关</h2>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="g-enable-switch">
+                        <span>插件全局启用 (global_enable_switch)</span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="g-debug-switch">
+                        <span>调试日志模式 (global_debug_mode_switch)</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>接口与下载参数</h2>
+                <div class="form-group">
+                    <label>Fangame Archive API 地址 (api_base_url)</label>
+                    <input type="text" id="g-api-url" placeholder="https://fangame-archive.com">
+                </div>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>请求超时 (秒, api_timeout_seconds)</label>
+                        <input type="number" id="g-api-timeout" min="1" max="120">
+                    </div>
+                    <div class="form-group">
+                        <label>单页结果数量 (result_page_size)</label>
+                        <input type="number" id="g-page-size" min="1" max="50">
+                    </div>
+                </div>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>序号选择超时 (秒, selection_timeout_seconds)</label>
+                        <input type="number" id="g-select-timeout" min="10" max="3600">
+                    </div>
+                    <div class="form-group">
+                        <label>下载并发数 (max_download_concurrency, 1-100)</label>
+                        <input type="number" id="g-download-concurrency" min="1" max="100">
+                    </div>
+                </div>
+                <div class="row">
+                    <button class="primary" onclick="saveGlobal()">保存全局设置</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>数据存储目录</h2>
+                <input type="text" id="g-data-dir" readonly onclick="this.select()">
+            </div>
+        </section>
+
+        <!-- Bot 配置页签 -->
+        <section id="tab-bot" style="display: none;">
+            <div class="card">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px;">
+                    <h2>当前 Bot 选择</h2>
+                    <select id="bot-selector" style="max-width: 320px;" onchange="onBotSelected()"></select>
+                </div>
+                <div id="linked-bot-hint" class="hint" style="margin-bottom: 14px;"></div>
+
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="b-enable-switch">
+                        <strong>当前账号启用本插件 (bot_enable_switch)</strong>
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="b-merge-forward">
+                        <span>启用合并转发 (merge_forward_enabled)</span>
+                    </label>
+                </div>
+
+                <div class="row">
+                    <button class="primary" onclick="saveBot()">保存 Bot 配置</button>
+                </div>
+            </div>
+
+            <!-- 骰主与自定义回复 -->
+            <div class="columns">
+                <!-- 自定义回复词 -->
+                <div class="card">
+                    <h2>自定义回复词 (解析群链)</h2>
+                    <div class="form-group">
+                        <label>选择词条</label>
+                        <select id="reply-key-selector" onchange="onReplySelected()"></select>
+                    </div>
+                    <div id="reply-note" class="hint" style="margin-bottom: 8px;"></div>
+                    <div class="form-group">
+                        <textarea id="reply-value" rows="4"></textarea>
+                    </div>
+                    <div class="row">
+                        <button class="primary" onclick="saveReply()">保存词条</button>
+                        <button onclick="resetReply()">恢复此条默认</button>
+                        <button onclick="resetAllReplies()" style="color: var(--error-color);">恢复全部默认</button>
+                    </div>
+                </div>
+
+                <!-- 骰主管理 -->
+                <div class="card">
+                    <h2>本插件配置骰主</h2>
+                    <div class="hint">输入纯数字用户 ID，支持逗号或换行批量添加</div>
+                    <div class="row" style="margin-top: 8px;">
+                        <input type="text" id="master-input" placeholder="输入用户 ID">
+                        <button class="primary" onclick="addMaster()">添加</button>
+                    </div>
+                    <div id="master-tags" class="tag-list"></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        'use strict';
+        let currentBotHash = '';
+        let currentState = null;
+        let pendingRequests = new Map();
+        let isVisible = true;
+
+        window.addEventListener('message', (event) => {
+            if (event.source !== window.parent) return;
+            const data = event.data;
+            if (!data) return;
+            if (data.type === 'olivos:plugin_visibility') {
+                isVisible = data.visible;
+                return;
+            }
+            if (data.type === 'olivos:plugin_reply') {
+                const resolver = pendingRequests.get(data.request_id);
+                if (resolver) {
+                    pendingRequests.delete(data.request_id);
+                    resolver(data);
+                }
+            }
+        });
+
+        function sendEvent(payload) {
+            return new Promise((resolve, reject) => {
+                const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                const timer = setTimeout(() => {
+                    pendingRequests.delete(requestId);
+                    reject(new Error('请求超时，请检查 OlivOS 宿主连接或重载插件'));
+                }, PAGE_CONFIG.requestTimeoutMs);
+
+                pendingRequests.set(requestId, (reply) => {
+                    clearTimeout(timer);
+                    if (reply.error) {
+                        reject(new Error(reply.error));
+                    } else {
+                        resolve(reply.payload);
+                    }
+                });
+
+                window.parent.postMessage({
+                    type: 'olivos:plugin_event',
+                    event: PAGE_CONFIG.eventName,
+                    request_id: requestId,
+                    payload: payload,
+                }, '*');
+            });
+        }
+
+        function showStatus(text, isError = false) {
+            const bar = document.getElementById('status-bar');
+            bar.textContent = text;
+            bar.className = isError ? 'status-bar error' : 'status-bar';
+            bar.style.display = 'block';
+            setTimeout(() => { bar.style.display = 'none'; }, 4000);
+        }
+
+        function switchTab(tab) {
+            document.getElementById('tab-btn-global').className = tab === 'global' ? 'tab-btn active' : 'tab-btn';
+            document.getElementById('tab-btn-bot').className = tab === 'bot' ? 'tab-btn active' : 'tab-btn';
+            document.getElementById('tab-global').style.display = tab === 'global' ? 'block' : 'none';
+            document.getElementById('tab-bot').style.display = tab === 'bot' ? 'block' : 'none';
+        }
+
+        async function fetchState(requestedBotHash = currentBotHash) {
+            try {
+                const res = await sendEvent({ action: 'get_state', bot_hash: requestedBotHash });
+                if (res && res.ok) {
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '获取状态失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        function renderState(state) {
+            currentState = state;
+            const gc = state.global_config || {};
+            document.getElementById('g-enable-switch').checked = !!gc.global_enable_switch;
+            document.getElementById('g-debug-switch').checked = !!gc.global_debug_mode_switch;
+            document.getElementById('g-api-url').value = gc.api_base_url || '';
+            document.getElementById('g-api-timeout').value = gc.api_timeout_seconds ?? 12;
+            document.getElementById('g-page-size').value = gc.result_page_size ?? 10;
+            document.getElementById('g-select-timeout').value = gc.selection_timeout_seconds ?? 300;
+            document.getElementById('g-download-concurrency').value = gc.max_download_concurrency ?? 5;
+            document.getElementById('g-data-dir').value = state.global_directory || '';
+
+            const selector = document.getElementById('bot-selector');
+            selector.innerHTML = '';
+            (state.bots || []).forEach(b => {
+                const opt = document.createElement('option');
+                opt.value = b.hash;
+                opt.textContent = b.label;
+                selector.appendChild(opt);
+            });
+
+            if (state.bot) {
+                currentBotHash = state.bot.hash;
+                selector.value = state.bot.hash;
+                renderBot(state.bot);
+            } else {
+                currentBotHash = '';
+            }
+        }
+
+        function renderBot(bot) {
+            document.getElementById('linked-bot-hint').textContent =
+                bot.linked_hash && bot.linked_hash !== bot.hash
+                    ? `已关联群链账号：${bot.linked_label}（回复词共用）`
+                    : '独立账号（无群链关联）';
+
+            document.getElementById('b-enable-switch').checked = !!bot.bot_enable_switch;
+            document.getElementById('b-merge-forward').checked = !!bot.merge_forward_enabled;
+
+            const masterContainer = document.getElementById('master-tags');
+            masterContainer.innerHTML = '';
+            (bot.masters || []).forEach(m => {
+                const tag = document.createElement('span');
+                tag.className = 'tag';
+                tag.innerHTML = `<span>${m}</span><button onclick="removeMaster('${m}')">&times;</button>`;
+                masterContainer.appendChild(tag);
+            });
+
+            const replySelector = document.getElementById('reply-key-selector');
+            replySelector.innerHTML = '';
+            (bot.replies || []).forEach(r => {
+                const opt = document.createElement('option');
+                opt.value = r.key;
+                opt.textContent = `${r.key}${r.is_default ? '' : ' *'}`;
+                replySelector.appendChild(opt);
+            });
+            onReplySelected();
+        }
+
+        function onBotSelected() {
+            const hash = document.getElementById('bot-selector').value;
+            fetchState(hash);
+        }
+
+        function onReplySelected() {
+            if (!currentState?.bot?.replies) return;
+            const key = document.getElementById('reply-key-selector').value;
+            const reply = currentState.bot.replies.find(r => r.key === key);
+            if (reply) {
+                document.getElementById('reply-note').textContent = reply.note || '';
+                document.getElementById('reply-value').value = reply.value || '';
+            }
+        }
+
+        async function saveGlobal() {
+            try {
+                const res = await sendEvent({
+                    action: 'save_global',
+                    global_enable_switch: document.getElementById('g-enable-switch').checked,
+                    global_debug_mode_switch: document.getElementById('g-debug-switch').checked,
+                    api_base_url: document.getElementById('g-api-url').value.trim(),
+                    api_timeout_seconds: parseInt(document.getElementById('g-api-timeout').value, 10),
+                    result_page_size: parseInt(document.getElementById('g-page-size').value, 10),
+                    selection_timeout_seconds: parseInt(document.getElementById('g-select-timeout').value, 10),
+                    max_download_concurrency: parseInt(document.getElementById('g-download-concurrency').value, 10),
+                });
+                if (res?.ok) {
+                    showStatus('全局设置保存成功');
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '保存失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        async function saveBot() {
+            if (!currentBotHash) return;
+            try {
+                const res = await sendEvent({
+                    action: 'save_bot',
+                    bot_hash: currentBotHash,
+                    bot_enable_switch: document.getElementById('b-enable-switch').checked,
+                    merge_forward_enabled: document.getElementById('b-merge-forward').checked,
+                });
+                if (res?.ok) {
+                    showStatus('Bot 配置保存成功');
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '保存失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        async function addMaster() {
+            if (!currentBotHash) return;
+            const input = document.getElementById('master-input');
+            const ids = input.value.split(/[\s,，]+/).filter(x => /^\d{1,32}$/.test(x));
+            if (!ids.length) {
+                showStatus('请输入有效数字用户 ID', true);
+                return;
+            }
+            try {
+                const res = await sendEvent({ action: 'add_masters', bot_hash: currentBotHash, ids: ids });
+                if (res?.ok) {
+                    input.value = '';
+                    showStatus('骰主添加成功');
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '添加失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        async function removeMaster(id) {
+            if (!currentBotHash) return;
+            try {
+                const res = await sendEvent({ action: 'remove_masters', bot_hash: currentBotHash, ids: [id] });
+                if (res?.ok) {
+                    showStatus('骰主移除成功');
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '移除失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        async function saveReply() {
+            if (!currentBotHash) return;
+            const key = document.getElementById('reply-key-selector').value;
+            const val = document.getElementById('reply-value').value;
+            try {
+                const res = await sendEvent({ action: 'save_reply', bot_hash: currentBotHash, key: key, value: val });
+                if (res?.ok) {
+                    showStatus(`回复词 [${key}] 保存成功`);
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '保存回复词失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        async function resetReply() {
+            if (!currentBotHash) return;
+            const key = document.getElementById('reply-key-selector').value;
+            if (!confirm(`确认恢复回复词 [${key}] 到默认值？`)) return;
+            try {
+                const res = await sendEvent({ action: 'reset_reply', bot_hash: currentBotHash, key: key, confirm: true });
+                if (res?.ok) {
+                    showStatus(`已恢复 [${key}] 为默认值`);
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '恢复失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        async function resetAllReplies() {
+            if (!currentBotHash) return;
+            if (!confirm('确认恢复当前 Bot 的全部回复词到默认值？')) return;
+            try {
+                const res = await sendEvent({ action: 'reset_replies', bot_hash: currentBotHash, confirm: true });
+                if (res?.ok) {
+                    showStatus('已恢复全部默认回复');
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '恢复失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        fetchState();
+    </script>
+</body>
+</html>

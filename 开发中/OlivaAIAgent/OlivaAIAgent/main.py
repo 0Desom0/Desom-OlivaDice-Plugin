@@ -197,6 +197,10 @@ class Event(object):
     def menu(plugin_event, Proc):
         if plugin_event.data.namespace != 'OlivaAIAgent':
             return
+        context = getattr(plugin_event.data, 'webui', None)
+        if isinstance(context, dict):
+            OlivaAIAgent.webui.handle_menu_event(plugin_event, Proc)
+            return
         if plugin_event.data.event == 'OlivaAIAgent_Menu_OpenConf':
             try:
                 OlivaAIAgent.conf.initDataPath()
@@ -207,3 +211,4 @@ class Event(object):
             OlivaAIAgent.conf.load()
             OlivaAIAgent.mcp.invalidate()
             OlivaAIAgent.conf.log(Proc, 2, '配置已重载')
+
