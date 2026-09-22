@@ -273,12 +273,13 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
         
         selected_song = results[selected_index - 1]
         clear_search_session(plugin_event)
-        if session_data.get('view_mode') == 'info':
+        session_region = session_data.get('region')
+        if session_data.get('view_mode') == 'info' and _has_info_binding(plugin_event, session_region):
             selected_song, sync_notice = _prepare_song_for_query(selected_song)
             reply_song_info(
                 plugin_event,
                 selected_song,
-                region=session_data.get('region'),
+                region=session_region,
                 notice_prefix=sync_notice,
             )
         else:
@@ -595,6 +596,13 @@ def _prepare_song_for_query(song: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return updated_song, '官方曲目目录中暂未找到这首歌的 songId 和定数。'
 
 
+def _has_info_binding(plugin_event, region: str | None) -> bool:
+    """info 查分需要已绑定对应区域；未指定区域时，任一已绑定区域即可。"""
+    if region is not None:
+        return bool(portal.get_bound_nano_id(plugin_event, region))
+    return bool(portal.get_bound_region(plugin_event))
+
+
 def reply_song_info(
     plugin_event,
     song: dict[str, Any],
@@ -602,7 +610,10 @@ def reply_song_info(
     *,
     notice_prefix: str = '',
 ) -> None:
-    """查询绑定玩家该歌曲成绩；没有成绩时回退为歌曲卡片并提示。"""
+    """查询绑定玩家该歌曲成绩；未绑定或没有成绩时回退为歌曲卡片。"""
+    if not _has_info_binding(plugin_event, region):
+        reply_song_card(plugin_event, song)
+        return
     legacy_data = song.get('Legacy', {})
     legacy_song_id = (
         str(legacy_data.get('official_songid', '') or '').strip()
@@ -1287,6 +1298,9 @@ def handle_info(plugin_event, argument: str) -> None:
         raw_arg = remaining
     if not raw_arg:
         reply_text(plugin_event, '用法：/la info <搜索词>，或 /la info cn <搜索词>（查询国服成绩）')
+        return
+    if not _has_info_binding(plugin_event, region):
+        _search_songs(plugin_event, raw_arg, 'song')
         return
 
     song_data = function.load_song_data()
@@ -1995,7 +2009,7 @@ help_categories = {
         'aliases': ['song', 'info'],
         'commands': [
             '/la song <搜索词> - 只查看歌曲信息',
-            '/la info <搜索词> - 查看绑定玩家的该曲成绩（双区绑定时默认国际服）',
+            '/la info <搜索词> - 查看绑定玩家的该曲成绩（未绑定则只显示歌曲信息；双区绑定时默认国际服）',
             '/la info cn <搜索词> - 查看国服绑定玩家的该曲成绩',
             '/la info global <搜索词> - 查看国际服绑定玩家的该曲成绩',
         ],

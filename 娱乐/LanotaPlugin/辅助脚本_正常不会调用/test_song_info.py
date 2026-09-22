@@ -190,6 +190,7 @@ class SongInfoTest(unittest.TestCase):
         song = {'id': 1, 'title': 'Song', 'official_songid': 'song'}
         compare_data = {'_portal_region': 'china', 'friend': {'username': 'Player'}, 'songs': []}
         with (
+            patch.object(message, '_has_info_binding', return_value=True),
             patch.object(
                 message.portal,
                 'get_compare_data_cached',
@@ -204,6 +205,7 @@ class SongInfoTest(unittest.TestCase):
         event = object()
         song = {'id': 1, 'title': 'Song', 'official_songid': 'song'}
         with (
+            patch.object(message, '_has_info_binding', return_value=True),
             patch.object(
                 message.portal,
                 'get_compare_data_cached',
@@ -315,6 +317,7 @@ class SongInfoTest(unittest.TestCase):
         song = {'id': 1, 'title': 'Frey', 'official_songid': 'frey'}
         event = object()
         with (
+            patch.object(message, '_has_info_binding', return_value=True),
             patch.object(message.function, 'load_song_data', return_value=[song]),
             patch.object(message.function, 'load_alias_data', return_value={}),
             patch.object(
@@ -333,6 +336,66 @@ class SongInfoTest(unittest.TestCase):
             region='china',
             notice_prefix='',
         )
+
+    def test_unbound_info_falls_back_to_song_card(self) -> None:
+        song = {'id': 1, 'title': 'Frey', 'official_songid': 'frey'}
+        event = object()
+        with (
+            patch.object(message, '_has_info_binding', return_value=False),
+            patch.object(message.function, 'load_song_data', return_value=[song]),
+            patch.object(message.function, 'load_alias_data', return_value={}),
+            patch.object(
+                message.function,
+                'find_song_by_search_term',
+                return_value=([song], '原名匹配', 1),
+            ),
+            patch.object(message, 'clear_search_session'),
+            patch.object(message, '_prepare_song_for_query') as prepare_song,
+            patch.object(message.portal, 'get_compare_data_cached') as get_compare,
+            patch.object(message, 'reply_song_info') as reply_song_info,
+            patch.object(message, 'reply_song_card') as reply_song_card,
+            patch.object(message, 'reply_text') as reply_text,
+        ):
+            message.handle_info(event, 'Frey')
+            message.handle_info(event, 'cn Frey')
+        prepare_song.assert_not_called()
+        get_compare.assert_not_called()
+        reply_song_info.assert_not_called()
+        reply_text.assert_not_called()
+        self.assertEqual(reply_song_card.call_count, 2)
+        reply_song_card.assert_called_with(event, song)
+
+    def test_unbound_info_selection_uses_song_card(self) -> None:
+        event = object()
+        song = {'id': 1, 'title': 'Frey'}
+        message.search_session_dict.clear()
+        message.save_search_session(event, [song], '原名匹配', view_mode='info', region='china')
+        with (
+            patch.object(message, '_has_info_binding', return_value=False),
+            patch.object(message, '_prepare_song_for_query') as prepare_song,
+            patch.object(message, 'reply_song_info') as reply_song_info,
+            patch.object(message, 'reply_song_card') as reply_song_card,
+            patch.object(message.utils, 'safe_str', side_effect=lambda value: str(value)),
+        ):
+            handled = message.handle_search_session_input(event, '1')
+        self.assertTrue(handled)
+        prepare_song.assert_not_called()
+        reply_song_info.assert_not_called()
+        reply_song_card.assert_called_once_with(event, song)
+
+    def test_unbound_reply_song_info_skips_score_query(self) -> None:
+        event = object()
+        song = {'id': 1, 'title': 'Frey'}
+        with (
+            patch.object(message, '_has_info_binding', return_value=False),
+            patch.object(message.portal, 'get_compare_data_cached') as get_compare,
+            patch.object(message, 'reply_song_card') as reply_song_card,
+            patch.object(message, 'reply_text') as reply_text,
+        ):
+            message.reply_song_info(event, song, region='china', notice_prefix='不应出现')
+        get_compare.assert_not_called()
+        reply_text.assert_not_called()
+        reply_song_card.assert_called_once_with(event, song)
 
     def test_info_prepares_missing_official_fields_before_query(self) -> None:
         song = {'id': 1, 'title': 'Frey', 'chapter': '1-1'}
@@ -398,6 +461,7 @@ class SongInfoTest(unittest.TestCase):
             ],
         }
         with (
+            patch.object(message, '_has_info_binding', return_value=True),
             patch.object(
                 message.portal,
                 'get_compare_data_cached',
