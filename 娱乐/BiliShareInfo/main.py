@@ -77,6 +77,9 @@ MIN_TITLE_SEARCH_SIGNAL_LENGTH = 3
 PREVIEW_OCR_MAX_BYTES = 4 * 1024 * 1024
 CARD_SEARCH_WORKERS = 2
 CARD_SEARCH_CANDIDATE_LIMIT = 20
+TITLE_SEARCH_PAGE_SIZE = 20
+# 第一页没有可确认标题时再翻页。全站综合排序最多看到前三页，避免把接口打进风控。
+CARD_SEARCH_MAX_PAGES = 3
 OWNER_EXACT_DETAIL_LIMIT = 8
 LIVE_ROOM_API = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo'
 WBI_KEY_CACHE_TTL_SECONDS = 3600
@@ -2012,11 +2015,50 @@ def search_video_by_card_comparison(
             f'ocr_stats={format_preview_stat_log(preview_metadata)}'
         )
 
+        if (
+            effective_title
+            and not ocr_video_ref
+            and not has_confirmed_title_candidate(effective_title, title_candidate_list)
+        ):
+            # 综合排序会被「黑暗之魂」这类热门词淹没。按播放量排序时，完整标题往往就在第一页。
+            parse_log(
+                f'综合排序未确认视频，改按播放量排序搜索 keyword='
+                f'{shorten_log_text(effective_title, 120)}'
+            )
+            title_candidate_list.extend(
+                search_video_candidates_by_keyword(
+                    effective_title,
+                    CARD_SEARCH_CANDIDATE_LIMIT,
+                    order='click',
+                )
+            )
+        if (
+            effective_title
+            and not ocr_video_ref
+            and not has_confirmed_title_candidate(effective_title, title_candidate_list)
+        ):
+            title_candidate_list.extend(
+                fetch_later_title_search_pages(
+                    effective_title,
+                    effective_title,
+                    title_candidate_list,
+                    order='click',
+                )
+            )
+            title_candidate_list.extend(
+                fetch_later_title_search_pages(
+                    effective_title,
+                    effective_title,
+                    title_candidate_list,
+                )
+            )
+
         compact_keyword = build_compact_search_keyword(effective_title) if effective_title else ''
         if (
             compact_keyword
+            and not ocr_video_ref
             and compact_keyword != clean_search_keyword(effective_title)
-            and not has_exact_title_candidate(effective_title, title_candidate_list)
+            and not has_confirmed_title_candidate(effective_title, title_candidate_list)
         ):
             parse_log(
                 f'完整标题搜索未命中，补充紧凑关键词搜索 keyword='
@@ -2027,6 +2069,13 @@ def search_video_by_card_comparison(
                 CARD_SEARCH_CANDIDATE_LIMIT,
             )
             title_candidate_list.extend(compact_candidate_list)
+            title_candidate_list.extend(
+                fetch_later_title_search_pages(
+                    compact_keyword,
+                    effective_title,
+                    title_candidate_list,
+                )
+            )
 
         owner_name = safe_str(preview_metadata.get('owner', '')).strip()
         # 已有同名候选时仍然补查 OCR 识别出的 UP 主；否则会把“同名但非同一视频”
@@ -2176,10 +2225,10 @@ def choose_card_search_result(
     if not compared_candidate_list:
         parse_log('卡片候选逐条对比无可用结果')
         return None
-    selected_score, _, selected_ref, selected_candidate, _ = compared_candidate_list[0]
-    selected_title = clean_search_result_title(selected_candidate.get('title', ''))
 
     if not title_hint:
+        selected_score, _, selected_ref, selected_candidate, _ = compared_candidate_list[0]
+        selected_title = clean_search_result_title(selected_candidate.get('title', ''))
         if selected_score >= 2000:
             parse_log(
                 f'无有效标题卡片依据元数据高分采纳 ref={format_video_ref(selected_ref)} '
@@ -2192,8 +2241,19 @@ def choose_card_search_result(
         )
         return None
 
-    match_level, match_ratio = evaluate_title_match(title_hint, selected_title)
-    if match_level not in ['exact', 'strong']:
+    # 翻页后的正确视频不一定排在分数第一。所有候选里只要有完整或强匹配就采用。
+    confirmed_candidate_list = []
+    for score, _, video_ref, candidate, _ in compared_candidate_list:
+        candidate_title = clean_search_result_title(candidate.get('title', ''))
+        match_level, match_ratio = evaluate_title_match(title_hint, candidate_title)
+        if match_level in ['exact', 'strong']:
+            confirmed_candidate_list.append(
+                (match_level == 'exact', match_ratio, score, video_ref, candidate, match_level)
+            )
+    if not confirmed_candidate_list:
+        selected_score, _, selected_ref, selected_candidate, _ = compared_candidate_list[0]
+        selected_title = clean_search_result_title(selected_candidate.get('title', ''))
+        match_level, match_ratio = evaluate_title_match(title_hint, selected_title)
         # 卡片没有 BV/av 号，标题对不上就无法确认是同一个视频；
         # 宁可不回复，也不要把标题无关的视频当成分享结果发出去。
         parse_log(
@@ -2204,10 +2264,19 @@ def choose_card_search_result(
             f'http_blocked={format_http_blocked_log()}'
         )
         return None
+
+    confirmed_candidate_list.sort(
+        key=lambda item: (item[0], item[1], item[2]),
+        reverse=True,
+    )
+    _, match_ratio, selected_score, selected_ref, selected_candidate, match_level = (
+        confirmed_candidate_list[0]
+    )
     parse_log(
         f'卡片候选评分选择 source={safe_str(selected_candidate.get("_search_source", "title"))} '
         f'ref={format_video_ref(selected_ref)} score={selected_score} '
-        f'title_level={match_level} title_ratio={match_ratio:.2f}'
+        f'title_level={match_level} title_ratio={match_ratio:.2f} '
+        f'confirmed={len(confirmed_candidate_list)}'
     )
     return selected_ref
 
@@ -2291,6 +2360,20 @@ def has_exact_title_candidate(title_hint: str, candidate_list: list[dict[str, An
         == normalize_exact_search_match_text(clean_search_result_title(candidate.get('title', '')))
         for candidate in candidate_list
     )
+
+
+def has_confirmed_title_candidate(title_hint: str, candidate_list: list[dict[str, Any]]) -> bool:
+    """候选里已经有完整标题或足够可靠的强匹配时，不必再翻页。"""
+    if not clean_search_keyword(title_hint):
+        return False
+    if has_exact_title_candidate(title_hint, candidate_list):
+        return True
+    for candidate in candidate_list:
+        candidate_title = clean_search_result_title(candidate.get('title', ''))
+        match_level, _ = evaluate_title_match(title_hint, candidate_title)
+        if match_level in ['exact', 'strong']:
+            return True
+    return False
 
 
 def merge_search_candidates(candidate_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2834,49 +2917,76 @@ def search_video_by_owner_metadata(
     # 1. 免风控的 medialist (最近 50 个视频)
     candidate_list.extend(fetch_owner_medialist_candidates(owner_mid))
 
-    # 2. 如果有有效标题，尝试 recArchivesByKeywords / 空间分页
+    # 2. UP 主关键词投稿。第一页对不上就翻页；接口只给总数不给列表时缩短关键词再查。
     if title_hint:
-        for page in range(1, 4):
-            page_candidates = fetch_owner_archive_candidates(
+        search_keyword_list = [clean_search_keyword(title_hint)]
+        bracket_body = extract_leading_bracket_body(title_hint)
+        if bracket_body and bracket_body not in search_keyword_list:
+            search_keyword_list.append(bracket_body)
+        saw_incomplete = False
+        degrade_seed = bracket_body or search_keyword_list[0]
+        for keyword in search_keyword_list:
+            if has_confirmed_title_candidate(title_hint, candidate_list):
+                break
+            status = extend_owner_keyword_candidates(
                 owner_mid,
+                keyword,
                 title_hint,
-                'pubdate',
-                page,
+                candidate_list,
             )
-            candidate_list.extend(page_candidates)
-            if not page_candidates:
+            if status in ['incomplete', 'blocked']:
+                # 长关键词被风控或只回了总数时，仍要用更短的词再查。
+                saw_incomplete = True
+            if status in ['matched', 'listed', 'blocked']:
                 break
-            if any(
-                normalize_exact_search_match_text(clean_search_result_title(candidate.get('title', '')))
-                == normalize_exact_search_match_text(title_hint)
-                for candidate in page_candidates
-            ):
-                break
-
-    # 3. UP 主全站投稿视频搜索 (totalrank 与 click 倒序各查一页)
-    if not has_exact_title_candidate(title_hint, candidate_list):
-        for order in ['totalrank', 'click']:
-            page_candidates = fetch_owner_search_candidates(
-                owner_name,
-                title_hint=title_hint,
-                page=1,
-                order=order,
-            )
-            owner_candidates = [
-                cand for cand in page_candidates
-                if (
-                    cand.get('mid') and str(cand.get('mid')) == str(owner_mid)
-                ) or (
-                    difflib.SequenceMatcher(
-                        None,
-                        safe_str(cand.get('author', '')).casefold(),
-                        safe_str(owner_name).casefold(),
-                    ).ratio() >= 0.7
+        if saw_incomplete and not has_confirmed_title_candidate(title_hint, candidate_list):
+            keyword_blocked = False
+            for shorter_keyword in degrade_owner_keyword(degrade_seed):
+                if keyword_blocked and len(shorter_keyword) > 2:
+                    continue
+                status = extend_owner_keyword_candidates(
+                    owner_mid,
+                    shorter_keyword,
+                    title_hint,
+                    candidate_list,
                 )
-            ]
-            candidate_list.extend(owner_candidates)
-            if title_hint and has_exact_title_candidate(title_hint, owner_candidates):
+                if status == 'matched':
+                    break
+                if status == 'blocked':
+                    keyword_blocked = True
+
+    # 3. UP 主全站投稿视频搜索。某一排序的第一页对不上时继续翻页。
+    if not has_confirmed_title_candidate(title_hint, candidate_list):
+        for order in ['totalrank', 'click']:
+            if has_confirmed_title_candidate(title_hint, candidate_list):
                 break
+            for page in range(1, CARD_SEARCH_MAX_PAGES + 1):
+                page_candidates = fetch_owner_search_candidates(
+                    owner_name,
+                    title_hint=title_hint,
+                    page=page,
+                    order=order,
+                )
+                if not page_candidates:
+                    break
+                owner_candidates = [
+                    cand for cand in page_candidates
+                    if (
+                        cand.get('mid') and str(cand.get('mid')) == str(owner_mid)
+                    ) or (
+                        difflib.SequenceMatcher(
+                            None,
+                            safe_str(cand.get('author', '')).casefold(),
+                            safe_str(owner_name).casefold(),
+                        ).ratio() >= 0.7
+                    )
+                ]
+                candidate_list.extend(owner_candidates)
+                if title_hint and has_confirmed_title_candidate(title_hint, owner_candidates):
+                    break
+                # 没有标题时播放量已经能区分，只查第一页，避免无意义翻页。
+                if not title_hint or len(page_candidates) < TITLE_SEARCH_PAGE_SIZE:
+                    break
 
     if not candidate_list:
         parse_log(
@@ -3042,13 +3152,65 @@ def fetch_owner_search_candidates(
         return []
 
 
+def extend_owner_keyword_candidates(
+    owner_mid: str,
+    keyword: str,
+    title_hint: str,
+    candidate_list: list[dict[str, Any]],
+) -> str:
+    """把某一关键词的投稿页追加进候选。
+
+    返回 matched / listed / incomplete / miss / blocked。
+    incomplete 表示接口给了总数但列表是空的，不能当成“这个 UP 没有该视频”。
+    """
+    status = 'miss'
+    for page in range(1, CARD_SEARCH_MAX_PAGES + 1):
+        page_candidates, trusted, total = fetch_owner_keyword_archive_candidates(
+            owner_mid,
+            keyword,
+            'pubdate',
+            page,
+        )
+        if not trusted:
+            return 'blocked'
+        if not page_candidates:
+            if page == 1 and total > 0:
+                parse_log(
+                    f'UP主关键词没有返回列表，准备缩短后重试 keyword='
+                    f'{shorten_log_text(keyword, 80)} total={total}'
+                )
+                return 'incomplete'
+            break
+        status = 'listed'
+        candidate_list.extend(page_candidates)
+        if has_confirmed_title_candidate(title_hint, page_candidates):
+            parse_log(
+                f'UP主关键词第{page}页已能确认视频 keyword='
+                f'{shorten_log_text(keyword, 80)}'
+            )
+            return 'matched'
+        # 这个接口有时一页只给 2 条，但 total 还有剩余，不能把短页当成最后一页。
+        fetched_count = (page - 1) * TITLE_SEARCH_PAGE_SIZE + len(page_candidates)
+        reached_end = (
+            (total > 0 and fetched_count >= total)
+            or (total <= 0 and len(page_candidates) < TITLE_SEARCH_PAGE_SIZE)
+        )
+        if reached_end or page >= CARD_SEARCH_MAX_PAGES:
+            break
+        parse_log(
+            f'UP主关键词第{page}页未确认视频，继续翻页 keyword='
+            f'{shorten_log_text(keyword, 80)} total={total}'
+        )
+    return status
+
+
 def fetch_owner_keyword_archive_candidates(
     owner_mid: str,
     title_hint: str,
     order: str,
     page: int,
-) -> tuple[list[dict[str, Any]], bool]:
-    """返回 (候选列表, 结果是否可信)。请求被风控时第二项为 False。"""
+) -> tuple[list[dict[str, Any]], bool, int]:
+    """返回 (候选列表, 结果是否可信, 接口声明的总数)。请求被风控时第二项为 False。"""
     keyword = clean_search_keyword(title_hint)
     cache_key = f'owner_keyword:{owner_mid}:{order}:{page}:{keyword}'
     cached_result = get_api_cache(cache_key)
@@ -3056,7 +3218,7 @@ def fetch_owner_keyword_archive_candidates(
         parse_log(
             f'UP主关键词投稿命中缓存 mid={owner_mid} page={page} count={len(cached_result)}'
         )
-        return cached_result, True
+        return cached_result, True, len(cached_result)
 
     api_url = 'https://api.bilibili.com/x/series/recArchivesByKeywords?' + urllib.parse.urlencode(
         {
@@ -3078,16 +3240,26 @@ def fetch_owner_keyword_archive_candidates(
             )
         )
         response_code = response_data.get('code')
-        archive_list = response_data.get('data', {}).get('archives', [])
+        data_object = response_data.get('data', {})
+        if not isinstance(data_object, dict):
+            data_object = {}
+        archive_list = data_object.get('archives', [])
         if not isinstance(archive_list, list):
             archive_list = []
+        page_object = data_object.get('page', {})
+        page_total = 0
+        if isinstance(page_object, dict):
+            try:
+                page_total = int(page_object.get('total') or 0)
+            except (TypeError, ValueError):
+                page_total = 0
         parse_log(
             f'UP主关键词投稿API响应 mid={owner_mid} page={page} order={order} '
-            f'code={response_code} count={len(archive_list)}'
+            f'code={response_code} count={len(archive_list)} total={page_total}'
         )
         if response_code != 0:
             mark_http_blocked(f'recArchivesByKeywords code={response_code}')
-            return [], False
+            return [], False, 0
 
         result = []
         for result_rank, archive in enumerate(archive_list, start=1):
@@ -3100,16 +3272,24 @@ def fetch_owner_keyword_archive_candidates(
                 candidate['video_review'] = stat_data.get('danmaku')
                 candidate['like'] = stat_data.get('like')
             candidate['_search_source'] = 'owner_keyword_api'
-            candidate['_search_rank'] = (page - 1) * 20 + result_rank
+            candidate['_search_rank'] = (page - 1) * TITLE_SEARCH_PAGE_SIZE + result_rank
             result.append(candidate)
+        if not result and page_total > 0:
+            # 例如搜索「狗狗之魂」会返回 total=2000 且 archives=[]。
+            # 这不是“没有投稿”，缓存空列表会让后面的缩短重试也被跳过。
+            parse_log(
+                f'UP主关键词投稿列表为空但总数={page_total}，不缓存这次空结果 '
+                f'keyword={shorten_log_text(keyword, 80)}'
+            )
+            return [], True, page_total
         set_api_cache(cache_key, result)
-        return result, True
+        return result, True, page_total
     except Exception as exception_object:
         parse_log(
             f'UP主关键词投稿API请求失败 mid={owner_mid} page={page} '
             f'error={describe_http_error(exception_object)}'
         )
-        return [], False
+        return [], False, 0
 
 
 def get_wbi_mixin_key() -> str | None:
@@ -3184,7 +3364,7 @@ def fetch_owner_archive_candidates(
     order: str,
     page: int,
 ) -> list[dict[str, Any]]:
-    keyword_archive_list, keyword_api_trusted = fetch_owner_keyword_archive_candidates(
+    keyword_archive_list, keyword_api_trusted, keyword_total = fetch_owner_keyword_archive_candidates(
         owner_mid,
         title_hint,
         order,
@@ -3192,6 +3372,12 @@ def fetch_owner_archive_candidates(
     )
     if keyword_archive_list:
         return keyword_archive_list
+    if keyword_api_trusted and keyword_total > 0:
+        parse_log(
+            f'UP主关键词投稿列表不完整，跳过空间投稿接口 mid={owner_mid} '
+            f'total={keyword_total}'
+        )
+        return []
     if keyword_api_trusted and title_hint:
         # 关键词投稿接口已明确回复该 UP 主没有匹配投稿，
         # 再打空间接口只会增加请求量并提高被限流的概率。
@@ -3352,14 +3538,18 @@ def build_compact_search_keyword(keyword: str) -> str:
 def search_video_candidates_by_keyword(
     keyword: str,
     limit: int = CARD_SEARCH_CANDIDATE_LIMIT,
+    page: int = 1,
+    order: str = 'totalrank',
 ) -> list[dict[str, Any]]:
     keyword = clean_search_keyword(keyword)
+    page = max(1, int(page or 1))
+    order = safe_str(order).strip() or 'totalrank'
     if not keyword:
         parse_log('标题候选搜索跳过：关键词为空')
         return []
 
     normalized_keyword = normalize_search_match_text(keyword)
-    cache_key = f'title_search:{limit}:{keyword}'
+    cache_key = f'title_search:{limit}:{page}:{order}:{keyword}'
     cached_candidate_list = get_api_cache(cache_key)
     if cached_candidate_list is not None:
         parse_log(
@@ -3370,7 +3560,8 @@ def search_video_candidates_by_keyword(
 
     parse_log(
         f'开始标题搜索 keyword={shorten_log_text(keyword, 120)} '
-        f'normalized={normalized_keyword} length={len(normalized_keyword)}'
+        f'page={page} order={order} normalized={normalized_keyword} '
+        f'length={len(normalized_keyword)}'
     )
 
     wbi_type_url = build_wbi_signed_url(
@@ -3378,19 +3569,20 @@ def search_video_candidates_by_keyword(
         {
             'search_type': 'video',
             'keyword': keyword,
-            'page': 1,
-            'pagesize': 20,
-            'order': 'totalrank',
+            'page': page,
+            'pagesize': TITLE_SEARCH_PAGE_SIZE,
+            'order': order,
         },
     )
     wbi_all_url = build_wbi_signed_url(
         '/x/web-interface/wbi/search/all/v2',
-        {'keyword': keyword, 'page': 1, 'pagesize': 20},
+        {'keyword': keyword, 'page': page, 'pagesize': TITLE_SEARCH_PAGE_SIZE},
     )
     search_url_list = []
     if wbi_type_url:
         search_url_list.append(wbi_type_url)
-    if wbi_all_url:
+    # 综合接口没有播放量排序，只在综合排序的第一页补一次。
+    if page == 1 and order == 'totalrank' and wbi_all_url:
         search_url_list.append(wbi_all_url)
     if not search_url_list:
         search_url_list = [
@@ -3399,14 +3591,19 @@ def search_video_candidates_by_keyword(
                 {
                     'search_type': 'video',
                     'keyword': keyword,
-                    'page': 1,
-                    'pagesize': 20,
-                    'order': 'totalrank',
+                    'page': page,
+                    'pagesize': TITLE_SEARCH_PAGE_SIZE,
+                    'order': order,
                 }
             ),
-            'https://api.bilibili.com/x/web-interface/search/all/v2?'
-            + urllib.parse.urlencode({'keyword': keyword, 'page': 1, 'pagesize': 20}),
         ]
+        if page == 1 and order == 'totalrank':
+            search_url_list.append(
+                'https://api.bilibili.com/x/web-interface/search/all/v2?'
+                + urllib.parse.urlencode(
+                    {'keyword': keyword, 'page': page, 'pagesize': TITLE_SEARCH_PAGE_SIZE}
+                )
+            )
     raw_candidate_list = []
     for api_index, api_url in enumerate(search_url_list, start=1):
         if any(candidate.get('_search_exact') for candidate in raw_candidate_list):
@@ -3433,7 +3630,7 @@ def search_video_candidates_by_keyword(
             )
             continue
 
-        for result_rank, item in enumerate(result_list[:20], start=1):
+        for result_rank, item in enumerate(result_list[:TITLE_SEARCH_PAGE_SIZE], start=1):
             if not isinstance(item, dict):
                 continue
             bvid = safe_str(item.get('bvid', ''))
@@ -3450,13 +3647,15 @@ def search_video_candidates_by_keyword(
             candidate['title'] = title
             candidate['_search_source'] = f'title_api_{api_index}'
             candidate['_search_api'] = api_index
-            candidate['_search_rank'] = result_rank
+            candidate['_search_order'] = order
+            candidate['_search_page'] = page
+            candidate['_search_rank'] = (page - 1) * TITLE_SEARCH_PAGE_SIZE + result_rank
             candidate['_search_score'] = candidate_score
             candidate['_search_detail'] = score_detail
             candidate['_search_exact'] = is_exact_match
             raw_candidate_list.append(candidate)
             parse_log(
-                f'标题搜索候选 api={api_index} rank={result_rank} bvid={bvid} '
+                f'标题搜索候选 api={api_index} page={page} rank={result_rank} bvid={bvid} '
                 f'score={candidate_score} '
                 f'detail={score_detail} title={shorten_log_text(title, 120)}'
             )
@@ -3477,12 +3676,50 @@ def search_video_candidates_by_keyword(
     )
     candidate_list = merge_search_candidates(raw_candidate_list)[:max(1, limit)]
     parse_log(
-        f'标题搜索候选池完成 raw={len(raw_candidate_list)} '
+        f'标题搜索候选池完成 page={page} order={order} raw={len(raw_candidate_list)} '
         f'unique_selected={len(candidate_list)} limit={limit}'
     )
     if candidate_list:
         set_api_cache(cache_key, candidate_list)
     return candidate_list
+
+
+def fetch_later_title_search_pages(
+    keyword: str,
+    title_hint: str,
+    found_candidate_list: list[dict[str, Any]],
+    order: str = 'totalrank',
+) -> list[dict[str, Any]]:
+    """第一页没能确认视频时，按页继续向后找，确认到就停。"""
+    if has_confirmed_title_candidate(title_hint, found_candidate_list):
+        return []
+
+    extra_candidate_list = []
+    for page in range(2, CARD_SEARCH_MAX_PAGES + 1):
+        parse_log(
+            f'标题搜索未确认视频，继续翻页 page={page}/{CARD_SEARCH_MAX_PAGES} '
+            f'order={order} keyword={shorten_log_text(keyword, 120)}'
+        )
+        page_candidate_list = search_video_candidates_by_keyword(
+            keyword,
+            CARD_SEARCH_CANDIDATE_LIMIT,
+            page=page,
+            order=order,
+        )
+        if not page_candidate_list:
+            parse_log(f'标题搜索第{page}页没有结果，停止翻页')
+            break
+        extra_candidate_list.extend(page_candidate_list)
+        if has_confirmed_title_candidate(
+            title_hint,
+            found_candidate_list + extra_candidate_list,
+        ):
+            parse_log(f'标题搜索第{page}页已能确认视频，停止翻页')
+            break
+        if len(page_candidate_list) < TITLE_SEARCH_PAGE_SIZE:
+            parse_log(f'标题搜索第{page}页不足一整页，停止翻页')
+            break
+    return extra_candidate_list
 
 
 def extract_video_search_results(response_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4250,6 +4487,34 @@ def clean_search_keyword(keyword: str) -> str:
     keyword = safe_str(keyword)
     keyword = re.sub(r'^\s*\[QQ小程序\]\s*', '', keyword)
     return keyword.strip()
+
+
+def extract_leading_bracket_body(title: str) -> str:
+    """取出【系列】后面的正文。系列名太热门时，正文才是能搜到片子的词。"""
+    title = clean_search_keyword(title)
+    matched = re.match(
+        r'^(?:【[^】]*】|\[[^\]]*\]|「[^」]*」|《[^》]*》)\s*(.+)$',
+        title,
+    )
+    if not matched:
+        return ''
+    body = matched.group(1).strip()
+    if len(normalize_search_match_text(body)) < 2:
+        return ''
+    return body
+
+
+def degrade_owner_keyword(keyword: str) -> list[str]:
+    """关键词接口没返回列表时，从长到短截短再查，最多 4 个。"""
+    compact = re.sub(r'\s+', '', clean_search_keyword(keyword))
+    degraded_list = []
+    for length in range(len(compact) - 1, 0, -1):
+        shorter = compact[:length]
+        if shorter and shorter not in degraded_list:
+            degraded_list.append(shorter)
+        if len(degraded_list) >= 4:
+            break
+    return degraded_list
 
 
 def is_pseudo_title(keyword: str) -> bool:
