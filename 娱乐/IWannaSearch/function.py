@@ -653,11 +653,11 @@ def normalize_game_item(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def format_score_value(value: Any) -> str:
+def format_score_value(value: Any, scale: int = 10) -> str:
     if value_is_empty(value):
         return default_empty_text
     try:
-        return f'{float(value):.1f}/10'
+        return f'{float(value):.1f}/{scale}'
     except Exception:
         return default_empty_text
 
@@ -703,8 +703,8 @@ def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict
         'title': safe_text(game_item.get('title', default_empty_text), default_empty_text),
         'creator': safe_text(game_item.get('creator', default_empty_text), default_empty_text),
         'release_date': format_release_date(game_item.get('release_date')),
-        'rating': format_score_value(game_item.get('rating')),
-        'difficulty': format_score_value(game_item.get('difficulty')),
+        'rating': format_score_value(game_item.get('rating'), 10),
+        'difficulty': format_score_value(game_item.get('difficulty'), 100),
         'rating_count': format_rating_count(game_item.get('rating_count')),
         'tags': tag_text,
         'engine': format_engine_value(game_item.get('engine')),

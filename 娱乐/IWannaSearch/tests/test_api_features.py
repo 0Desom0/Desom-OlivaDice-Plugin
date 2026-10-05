@@ -100,6 +100,8 @@ class IWannaSearchAPIFeaturesTest(unittest.TestCase):
         self.assertEqual(template_val['release_date'], '2021-08-11')
         self.assertEqual(template_val['page_url'], 'https://fangame-archive.com/?game=14327')
         self.assertIn('Delicious Fruit', template_val['sources'])
+        self.assertEqual(template_val['rating'], '3.8/10')
+        self.assertEqual(template_val['difficulty'], '25.0/100')
 
     def test_parse_filter_flags(self):
         """测试命令参数中的多维过滤器解析。"""

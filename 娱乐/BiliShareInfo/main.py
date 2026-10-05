@@ -125,8 +125,8 @@ MESSAGE_SEGMENT_TYPE_SET = frozenset({
 })
 # 这几类消息段真的可能携带 B 站分享，内容需要保留参与解析。
 SHARE_BEARING_SEGMENT_TYPE_SET = frozenset({'text', 'share', 'music', 'xml', 'json'})
-MESSAGE_SEGMENT_PATTERN = re.compile(
-    r'\[(?:OP|CQ):(?P<type>[A-Za-z_]+)(?:,[^\]]*)?\]',
+MESSAGE_SEGMENT_START_PATTERN = re.compile(
+    r'\[(?P<prefix>OP|CQ):(?P<type>[A-Za-z_]+)',
     re.IGNORECASE,
 )
 BVID_REFERENCE_PATTERN = re.compile(
@@ -140,7 +140,13 @@ ANY_URL_PATTERN = re.compile(
     r'(?i)[a-z][a-z0-9+.-]*://[^\s"\'<>]+'
 )
 LIVE_ROOM_ID_PATTERN = re.compile(
-    r'(?i)(?:https?://)?live\.bilibili\.com/(?:h5/)?(?P<room_id>\d+)'
+    r'(?i)(?:https?://)?live\.bilibili\.com/(?:h5/|blanc/|live/)?(?P<room_id>\d+)'
+)
+LIVE_ROOM_HINT_PATTERN = re.compile(
+    r'(?i)房间号\s*[:：]\s*(?P<room_id>\d{1,10})'
+)
+LIVE_ROOM_PATH_PATTERN = re.compile(
+    r'^/(?:h5/|blanc/|live/)?(?P<room_id>\d+)(?:/|$)'
 )
 
 
@@ -229,17 +235,51 @@ def strip_non_parse_segments(message: str) -> str:
     （参见 OlivOS/core/core/messageAPI.py 的 PARA 定义）。这些段里的
     file/url 是一长串随机字符，凑巧出现 BV+10 位字符的概率并不低，
     直接扫描整条消息会把普通图片误认成视频分享。
-    """
-    def replace_segment(matched) -> str:
-        segment_type = safe_str(matched.group('type')).casefold()
-        if segment_type in SHARE_BEARING_SEGMENT_TYPE_SET:
-            return matched.group(0)
-        if segment_type in MESSAGE_SEGMENT_TYPE_SET:
-            return ' '
-        # 未知类型 OlivOS 会当作普通文本，这里同样原样保留。
-        return matched.group(0)
 
-    return MESSAGE_SEGMENT_PATTERN.sub(replace_segment, safe_str(message))
+    JSON 卡片的 data 里经常带未转义的 `]`，例如 prompt 的 `[分享]`，
+    不能按第一个 `]` 截断，否则图文 H5 卡片会缺字段。
+    """
+    message = safe_str(message)
+    pieces = []
+    index = 0
+    while True:
+        match = MESSAGE_SEGMENT_START_PATTERN.search(message, index)
+        if not match:
+            pieces.append(message[index:])
+            break
+        pieces.append(message[index:match.start()])
+        segment_type = match.group('type').casefold()
+        segment_end = find_message_segment_end(message, match.start(), segment_type)
+        if segment_end < 0:
+            pieces.append(message[match.start():])
+            break
+        segment = message[match.start():segment_end]
+        if segment_type in SHARE_BEARING_SEGMENT_TYPE_SET:
+            pieces.append(segment)
+        elif segment_type in MESSAGE_SEGMENT_TYPE_SET:
+            pieces.append(' ')
+        else:
+            pieces.append(segment)
+        index = segment_end
+    return ''.join(pieces)
+
+
+def find_message_segment_end(message: str, start_index: int, segment_type: str) -> int:
+    """返回消息段结束位置（闭括号后的下标）。找不到时返回 -1。"""
+    if segment_type == 'json':
+        data_index = message.find('data=', start_index)
+        if data_index >= 0:
+            brace_index = message.find('{', data_index)
+            if brace_index >= 0:
+                json_text = extract_balanced_json(message, brace_index)
+                if json_text:
+                    close_index = message.find(']', brace_index + len(json_text))
+                    if close_index >= 0:
+                        return close_index + 1
+    close_index = message.find(']', start_index)
+    if close_index >= 0:
+        return close_index + 1
+    return -1
 
 
 def has_message_reference(plugin_event, message: str) -> bool:
@@ -401,12 +441,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
             return
 
         video_info_list = []
-        sent_dedupe_key_list = []
         for video_ref in video_ref_list:
-            dedupe_key = build_dedupe_key(plugin_event, video_ref)
-            if is_recent_duplicate(dedupe_key):
-                parse_log(f'跳过近期重复引用 ref={format_video_ref(video_ref)}')
-                continue
             if is_live_ref(video_ref):
                 video_info = fetch_live_info(video_ref)
             else:
@@ -416,7 +451,6 @@ def handle_message(plugin_event, is_group: bool) -> None:
                 add_parse_notice(build_fetch_failure_notice(video_ref))
                 continue
             video_info_list.append(video_info)
-            sent_dedupe_key_list.append(dedupe_key)
 
         if not video_info_list:
             send_parse_failure_notice(plugin_event)
@@ -424,8 +458,6 @@ def handle_message(plugin_event, is_group: bool) -> None:
 
         send_video_info_list(plugin_event, video_info_list)
         parse_log(f'媒体信息发送完成 count={len(video_info_list)}')
-        for dedupe_key in sent_dedupe_key_list:
-            mark_recent_key(dedupe_key)
         send_parse_failure_notice(plugin_event)
     except Exception as exception_object:
         parse_log(
@@ -1261,28 +1293,34 @@ def extract_video_refs_from_event(
         f'qq_ark_count={len(qq_ark_card_list)}'
     )
 
-    if video_enable:
+    url_ref_cache = {}
+    if video_enable or live_enable:
         video_ref_list = extract_video_refs_from_message(
             message,
-            include_json_card=not use_qq_ark_card,
-            preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
+            include_json_card=True,
+            preview_ocr_enable=bool(video_enable and is_preview_ocr_enabled(plugin_event)),
+            allow_title_search=video_enable,
+            url_ref_cache=url_ref_cache,
         )
     else:
         video_ref_list = []
-        parse_log('本群普通视频解析关闭，跳过视频引用提取')
+        parse_log('本群普通视频与直播解析均关闭，跳过引用提取')
     seen_key_set = {
         video_key
         for video_ref in video_ref_list
         if (video_key := get_video_ref_key(video_ref))
     }
+    bili_card_list = list(qq_ark_card_list)
+    json_card = extract_json_card(message)
+    if json_card and is_probable_bili_card(json_card):
+        add_unique_card_data(bili_card_list, json_card)
     if live_enable:
         for live_ref in extract_live_refs_from_text(message):
             add_video_ref(video_ref_list, seen_key_set, live_ref)
-        for card_data in qq_ark_card_list:
-            for live_ref in extract_live_refs_from_card(card_data):
+        for card_data in bili_card_list:
+            for live_ref in extract_live_refs_from_card(card_data, url_ref_cache):
                 add_video_ref(video_ref_list, seen_key_set, live_ref)
     parse_log(f'消息文本解析初始refs={format_video_ref_list(video_ref_list)}')
-    url_ref_cache = {}
 
     parse_log(f'QQ ARK卡片提取数量={len(qq_ark_card_list)}')
     if video_enable:
@@ -1294,8 +1332,10 @@ def extract_video_refs_from_event(
                 url_ref_cache,
                 f'QQ官机ARK卡片#{card_index}',
                 preview_ocr_enable=is_preview_ocr_enabled(plugin_event),
+                allow_title_search=video_enable,
             )
 
+    video_ref_list = filter_enabled_media_refs(video_ref_list, video_enable, live_enable)
     log_resolved_video_refs(video_ref_list)
     return video_ref_list
 
@@ -1423,10 +1463,13 @@ def extract_video_refs_from_message(
     message: str,
     include_json_card: bool = True,
     preview_ocr_enable: bool = True,
+    allow_title_search: bool = True,
+    url_ref_cache: dict[str, dict[str, str] | None] | None = None,
 ) -> list[dict[str, str]]:
     video_ref_list = []
     seen_key_set = set()
-    url_ref_cache = {}
+    if url_ref_cache is None:
+        url_ref_cache = {}
     has_escaped_slash = '\\/' in message
     parse_log(
         f'开始解析消息文本 length={len(message)} escaped_slash={has_escaped_slash} '
@@ -1466,6 +1509,7 @@ def extract_video_refs_from_message(
         url_ref_cache,
         'JSON卡片',
         preview_ocr_enable=preview_ocr_enable,
+        allow_title_search=allow_title_search,
     )
     return video_ref_list
 
@@ -1477,6 +1521,7 @@ def add_video_refs_from_card(
     url_ref_cache: dict[str, dict[str, str] | None],
     card_label: str,
     preview_ocr_enable: bool = True,
+    allow_title_search: bool = True,
 ) -> None:
     is_bili_card = is_probable_bili_card(card_data)
     parse_log(
@@ -1489,45 +1534,55 @@ def add_video_refs_from_card(
     card_url_list = extract_urls_from_card(card_data)
     parse_log(f'{card_label} URL count={len(card_url_list)} urls={format_log_list(card_url_list, 8)}')
 
+    live_ref_list = extract_live_refs_from_card(card_data, url_ref_cache)
+    if live_ref_list:
+        parse_log(f'{card_label} 识别为直播卡片 refs={format_video_ref_list(live_ref_list)}')
+        for live_ref in live_ref_list:
+            add_video_ref(video_ref_list, seen_key_set, live_ref)
+        return
+
     card_video_ref_list = find_video_refs(card_data, url_ref_cache)
     parse_log(f'{card_label} 字段解析refs={format_video_ref_list(card_video_ref_list)}')
     for video_ref in card_video_ref_list:
         add_video_ref(video_ref_list, seen_key_set, video_ref)
 
-    if not card_video_ref_list and not video_ref_list:
-        if extract_live_refs_from_card(card_data):
-            parse_log(f'{card_label} 识别为直播卡片，跳过视频标题搜索')
-            return
-        title_hint = get_title_hint(card_data)
-        bgm_ref = search_video_by_bangumi_pattern(title_hint)
-        if bgm_ref:
-            parse_log(f'{card_label} 命中剧集/番剧卡片 ref={format_video_ref(bgm_ref)}')
-            add_video_ref(video_ref_list, seen_key_set, bgm_ref)
-            return
+    if card_video_ref_list or video_ref_list:
+        if not card_video_ref_list:
+            parse_log(f'{card_label} 消息中已有视频引用，跳过卡片标题搜索')
+        return
 
-        parse_log(
-            f'{card_label} 未解析到显式视频引用，进入OCR/标题并行搜索 '
-            f'keyword={shorten_log_text(title_hint, 120)}'
+    if not allow_title_search:
+        parse_log(f'{card_label} 未开启视频标题搜索')
+        return
+
+    title_hint = get_title_hint(card_data)
+    bgm_ref = search_video_by_bangumi_pattern(title_hint)
+    if bgm_ref:
+        parse_log(f'{card_label} 命中剧集/番剧卡片 ref={format_video_ref(bgm_ref)}')
+        add_video_ref(video_ref_list, seen_key_set, bgm_ref)
+        return
+
+    parse_log(
+        f'{card_label} 未解析到显式视频引用，进入OCR/标题并行搜索 '
+        f'keyword={shorten_log_text(title_hint, 120)}'
+    )
+    video_ref = search_video_by_card_comparison(
+        card_data,
+        title_hint,
+        preview_ocr_enable=preview_ocr_enable,
+    )
+    parse_log(
+        f'{card_label} OCR/标题对比结果 ref={format_video_ref(video_ref)} '
+        f'http_blocked={format_http_blocked_log()}'
+    )
+    if not video_ref:
+        add_parse_notice(build_card_failure_notice(title_hint))
+        bili_log(
+            f'小程序卡片无法确认视频 blocked={has_http_blocked()} '
+            f'title={shorten_text(clean_search_keyword(title_hint), 60)}',
+            2,
         )
-        video_ref = search_video_by_card_comparison(
-            card_data,
-            title_hint,
-            preview_ocr_enable=preview_ocr_enable,
-        )
-        parse_log(
-            f'{card_label} OCR/标题对比结果 ref={format_video_ref(video_ref)} '
-            f'http_blocked={format_http_blocked_log()}'
-        )
-        if not video_ref:
-            add_parse_notice(build_card_failure_notice(title_hint))
-            bili_log(
-                f'小程序卡片无法确认视频 blocked={has_http_blocked()} '
-                f'title={shorten_text(clean_search_keyword(title_hint), 60)}',
-                2,
-            )
-        add_video_ref(video_ref_list, seen_key_set, video_ref)
-    elif not card_video_ref_list:
-        parse_log(f'{card_label} 消息中已有视频引用，跳过卡片标题搜索')
+    add_video_ref(video_ref_list, seen_key_set, video_ref)
 
 
 def find_video_refs(
@@ -1629,6 +1684,23 @@ def add_video_ref(
     video_ref_list.append(video_ref)
 
 
+def filter_enabled_media_refs(
+    video_ref_list: list[dict[str, str]],
+    video_enable: bool,
+    live_enable: bool,
+) -> list[dict[str, str]]:
+    filtered_list = []
+    seen_key_set = set()
+    for video_ref in video_ref_list:
+        if is_live_ref(video_ref):
+            if live_enable:
+                add_video_ref(filtered_list, seen_key_set, video_ref)
+            continue
+        if video_enable:
+            add_video_ref(filtered_list, seen_key_set, video_ref)
+    return filtered_list
+
+
 def get_video_ref_key(video_ref: dict[str, str]) -> str:
     if video_ref.get('bvid'):
         return f'bvid:{video_ref["bvid"]}'
@@ -1692,7 +1764,7 @@ def extract_live_ref_from_url(url: str) -> dict[str, str] | None:
         parsed_url = urllib.parse.urlsplit(raw_url)
         if parsed_url.netloc.casefold().rstrip('.') != 'live.bilibili.com':
             return None
-        path_match = re.match(r'^/(?:h5/)?(?P<room_id>\d+)(?:/|$)', parsed_url.path)
+        path_match = LIVE_ROOM_PATH_PATTERN.match(parsed_url.path)
         room_id = path_match.group('room_id') if path_match else ''
         if not room_id:
             query_data = urllib.parse.parse_qs(parsed_url.query)
@@ -1712,7 +1784,8 @@ def extract_live_refs_from_text(text: str) -> list[dict[str, str]]:
     for url in extract_urls(text):
         live_ref = extract_live_ref_from_url(url)
         add_video_ref(live_ref_list, seen_key_set, live_ref)
-    for room_match in LIVE_ROOM_ID_PATTERN.finditer(html.unescape(safe_str(text))):
+    unescaped_text = html.unescape(safe_str(text))
+    for room_match in LIVE_ROOM_ID_PATTERN.finditer(unescaped_text):
         add_video_ref(
             live_ref_list,
             seen_key_set,
@@ -1721,12 +1794,35 @@ def extract_live_refs_from_text(text: str) -> list[dict[str, str]]:
     return live_ref_list
 
 
-def extract_live_refs_from_card(card_data: dict[str, Any]) -> list[dict[str, str]]:
+def add_live_ref_from_room_id(
+    live_ref_list: list[dict[str, str]],
+    seen_key_set: set[str],
+    room_id: str,
+) -> None:
+    room_id = safe_str(room_id).strip()
+    if not room_id.isdigit() or int(room_id) <= 0:
+        return
+    add_video_ref(live_ref_list, seen_key_set, {'live_id': room_id})
+
+
+def extract_live_refs_from_card(
+    card_data: dict[str, Any],
+    url_ref_cache: dict[str, dict[str, str] | None] | None = None,
+) -> list[dict[str, str]]:
     live_ref_list = []
     seen_key_set = set()
     for text in collect_strings(card_data):
         for live_ref in extract_live_refs_from_text(text):
             add_video_ref(live_ref_list, seen_key_set, live_ref)
+        unescaped_text = html.unescape(safe_str(text))
+        for room_match in LIVE_ROOM_HINT_PATTERN.finditer(unescaped_text):
+            add_live_ref_from_room_id(live_ref_list, seen_key_set, room_match.group('room_id'))
+    if live_ref_list:
+        return live_ref_list
+    for url in extract_urls_from_card(card_data):
+        media_ref = resolve_video_ref_from_url_cached(url, url_ref_cache)
+        if is_live_ref(media_ref):
+            add_video_ref(live_ref_list, seen_key_set, media_ref)
     return live_ref_list
 
 
@@ -1756,23 +1852,22 @@ def extract_urls(text: str) -> list[str]:
 
 
 def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
-    live_ref = extract_live_ref_from_url(url)
-    if live_ref or is_live_bilibili_url(url):
-        parse_log(f'识别为直播间URL，跳过视频链接解析 ref={format_video_ref(live_ref)}')
-        return None
-    parse_log(f'开始解析URL url={shorten_log_text(url, 180)}')
-    direct_ref = extract_video_ref_from_text(url)
+    direct_ref = extract_media_ref_from_url_text(url)
     if direct_ref:
-        parse_log(f'URL中直接命中视频引用 ref={format_video_ref(direct_ref)}')
+        parse_log(f'URL中直接命中媒体引用 ref={format_video_ref(direct_ref)}')
         return direct_ref
+    if is_live_bilibili_url(url):
+        parse_log(f'识别为直播间URL但未解析到房间号 url={shorten_log_text(url, 180)}')
+        return None
 
+    parse_log(f'开始解析URL url={shorten_log_text(url, 180)}')
     request_url_list = build_resolve_url_candidates(url)
     parse_log(f'URL解析候选 count={len(request_url_list)} urls={format_log_list(request_url_list, 5)}')
     for request_url in request_url_list:
         try:
             response_url, response_text = http_get_text(request_url, allow_response_body=True)
         except urllib.error.HTTPError as exception_object:
-            video_ref = extract_video_ref_from_http_error(exception_object)
+            video_ref = extract_media_ref_from_http_error(exception_object)
             error_url = get_http_error_url(exception_object)
             if video_ref:
                 parse_log(
@@ -1793,28 +1888,51 @@ def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
             )
             continue
 
-        for text in [response_url, response_text]:
-            video_ref = extract_video_ref_from_text(text)
-            if video_ref:
-                if request_url != url:
-                    parse_log(
-                        f'短链净化后解析成功 original={shorten_log_text(url, 180)} '
-                        f'request={shorten_log_text(request_url, 180)} ref={format_video_ref(video_ref)}'
-                    )
-                return video_ref
+        media_ref = extract_media_ref_from_url_text(response_url)
+        if media_ref:
+            if request_url != url:
+                parse_log(
+                    f'短链净化后解析成功 original={shorten_log_text(url, 180)} '
+                    f'request={shorten_log_text(request_url, 180)} ref={format_video_ref(media_ref)}'
+                )
+            return media_ref
+        if is_live_bilibili_url(response_url):
+            parse_log(
+                f'短链解析为直播间页面但未得到房间号 url={shorten_log_text(request_url, 180)} '
+                f'final={shorten_log_text(response_url, 180)}'
+            )
+            return None
+
+        video_ref = extract_video_ref_from_text(response_text)
+        if video_ref:
+            if request_url != url:
+                parse_log(
+                    f'短链净化后解析成功 original={shorten_log_text(url, 180)} '
+                    f'request={shorten_log_text(request_url, 180)} ref={format_video_ref(video_ref)}'
+                )
+            return video_ref
 
         parse_log(
-            f'URL响应未找到BV/av url={shorten_log_text(request_url, 180)} '
+            f'URL响应未找到BV/av/直播间 url={shorten_log_text(request_url, 180)} '
             f'final={shorten_log_text(response_url, 180)} body_len={len(response_text)}'
         )
     return None
 
 
-def extract_video_ref_from_http_error(exception_object: urllib.error.HTTPError) -> dict[str, str] | None:
+def extract_media_ref_from_url_text(url: str) -> dict[str, str] | None:
+    live_ref = extract_live_ref_from_url(url)
+    if live_ref:
+        return live_ref
+    return extract_video_ref_from_text(url)
+
+
+def extract_media_ref_from_http_error(exception_object: urllib.error.HTTPError) -> dict[str, str] | None:
     error_url = get_http_error_url(exception_object)
-    video_ref = extract_video_ref_from_text(error_url)
-    if video_ref:
-        return video_ref
+    media_ref = extract_media_ref_from_url_text(error_url)
+    if media_ref:
+        return media_ref
+    if is_live_bilibili_url(error_url):
+        return None
 
     try:
         response_body = exception_object.read(128 * 1024)
@@ -1877,7 +1995,7 @@ def search_video_by_bangumi_pattern(title_hint: str) -> dict[str, str] | None:
     title = clean_search_keyword(title_hint)
     if not title or is_pseudo_title(title):
         return None
-    m = re.search(r'《([^》]+)》\s*(?:第?\s*(\d+)\s*[集话期])?\s*(.*)', title)
+    m = re.search(r'《([^》]+)》\s*第?\s*(\d+)\s*[集话期]\s*(.*)', title)
     if not m:
         return None
     season_name = m.group(1).strip()
