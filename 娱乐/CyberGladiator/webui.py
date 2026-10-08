@@ -4,7 +4,7 @@
 import os
 import re
 
-from . import config, message_custom, utils
+from . import config, utils
 
 
 def get_bot_info_dict(Proc) -> dict:
@@ -48,7 +48,6 @@ def get_state(Proc, requested_bot_hash: str = '') -> dict:
     bot_hash = requested_bot_hash if requested_bot_hash in bot_info_dict else bots[0]['hash']
     linked_hash = utils.get_linked_bot_hash(bot_hash)
     bot_config = utils.load_bot_config(bot_hash)
-    replies = utils.load_bot_message_custom(bot_hash)
 
     state['bot'] = {
         'hash': bot_hash,
@@ -74,15 +73,7 @@ def get_state(Proc, requested_bot_hash: str = '') -> dict:
         'masters': bot_config.get('configured_master_list', []),
         'config_directory': os.path.abspath(utils.get_config_bot_root_dir(bot_hash)),
         'reply_directory': os.path.abspath(utils.get_reply_bot_root_dir(bot_hash)),
-        'replies': [
-            {
-                'key': key,
-                'note': utils.get_message_note_text(key),
-                'value': utils.safe_str(replies.get(key, '')),
-                'is_default': key in message_custom.default_custom_message_dict,
-            }
-            for key in utils.get_bot_message_key_list(bot_hash)
-        ],
+        'replies': utils.get_bot_message_custom_items(bot_hash),
     }
     return state
 
@@ -197,7 +188,7 @@ def save_bot_action(action: str, payload: dict, bot_hash: str) -> bool:
     if action == 'reset_replies':
         if payload.get('confirm') is not True:
             raise ValueError('请确认恢复全部默认回复。')
-        return utils.save_bot_message_custom(bot_hash, message_custom.default_custom_message_dict)
+        return utils.reset_all_bot_message_custom(bot_hash)
 
     if action in ('save_reply', 'reset_reply'):
         key = payload.get('key')
@@ -205,16 +196,25 @@ def save_bot_action(action: str, payload: dict, bot_hash: str) -> bool:
             raise ValueError('回复词条目不存在，请刷新后重新选择。')
         if action == 'save_reply':
             value = payload.get('value')
-            if not isinstance(value, str) or len(value) > 32768:
-                raise ValueError('回复词必须是文本，且不超过 32768 字。')
+            if not isinstance(value, str) or len(value) > config.message_custom_value_max_length:
+                raise ValueError(f'回复词必须是文本，且不超过 {config.message_custom_value_max_length} 字。')
             return utils.set_bot_message_custom_value(bot_hash, key, value)
         if payload.get('confirm') is not True:
             raise ValueError('请确认恢复或删除这条回复词。')
-        if key in message_custom.default_custom_message_dict:
-            return utils.reset_bot_message_custom_value(bot_hash, key)
-        replies = utils.load_bot_message_custom(bot_hash)
-        replies.pop(key, None)
-        return utils.save_bot_message_custom(bot_hash, replies)
+        return utils.reset_bot_message_custom_value(bot_hash, key)
+
+    if action == 'export_bot':
+        return True
+    if action == 'import_bot':
+        if payload.get('confirm') is not True:
+            raise ValueError('请确认导入 Bot 配置。')
+        return utils.import_bot_config(bot_hash, payload.get('data'))
+    if action == 'export_replies':
+        return True
+    if action == 'import_replies':
+        if payload.get('confirm') is not True:
+            raise ValueError('请确认导入回复词。')
+        return utils.import_bot_message_custom(bot_hash, payload.get('data'))
 
     raise ValueError('未知的 WebUI 操作。')
 
@@ -228,7 +228,18 @@ def dispatch(payload: dict, Proc) -> dict:
     with utils.file_lock:
         if action == 'get_state':
             return {'ok': True, 'state': get_state(Proc, bot_hash)}
-        if action == 'save_global':
+        if action == 'export_global':
+            return {
+                'ok': True,
+                'state': get_state(Proc, bot_hash),
+                'data': utils.export_global_config(),
+                'filename': utils.get_export_filename('global'),
+            }
+        if action == 'import_global':
+            if payload.get('confirm') is not True:
+                raise ValueError('请确认导入全局配置。')
+            saved = utils.import_global_config(payload.get('data'))
+        elif action == 'save_global':
             changes = {
                 'global_enable_switch': require_bool(payload, 'global_enable_switch'),
                 'global_debug_mode_switch': require_bool(payload, 'global_debug_mode_switch'),
@@ -241,6 +252,20 @@ def dispatch(payload: dict, Proc) -> dict:
             if not bot_hash or bot_hash not in get_bot_info_dict(Proc):
                 raise ValueError('所选 Bot 已不可用，请刷新账号列表。')
             saved = save_bot_action(action, payload, bot_hash)
+            if action == 'export_bot':
+                return {
+                    'ok': True,
+                    'state': get_state(Proc, bot_hash),
+                    'data': utils.export_bot_config(bot_hash),
+                    'filename': utils.get_export_filename('bot', bot_hash),
+                }
+            if action == 'export_replies':
+                return {
+                    'ok': True,
+                    'state': get_state(Proc, bot_hash),
+                    'data': utils.export_bot_message_custom(bot_hash),
+                    'filename': utils.get_export_filename('replies', bot_hash),
+                }
         if not saved:
             raise OSError('Configuration save failed')
         return {'ok': True, 'state': get_state(Proc, bot_hash)}

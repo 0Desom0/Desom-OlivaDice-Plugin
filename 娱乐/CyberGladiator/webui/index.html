@@ -17,6 +17,7 @@
                 replies: true,
                 masters: true,
                 directories: true,
+                importExport: true,
             },
         };
     </script>
@@ -200,6 +201,27 @@
             cursor: pointer;
             font-size: 14px;
         }
+
+        label.inline {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin: 0;
+            white-space: nowrap;
+        }
+        .reply-filters { justify-content: space-between; }
+        #reply-count { font-size: 13px; }
+        select.reply-list { min-height: 170px; }
+        dialog {
+            width: min(460px, calc(100% - 32px));
+            padding: 24px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-radius);
+            background: var(--card-background);
+            color: var(--text-color);
+        }
+        dialog::backdrop { background: #07132580; }
+        #confirm-message { white-space: pre-wrap; overflow-wrap: anywhere; }
     </style>
 </head>
 <body>
@@ -243,6 +265,8 @@
                 </div>
                 <div class="row">
                     <button class="primary" onclick="saveGlobal()">保存全局设置</button>
+                    <button onclick="importJson('global')">导入全局配置</button>
+                    <button onclick="exportJson('export_global', 'global-config.json')">导出全局配置</button>
                 </div>
             </div>
 
@@ -343,6 +367,8 @@
 
                 <div class="row">
                     <button class="primary" onclick="saveBot()">保存 Bot 配置</button>
+                    <button onclick="importJson('bot')">导入 Bot 配置</button>
+                    <button onclick="exportJson('export_bot', 'bot-config.json')">导出 Bot 配置</button>
                 </div>
             </div>
 
@@ -351,9 +377,25 @@
                 <!-- 自定义回复词 -->
                 <div class="card">
                     <h2>自定义回复词 (解析群链)</h2>
+                    <p class="hint">已修改按默认文本比较；恢复默认会删掉这一条覆盖层。</p>
+                    <div class="form-group">
+                        <label>搜索回复词</label>
+                        <input type="text" id="reply-search" placeholder="键名、说明或内容" oninput="handleReplySearchInput()">
+                    </div>
+                    <div class="row reply-filters">
+                        <span id="reply-count" class="muted">0 / 0 条回复</span>
+                        <label class="inline">
+                            <input id="reply-filter-modified" type="checkbox" onchange="handleReplyFilterChange('modified', this.checked)">
+                            仅看已修改
+                        </label>
+                        <label class="inline">
+                            <input id="reply-filter-unmodified" type="checkbox" onchange="handleReplyFilterChange('unmodified', this.checked)">
+                            仅看未修改
+                        </label>
+                    </div>
                     <div class="form-group">
                         <label>选择词条</label>
-                        <select id="reply-key-selector" onchange="onReplySelected()"></select>
+                        <select id="reply-key-selector" class="reply-list" size="8" onchange="onReplySelected()"></select>
                     </div>
                     <div id="reply-note" class="hint" style="margin-bottom: 8px;"></div>
                     <div class="form-group">
@@ -362,6 +404,10 @@
                     <div class="row">
                         <button class="primary" onclick="saveReply()">保存词条</button>
                         <button onclick="resetReply()">恢复此条默认</button>
+                    </div>
+                    <div class="row">
+                        <button onclick="importJson('replies')">导入回复词</button>
+                        <button onclick="exportJson('export_replies', 'replies.json')">导出回复词</button>
                         <button onclick="resetAllReplies()" style="color: var(--error-color);">恢复全部默认</button>
                     </div>
                 </div>
@@ -380,12 +426,188 @@
         </section>
     </main>
 
+    <input id="import-global-file" type="file" accept=".json,application/json" hidden onchange="handleImportFile('global', this.files && this.files[0])">
+    <input id="import-bot-file" type="file" accept=".json,application/json" hidden onchange="handleImportFile('bot', this.files && this.files[0])">
+    <input id="import-replies-file" type="file" accept=".json,application/json" hidden onchange="handleImportFile('replies', this.files && this.files[0])">
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">确认操作</h2>
+        <p id="confirm-message"></p>
+        <div class="row">
+            <button id="confirm-cancel" type="button">取消</button>
+            <button id="confirm-ok" type="button" class="primary">确认</button>
+        </div>
+    </dialog>
+
+
     <script>
         'use strict';
         let currentBotHash = '';
         let currentState = null;
         let pendingRequests = new Map();
         let isVisible = true;
+
+        let replyStatusFilter = 'all';
+        let replyQuery = '';
+        let selectedReplyKey = '';
+
+        function confirmAction(text) {
+            const dialog = document.getElementById('confirm-dialog');
+            if (dialog.open) {
+                return Promise.resolve(false);
+            }
+            document.getElementById('confirm-message').textContent = text;
+            return new Promise((resolve) => {
+                function finish(answer) {
+                    dialog.close();
+                    resolve(answer);
+                }
+                document.getElementById('confirm-ok').onclick = () => finish(true);
+                document.getElementById('confirm-cancel').onclick = () => finish(false);
+                dialog.oncancel = (event) => {
+                    event.preventDefault();
+                    finish(false);
+                };
+                dialog.showModal();
+            });
+        }
+
+        function downloadJson(filename, data) {
+            const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json;charset=utf-8'});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename || 'export.json';
+            link.rel = 'noopener';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+        }
+
+        function readJsonFile(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    try {
+                        const parsed = JSON.parse(String(reader.result || ''));
+                        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                            reject(new Error('JSON 文件必须是对象。'));
+                            return;
+                        }
+                        resolve(parsed);
+                    } catch (_error) {
+                        reject(new Error('无法解析 JSON 文件。'));
+                    }
+                };
+                reader.onerror = () => reject(new Error('读取文件失败。'));
+                reader.readAsText(file, 'utf-8');
+            });
+        }
+
+        async function exportJson(action, fallbackName) {
+            try {
+                const res = await sendEvent({ action: action, bot_hash: currentBotHash });
+                if (res?.ok && res.data) {
+                    downloadJson(res.filename || fallbackName, res.data);
+                    showStatus('已导出 JSON 文件');
+                } else {
+                    showStatus(res?.error || '导出失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message, true);
+            }
+        }
+
+        function importJson(kind) {
+            const input = document.getElementById(`import-${kind}-file`);
+            if (input) {
+                input.click();
+            }
+        }
+
+        async function handleImportFile(kind, file) {
+            const input = document.getElementById(`import-${kind}-file`);
+            if (!file) {
+                if (input) input.value = '';
+                return;
+            }
+            try {
+                const data = await readJsonFile(file);
+                const count = Object.keys(data).length;
+                const labels = { global: '全局配置', bot: 'Bot 配置', replies: '回复词' };
+                if (!await confirmAction(`将导入 ${count} 项${labels[kind]}，同名字段会覆盖当前值，继续吗？`)) {
+                    return;
+                }
+                const action = kind === 'global' ? 'import_global' : kind === 'bot' ? 'import_bot' : 'import_replies';
+                const res = await sendEvent({
+                    action: action,
+                    bot_hash: currentBotHash,
+                    data: data,
+                    confirm: true,
+                });
+                if (res?.ok) {
+                    showStatus(`${labels[kind]}已导入`);
+                    renderState(res.state);
+                } else {
+                    showStatus(res?.error || '导入失败', true);
+                }
+            } catch (err) {
+                showStatus(err.message || '导入失败，请检查 JSON 文件。', true);
+            } finally {
+                if (input) input.value = '';
+            }
+        }
+
+        function getFilteredReplies(bot) {
+            const replies = bot?.replies || [];
+            const query = replyQuery.trim().toLowerCase();
+            return replies.filter((reply) => {
+                if (replyStatusFilter === 'modified' && !reply.modified) return false;
+                if (replyStatusFilter === 'unmodified' && reply.modified) return false;
+                if (!query) return true;
+                return `${reply.key} ${reply.note} ${reply.value}`.toLowerCase().includes(query);
+            });
+        }
+
+        function renderReplyList(bot) {
+            const replies = bot?.replies || [];
+            const filtered = getFilteredReplies(bot);
+            const replySelector = document.getElementById('reply-key-selector');
+            const previousKey = selectedReplyKey || replySelector.value;
+            replySelector.innerHTML = '';
+            filtered.forEach((reply) => {
+                const opt = document.createElement('option');
+                opt.value = reply.key;
+                opt.textContent = reply.modified ? `${reply.key} · 已修改` : reply.key;
+                replySelector.appendChild(opt);
+            });
+            document.getElementById('reply-count').textContent = `${filtered.length} / ${replies.length} 条回复`;
+            document.getElementById('reply-search').value = replyQuery;
+            document.getElementById('reply-filter-modified').checked = replyStatusFilter === 'modified';
+            document.getElementById('reply-filter-unmodified').checked = replyStatusFilter === 'unmodified';
+            const selectionExists = filtered.some((reply) => reply.key === previousKey);
+            selectedReplyKey = selectionExists ? previousKey : (filtered[0]?.key || '');
+            replySelector.value = selectedReplyKey;
+            onReplySelected();
+        }
+
+        function handleReplySearchInput() {
+            replyQuery = document.getElementById('reply-search').value;
+            if (currentState?.bot) {
+                renderReplyList(currentState.bot);
+            }
+        }
+
+        function handleReplyFilterChange(kind, checked) {
+            if (checked) {
+                replyStatusFilter = kind;
+            } else if (replyStatusFilter === kind) {
+                replyStatusFilter = 'all';
+            }
+            if (currentState?.bot) {
+                renderReplyList(currentState.bot);
+            }
+        }
 
         window.addEventListener('message', (event) => {
             if (event.source !== window.parent) return;
@@ -517,16 +739,7 @@
                 masterContainer.appendChild(tag);
             });
 
-            // 回复词
-            const replySelector = document.getElementById('reply-key-selector');
-            replySelector.innerHTML = '';
-            (bot.replies || []).forEach(r => {
-                const opt = document.createElement('option');
-                opt.value = r.key;
-                opt.textContent = `${r.key}${r.is_default ? '' : ' *'}`;
-                replySelector.appendChild(opt);
-            });
-            onReplySelected();
+            renderReplyList(bot);
         }
 
         function onBotSelected() {
@@ -537,10 +750,14 @@
         function onReplySelected() {
             if (!currentState?.bot?.replies) return;
             const key = document.getElementById('reply-key-selector').value;
+            selectedReplyKey = key;
             const reply = currentState.bot.replies.find(r => r.key === key);
             if (reply) {
                 document.getElementById('reply-note').textContent = reply.note || '';
                 document.getElementById('reply-value').value = reply.value || '';
+            } else {
+                document.getElementById('reply-note').textContent = '当前没有可编辑的回复词。';
+                document.getElementById('reply-value').value = '';
             }
         }
 
@@ -652,7 +869,7 @@
         async function resetReply() {
             if (!currentBotHash) return;
             const key = document.getElementById('reply-key-selector').value;
-            if (!confirm(`确认恢复回复词 [${key}] 到默认值？`)) return;
+            if (!await confirmAction(`确认恢复回复词 [${key}] 到默认值？`)) return;
             try {
                 const res = await sendEvent({ action: 'reset_reply', bot_hash: currentBotHash, key: key, confirm: true });
                 if (res?.ok) {
@@ -668,7 +885,7 @@
 
         async function resetAllReplies() {
             if (!currentBotHash) return;
-            if (!confirm('确认恢复当前 Bot 的全部回复词到默认值？')) return;
+            if (!await confirmAction('确认恢复当前 Bot 的全部回复词到默认值？')) return;
             try {
                 const res = await sendEvent({ action: 'reset_replies', bot_hash: currentBotHash, confirm: true });
                 if (res?.ok) {

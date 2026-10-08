@@ -25,7 +25,7 @@ class IWannaSearchAPIFeaturesTest(unittest.TestCase):
         spec.loader.exec_module(package)
         cls.message = package.main.message
         cls.function = package.main.message.function
-        cls.message_custom = package.main.webui.message_custom
+        cls.message_custom = package.main.utils.message_custom
         cls.utils = package.main.utils
 
     @classmethod

@@ -19,6 +19,11 @@ storage_folder_name = 'storage'
 
 allowed_prefix_list = ['.', '。', '/']
 
+# 导入导出与回复词长度上限，GUI 与 WebUI 共用。
+json_import_max_keys = 5000
+message_custom_key_max_length = 200
+message_custom_value_max_length = 32768
+
 api_default_base_url = 'https://fangame-archive.com'
 api_timeout_seconds = 12
 result_page_size = 10

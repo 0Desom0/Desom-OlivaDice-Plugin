@@ -40,6 +40,11 @@ storage_folder_name = 'storage'
 # 允许的命令前缀仅放静态常量。
 allowed_prefix_list = ['.', '。', '/', '／']
 
+# 导入导出与回复词长度上限，GUI 与 WebUI 共用。
+json_import_max_keys = 5000
+message_custom_key_max_length = 200
+message_custom_value_max_length = 32768
+
 # GUI 只做一个轻量的通用面板，因此标题也放在静态配置里。
 gui_window_title = 'YourPluginName 设置面板'
 gui_global_tab_title = '全局配置'

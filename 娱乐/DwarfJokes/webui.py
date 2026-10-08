@@ -4,7 +4,7 @@
 import os
 import re
 
-from . import config, utils
+from . import config, function, utils
 
 
 def get_bot_info_dict(Proc) -> dict:
@@ -31,40 +31,29 @@ def get_state(Proc, requested_bot_hash: str = '') -> dict:
     bots = [{'hash': key, 'label': bot_label(key, bot_info_dict)} for key in bot_info_dict if isinstance(key, str)]
     bots.sort(key=lambda item: (item['label'], item['hash']))
     global_config = utils.load_global_config()
+    function.ensure_joke_pack_initialized()
     state = {
         'plugin_name': config.plugin_name,
-        'global_config': {
-            'global_enable_switch': bool(global_config.get('global_enable_switch', True)),
-            'global_debug_mode_switch': bool(global_config.get('global_debug_mode_switch', False)),
-            'api_base_url': utils.safe_str(global_config.get('api_base_url', config.api_default_base_url)),
-            'api_timeout_seconds': int(global_config.get('api_timeout_seconds', config.api_timeout_seconds)),
-            'result_page_size': int(global_config.get('result_page_size', config.result_page_size)),
-            'selection_timeout_seconds': int(
-                global_config.get('selection_timeout_seconds', config.selection_timeout_seconds)
-            ),
-            'max_download_concurrency': int(
-                global_config.get('max_download_concurrency', config.download_concurrency_default)
-            ),
-        },
+        'global_config': {key: bool(global_config[key]) for key in config.default_global_config},
         'global_directory': os.path.abspath(config.plugin_data_dir),
+        'joke_pack': function.get_joke_pack_summary(),
         'bots': bots,
         'bot': None,
     }
     if not bots:
         return state
-
+    # 刷新时账号可能已被宿主移除，回到列表里的第一个账号；写操作仍严格校验账号。
     bot_hash = requested_bot_hash if requested_bot_hash in bot_info_dict else bots[0]['hash']
     linked_hash = utils.get_linked_bot_hash(bot_hash)
     bot_config = utils.load_bot_config(bot_hash)
-
     state['bot'] = {
         'hash': bot_hash,
         'label': bot_label(bot_hash, bot_info_dict),
         'linked_hash': linked_hash,
         'linked_label': bot_label(linked_hash, bot_info_dict),
-        'bot_enable_switch': bool(bot_config.get('bot_enable_switch', True)),
-        'merge_forward_enabled': bool(bot_config.get('merge_forward_enabled', True)),
-        'masters': bot_config.get('configured_master_list', []),
+        'bot_enable_switch': bool(bot_config['bot_enable_switch']),
+        'masters': bot_config['configured_master_list'],
+        'admins': bot_config['configured_admin_list'],
         'config_directory': os.path.abspath(utils.get_config_bot_root_dir(bot_hash)),
         'reply_directory': os.path.abspath(utils.get_reply_bot_root_dir(bot_hash)),
         'replies': utils.get_bot_message_custom_items(bot_hash),
@@ -76,36 +65,11 @@ def require_bool(payload: dict, key: str) -> bool:
     """不把字符串 'false' 或数字误当成布尔开关。"""
     value = payload.get(key)
     if not isinstance(value, bool):
-        raise ValueError(f'{key} 开关必须为 true 或 false。')
+        raise ValueError('开关必须为 true 或 false。')
     return value
 
 
-def require_int(payload: dict, key: str, min_val: int = None, max_val: int = None) -> int:
-    """严格校验整数字段。"""
-    value = payload.get(key)
-    if not isinstance(value, int) or isinstance(value, bool):
-        try:
-            value = int(str(value).strip())
-        except (ValueError, TypeError):
-            raise ValueError(f'{key} 必须为整数。')
-    if min_val is not None and value < min_val:
-        raise ValueError(f'{key} 不能小于 {min_val}。')
-    if max_val is not None and value > max_val:
-        raise ValueError(f'{key} 不能大于 {max_val}。')
-    return value
-
-
-def require_str(payload: dict, key: str, max_len: int = 4096) -> str:
-    """严格校验文本字段。"""
-    value = payload.get(key)
-    if not isinstance(value, str):
-        raise ValueError(f'{key} 必须为文本。')
-    if len(value) > max_len:
-        raise ValueError(f'{key} 长度超过限制（最多 {max_len} 字）。')
-    return value
-
-
-def require_master_ids(payload: dict) -> list:
+def require_master_ids(payload: dict) -> list[str]:
     """完整校验后再保存，拒绝把混有字母的输入静默变成另一个用户 ID。"""
     values = payload.get('ids')
     if not isinstance(values, list) or not 1 <= len(values) <= 100:
@@ -115,14 +79,47 @@ def require_master_ids(payload: dict) -> list:
     return list(dict.fromkeys(values))
 
 
+def require_joke_text(payload: dict) -> str:
+    """校验新增笑话正文。"""
+    value = payload.get('text')
+    if not isinstance(value, str):
+        raise ValueError('笑话内容必须是文本。')
+    text = value.strip()
+    if not text:
+        raise ValueError('笑话内容不能为空。')
+    if len(text) > config.joke_text_max_length:
+        raise ValueError(f'笑话内容不能超过 {config.joke_text_max_length} 字。')
+    return text
+
+
+def require_joke_id(payload: dict) -> int:
+    """校验删除用的笑话序号。"""
+    value = payload.get('id')
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError('笑话序号必须是正整数。')
+    if value < 1:
+        raise ValueError('笑话序号必须是正整数。')
+    return value
+
+
+def require_draw_count(payload: dict) -> int:
+    """校验抽选条数。"""
+    value = payload.get('count', 1)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError('抽选条数必须是整数。')
+    if value > config.draw_count_max:
+        return config.draw_count_max
+    if value < config.draw_count_min:
+        return config.draw_count_min
+    return value
+
+
 def save_bot_action(action: str, payload: dict, bot_hash: str) -> bool:
     """只写本次操作的字段，保留群禁用列表与使用者自行扩展的配置。"""
     if action == 'save_bot':
+        enabled = require_bool(payload, 'bot_enable_switch')
         bot_config = utils.load_bot_config(bot_hash)
-        if 'bot_enable_switch' in payload:
-            bot_config['bot_enable_switch'] = require_bool(payload, 'bot_enable_switch')
-        if 'merge_forward_enabled' in payload:
-            bot_config['merge_forward_enabled'] = require_bool(payload, 'merge_forward_enabled')
+        bot_config['bot_enable_switch'] = enabled
         return utils.save_bot_config(bot_hash, bot_config)
 
     if action in ('add_masters', 'remove_masters'):
@@ -133,6 +130,15 @@ def save_bot_action(action: str, payload: dict, bot_hash: str) -> bool:
         else:
             masters = [master_id for master_id in masters if master_id not in ids]
         return utils.set_configured_master_list(bot_hash, masters)
+
+    if action in ('add_admins', 'remove_admins'):
+        ids = require_master_ids(payload)
+        admins = utils.get_configured_admin_list(bot_hash)
+        if action == 'add_admins':
+            admins = list(dict.fromkeys(admins + ids))
+        else:
+            admins = [admin_id for admin_id in admins if admin_id not in ids]
+        return utils.set_configured_admin_list(bot_hash, admins)
 
     if action == 'reset_replies':
         if payload.get('confirm') is not True:
@@ -189,25 +195,41 @@ def dispatch(payload: dict, Proc) -> dict:
                 raise ValueError('请确认导入全局配置。')
             saved = utils.import_global_config(payload.get('data'))
         elif action == 'save_global':
-            changes = {
-                'global_enable_switch': require_bool(payload, 'global_enable_switch'),
-                'global_debug_mode_switch': require_bool(payload, 'global_debug_mode_switch'),
-                'api_base_url': require_str(payload, 'api_base_url').rstrip('/'),
-                'api_timeout_seconds': require_int(payload, 'api_timeout_seconds', min_val=1, max_val=120),
-                'result_page_size': require_int(payload, 'result_page_size', min_val=1, max_val=50),
-                'selection_timeout_seconds': require_int(
-                    payload, 'selection_timeout_seconds', min_val=10, max_val=3600,
-                ),
-                'max_download_concurrency': require_int(
-                    payload,
-                    'max_download_concurrency',
-                    min_val=config.download_concurrency_min,
-                    max_val=config.download_concurrency_max,
-                ),
-            }
+            changes = {key: require_bool(payload, key) for key in config.default_global_config}
             global_config = utils.load_global_config()
             global_config.update(changes)
             saved = utils.save_global_config(global_config)
+        elif action == 'add_joke':
+            add_result = function.add_joke(require_joke_text(payload))
+            if not add_result.get('ok'):
+                if add_result.get('reason') == 'duplicate':
+                    raise ValueError(
+                        f'与序号 {add_result["id"]} 的笑话重复（参考度 {add_result["rank"]}）。'
+                    )
+                if add_result.get('reason') == 'too_long':
+                    raise ValueError(f'笑话内容不能超过 {config.joke_text_max_length} 字。')
+                if add_result.get('reason') == 'empty':
+                    raise ValueError('笑话内容不能为空。')
+                raise OSError('Configuration save failed')
+            return {'ok': True, 'state': get_state(Proc, bot_hash), 'result': add_result}
+        elif action == 'delete_joke':
+            delete_result = function.delete_joke(require_joke_id(payload))
+            if not delete_result.get('ok'):
+                if delete_result.get('reason') in {'missing', 'invalid_id'}:
+                    raise ValueError(f'序号 {payload.get("id")} 不存在或无效。')
+                raise OSError('Configuration save failed')
+            return {'ok': True, 'state': get_state(Proc, bot_hash), 'result': delete_result}
+        elif action == 'draw_jokes':
+            draw_result = function.draw_jokes(require_draw_count(payload))
+            return {
+                'ok': True,
+                'state': get_state(Proc, bot_hash),
+                'result': {
+                    'ok': bool(draw_result.get('ok')),
+                    'text': function.format_draw_result(draw_result),
+                    'count': draw_result.get('count', 0),
+                },
+            }
         else:
             if not bot_hash or bot_hash not in get_bot_info_dict(Proc):
                 raise ValueError('所选 Bot 已不可用，请刷新账号列表。')
@@ -252,6 +274,7 @@ def handle_menu_event(plugin_event, Proc) -> None:
     except ValueError as error:
         response = {'ok': False, 'error': str(error)}
     except Exception as error:
+        # 不把事件、payload、认证上下文或异常中的路径写入日志与回包。
         utils.error_log(Proc, f'WebUI 配置操作失败：{type(error).__name__}')
         response = {'ok': False, 'error': '配置读写失败，请检查服务器数据目录权限，再刷新确认当前状态。'}
     try:

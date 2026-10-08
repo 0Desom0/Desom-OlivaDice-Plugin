@@ -1,11 +1,11 @@
 {
-  "name": "赛博角斗场",
+  "name": "矮人笑话",
   "author": "Desom-fu",
-  "namespace": "CyberGladiator",
+  "namespace": "DwarfJokes",
   "message_mode": "olivos_string",
-  "info": "基于轻量模板实现的赛博斗蛐蛐插件",
-  "version": "1.4.5",
-  "svn": 8,
+  "info": "抽取、新增和删除全局矮人笑话合集",
+  "version": "1.0.3",
+  "svn": 4,
   "compatible_svn": 190,
   "priority": 30000,
   "support": [
@@ -20,17 +20,17 @@
       "model": "all"
     }
   ],
+  "webui_config": [
+    {
+      "title": "矮人笑话配置",
+      "type": "iframe",
+      "path": "webui/index.html"
+    }
+  ],
   "menu_config": [
     {
       "title": "打开插件配置",
-      "event": "CyberGladiator_Menu_001"
-    }
-  ],
-  "webui_config": [
-    {
-      "title": "赛博角斗场配置",
-      "type": "iframe",
-      "path": "webui/index.html"
+      "event": "DwarfJokes_Menu_001"
     }
   ]
 }

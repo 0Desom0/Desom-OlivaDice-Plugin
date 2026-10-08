@@ -557,23 +557,97 @@ def save_bot_config(bot_hash: Any, bot_config: Dict[str, Any]) -> bool:
     return save_json_file(get_bot_config_file_path(bot_hash), final_config)
 
 
+def require_json_object(data: Any, kind: str = '配置') -> Dict[str, Any]:
+    """校验导入数据是不超过上限的 JSON 对象。"""
+    if not isinstance(data, dict):
+        raise ValueError(f'{kind}必须是 JSON 对象。')
+    if len(data) > config.json_import_max_keys:
+        raise ValueError(f'{kind}不能超过 {config.json_import_max_keys} 项。')
+    return data
+
+
+def require_known_bool_fields(incoming: Dict[str, Any], defaults: Dict[str, Any]) -> None:
+    """只校验默认配置里本来就是布尔值的字段。"""
+    for key, default_value in defaults.items():
+        if key in incoming and isinstance(default_value, bool) and not isinstance(incoming[key], bool):
+            raise ValueError(f'{key} 必须为 true 或 false。')
+
+
+def is_message_custom_modified(message_key: str, message_text: Any) -> bool:
+    """
+    判断一条回复是否相对模板默认值发生了修改。
+
+    比较对象是默认文本，而不是“文件里有没有这个 key”或“当前是不是空字符串”。
+    没有默认文本的扩展回复词始终视为已修改。
+    """
+    if message_key not in message_custom.default_custom_message_dict:
+        return True
+    return safe_str(message_text) != safe_str(message_custom.default_custom_message_dict[message_key])
+
+
+def build_message_custom_overlay(custom_message_dict: Any) -> Dict[str, str]:
+    """
+    从运行时回复词字典抽出需要落盘的覆盖层。
+
+    只保留：
+    1. 模板默认回复词中，内容和默认文本不同的条目；
+    2. 模板里没有的扩展回复词。
+    """
+    overlay_dict: Dict[str, str] = {}
+    if not isinstance(custom_message_dict, dict):
+        return overlay_dict
+    for message_key, message_text in custom_message_dict.items():
+        text_key = safe_str(message_key)
+        if not text_key:
+            continue
+        text_value = safe_str(message_text)
+        if is_message_custom_modified(text_key, text_value):
+            overlay_dict[text_key] = text_value
+    return overlay_dict
+
+
+def load_bot_message_custom_overlay(bot_hash: Any) -> Dict[str, str]:
+    """
+    读取磁盘上的回复词覆盖层。
+
+    文件不存在、损坏或不是对象时，视为没有任何自定义覆盖。
+    """
+    file_data = read_json_file(get_message_custom_file_path(bot_hash), {})
+    if not isinstance(file_data, dict):
+        return {}
+    overlay_dict: Dict[str, str] = {}
+    for message_key, message_text in file_data.items():
+        text_key = safe_str(message_key)
+        if not text_key:
+            continue
+        overlay_dict[text_key] = safe_str(message_text)
+    return overlay_dict
+
+
+def save_bot_message_custom_overlay(bot_hash: Any, overlay_dict: Any) -> bool:
+    """把覆盖层写回 message_custom.json，写入前再次丢掉与默认相同的条目。"""
+    return save_json_file(get_message_custom_file_path(bot_hash), build_message_custom_overlay(overlay_dict))
+
+
 def load_bot_message_custom(bot_hash: Any) -> Dict[str, str]:
     """
-    读取当前 bot 的自定义回复词。
+    读取当前 bot 实际生效的回复词。
 
-    这里会读取 linked_bot_hash 对应目录中的回复词文件。
-    这些文件在初始化阶段就会被准备好，因此正常情况下会直接读取
-    对应 bot_hash 目录中的文件内容。
+    运行时始终是“模板默认值 + 覆盖层”。磁盘文件只保存覆盖层。
     """
-    file_path = get_message_custom_file_path(bot_hash)
-    file_data = read_json_file(file_path, message_custom.default_custom_message_dict)
-    return merge_dict_with_default(file_data, message_custom.default_custom_message_dict)
+    return merge_dict_with_default(
+        load_bot_message_custom_overlay(bot_hash),
+        message_custom.default_custom_message_dict,
+    )
 
 
 def save_bot_message_custom(bot_hash: Any, custom_message_dict: Dict[str, str]) -> bool:
-    """保存当前 bot 的自定义回复词。"""
-    final_dict = merge_dict_with_default(custom_message_dict, message_custom.default_custom_message_dict)
-    return save_json_file(get_message_custom_file_path(bot_hash), final_dict)
+    """
+    保存当前 bot 的自定义回复词。
+
+    传入的是运行时完整字典也可以，函数会只把相对默认值改过的条目写入文件。
+    """
+    return save_bot_message_custom_overlay(bot_hash, custom_message_dict)
 
 
 def load_bot_message_variables(bot_hash: Any) -> Dict[str, str]:
@@ -596,13 +670,13 @@ def get_bot_message_key_list(bot_hash: Any) -> List[str]:
     这里会合并三部分来源：
     1. 模板默认内置的回复词 key。
     2. 说明字典里存在的 key。
-    3. 当前 bot 已经保存过的自定义 key。
+    3. 当前 bot 覆盖层里已经保存过的自定义 key。
 
     这样 GUI 无论面对“模板自带词条”还是“用户后续扩展词条”，都能把它们列出来。
     """
     key_set = set(message_custom.default_custom_message_dict.keys())
     key_set.update(message_custom.custom_message_note_dict.keys())
-    key_set.update(load_bot_message_custom(bot_hash).keys())
+    key_set.update(load_bot_message_custom_overlay(bot_hash).keys())
     return sorted(key_set)
 
 
@@ -611,26 +685,120 @@ def get_message_note_text(message_key: str) -> str:
     return safe_str(message_custom.custom_message_note_dict.get(message_key, '这个回复词当前没有额外说明。'))
 
 
+def get_bot_message_custom_items(bot_hash: Any) -> List[Dict[str, Any]]:
+    """整理 GUI / WebUI 使用的回复词列表，modified 始终和默认文本比较。"""
+    runtime_dict = load_bot_message_custom(bot_hash)
+    item_list = []
+    for message_key in get_bot_message_key_list(bot_hash):
+        message_text = safe_str(runtime_dict.get(message_key, ''))
+        has_default = message_key in message_custom.default_custom_message_dict
+        default_text = (
+            safe_str(message_custom.default_custom_message_dict[message_key]) if has_default else None
+        )
+        item_list.append(
+            {
+                'key': message_key,
+                'note': get_message_note_text(message_key),
+                'value': message_text,
+                'is_default': has_default,
+                'modified': is_message_custom_modified(message_key, message_text),
+                'default': default_text,
+            }
+        )
+    return item_list
+
+
 def set_bot_message_custom_value(bot_hash: Any, message_key: str, message_text: str) -> bool:
-    """设置当前 bot 某一条自定义回复词。"""
-    custom_message_dict = load_bot_message_custom(bot_hash)
-    custom_message_dict[safe_str(message_key)] = safe_str(message_text)
-    return save_bot_message_custom(bot_hash, custom_message_dict)
+    """
+    设置当前 bot 某一条自定义回复词。
+
+    写入内容如果和默认文本相同，会从覆盖层删掉这一条，效果等于恢复默认。
+    """
+    overlay_dict = load_bot_message_custom_overlay(bot_hash)
+    overlay_dict[safe_str(message_key)] = safe_str(message_text)
+    return save_bot_message_custom_overlay(bot_hash, overlay_dict)
 
 
 def reset_bot_message_custom_value(bot_hash: Any, message_key: str) -> bool:
     """
-    把当前 bot 某一条自定义回复词重置为模板默认值。
+    恢复某一条回复词。
 
-    如果该 key 不在模板默认回复词里，则重置为空字符串，
-    让模板使用者能明显看到这个词条还没有给出默认文本。
+    做法是从覆盖层删除该 key 再重新加载：模板默认词回到默认文本，扩展词则消失。
+    如果这一条本来就没有自定义内容，文件不会产生新的变化。
     """
-    custom_message_dict = load_bot_message_custom(bot_hash)
-    if message_key in message_custom.default_custom_message_dict:
-        custom_message_dict[message_key] = message_custom.default_custom_message_dict[message_key]
-    else:
-        custom_message_dict[message_key] = ''
-    return save_bot_message_custom(bot_hash, custom_message_dict)
+    overlay_dict = load_bot_message_custom_overlay(bot_hash)
+    overlay_dict.pop(safe_str(message_key), None)
+    return save_bot_message_custom_overlay(bot_hash, overlay_dict)
+
+
+def reset_all_bot_message_custom(bot_hash: Any) -> bool:
+    """清空覆盖层，当前 Bot 的回复词全部回到模板默认值，扩展词一并删除。"""
+    return save_bot_message_custom_overlay(bot_hash, {})
+
+
+def get_export_filename(kind: str, bot_hash: Any = '') -> str:
+    """生成导入导出使用的默认文件名。"""
+    plugin = config.plugin_name
+    if kind == 'global':
+        return f'{plugin}-global-config.json'
+    if kind == 'bot':
+        suffix = safe_str(bot_hash)[:8] or 'bot'
+        return f'{plugin}-bot-config-{suffix}.json'
+    return f'{plugin}-replies.json'
+
+
+def export_global_config() -> Dict[str, Any]:
+    """导出当前全局配置。"""
+    return load_global_config()
+
+
+def import_global_config(data: Any) -> bool:
+    """导入全局配置：同名字段覆盖，未知字段保留，缺省字段仍按默认值补齐。"""
+    incoming = require_json_object(data, '全局配置')
+    require_known_bool_fields(incoming, config.default_global_config)
+    current_config = load_global_config()
+    current_config.update(incoming)
+    return save_global_config(current_config)
+
+
+def export_bot_config(bot_hash: Any) -> Dict[str, Any]:
+    """导出当前原始 Bot 的 bot_config。"""
+    return load_bot_config(bot_hash)
+
+
+def import_bot_config(bot_hash: Any, data: Any) -> bool:
+    """导入 Bot 配置：同名字段覆盖，已知布尔开关会做类型校验，列表由 save_bot_config 清洗。"""
+    incoming = require_json_object(data, 'Bot 配置')
+    require_known_bool_fields(incoming, config.default_bot_config)
+    current_config = load_bot_config(bot_hash)
+    current_config.update(incoming)
+    return save_bot_config(bot_hash, current_config)
+
+
+def export_bot_message_custom(bot_hash: Any) -> Dict[str, str]:
+    """导出回复词覆盖层，也就是相对默认值真正改过的条目。"""
+    return load_bot_message_custom_overlay(bot_hash)
+
+
+def import_bot_message_custom(bot_hash: Any, data: Any) -> bool:
+    """
+    导入回复词覆盖层。
+
+    同名条目覆盖当前自定义内容；导入值和默认文本相同的条目不会写入文件。
+    """
+    incoming = require_json_object(data, '回复词')
+    overlay_dict = load_bot_message_custom_overlay(bot_hash)
+    for message_key, message_text in incoming.items():
+        if not isinstance(message_key, str) or not message_key:
+            raise ValueError('回复词条目名必须是非空文本。')
+        if len(message_key) > config.message_custom_key_max_length:
+            raise ValueError(f'回复词条目名不能超过 {config.message_custom_key_max_length} 字。')
+        if not isinstance(message_text, str):
+            raise ValueError('回复词必须是文本。')
+        if len(message_text) > config.message_custom_value_max_length:
+            raise ValueError(f'回复词不能超过 {config.message_custom_value_max_length} 字。')
+        overlay_dict[message_key] = message_text
+    return save_bot_message_custom_overlay(bot_hash, overlay_dict)
 
 
 def initialize_bot_storage(bot_hash: Any, bot_id: Any = '') -> Dict[str, Any]:
@@ -640,7 +808,7 @@ def initialize_bot_storage(bot_hash: Any, bot_id: Any = '') -> Dict[str, Any]:
     每次 bot 首次出现时，会把必要的初始化文件都准备好：
     - 原始 bot 目录中的 bot_config.json
     - 解析后的 linked_bot_hash 目录中的 storage/
-    - 解析后的 linked_bot_hash 目录中的 message_custom.json
+    - 解析后的 linked_bot_hash 目录中的 message_custom.json（只写覆盖层，默认值不落盘）
     - 解析后的 linked_bot_hash 目录中的 message_variable.json
     """
     config_bot_hash = get_config_bot_hash(bot_hash)

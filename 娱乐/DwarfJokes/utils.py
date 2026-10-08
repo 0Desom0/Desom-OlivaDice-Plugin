@@ -67,7 +67,12 @@ def op_escape(value: Any) -> str:
 
 
 def get_user_hash(user_id: Any, user_type: Any, platform: Any, sub_id: Any = None) -> str:
-    """复刻 OlivaDiceCore.userConfig.getUserHash 的哈希规则。"""
+    """
+    复刻 OlivaDiceCore.userConfig.getUserHash 的哈希规则。
+
+    在没有 OlivaDiceCore 的环境下，也能用这套规则生成与之一致的 user_hash，
+    用于做用户级数据隔离、缓存 key 等。
+    """
     hash_object = hashlib.new('md5')
     if sub_id is not None:
         id_text = f'{safe_str(sub_id)}|{safe_str(user_id)}'
@@ -79,6 +84,16 @@ def get_user_hash(user_id: Any, user_type: Any, platform: Any, sub_id: Any = Non
     if sub_id is not None:
         hash_object.update(safe_str(sub_id).encode(encoding='UTF-8'))
     return hash_object.hexdigest()
+
+
+def get_group_hash(hag_id: Any, platform: Any) -> str:
+    """
+    复刻 OlivaDiceCore 群级哈希规则。
+
+    与 get_user_hash 的区别仅在于 user_type 固定为 'group'，
+    传入的 id 为 hag_id（host_id|group_id 或纯 group_id）。
+    """
+    return get_user_hash(hag_id, 'group', platform)
 
 
 def deep_copy_default(default_value: Any) -> Any:
@@ -211,11 +226,11 @@ def debug_log(Proc, message_text: str, plugin_event=None, bot_hash: Optional[str
 
     调试模式开关属于所有 bot 共用的全局配置。
     因此这里虽然保留 bot_hash 参数以兼容旧调用，但实际判断只读取
-    plugin/data/IWannaSearch/global_config.json 这一份共享配置。
+    plugin/data/DwarfJokes/global_config.json 这一份共享配置。
     """
     global_config = load_global_config()
     if global_config.get('global_debug_mode_switch', False):
-        log_message(Proc, 2, 'DEBUG', message_text)
+        log_message(Proc, 0, 'DEBUG', message_text)
 
 
 def info_log(Proc, message_text: str) -> None:
@@ -225,7 +240,7 @@ def info_log(Proc, message_text: str) -> None:
 
 def error_log(Proc, message_text: str) -> None:
     """Error 级日志，仅用于错误输出。"""
-    log_message(Proc, 3, 'ERROR', message_text)
+    log_message(Proc, 4, 'ERROR', message_text)
 
 
 def log_exception(action_name: str):
@@ -345,13 +360,13 @@ def get_bot_id_from_event(plugin_event) -> str:
 
 
 def get_self_id_from_event(plugin_event) -> str:
-    """拿到当前 bot 的首个可指名 ID。"""
+    """拿到当前 bot 的 self_id，主要用于 at 判定。"""
     target_id_list = get_current_bot_target_ids(plugin_event)
     return target_id_list[0] if target_id_list else ''
 
 
 def get_current_bot_target_ids(plugin_event) -> List[str]:
-    """获取可用于指名当前机器人的全部账号 ID。"""
+    """返回所有可用于指名当前 Bot 的账号 ID。"""
     target_id_list = []
     try:
         base_info = plugin_event.base_info
@@ -420,6 +435,40 @@ def get_message_text_from_event(plugin_event) -> str:
         return safe_str(plugin_event.data.message)
     except Exception:
         return ''
+
+
+def get_platform_from_event(plugin_event) -> str:
+    """从事件对象中安全获取平台标识。"""
+    try:
+        return safe_str(plugin_event.platform.get('platform', 'unknown'))
+    except Exception:
+        return 'unknown'
+
+
+def get_user_hash_from_event(plugin_event) -> str:
+    """
+    从事件对象中提取 user_id 与 platform，生成 user_hash。
+
+    当无法获取有效 user_id 时返回空字符串，避免生成无意义的哈希。
+    """
+    user_id = get_sender_id_from_event(plugin_event)
+    if not user_id:
+        return ''
+    platform_name = get_platform_from_event(plugin_event)
+    return get_user_hash(user_id, 'user', platform_name)
+
+
+def get_group_hash_from_event(plugin_event) -> str:
+    """
+    从事件对象中提取 hag_id 与 platform，生成 group_hash。
+
+    当不在群聊场景（无 group_id）时返回空字符串。
+    """
+    hag_id = get_hag_id_from_event(plugin_event)
+    if not hag_id:
+        return ''
+    platform_name = get_platform_from_event(plugin_event)
+    return get_group_hash(hag_id, platform_name)
 
 
 def get_config_bot_root_dir(bot_hash: Any) -> str:
@@ -548,13 +597,14 @@ def load_bot_config(bot_hash: Any) -> Dict[str, Any]:
     """
     读取 bot 配置。
 
-    这里除了补齐默认字段外，还会把 configured_master_list 统一清洗成
+    这里除了补齐默认字段外，还会把骰主和管理员列表统一清洗成
     只包含数字字符串、且不重复的列表。
     """
     file_path = get_bot_config_file_path(bot_hash)
     file_data = read_json_file(file_path, config.default_bot_config)
     merged_config = merge_dict_with_default(file_data, config.default_bot_config)
     merged_config['configured_master_list'] = normalize_id_list(merged_config.get('configured_master_list', []))
+    merged_config['configured_admin_list'] = normalize_id_list(merged_config.get('configured_admin_list', []))
     return merged_config
 
 
@@ -569,6 +619,7 @@ def save_bot_config(bot_hash: Any, bot_config: Dict[str, Any]) -> bool:
     for legacy_key in ['bot_id', 'bot_hash', 'raw_bot_hash']:
         final_config.pop(legacy_key, None)
     final_config['configured_master_list'] = normalize_id_list(final_config.get('configured_master_list', []))
+    final_config['configured_admin_list'] = normalize_id_list(final_config.get('configured_admin_list', []))
     return save_json_file(get_bot_config_file_path(bot_hash), final_config)
 
 
@@ -1061,8 +1112,7 @@ def parse_at_segments(message_text: str, allow_multi: bool = True) -> Tuple[List
     - 一旦遇到第一个“不是 at 的内容”，立即停止。
     - 返回值为 (at 列表, 剩余字符串)，两者都可能为空。
 
-    这里默认按 compatible_svn 190+、message_mode 为 olivos_string 的 OP 码处理，
-    因此识别的是 [OP:at,id=xxx,name=xxx] 或 [OP:at,id=xxx]。
+    输入同时兼容 OP/CQ 码以及 id/qq 参数。
     """
     remaining_text = safe_str(message_text)
     at_item_list: List[Dict[str, str]] = []
@@ -1073,18 +1123,16 @@ def parse_at_segments(message_text: str, allow_multi: bool = True) -> Tuple[List
         if not matched_at:
             break
 
-        param_dict = {}
-        for param_item in safe_str(matched_at.group('params')).split(','):
-            key, separator, value = param_item.partition('=')
+        params = {}
+        for item in safe_str(matched_at.group('params')).split(','):
+            key, separator, value = item.partition('=')
             if separator:
-                param_dict[key.strip().casefold()] = value.strip()
-        at_item_list.append(
-            {
-                'id': safe_str(param_dict.get('id') or param_dict.get('qq') or '').strip(),
-                'name': safe_str(param_dict.get('name')).strip(),
-                'raw': matched_at.group(0),
-            }
-        )
+                params[key.strip().casefold()] = value.strip()
+        at_item_list.append({
+            'id': safe_str(params.get('id') or params.get('qq') or ''),
+            'name': safe_str(params.get('name') or ''),
+            'raw': matched_at.group(0),
+        })
         remaining_text = remaining_text[matched_at.end() :]
         if not allow_multi:
             break
@@ -1143,6 +1191,26 @@ def is_sender_configured_master(plugin_event) -> bool:
     return sender_id in get_configured_master_list(config_bot_hash)
 
 
+def get_configured_admin_list(bot_hash: Any) -> List[str]:
+    """获取当前 bot 的本插件管理员列表。"""
+    bot_config = load_bot_config(bot_hash)
+    return normalize_id_list(bot_config.get('configured_admin_list', []))
+
+
+def set_configured_admin_list(bot_hash: Any, admin_id_list: Iterable[str]) -> bool:
+    """保存当前 bot 的本插件管理员列表。"""
+    bot_config = load_bot_config(bot_hash)
+    bot_config['configured_admin_list'] = normalize_id_list(list(admin_id_list))
+    return save_bot_config(bot_hash, bot_config)
+
+
+def is_sender_configured_admin(plugin_event) -> bool:
+    """判断发送者是否属于当前 bot 的本插件管理员。"""
+    sender_id = get_sender_id_from_event(plugin_event)
+    config_bot_hash = get_bot_hash_from_event(plugin_event)
+    return sender_id in get_configured_admin_list(config_bot_hash)
+
+
 def is_sender_core_master(plugin_event) -> bool:
     """
     判断发送者是否属于 OlivaDiceCore 骰主。
@@ -1179,13 +1247,18 @@ def get_master_permission_info(plugin_event) -> Dict[str, Any]:
 
     这样模板使用者后续扩展权限时，就不会把两套权限来源混在一起。
     """
-    configured_master_list = get_configured_master_list(get_bot_hash_from_event(plugin_event))
+    config_bot_hash = get_bot_hash_from_event(plugin_event)
+    configured_master_list = get_configured_master_list(config_bot_hash)
+    configured_admin_list = get_configured_admin_list(config_bot_hash)
     sender_is_core_master = is_sender_core_master(plugin_event)
     sender_is_configured_master = is_sender_configured_master(plugin_event)
+    sender_is_configured_admin = is_sender_configured_admin(plugin_event)
     return {
         'configured_master_list': configured_master_list,
+        'configured_admin_list': configured_admin_list,
         'sender_is_core_master': sender_is_core_master,
         'sender_is_configured_master': sender_is_configured_master,
+        'sender_is_configured_admin': sender_is_configured_admin,
         'sender_is_master': sender_is_core_master or sender_is_configured_master,
     }
 
@@ -1251,6 +1324,54 @@ def check_core_group_enable(plugin_event) -> bool:
         return True
 
     return True
+
+
+def get_disabled_group_list(bot_hash: Any) -> List[str]:
+    """获取当前 bot 的群级禁用列表。"""
+    bot_config = load_bot_config(bot_hash)
+    return normalize_id_list(bot_config.get('disabled_group_list', []))
+
+
+def set_disabled_group_list(bot_hash: Any, group_id_list: Iterable[str]) -> bool:
+    """保存当前 bot 的群级禁用列表。"""
+    bot_config = load_bot_config(bot_hash)
+    bot_config['disabled_group_list'] = normalize_id_list(list(group_id_list))
+    return save_bot_config(bot_hash, bot_config)
+
+
+def is_group_disabled(plugin_event) -> bool:
+    """
+    检查当前事件来源群是否在本插件的群级禁用列表中。
+
+    仅对群消息有效；私聊或无法获取 group_id 时直接返回 False。
+    """
+    group_id = get_group_id_from_event(plugin_event)
+    if not group_id:
+        return False
+    config_bot_hash = get_bot_hash_from_event(plugin_event)
+    return group_id in get_disabled_group_list(config_bot_hash)
+
+
+def add_disabled_group(bot_hash: Any, group_id: Any) -> bool:
+    """将一个群加入当前 bot 的群级禁用列表。"""
+    disabled_list = get_disabled_group_list(bot_hash)
+    target_id_list = normalize_id_list([group_id])
+    changed = False
+    for target_id in target_id_list:
+        if target_id not in disabled_list:
+            disabled_list.append(target_id)
+            changed = True
+    if changed:
+        return set_disabled_group_list(bot_hash, disabled_list)
+    return True
+
+
+def remove_disabled_group(bot_hash: Any, group_id: Any) -> bool:
+    """将一个群从当前 bot 的群级禁用列表中移除。"""
+    disabled_list = get_disabled_group_list(bot_hash)
+    target_id_list = normalize_id_list([group_id])
+    new_list = [gid for gid in disabled_list if gid not in target_id_list]
+    return set_disabled_group_list(bot_hash, new_list)
 
 
 class TemplateValueDict(dict):
@@ -1390,7 +1511,7 @@ def reply_message(
     message_text: str,
     record_by_logger: bool = True,
     at_sender: bool = False,
-    quote_reply: bool = True,
+    quote_reply: bool = False,
 ) -> Any:
     """
     统一回复封装。
@@ -1399,7 +1520,8 @@ def reply_message(
     - record_by_logger=True：主动调用 Logger 钩子，便于被日志系统记录。
     - record_by_logger=False：不主动调用 Logger 钩子，只发送消息。
     - at_sender=True：在消息前追加一个 at 当前用户的 OP 码。
-    - quote_reply=False：发送消息但不引用触发消息，适合后台下载状态提示。
+    - quote_reply=False：发送消息，但不引用触发消息（默认）。
+    - quote_reply=True：群聊中引用触发消息；私聊或无有效消息 ID 时不追加引用。
     """
     final_message = safe_str(message_text)
     if at_sender:
@@ -1418,7 +1540,7 @@ def reply_message(
 
 
 def build_reply_quote_segment(plugin_event) -> str:
-    """群聊回复时引用触发命令的原消息。"""
+    """群聊回复时构造对触发消息的引用。"""
     if not get_group_id_from_event(plugin_event):
         return ''
     try:
@@ -1431,6 +1553,7 @@ def build_reply_quote_segment(plugin_event) -> str:
 
 
 def add_reply_quote(plugin_event, message_text: str) -> str:
+    """为群聊消息补充对触发消息的引用，已有引用时保持原文。"""
     source = safe_str(message_text)
     if reply_segment_pattern.match(source.lstrip()):
         return source

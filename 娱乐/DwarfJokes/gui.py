@@ -48,10 +48,10 @@ class TemplatePluginGui(object):
         self.bot_selector_var = None
         self.global_enable_var = None
         self.global_debug_var = None
-        self.download_concurrency_var = None
         self.bot_enable_var = None
         self.bot_info_var = None
         self.linked_hint_var = None
+        self.joke_summary_var = None
         self.reply_filter_var = None
 
         self.bot_display_value_list = []
@@ -65,7 +65,7 @@ class TemplatePluginGui(object):
 
     def calculate_window_geometry(self) -> str:
         """统一窗口尺寸。"""
-        return '760x520'
+        return '820x520'
 
     def build_bot_selector_mapping(self) -> None:
         """生成 Bot 选择下拉框映射。"""
@@ -187,11 +187,11 @@ class TemplatePluginGui(object):
         self.bot_selector_var = tkinter.StringVar(value='')
         self.global_enable_var = tkinter.StringVar(value='True')
         self.global_debug_var = tkinter.StringVar(value='False')
-        self.download_concurrency_var = tkinter.StringVar(value=str(config.download_concurrency_default))
         self.bot_enable_var = tkinter.StringVar(value='True')
         self.bot_info_var = tkinter.StringVar(value='当前未检测到 Bot')
         self.linked_hint_var = tkinter.StringVar(value='')
         self.reply_filter_var = tkinter.StringVar(value='全部')
+        self.joke_summary_var = tkinter.StringVar(value='正在读取笑话合集…')
 
     def get_current_bot_info(self):
         """获取当前被选中的 bot_info。"""
@@ -263,23 +263,8 @@ class TemplatePluginGui(object):
         self.create_labeled_combobox(self.frame_global, 0, '全局启用', self.global_enable_var)
         self.create_labeled_combobox(self.frame_global, 2, '全局调试模式', self.global_debug_var)
 
-        concurrency_label = tkinter.Label(
-            self.frame_global,
-            text='最大下载并发数（1-100）',
-            bg=dict_color_context['color_001'],
-            fg=dict_color_context['color_004'],
-            font=('等线', 11, 'bold'),
-            anchor='w',
-        )
-        concurrency_label.grid(row=4, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
-        tkinter.Entry(
-            self.frame_global,
-            textvariable=self.download_concurrency_var,
-            width=18,
-        ).grid(row=5, column=0, sticky='w', padx=(20, 20), pady=(4, 0))
-
         button_frame = tkinter.Frame(self.frame_global, bg=dict_color_context['color_001'])
-        button_frame.grid(row=6, column=0, sticky='nsew', padx=(20, 20), pady=(28, 0))
+        button_frame.grid(row=4, column=0, sticky='nsew', padx=(20, 20), pady=(40, 0))
         self.create_native_button(button_frame, '保存全局设置', self.save_global_config_from_form, width=16).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
@@ -295,7 +280,7 @@ class TemplatePluginGui(object):
         self.create_native_button(button_frame, '关闭窗口', lambda: self.root.destroy(), width=12).pack(side=tkinter.RIGHT)
 
         import_frame = tkinter.Frame(self.frame_global, bg=dict_color_context['color_001'])
-        import_frame.grid(row=7, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
+        import_frame.grid(row=5, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
         self.create_native_button(import_frame, '导入全局配置', self.import_global_config_from_file, width=16).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
@@ -310,7 +295,7 @@ class TemplatePluginGui(object):
             fg=dict_color_context['color_004'],
             font=('等线', 10),
         )
-        hint_label.grid(row=8, column=0, sticky='nsew', padx=(20, 20), pady=(14, 0))
+        hint_label.grid(row=6, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
 
     def init_frame_bot(self) -> None:
         """Bot 配置页。"""
@@ -385,6 +370,9 @@ class TemplatePluginGui(object):
             side=tkinter.LEFT, padx=(0, 8)
         )
         self.create_native_button(button_frame_bottom, '编辑骰主列表', self.open_master_manager_dialog, width=14).pack(
+            side=tkinter.LEFT, padx=(0, 8)
+        )
+        self.create_native_button(button_frame_bottom, '编辑管理员', self.open_admin_manager_dialog, width=12).pack(
             side=tkinter.LEFT, padx=(0, 8)
         )
         self.create_native_button(
@@ -876,18 +864,271 @@ class TemplatePluginGui(object):
 
         refresh_master_tree()
 
+    def open_id_list_manager_dialog(self, title_text: str, label_text: str, load_callback, save_callback) -> None:
+        """骰主/管理员共用的数字 ID 列表窗口。"""
+        config_bot_hash = self.get_current_config_bot_hash()
+        if not config_bot_hash:
+            messagebox.showwarning('提示', '当前没有可操作的 Bot。')
+            return
+
+        dialog_window = tkinter.Toplevel(self.root)
+        dialog_window.title(title_text)
+        dialog_window.geometry('520x460')
+        dialog_window.minsize(460, 400)
+        dialog_window.configure(bg=dict_color_context['color_001'])
+        dialog_window.grid_rowconfigure(1, weight=1)
+        dialog_window.grid_columnconfigure(0, weight=1)
+
+        entry_var = tkinter.StringVar()
+        top_frame = tkinter.Frame(dialog_window, bg=dict_color_context['color_001'])
+        top_frame.grid(row=0, column=0, sticky='nsew', padx=(15, 15), pady=(15, 10))
+
+        tkinter.Label(
+            top_frame,
+            text='输入用户 ID 后点击添加：',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 10),
+        ).pack(side=tkinter.LEFT, padx=(0, 8))
+        tkinter.Entry(top_frame, textvariable=entry_var, width=22).pack(side=tkinter.LEFT, padx=(0, 8))
+
+        id_tree = ttk.Treeview(dialog_window, selectmode='extended')
+        id_tree['show'] = 'headings'
+        id_tree['columns'] = ('USER_ID',)
+        id_tree.column('USER_ID', width=240)
+        id_tree.heading('USER_ID', text=label_text)
+        id_tree.grid(row=1, column=0, sticky='nsew', padx=(15, 0), pady=(0, 0))
+
+        id_scrollbar = ttk.Scrollbar(dialog_window, orient='vertical', command=id_tree.yview)
+        id_tree.configure(yscrollcommand=id_scrollbar.set)
+        id_scrollbar.grid(row=1, column=1, sticky='nsw', padx=(0, 15))
+
+        def refresh_id_tree() -> None:
+            id_tree.delete(*id_tree.get_children())
+            for user_id in load_callback(config_bot_hash):
+                id_tree.insert('', tkinter.END, values=(user_id,))
+
+        def add_user_id() -> None:
+            new_id_list = utils.normalize_id_list(entry_var.get())
+            if not new_id_list:
+                messagebox.showwarning('提示', '请输入有效的数字 ID。')
+                return
+            current_list = load_callback(config_bot_hash)
+            for user_id in new_id_list:
+                if user_id not in current_list:
+                    current_list.append(user_id)
+            save_callback(config_bot_hash, current_list)
+            entry_var.set('')
+            refresh_id_tree()
+
+        def delete_selected_id() -> None:
+            selected_id_set = set()
+            for selection_item in id_tree.selection():
+                value_tuple = id_tree.item(selection_item, 'values')
+                if value_tuple:
+                    selected_id_set.add(utils.safe_str(value_tuple[0]))
+            if not selected_id_set:
+                messagebox.showwarning('提示', '请先选择要删除的项目。')
+                return
+            current_list = [
+                user_id for user_id in load_callback(config_bot_hash) if user_id not in selected_id_set
+            ]
+            save_callback(config_bot_hash, current_list)
+            refresh_id_tree()
+
+        button_frame = tkinter.Frame(dialog_window, bg=dict_color_context['color_001'])
+        button_frame.grid(row=2, column=0, columnspan=2, sticky='nsew', padx=(15, 15), pady=(10, 15))
+        self.create_native_button(button_frame, '添加', add_user_id).pack(side=tkinter.LEFT, padx=(0, 6))
+        self.create_native_button(button_frame, '删除', delete_selected_id).pack(side=tkinter.LEFT, padx=(0, 6))
+        self.create_native_button(button_frame, '刷新', refresh_id_tree).pack(side=tkinter.RIGHT, padx=(0, 6))
+        self.create_native_button(button_frame, '关闭', dialog_window.destroy).pack(side=tkinter.RIGHT)
+
+        refresh_id_tree()
+
+    def open_admin_manager_dialog(self) -> None:
+        """打开插件管理员列表窗口。"""
+        self.open_id_list_manager_dialog(
+            title_text=f'{config.plugin_name} - 管理员列表',
+            label_text='管理员ID',
+            load_callback=utils.get_configured_admin_list,
+            save_callback=utils.set_configured_admin_list,
+        )
+
+    def init_frame_jokes(self) -> None:
+        """笑话合集页。"""
+        self.frame_jokes = self.create_page_root()
+        self.frame_jokes.grid_columnconfigure(0, weight=1)
+
+        title_label = tkinter.Label(
+            self.frame_jokes,
+            text='全局矮人笑话合集',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 12, 'bold'),
+            anchor='w',
+        )
+        title_label.grid(row=0, column=0, sticky='nsew', padx=(20, 20), pady=(16, 0))
+
+        summary_label = tkinter.Label(
+            self.frame_jokes,
+            textvariable=self.joke_summary_var,
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 11),
+            justify='left',
+            anchor='w',
+            wraplength=760,
+        )
+        summary_label.grid(row=1, column=0, sticky='nsew', padx=(20, 20), pady=(10, 0))
+
+        hint_label = tkinter.Label(
+            self.frame_jokes,
+            text='合集对所有 Bot 共用。新增时会按 OlivaDiceCore 帮助文档参考度打分，低于 50 视为重复。',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 10),
+            justify='left',
+            anchor='w',
+            wraplength=760,
+        )
+        hint_label.grid(row=2, column=0, sticky='nsew', padx=(20, 20), pady=(10, 0))
+
+        button_frame = tkinter.Frame(self.frame_jokes, bg=dict_color_context['color_001'])
+        button_frame.grid(row=3, column=0, sticky='nsew', padx=(20, 20), pady=(24, 0))
+        self.create_native_button(button_frame, '管理笑话', self.open_joke_manager_dialog, width=14).pack(
+            side=tkinter.LEFT, padx=(0, 8)
+        )
+        self.create_native_button(button_frame, '随机抽一条', self.preview_random_joke, width=14).pack(
+            side=tkinter.LEFT, padx=(0, 8)
+        )
+        self.create_native_button(
+            button_frame,
+            '打开合集文件',
+            lambda: self.open_path(os.path.dirname(function.get_joke_pack_path())),
+            width=14,
+        ).pack(side=tkinter.LEFT, padx=(0, 8))
+        self.create_native_button(button_frame, '刷新', self.refresh_joke_view, width=10).pack(side=tkinter.RIGHT)
+
+    def refresh_joke_view(self) -> None:
+        """刷新笑话合集摘要。"""
+        try:
+            function.ensure_joke_pack_initialized(self.Proc)
+            summary = function.get_joke_pack_summary()
+            self.joke_summary_var.set(
+                f'当前共有 {summary["count"]} 条，下一个填补序号是 {summary["next_id"]}，'
+                f'最大序号 {summary["max_id"]}。\n文件：{summary["path"]}'
+            )
+        except Exception as exception_object:
+            self.joke_summary_var.set(f'读取合集失败：{type(exception_object).__name__}')
+
+    def preview_random_joke(self) -> None:
+        """在弹窗中预览一条随机笑话。"""
+        draw_result = function.draw_jokes(1)
+        if not draw_result.get('ok'):
+            messagebox.showinfo('矮人笑话', '当前没有可抽取的矮人笑话。')
+            return
+        messagebox.showinfo('矮人笑话', function.format_draw_result(draw_result))
+
+    def open_joke_manager_dialog(self) -> None:
+        """打开笑话浏览与增删窗口。"""
+        dialog_window = tkinter.Toplevel(self.root)
+        dialog_window.title(f'{config.plugin_name} - 笑话合集')
+        dialog_window.geometry('960x620')
+        dialog_window.minsize(840, 520)
+        dialog_window.configure(bg=dict_color_context['color_001'])
+        dialog_window.grid_rowconfigure(0, weight=1)
+        dialog_window.grid_columnconfigure(0, weight=1)
+
+        joke_tree = ttk.Treeview(dialog_window)
+        joke_tree['show'] = 'headings'
+        joke_tree['columns'] = ('ID', 'TEXT')
+        joke_tree.column('ID', width=80, anchor='center')
+        joke_tree.column('TEXT', width=760)
+        joke_tree.heading('ID', text='序号')
+        joke_tree.heading('TEXT', text='笑话正文')
+        joke_tree.grid(row=0, column=0, sticky='nsew', padx=(15, 0), pady=(15, 0))
+
+        joke_scrollbar = ttk.Scrollbar(dialog_window, orient='vertical', command=joke_tree.yview)
+        joke_tree.configure(yscrollcommand=joke_scrollbar.set)
+        joke_scrollbar.grid(row=0, column=1, sticky='nsw', padx=(0, 15), pady=(15, 0))
+
+        def refresh_joke_tree() -> None:
+            joke_tree.delete(*joke_tree.get_children())
+            for joke_item in function.load_joke_pack(force_reload=True):
+                joke_tree.insert('', tkinter.END, values=(joke_item['id'], joke_item['text']))
+            self.refresh_joke_view()
+
+        def add_joke_from_editor(new_text: str) -> None:
+            add_result = function.add_joke(new_text)
+            if add_result.get('ok'):
+                refresh_joke_tree()
+                messagebox.showinfo('提示', f'添加成功，序号 {add_result["id"]}，当前共 {add_result["count"]} 条。')
+                return
+            if add_result.get('reason') == 'duplicate':
+                messagebox.showwarning(
+                    '重复',
+                    f'与序号 {add_result["id"]} 重复，参考度 {add_result["rank"]}。',
+                )
+                return
+            if add_result.get('reason') == 'empty':
+                messagebox.showwarning('提示', '笑话内容不能为空。')
+                return
+            if add_result.get('reason') == 'too_long':
+                messagebox.showwarning('提示', f'笑话不能超过 {config.joke_text_max_length} 字。')
+                return
+            messagebox.showerror('提示', '写入合集失败。')
+
+        def open_add_dialog() -> None:
+            self.open_text_editor_dialog(
+                title_text='新增矮人笑话',
+                note_text='只会写入 text，其余字段留空。参考度低于 50 时拒绝添加。',
+                initial_text='',
+                save_callback=add_joke_from_editor,
+            )
+
+        def delete_selected_joke() -> None:
+            joke_id_text = self.get_selected_tree_value(joke_tree, 0)
+            if not joke_id_text:
+                messagebox.showwarning('提示', '请先选择一条笑话。')
+                return
+            if not messagebox.askyesno('确认', f'确定删除序号 {joke_id_text} 吗？'):
+                return
+            delete_result = function.delete_joke(joke_id_text)
+            if delete_result.get('ok'):
+                refresh_joke_tree()
+                messagebox.showinfo('提示', f'已删除序号 {delete_result["id"]}，当前共 {delete_result["count"]} 条。')
+                return
+            if delete_result.get('reason') == 'missing':
+                messagebox.showwarning('提示', f'序号 {joke_id_text} 不存在。')
+                refresh_joke_tree()
+                return
+            messagebox.showerror('提示', '删除失败。')
+
+        def show_selected_joke() -> None:
+            joke_id_text = self.get_selected_tree_value(joke_tree, 0)
+            joke_text = self.get_selected_tree_value(joke_tree, 1)
+            if not joke_id_text:
+                return
+            messagebox.showinfo(f'序号 {joke_id_text}', joke_text)
+
+        button_frame = tkinter.Frame(dialog_window, bg=dict_color_context['color_001'])
+        button_frame.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=(15, 15), pady=(10, 15))
+        self.create_native_button(button_frame, '新增', open_add_dialog, width=10).pack(side=tkinter.LEFT, padx=(0, 8))
+        self.create_native_button(button_frame, '删除', delete_selected_joke, width=10).pack(
+            side=tkinter.LEFT, padx=(0, 8)
+        )
+        self.create_native_button(button_frame, '查看', show_selected_joke, width=10).pack(side=tkinter.LEFT, padx=(0, 8))
+        self.create_native_button(button_frame, '刷新', refresh_joke_tree, width=10).pack(side=tkinter.RIGHT, padx=(0, 8))
+        self.create_native_button(button_frame, '关闭', dialog_window.destroy, width=10).pack(side=tkinter.RIGHT)
+
+        joke_tree.bind('<Double-1>', lambda _event: show_selected_joke())
+        refresh_joke_tree()
+
     def refresh_global_view(self) -> None:
         """刷新全局配置页。"""
         global_config = utils.load_global_config()
         self.global_enable_var.set(str(bool(global_config.get('global_enable_switch', True))))
         self.global_debug_var.set(str(bool(global_config.get('global_debug_mode_switch', False))))
-        self.download_concurrency_var.set(
-            str(
-                function.normalize_download_concurrency(
-                    global_config.get('max_download_concurrency', config.download_concurrency_default),
-                )
-            )
-        )
 
     def refresh_bot_view(self) -> None:
         """刷新 Bot 配置页。"""
@@ -926,17 +1167,7 @@ class TemplatePluginGui(object):
         global_config = utils.load_global_config()
         global_config['global_enable_switch'] = self.str_to_bool(self.global_enable_var.get())
         global_config['global_debug_mode_switch'] = self.str_to_bool(self.global_debug_var.get())
-        concurrency_text = utils.safe_str(self.download_concurrency_var.get()).strip()
-        if not concurrency_text.isdigit():
-            messagebox.showwarning('提示', '最大下载并发数必须是 1-100 的整数。')
-            return
-        concurrency_value = int(concurrency_text)
-        if not config.download_concurrency_min <= concurrency_value <= config.download_concurrency_max:
-            messagebox.showwarning('提示', '最大下载并发数必须是 1-100 的整数。')
-            return
-        global_config['max_download_concurrency'] = concurrency_value
         utils.save_global_config(global_config)
-        function.set_download_concurrency(concurrency_value)
         messagebox.showinfo('提示', '全局设置已保存。')
         self.refresh_global_view()
 
@@ -956,6 +1187,7 @@ class TemplatePluginGui(object):
         """刷新全部页面。"""
         self.refresh_global_view()
         self.refresh_bot_view()
+        self.refresh_joke_view()
 
     def handle_bot_selected(self) -> None:
         """切换 Bot 配置页中的当前 Bot。"""
@@ -968,7 +1200,7 @@ class TemplatePluginGui(object):
         self.root = self.create_root_window()
         self.root.title(config.gui_window_title)
         self.root.geometry(self.calculate_window_geometry())
-        self.root.minsize(720, 490)
+        self.root.minsize(760, 480)
         self.root.resizable(width=True, height=True)
         self.root.configure(bg=dict_color_context['color_001'])
         self.init_string_vars()
@@ -978,9 +1210,11 @@ class TemplatePluginGui(object):
 
         self.init_frame_global()
         self.init_frame_bot()
+        self.init_frame_jokes()
 
         self.notebook.add(self.frame_global, text='全局设置')
         self.notebook.add(self.frame_bot, text='Bot 配置')
+        self.notebook.add(self.frame_jokes, text='笑话合集')
 
         self.refresh_all_views()
         self.root.mainloop()

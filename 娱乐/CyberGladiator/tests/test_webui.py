@@ -26,7 +26,7 @@ class CyberGladiatorWebUITest(unittest.TestCase):
         cls.webui = package.main.webui
         cls.utils = package.main.utils
         cls.config = cls.webui.config
-        cls.messages = cls.webui.message_custom
+        cls.messages = cls.utils.message_custom
 
     @classmethod
     def tearDownClass(cls):
@@ -74,6 +74,17 @@ class CyberGladiatorWebUITest(unittest.TestCase):
         self.assertEqual((destination, request_id), ('webui', 'test-request-cg'))
         json.dumps(response, ensure_ascii=False)
         return response
+
+    def overlay(self, bot_hash):
+        path = Path(self.utils.get_message_custom_file_path(bot_hash))
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding='utf-8'))
+
+    def reply_item(self, key, bot_hash=None):
+        response = self.call('get_state', bot_hash=bot_hash or self.child_hash)
+        self.assertTrue(response['ok'])
+        return next(item for item in response['state']['bot']['replies'] if item['key'] == key)
 
     def test_app_json_no_bom_and_paths_exist(self):
         data = (PLUGIN_DIR / 'app.json').read_bytes()
@@ -128,6 +139,131 @@ class CyberGladiatorWebUITest(unittest.TestCase):
         self.assertEqual(bot['temperature'], 0.7)
         self.assertEqual(bot['request_timeout_seconds'], 300)
         self.assertEqual(bot['normal_input_limit'], 1500)
+
+    def test_reply_save_reset_and_extension_delete_share_parent_storage(self):
+        self.assertTrue(self.call('save_reply', key='reply_help_hint', value='自定义帮助')['ok'])
+        self.assertEqual(self.utils.load_bot_message_custom(self.parent_hash)['reply_help_hint'], '自定义帮助')
+        self.assertEqual(self.overlay(self.parent_hash), {'reply_help_hint': '自定义帮助'})
+        self.assertNotIn('reply_group_only', self.overlay(self.parent_hash))
+        self.assertFalse((self.root / 'data' / self.child_hash / 'message_custom.json').exists())
+        self.assertFalse(self.call('reset_reply', key='reply_help_hint')['ok'])
+        self.assertTrue(self.call('reset_reply', key='reply_help_hint', confirm=True)['ok'])
+        self.assertEqual(
+            self.utils.load_bot_message_custom(self.parent_hash)['reply_help_hint'],
+            self.messages.default_custom_message_dict['reply_help_hint'],
+        )
+        self.assertNotIn('reply_help_hint', self.overlay(self.parent_hash))
+        self.utils.set_bot_message_custom_value(self.parent_hash, 'extension_reply', '扩展')
+        self.assertTrue(self.call('save_reply', key='extension_reply', value='修改扩展')['ok'])
+        self.assertTrue(self.call('reset_reply', key='extension_reply', confirm=True)['ok'])
+        self.assertNotIn('extension_reply', self.utils.load_bot_message_custom(self.parent_hash))
+        self.assertNotIn('extension_reply', self.overlay(self.parent_hash))
+
+    def test_reply_modified_compares_default_text_not_emptiness(self):
+        hint = self.reply_item('reply_help_hint')
+        self.assertFalse(hint['modified'])
+        self.assertEqual(hint['default'], self.messages.default_custom_message_dict['reply_help_hint'])
+        self.assertTrue(self.call('save_reply', key='reply_help_hint', value='自定义')['ok'])
+        self.assertTrue(self.reply_item('reply_help_hint')['modified'])
+        default_text = self.messages.default_custom_message_dict['reply_help_hint']
+        self.assertTrue(self.call('save_reply', key='reply_help_hint', value=default_text)['ok'])
+        hint = self.reply_item('reply_help_hint')
+        self.assertFalse(hint['modified'])
+        self.assertNotIn('reply_help_hint', self.overlay(self.parent_hash))
+        self.assertTrue(self.call('reset_reply', key='reply_help_hint', confirm=True)['ok'])
+        self.assertFalse(self.reply_item('reply_help_hint')['modified'])
+        self.utils.set_bot_message_custom_value(self.parent_hash, 'extension_reply', '扩展')
+        extra = self.reply_item('extension_reply')
+        self.assertTrue(extra['modified'])
+        self.assertIsNone(extra['default'])
+
+    def test_reset_all_requires_confirmation_and_preserves_other_storage(self):
+        self.utils.set_bot_message_custom_value(self.parent_hash, 'extension_reply', '扩展')
+        self.utils.save_bot_message_variables(self.parent_hash, {'variable': '保留'})
+        self.assertFalse(self.call('reset_replies', confirm=False)['ok'])
+        self.assertIn('extension_reply', self.utils.load_bot_message_custom(self.parent_hash))
+        self.assertTrue(self.call('reset_replies', confirm=True)['ok'])
+        self.assertEqual(
+            self.utils.load_bot_message_custom(self.parent_hash),
+            self.messages.default_custom_message_dict,
+        )
+        self.assertEqual(self.overlay(self.parent_hash), {})
+        self.assertEqual(self.utils.load_bot_message_variables(self.parent_hash)['variable'], '保留')
+
+    def test_import_export_global_bot_and_replies(self):
+        self.assertTrue(self.call(
+            'save_global',
+            global_enable_switch=False,
+            global_debug_mode_switch=True,
+            global_god_war_enable_switch=False,
+        )['ok'])
+        exported_global = self.call('export_global')
+        self.assertTrue(exported_global['ok'])
+        self.assertFalse(exported_global['data']['global_enable_switch'])
+        self.assertTrue(exported_global['filename'].endswith('global-config.json'))
+        self.assertTrue(self.call(
+            'save_global',
+            global_enable_switch=True,
+            global_debug_mode_switch=False,
+            global_god_war_enable_switch=True,
+        )['ok'])
+        self.assertTrue(self.call(
+            'import_global', confirm=True,
+            data={'global_enable_switch': False, 'future_setting': 'keep'},
+        )['ok'])
+        actual_global = self.utils.load_global_config()
+        self.assertFalse(actual_global['global_enable_switch'])
+        self.assertEqual(actual_global['future_setting'], 'keep')
+        self.assertFalse(self.call('import_global', data={'global_enable_switch': True})['ok'])
+
+        self.assertTrue(self.call('save_bot', bot_enable_switch=False)['ok'])
+        self.assertTrue(self.call('add_masters', ids=['123'])['ok'])
+        exported_bot = self.call('export_bot')
+        self.assertFalse(exported_bot['data']['bot_enable_switch'])
+        self.assertEqual(exported_bot['data']['configured_master_list'], ['123'])
+        self.assertTrue(self.call('save_bot', bot_enable_switch=True)['ok'])
+        self.assertTrue(self.call(
+            'import_bot', confirm=True,
+            data={'bot_enable_switch': False, 'future_setting': 'keep'},
+        )['ok'])
+        actual_bot = self.utils.load_bot_config(self.child_hash)
+        self.assertFalse(actual_bot['bot_enable_switch'])
+        self.assertEqual(actual_bot['configured_master_list'], ['123'])
+        self.assertEqual(actual_bot['future_setting'], 'keep')
+
+        self.assertTrue(self.call('save_reply', key='reply_help_hint', value='导入前')['ok'])
+        exported_replies = self.call('export_replies')
+        self.assertEqual(exported_replies['data'], {'reply_help_hint': '导入前'})
+        self.assertTrue(self.call('save_reply', key='reply_help_hint', value='将被覆盖')['ok'])
+        self.assertTrue(self.call(
+            'import_replies', confirm=True,
+            data={
+                'reply_help_hint': self.messages.default_custom_message_dict['reply_help_hint'],
+                'reply_group_only': '自定义群聊限制',
+            },
+        )['ok'])
+        overlay = self.overlay(self.parent_hash)
+        self.assertNotIn('reply_help_hint', overlay)
+        self.assertEqual(overlay['reply_group_only'], '自定义群聊限制')
+        self.assertFalse(self.reply_item('reply_help_hint')['modified'])
+        self.assertTrue(self.reply_item('reply_group_only')['modified'])
+        self.assertFalse(self.call('import_replies', data={'reply_help_hint': 'x'})['ok'])
+        self.assertFalse(self.call('import_replies', confirm=True, data=['not-an-object'])['ok'])
+        self.assertFalse(self.call('import_bot', confirm=True, data={'bot_enable_switch': 'yes'})['ok'])
+
+    def test_legacy_full_reply_file_is_stripped_on_next_save(self):
+        full = dict(self.messages.default_custom_message_dict)
+        full['reply_help_hint'] = '旧自定义'
+        path = Path(self.utils.get_message_custom_file_path(self.parent_hash))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(full, ensure_ascii=False), encoding='utf-8')
+        self.assertEqual(self.utils.load_bot_message_custom(self.parent_hash)['reply_help_hint'], '旧自定义')
+        default_group = self.messages.default_custom_message_dict['reply_group_only']
+        self.assertTrue(self.call('save_reply', key='reply_group_only', value=default_group)['ok'])
+        overlay = self.overlay(self.parent_hash)
+        self.assertEqual(overlay, {'reply_help_hint': '旧自定义'})
+        self.assertTrue(self.reply_item('reply_help_hint')['modified'])
+        self.assertFalse(self.reply_item('reply_group_only')['modified'])
 
 
 if __name__ == '__main__':

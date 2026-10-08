@@ -23,11 +23,11 @@
         // 页面常用配置：基于模板制作自己的插件时，优先修改这里。
         const PAGE_CONFIG = {
             // 必须与 config.py 中的 webui_event 完全一致。
-            eventName: 'YourPluginName_WebUI_Config',
+            eventName: 'DwarfJokes_WebUI_Config',
 
             // 同时用于浏览器标题和页面标题；设为空字符串则使用后端插件名称。
-            title: '轻量级插件配置',
-            description: '管理全局开关、Bot 配置和自定义回复。',
+            title: '矮人笑话配置',
+            description: '管理全局开关、Bot 权限和矮人笑话合集。',
 
             // 请求等待时间，单位为毫秒。超时后提示用户刷新，不自动重试保存。
             requestTimeoutMs: 15000,
@@ -39,6 +39,8 @@
             features: {
                 replies: true,       // 显示回复词编辑、恢复和删除操作。
                 masters: true,       // 显示本插件配置骰主的添加与删除操作。
+                admins: true,        // 显示本插件管理员的添加与删除操作。
+                jokes: true,         // 显示笑话合集页。
                 directories: true,   // 显示服务器数据目录，供用户选中复制。
                 importExport: true,  // 显示全局配置、Bot 配置和回复词的导入导出。
             },
@@ -166,7 +168,7 @@
         /* Bot 页下方默认左右排列回复词和骰主管理；只启用一块时自动占满。 */
         .columns {
             display: grid;
-            grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
             gap: var(--section-gap);
         }
 
@@ -383,8 +385,8 @@
         <!-- 页面标题与刷新入口。标题、简介会在初始化时读取 PAGE_CONFIG。 -->
         <header>
             <div>
-                <h1 id="title">轻量级插件配置</h1>
-                <p id="description" class="muted">管理全局开关、Bot 配置和自定义回复。</p>
+                <h1 id="title">矮人笑话配置</h1>
+                <p id="description" class="muted">管理全局开关、Bot 权限和矮人笑话合集。</p>
             </div>
             <button id="refresh" type="button" data-control>
                 刷新配置
@@ -415,6 +417,16 @@
                 tabindex="-1"
             >
                 Bot 配置
+            </button>
+            <button
+                id="jokes-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="jokes-panel"
+                tabindex="-1"
+            >
+                笑话合集
             </button>
         </nav>
 
@@ -581,6 +593,85 @@
                         </button>
                     </div>
                 </section>
+
+                <section id="admin-card" class="card" aria-labelledby="admins-title">
+                    <h2 id="admins-title">管理员列表</h2>
+                    <p class="hint">可新增/删除笑话，不能管理骰主或其他管理员。仅属于当前 Bot。</p>
+
+                    <label for="admin-list">已配置管理员</label>
+                    <select id="admin-list" multiple size="6" data-control data-bot-control></select>
+                    <div class="row">
+                        <button id="remove-admins" type="button" data-control data-bot-control>
+                            删除选中管理员
+                        </button>
+                    </div>
+
+                    <label for="admin-input" class="spaced-label">添加数字用户 ID</label>
+                    <input
+                        id="admin-input"
+                        type="text"
+                        placeholder="多个 ID 用空格或逗号分隔"
+                        autocomplete="off"
+                        data-control
+                        data-bot-control
+                    >
+                    <div class="row">
+                        <button id="add-admins" type="button" class="primary" data-control data-bot-control>
+                            添加管理员
+                        </button>
+                    </div>
+                </section>
+            </div>
+        </section>
+
+        <section id="jokes-panel" role="tabpanel" aria-labelledby="jokes-tab" hidden>
+            <div class="card">
+                <h2>全局矮人笑话合集</h2>
+                <p id="joke-summary" class="hint">正在读取合集…</p>
+                <p class="muted">合集对所有 Bot 共用。新增时按 OlivaDiceCore 帮助文档参考度打分，低于 50 视为重复。</p>
+                <details data-directory>
+                    <summary>合集文件路径</summary>
+                    <label for="joke-path">服务器上的 DwarfJokesPack.json 目录（点击选中后可复制）</label>
+                    <input id="joke-path" class="path" type="text" readonly>
+                </details>
+            </div>
+
+            <div class="columns">
+                <section class="card">
+                    <h2>新增笑话</h2>
+                    <label for="joke-text">笑话正文，写入 text，其余字段留空</label>
+                    <textarea
+                        id="joke-text"
+                        maxlength="4000"
+                        spellcheck="false"
+                        data-control
+                    ></textarea>
+                    <div class="row">
+                        <button id="add-joke" type="button" class="primary" data-control>
+                            添加笑话
+                        </button>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <h2>删除 / 抽选</h2>
+                    <label for="joke-id">删除序号</label>
+                    <input id="joke-id" type="text" inputmode="numeric" placeholder="正整数序号" data-control>
+                    <div class="row">
+                        <button id="delete-joke" type="button" class="danger" data-control>
+                            删除该序号
+                        </button>
+                    </div>
+
+                    <label for="draw-count" class="spaced-label">抽选条数（1-10）</label>
+                    <input id="draw-count" type="text" inputmode="numeric" value="1" data-control>
+                    <div class="row">
+                        <button id="draw-jokes" type="button" class="primary" data-control>
+                            随机抽取
+                        </button>
+                    </div>
+                    <p id="joke-preview" class="hint"></p>
+                </section>
             </div>
         </section>
     </main>
@@ -619,6 +710,7 @@
             global: false,
             bot: false,
             reply: false,
+            jokes: false,
         };
 
         function getElement(id) {
@@ -647,7 +739,8 @@
 
         function hasBotDraft() {
             const hasMasterInput = getElement('master-input').value.trim() !== '';
-            return unsavedChanges.bot || unsavedChanges.reply || hasMasterInput;
+            const hasAdminInput = getElement('admin-input').value.trim() !== '';
+            return unsavedChanges.bot || unsavedChanges.reply || hasMasterInput || hasAdminInput;
         }
 
         // 下拉框内容统一使用文本节点，回复词和账号名称不会被当作 HTML 执行。
@@ -763,8 +856,8 @@
                     bot_hash: pageState?.bot?.hash || '',
                     ...payload,
                 };
-                const result = await sendRequest(requestPayload);
-                const nextState = result.state;
+                const response = await sendRequest(requestPayload);
+                const nextState = response.state;
 
                 // 宿主可能移除账号或调整群链，此时必须一起更新表单和实际写入目标。
                 const botChanged = pageState?.bot?.hash !== nextState.bot?.hash;
@@ -773,10 +866,10 @@
                     renderBotSettings(nextState);
                 }
 
-                render(nextState);
+                render(nextState, response);
                 pageState = nextState;
                 showStatus(successText);
-                return result;
+                return response;
             } catch (error) {
                 // 保存失败时保留表单草稿，不把旧的服务器值写回输入框。
                 showStatus(error.message || '操作失败，请刷新后重试。', true);
@@ -869,7 +962,6 @@
             getElement('reply-filter-modified').checked = replyStatusFilter === 'modified';
             getElement('reply-filter-unmodified').checked = replyStatusFilter === 'unmodified';
 
-            // 保存后尽量保持原选中项；如果当前项被筛掉或删除，则选择可见列表中的第一项。
             const selectionExists = filtered.some((reply) => reply.key === selectedReplyKey);
             const nextKey = selectionExists ? selectedReplyKey : filtered[0]?.key;
             if (keepDraft && nextKey === selectedReplyKey) {
@@ -883,6 +975,23 @@
             const masters = nextState.bot?.masters || [];
             const options = masters.map((masterId) => ({value: masterId, label: masterId}));
             populateOptions(getElement('master-list'), options);
+        }
+
+        function renderAdminList(nextState) {
+            const admins = nextState.bot?.admins || [];
+            const options = admins.map((adminId) => ({value: adminId, label: adminId}));
+            populateOptions(getElement('admin-list'), options);
+        }
+
+        function renderJokePack(nextState, response) {
+            const jokePack = nextState.joke_pack || {};
+            getElement('joke-summary').textContent =
+                `当前共有 ${jokePack.count || 0} 条，下一个填补序号是 ${jokePack.next_id || 1}，最大序号 ${jokePack.max_id || 0}。`;
+            getElement('joke-path').value = jokePack.path || '';
+            if (response && response.result && typeof response.result.text === 'string') {
+                getElement('joke-preview').textContent = response.result.text;
+            }
+            unsavedChanges.jokes = false;
         }
 
         // 单独保存 Bot 开关时，只更新这个开关，不清除回复词和骰主输入框中的草稿。
@@ -913,20 +1022,23 @@
             getElement('bot-path').value = nextState.bot?.config_directory || '';
             getElement('reply-path').value = nextState.bot?.reply_directory || '';
             getElement('master-input').value = '';
+            getElement('admin-input').value = '';
             renderBotEnableSetting(nextState);
             renderReplyList(nextState);
             renderMasterList(nextState);
+            renderAdminList(nextState);
         }
 
-        function renderAllSettings(nextState) {
+        function renderAllSettings(nextState, response) {
             renderGlobalSettings(nextState);
             renderBotSettings(nextState);
+            renderJokePack(nextState, response);
         }
 
         // ==================== 4. 各按钮的业务操作 ====================
         // 这里的 action 名称对应 webui.py 中的 dispatch / save_bot_action 分支。
         async function handleRefreshClick() {
-            if (unsavedChanges.global || hasBotDraft()) {
+            if (unsavedChanges.global || unsavedChanges.jokes || hasBotDraft()) {
                 const confirmed = await confirmAction('刷新会丢弃页面中尚未保存的修改，继续吗？');
                 if (!confirmed) {
                     return;
@@ -1149,9 +1261,94 @@
             }
         }
 
+        async function handleAddAdminsClick() {
+            const input = getElement('admin-input').value.trim();
+            const ids = input.split(/[\s,;，；]+/).filter(Boolean);
+            const invalidCount = ids.length === 0 || ids.length > 100;
+            const invalidId = ids.some((id) => !/^[0-9]{1,32}$/.test(id));
+            if (invalidCount || invalidId) {
+                showStatus('请输入 1 至 100 个数字用户 ID，每个 ID 最多 32 位。', true);
+                return;
+            }
+            const saved = await runAction('add_admins', {ids: ids}, renderAdminList, '管理员列表已更新。');
+            if (saved) {
+                getElement('admin-input').value = '';
+            }
+        }
+
+        async function handleRemoveAdminsClick() {
+            const selectedOptions = Array.from(getElement('admin-list').selectedOptions);
+            const ids = selectedOptions.map((option) => option.value);
+            if (ids.length === 0) {
+                showStatus('请先选择要删除的管理员。', true);
+                return;
+            }
+            if (!await confirmAction(`从当前 Bot 删除所选 ${ids.length} 位管理员吗？`)) {
+                return;
+            }
+            await runAction('remove_admins', {ids: ids}, renderAdminList, '管理员列表已更新。');
+        }
+
+        function handleAdminInputKeydown(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                getElement('add-admins').click();
+            }
+        }
+
+        async function handleAddJokeClick() {
+            const text = getElement('joke-text').value.trim();
+            if (!text) {
+                showStatus('笑话内容不能为空。', true);
+                return;
+            }
+            const saved = await runAction('add_joke', {text: text}, renderJokePack, '笑话已添加。');
+            if (saved) {
+                getElement('joke-text').value = '';
+            }
+        }
+
+        async function handleDeleteJokeClick() {
+            const rawId = getElement('joke-id').value.trim();
+            if (!/^[1-9][0-9]*$/.test(rawId)) {
+                showStatus('请输入有效的正整数序号。', true);
+                return;
+            }
+            if (!await confirmAction(`确定删除序号 ${rawId} 的矮人笑话吗？`)) {
+                return;
+            }
+            const saved = await runAction(
+                'delete_joke',
+                {id: Number(rawId)},
+                renderJokePack,
+                `已删除序号 ${rawId}。`,
+            );
+            if (saved) {
+                getElement('joke-id').value = '';
+            }
+        }
+
+        async function handleDrawJokesClick() {
+            const rawCount = getElement('draw-count').value.trim() || '1';
+            if (!/^-?\d+$/.test(rawCount)) {
+                showStatus('抽选条数必须是整数。', true);
+                return;
+            }
+            let count = Number(rawCount);
+            if (count > 10) {
+                count = 10;
+            }
+            if (count < 1) {
+                count = 1;
+            }
+            await runAction('draw_jokes', {count: count}, renderJokePack, '已抽取矮人笑话。');
+        }
+
         // ==================== 5. 页签、页面配置与事件绑定 ====================
+        const TAB_NAMES = ['global', 'bot', 'jokes'];
+
         function setActiveTab(name) {
-            for (const tab of ['global', 'bot']) {
+            for (const tab of TAB_NAMES) {
                 const isSelected = name === tab;
                 getElement(`${tab}-tab`).setAttribute('aria-selected', String(isSelected));
                 getElement(`${tab}-tab`).tabIndex = isSelected ? 0 : -1;
@@ -1160,13 +1357,16 @@
         }
 
         function handleTabKeydown(event, currentTab) {
+            const currentIndex = TAB_NAMES.indexOf(currentTab);
             let targetTab;
             if (event.key === 'Home') {
-                targetTab = 'global';
+                targetTab = TAB_NAMES[0];
             } else if (event.key === 'End') {
-                targetTab = 'bot';
-            } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-                targetTab = currentTab === 'global' ? 'bot' : 'global';
+                targetTab = TAB_NAMES[TAB_NAMES.length - 1];
+            } else if (event.key === 'ArrowLeft') {
+                targetTab = TAB_NAMES[(currentIndex - 1 + TAB_NAMES.length) % TAB_NAMES.length];
+            } else if (event.key === 'ArrowRight') {
+                targetTab = TAB_NAMES[(currentIndex + 1) % TAB_NAMES.length];
             } else {
                 return;
             }
@@ -1186,8 +1386,17 @@
             const features = PAGE_CONFIG.features;
             getElement('reply-card').hidden = !features.replies;
             getElement('master-card').hidden = !features.masters;
-            getElement('bot-tools').hidden = !features.replies && !features.masters;
-            getElement('bot-tools').classList.toggle('single-column', !features.replies || !features.masters);
+            getElement('admin-card').hidden = !features.admins;
+            getElement('jokes-tab').hidden = !features.jokes;
+            if (!features.jokes) {
+                getElement('jokes-panel').hidden = true;
+            }
+            const visibleBotTools = Boolean(features.replies || features.masters || features.admins);
+            getElement('bot-tools').hidden = !visibleBotTools;
+            getElement('bot-tools').classList.toggle(
+                'single-column',
+                [features.replies, features.masters, features.admins].filter(Boolean).length <= 1,
+            );
             document.querySelectorAll('[data-import-export]').forEach((control) => {
                 control.hidden = !features.importExport;
             });
@@ -1196,7 +1405,7 @@
                 section.hidden = !features.directories;
             });
 
-            const initialTab = PAGE_CONFIG.defaultTab === 'bot' ? 'bot' : 'global';
+            const initialTab = TAB_NAMES.includes(PAGE_CONFIG.defaultTab) ? PAGE_CONFIG.defaultTab : 'global';
             setActiveTab(initialTab);
         }
 
@@ -1239,6 +1448,12 @@
             getElement('add-masters').addEventListener('click', handleAddMastersClick);
             getElement('remove-masters').addEventListener('click', handleRemoveMastersClick);
             getElement('master-input').addEventListener('keydown', handleMasterInputKeydown);
+            getElement('add-admins').addEventListener('click', handleAddAdminsClick);
+            getElement('remove-admins').addEventListener('click', handleRemoveAdminsClick);
+            getElement('admin-input').addEventListener('keydown', handleAdminInputKeydown);
+            getElement('add-joke').addEventListener('click', handleAddJokeClick);
+            getElement('delete-joke').addEventListener('click', handleDeleteJokeClick);
+            getElement('draw-jokes').addEventListener('click', handleDrawJokesClick);
 
             // 仅记录表单是否有草稿，实际保存由各自的保存按钮触发。
             for (const id of ['global-enable', 'global-debug']) {
@@ -1252,12 +1467,15 @@
             getElement('reply-value').addEventListener('input', () => {
                 unsavedChanges.reply = true;
             });
+            getElement('joke-text').addEventListener('input', () => {
+                unsavedChanges.jokes = true;
+            });
 
             document.querySelectorAll('.path').forEach((input) => {
                 input.addEventListener('click', () => input.select());
             });
 
-            for (const name of ['global', 'bot']) {
+            for (const name of TAB_NAMES) {
                 getElement(`${name}-tab`).addEventListener('click', () => setActiveTab(name));
                 getElement(`${name}-tab`).addEventListener('keydown', (event) => {
                     handleTabKeydown(event, name);

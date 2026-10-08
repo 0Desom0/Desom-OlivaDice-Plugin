@@ -12,8 +12,10 @@
 - 不在 GUI 里编排消息解析逻辑。
 """
 
+import json
 import os
 import tkinter
+from tkinter import filedialog
 from tkinter import messagebox
 from tkinter import scrolledtext
 from tkinter import ttk
@@ -66,6 +68,7 @@ class TemplatePluginGui(object):
         self.god_war_system_prompt_summary_var = None
         self.bot_info_var = None
         self.linked_hint_var = None
+        self.reply_filter_var = None
         self.frame_bot_container = None
         self.bot_scroll_canvas = None
         self.active_scroll_canvas = None
@@ -328,6 +331,7 @@ class TemplatePluginGui(object):
         self.god_war_system_prompt_summary_var = tkinter.StringVar(value='')
         self.bot_info_var = tkinter.StringVar(value='当前未检测到 Bot')
         self.linked_hint_var = tkinter.StringVar(value='')
+        self.reply_filter_var = tkinter.StringVar(value='全部')
 
     def get_current_bot_info(self):
         """获取当前被选中的 bot_info。"""
@@ -550,14 +554,23 @@ class TemplatePluginGui(object):
         )
         self.create_native_button(button_frame, '关闭窗口', lambda: self.root.destroy(), width=12).pack(side=tkinter.RIGHT)
 
+        import_frame = tkinter.Frame(self.frame_global, bg=dict_color_context['color_001'])
+        import_frame.grid(row=7, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
+        self.create_native_button(import_frame, '导入全局配置', self.import_global_config_from_file, width=16).pack(
+            side=tkinter.LEFT, padx=(0, 8)
+        )
+        self.create_native_button(import_frame, '导出全局配置', self.export_global_config_to_file, width=16).pack(
+            side=tkinter.LEFT
+        )
+
         hint_label = tkinter.Label(
             self.frame_global,
-            text='提示：修改任何配置后，都需要点击黄色“保存”按钮才会真正生效。',
+            text='提示：修改任何配置后，都需要点击黄色“保存”按钮才会真正生效。导入导出使用 JSON 文件。',
             bg=dict_color_context['color_001'],
             fg=dict_color_context['color_007'],
             font=('等线', 10, 'bold'),
         )
-        hint_label.grid(row=7, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
+        hint_label.grid(row=8, column=0, sticky='nsew', padx=(20, 20), pady=(18, 0))
 
     def init_frame_bot(self) -> None:
         """Bot 配置页。"""
@@ -784,6 +797,15 @@ class TemplatePluginGui(object):
             width=14,
         ).pack(side=tkinter.RIGHT)
 
+        import_frame = tkinter.Frame(self.frame_bot, bg=dict_color_context['color_001'])
+        import_frame.grid(row=32, column=0, sticky='nsew', padx=(20, 20), pady=(12, 0))
+        self.create_native_button(import_frame, '导入 Bot 配置', self.import_bot_config_from_file, width=16).pack(
+            side=tkinter.LEFT, padx=(0, 8)
+        )
+        self.create_native_button(import_frame, '导出 Bot 配置', self.export_bot_config_to_file, width=16).pack(
+            side=tkinter.LEFT
+        )
+
         self.bind_scroll_canvas_widgets(self.frame_bot, self.bot_scroll_canvas)
         self.bind_scroll_canvas_widgets(self.bot_scroll_canvas, self.bot_scroll_canvas)
 
@@ -852,38 +874,71 @@ class TemplatePluginGui(object):
 
         dialog_window = tkinter.Toplevel(self.root)
         dialog_window.title(f'{config.plugin_name} - 回复词管理')
-        dialog_window.geometry('920x560')
-        dialog_window.minsize(840, 500)
+        dialog_window.geometry('980x620')
+        dialog_window.minsize(880, 540)
         dialog_window.configure(bg=dict_color_context['color_001'])
-        dialog_window.grid_rowconfigure(0, weight=1)
+        dialog_window.grid_rowconfigure(1, weight=1)
         dialog_window.grid_columnconfigure(0, weight=1)
+
+        filter_frame = tkinter.Frame(dialog_window, bg=dict_color_context['color_001'])
+        filter_frame.grid(row=0, column=0, columnspan=2, sticky='nsew', padx=(15, 15), pady=(15, 0))
+        tkinter.Label(
+            filter_frame,
+            text='筛选：',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 10),
+        ).pack(side=tkinter.LEFT, padx=(0, 8))
+        filter_box = ttk.Combobox(
+            filter_frame,
+            textvariable=self.reply_filter_var,
+            state='readonly',
+            values=('全部', '仅看已修改', '仅看未修改'),
+            width=16,
+        )
+        filter_box.pack(side=tkinter.LEFT)
+        filter_box.bind('<MouseWheel>', self.handle_combobox_mousewheel, add='+')
+        tkinter.Label(
+            filter_frame,
+            text='已修改按模板默认文本比较，不是看文件是否为空。',
+            bg=dict_color_context['color_001'],
+            fg=dict_color_context['color_004'],
+            font=('等线', 10),
+        ).pack(side=tkinter.LEFT, padx=(12, 0))
 
         reply_tree = ttk.Treeview(dialog_window)
         reply_tree['show'] = 'headings'
-        reply_tree['columns'] = ('KEY', 'NOTE', 'DATA')
+        reply_tree['columns'] = ('KEY', 'NOTE', 'STATUS', 'DATA')
         reply_tree.column('KEY', width=160)
-        reply_tree.column('NOTE', width=280)
+        reply_tree.column('NOTE', width=240)
+        reply_tree.column('STATUS', width=80)
         reply_tree.column('DATA', width=420)
         reply_tree.heading('KEY', text='条目')
         reply_tree.heading('NOTE', text='说明')
+        reply_tree.heading('STATUS', text='状态')
         reply_tree.heading('DATA', text='内容')
-        reply_tree.grid(row=0, column=0, sticky='nsew', padx=(15, 0), pady=(15, 0))
+        reply_tree.grid(row=1, column=0, sticky='nsew', padx=(15, 0), pady=(10, 0))
 
         reply_scrollbar = ttk.Scrollbar(dialog_window, orient='vertical', command=reply_tree.yview)
         reply_tree.configure(yscrollcommand=reply_scrollbar.set)
-        reply_scrollbar.grid(row=0, column=1, sticky='nsw', padx=(0, 15), pady=(15, 0))
+        reply_scrollbar.grid(row=1, column=1, sticky='nsw', padx=(0, 15), pady=(10, 0))
 
         def refresh_reply_tree() -> None:
             reply_tree.delete(*reply_tree.get_children())
-            custom_message_dict = utils.load_bot_message_custom(runtime_bot_hash)
-            for message_key in utils.get_bot_message_key_list(runtime_bot_hash):
+            filter_mode = self.reply_filter_var.get()
+            for item in utils.get_bot_message_custom_items(runtime_bot_hash):
+                if filter_mode == '仅看已修改' and not item['modified']:
+                    continue
+                if filter_mode == '仅看未修改' and item['modified']:
+                    continue
                 reply_tree.insert(
                     '',
                     tkinter.END,
                     values=(
-                        message_key,
-                        utils.get_message_note_text(message_key).replace('\n', ' / '),
-                        utils.safe_str(custom_message_dict.get(message_key, '')),
+                        item['key'],
+                        item['note'].replace('\n', ' / '),
+                        '已修改' if item['modified'] else '默认',
+                        item['value'],
                     ),
                 )
 
@@ -921,14 +976,31 @@ class TemplatePluginGui(object):
 
             if not messagebox.askyesno('确认', f'确定要删除回复词 {message_key} 的自定义内容吗？'):
                 return
-            custom_message_dict = utils.load_bot_message_custom(runtime_bot_hash)
-            custom_message_dict.pop(message_key, None)
-            utils.save_bot_message_custom(runtime_bot_hash, custom_message_dict)
+            utils.reset_bot_message_custom_value(runtime_bot_hash, message_key)
             refresh_reply_tree()
             messagebox.showinfo('提示', f'回复词 {message_key} 已删除。')
 
         def reset_all_reply() -> None:
             self.reset_all_reply_with_callback(refresh_callback=refresh_reply_tree)
+
+        def import_replies() -> None:
+            self.import_json_with_callback(
+                title_text='选择回复词 JSON 文件',
+                confirm_text='确定导入回复词吗？文件中的同名条目会覆盖当前自定义内容。',
+                import_callback=lambda data: utils.import_bot_message_custom(runtime_bot_hash, data),
+                refresh_callback=refresh_reply_tree,
+                success_text='回复词导入成功。',
+                parent_window=dialog_window,
+            )
+
+        def export_replies() -> None:
+            self.export_json_data(
+                title_text='保存回复词 JSON 文件',
+                initial_name=utils.get_export_filename('replies', runtime_bot_hash),
+                data=utils.export_bot_message_custom(runtime_bot_hash),
+                success_text='回复词导出成功。只包含相对默认值改过的条目。',
+                parent_window=dialog_window,
+            )
 
         def show_reply_context_menu(event) -> None:
             row_id = reply_tree.identify_row(event.y)
@@ -946,15 +1018,21 @@ class TemplatePluginGui(object):
         context_menu.add_command(label='恢复/删除', command=reset_or_delete_selected_reply)
 
         button_frame = tkinter.Frame(dialog_window, bg=dict_color_context['color_001'])
-        button_frame.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=(15, 15), pady=(10, 15))
+        button_frame.grid(row=2, column=0, columnspan=2, sticky='nsew', padx=(15, 15), pady=(10, 15))
         button_frame.grid_columnconfigure(1, weight=1)
 
         button_left_frame = tkinter.Frame(button_frame, bg=dict_color_context['color_001'])
         button_left_frame.grid(row=0, column=0, sticky='w')
-        self.create_native_button(button_left_frame, '恢复默认回复', reset_all_reply, width=14).grid(
+        self.create_native_button(button_left_frame, '导入回复', import_replies, width=12).grid(
             row=0, column=0, padx=(0, 8)
         )
-        self.create_native_button(button_left_frame, '刷新', refresh_reply_tree, width=10).grid(row=0, column=1)
+        self.create_native_button(button_left_frame, '导出回复', export_replies, width=12).grid(
+            row=0, column=1, padx=(0, 8)
+        )
+        self.create_native_button(button_left_frame, '恢复默认回复', reset_all_reply, width=14).grid(
+            row=0, column=2, padx=(0, 8)
+        )
+        self.create_native_button(button_left_frame, '刷新', refresh_reply_tree, width=10).grid(row=0, column=3)
 
         button_right_frame = tkinter.Frame(button_frame, bg=dict_color_context['color_001'])
         button_right_frame.grid(row=0, column=2, sticky='e')
@@ -963,9 +1041,131 @@ class TemplatePluginGui(object):
         )
         self.create_native_button(button_right_frame, '编辑', edit_selected_reply, width=10).grid(row=0, column=1)
 
+        filter_box.bind('<<ComboboxSelected>>', lambda _event: refresh_reply_tree())
         reply_tree.bind('<Double-1>', lambda _event: edit_selected_reply())
         reply_tree.bind('<Button-3>', show_reply_context_menu)
         refresh_reply_tree()
+
+    def choose_json_open_path(self, title_text: str, parent_window=None) -> str:
+        """选择要导入的 JSON 文件。"""
+        return filedialog.askopenfilename(
+            title=title_text,
+            filetypes=[('JSON文件', '*.json'), ('所有文件', '*.*')],
+            parent=parent_window or self.root,
+        )
+
+    def choose_json_save_path(self, title_text: str, initial_name: str, parent_window=None) -> str:
+        """选择要导出的 JSON 文件路径。"""
+        return filedialog.asksaveasfilename(
+            title=title_text,
+            defaultextension='.json',
+            initialfile=initial_name,
+            filetypes=[('JSON文件', '*.json'), ('所有文件', '*.*')],
+            parent=parent_window or self.root,
+        )
+
+    def export_json_data(
+        self,
+        title_text: str,
+        initial_name: str,
+        data,
+        success_text: str,
+        parent_window=None,
+    ) -> None:
+        """把字典导出为 JSON 文件。"""
+        file_path = self.choose_json_save_path(title_text, initial_name, parent_window=parent_window)
+        if not file_path:
+            return
+        try:
+            with open(file_path, 'w', encoding='utf-8') as file_object:
+                json.dump(data, file_object, ensure_ascii=False, indent=2)
+            messagebox.showinfo('提示', success_text, parent=parent_window or self.root)
+        except Exception as exception_object:
+            messagebox.showerror(
+                '错误',
+                f'导出失败：{type(exception_object).__name__}',
+                parent=parent_window or self.root,
+            )
+
+    def import_json_with_callback(
+        self,
+        title_text: str,
+        confirm_text: str,
+        import_callback,
+        refresh_callback=None,
+        success_text: str = '导入成功。',
+        parent_window=None,
+    ) -> None:
+        """读取 JSON 对象并交给存储层导入。"""
+        file_path = self.choose_json_open_path(title_text, parent_window=parent_window)
+        if not file_path:
+            return
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file_object:
+                import_data = json.load(file_object)
+            if not isinstance(import_data, dict):
+                raise ValueError('配置文件必须是 JSON 对象。')
+            if not messagebox.askyesno('确认导入', confirm_text, parent=parent_window or self.root):
+                return
+            if import_callback(import_data) is False:
+                raise OSError('Configuration save failed')
+            if callable(refresh_callback):
+                refresh_callback()
+            messagebox.showinfo('提示', success_text, parent=parent_window or self.root)
+        except ValueError as exception_object:
+            messagebox.showerror('错误', str(exception_object), parent=parent_window or self.root)
+        except Exception as exception_object:
+            messagebox.showerror(
+                '错误',
+                f'导入失败：{type(exception_object).__name__}\n配置未更改。',
+                parent=parent_window or self.root,
+            )
+
+    def import_global_config_from_file(self) -> None:
+        """导入全局配置 JSON。"""
+        self.import_json_with_callback(
+            title_text='选择全局配置 JSON 文件',
+            confirm_text='确定导入全局配置吗？文件中的同名字段会覆盖当前值。',
+            import_callback=utils.import_global_config,
+            refresh_callback=self.refresh_all_views,
+            success_text='全局配置导入成功。',
+        )
+
+    def export_global_config_to_file(self) -> None:
+        """导出全局配置 JSON。"""
+        self.export_json_data(
+            title_text='保存全局配置 JSON 文件',
+            initial_name=utils.get_export_filename('global'),
+            data=utils.export_global_config(),
+            success_text='全局配置导出成功。',
+        )
+
+    def import_bot_config_from_file(self) -> None:
+        """导入当前 Bot 配置 JSON。"""
+        config_bot_hash = self.get_current_config_bot_hash()
+        if not config_bot_hash:
+            messagebox.showwarning('提示', '当前没有可操作的 Bot。')
+            return
+        self.import_json_with_callback(
+            title_text='选择 Bot 配置 JSON 文件',
+            confirm_text='确定导入 Bot 配置吗？文件中的同名字段会覆盖当前账号配置。',
+            import_callback=lambda data: utils.import_bot_config(config_bot_hash, data),
+            refresh_callback=self.refresh_all_views,
+            success_text='Bot 配置导入成功。',
+        )
+
+    def export_bot_config_to_file(self) -> None:
+        """导出当前 Bot 配置 JSON。"""
+        config_bot_hash = self.get_current_config_bot_hash()
+        if not config_bot_hash:
+            messagebox.showwarning('提示', '当前没有可操作的 Bot。')
+            return
+        self.export_json_data(
+            title_text='保存 Bot 配置 JSON 文件',
+            initial_name=utils.get_export_filename('bot', config_bot_hash),
+            data=utils.export_bot_config(config_bot_hash),
+            success_text='Bot 配置导出成功。',
+        )
 
     def save_reply_text(
         self,
@@ -994,7 +1194,7 @@ class TemplatePluginGui(object):
             return
         if not messagebox.askyesno('确认', '确定要把当前 Bot 的全部回复词恢复为默认值吗？'):
             return
-        utils.save_bot_message_custom(runtime_bot_hash, message_custom.default_custom_message_dict)
+        utils.reset_all_bot_message_custom(runtime_bot_hash)
         if callable(refresh_callback):
             refresh_callback()
         messagebox.showinfo('提示', '当前 Bot 的回复词已恢复为模板默认值。')

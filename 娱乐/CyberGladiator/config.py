@@ -28,6 +28,11 @@ storage_folder_name = 'storage'
 
 allowed_prefix_list = ['.', '。', '/', '／']
 
+# 导入导出与回复词长度上限，GUI 与 WebUI 共用。
+json_import_max_keys = 5000
+message_custom_key_max_length = 200
+message_custom_value_max_length = 32768
+
 gui_window_title = '赛博角斗场 设置面板'
 gui_global_tab_title = '全局配置'
 gui_bot_tab_title = 'Bot 配置'
