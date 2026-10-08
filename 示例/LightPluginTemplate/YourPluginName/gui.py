@@ -543,6 +543,10 @@ class TemplatePluginGui(object):
                 return
 
             if message_key in message_custom.default_custom_message_dict:
+                current_text = utils.load_bot_message_custom(runtime_bot_hash).get(message_key, '')
+                if not utils.is_message_custom_modified(message_key, current_text):
+                    messagebox.showinfo('提示', f'回复词 {message_key} 已经是默认值，没有变化。')
+                    return
                 if not messagebox.askyesno('确认', f'确定要把回复词 {message_key} 恢复为默认值吗？'):
                     return
                 utils.reset_bot_message_custom_value(runtime_bot_hash, message_key)

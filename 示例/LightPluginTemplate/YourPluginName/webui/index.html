@@ -994,6 +994,11 @@
                 return;
             }
 
+            if (reply.is_default && !reply.modified) {
+                showStatus('已经是默认值，没有变化。');
+                return;
+            }
+
             const operation = reply.is_default ? '恢复默认值' : '删除自定义内容';
             const confirmText = `确定对 ${selectedReplyKey} ${operation}？\n共用这套回复词的主从账号都会生效。`;
             if (!await confirmAction(confirmText)) {

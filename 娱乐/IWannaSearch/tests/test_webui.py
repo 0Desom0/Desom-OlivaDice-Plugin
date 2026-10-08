@@ -186,6 +186,17 @@ class IWannaSearchWebUITest(unittest.TestCase):
         self.assertTrue(extra['modified'])
         self.assertIsNone(extra['default'])
 
+    def test_reset_unmodified_default_does_not_write(self):
+        path = Path(self.utils.get_message_custom_file_path(self.parent_hash))
+        self.assertFalse(path.exists())
+        self.assertTrue(self.call('reset_reply', key='reply_help_hint', confirm=True)['ok'])
+        self.assertFalse(path.exists())
+        self.assertTrue(self.call('save_reply', key='reply_empty_query', value='自定义空查询')['ok'])
+        before = path.read_bytes()
+        self.assertTrue(self.call('reset_reply', key='reply_help_hint', confirm=True)['ok'])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.overlay(self.parent_hash), {'reply_empty_query': '自定义空查询'})
+
     def test_reset_all_requires_confirmation_and_preserves_other_storage(self):
         self.utils.set_bot_message_custom_value(self.parent_hash, 'extension_reply', '扩展')
         self.utils.save_bot_message_variables(self.parent_hash, {'variable': '保留'})

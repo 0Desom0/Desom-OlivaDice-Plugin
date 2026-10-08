@@ -869,11 +869,22 @@
         async function resetReply() {
             if (!currentBotHash) return;
             const key = document.getElementById('reply-key-selector').value;
-            if (!await confirmAction(`确认恢复回复词 [${key}] 到默认值？`)) return;
+            if (!key) return;
+            const reply = (currentState?.bot?.replies || []).find((item) => item.key === key);
+            if (!reply) {
+                showStatus('回复词条目已发生变化，请刷新后重新选择。', true);
+                return;
+            }
+            if (reply.is_default && !reply.modified) {
+                showStatus('已经是默认值，没有变化。');
+                return;
+            }
+            const operation = reply.is_default ? '恢复默认值' : '删除自定义内容';
+            if (!await confirmAction(`确定对 ${key} ${operation}？`)) return;
             try {
                 const res = await sendEvent({ action: 'reset_reply', bot_hash: currentBotHash, key: key, confirm: true });
                 if (res?.ok) {
-                    showStatus(`已恢复 [${key}] 为默认值`);
+                    showStatus(reply.is_default ? `已恢复 [${key}] 为默认值` : `已删除 [${key}]`);
                     renderState(res.state);
                 } else {
                     showStatus(res?.error || '恢复失败', true);

@@ -793,7 +793,10 @@ def reset_bot_message_custom_value(bot_hash: Any, message_key: str) -> bool:
     如果这一条本来就没有自定义内容，文件不会产生新的变化。
     """
     overlay_dict = load_bot_message_custom_overlay(bot_hash)
-    overlay_dict.pop(safe_str(message_key), None)
+    text_key = safe_str(message_key)
+    if text_key not in overlay_dict:
+        return True
+    overlay_dict.pop(text_key)
     return save_bot_message_custom_overlay(bot_hash, overlay_dict)
 
 
