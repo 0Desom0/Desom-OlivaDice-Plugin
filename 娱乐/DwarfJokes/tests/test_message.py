@@ -191,6 +191,32 @@ class DwarfJokesMessageTest(unittest.TestCase):
         self.assertIn('已添加插件管理员', master.reply.call_args.args[0])
         self.assertEqual(self.utils.get_configured_admin_list(self.bot_hash), ['12345'])
 
+    def test_admin_add_keeps_qqguild_uinfo_hash(self):
+        hex_id = 'A9EEAF03BE4844ED78B6523A63D0728F'
+        master = FakeEvent(f'.矮人 admin add {hex_id}')
+        with patch.object(self.utils, 'ensure_runtime_storage_by_event', return_value=self.bot_hash), \
+                patch.object(self.utils, 'check_core_group_enable', return_value=True), \
+                patch.object(self.utils, 'get_bot_hash_from_event', return_value=self.bot_hash), \
+                patch.object(self.utils, 'is_sender_core_master', return_value=True), \
+                patch.object(self.utils, 'is_sender_configured_master', return_value=False), \
+                patch.object(self.utils, 'is_sender_configured_admin', return_value=False):
+            self.message.handle_message(master, self.proc)
+        self.assertIn(hex_id, master.reply.call_args.args[0])
+        self.assertEqual(self.utils.get_configured_admin_list(self.bot_hash), [hex_id])
+        self.assertNotIn('9034844786523630728', self.utils.get_configured_admin_list(self.bot_hash))
+
+    def test_configured_admin_matches_uinfo_user_id_and_record_hash(self):
+        hex_id = 'A9EEAF03BE4844ED78B6523A63D0728F'
+        event = FakeEvent('.矮人add x', user_id=hex_id)
+        event.platform = {'platform': 'qqGuild'}
+        self.utils.set_configured_admin_list(self.bot_hash, [hex_id.lower()])
+        with patch.object(self.utils, 'get_bot_hash_from_event', return_value=self.bot_hash):
+            self.assertTrue(self.utils.is_sender_configured_admin(event))
+        record_hash = self.utils.get_user_hash(hex_id, 'user', 'qqGuild')
+        self.utils.set_configured_admin_list(self.bot_hash, [record_hash])
+        with patch.object(self.utils, 'get_bot_hash_from_event', return_value=self.bot_hash):
+            self.assertTrue(self.utils.is_sender_configured_admin(event))
+
 
 if __name__ == '__main__':
     unittest.main()

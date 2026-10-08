@@ -290,9 +290,7 @@ def handle_admin(plugin_event, argument_text: str) -> None:
         if not target_id_list:
             utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_admin_add_empty'))
             return
-        for target_id in target_id_list:
-            if target_id not in admin_list:
-                admin_list.append(target_id)
+        admin_list = utils.extend_unique_ids(admin_list, target_id_list)
         utils.set_configured_admin_list(config_bot_hash, admin_list)
         utils.reply_message(
             plugin_event,
@@ -311,7 +309,7 @@ def handle_admin(plugin_event, argument_text: str) -> None:
         if not target_id_list:
             utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_admin_del_empty'))
             return
-        admin_list = [admin_id for admin_id in admin_list if admin_id not in target_id_list]
+        admin_list = utils.subtract_ids(admin_list, target_id_list)
         utils.set_configured_admin_list(config_bot_hash, admin_list)
         utils.reply_message(
             plugin_event,

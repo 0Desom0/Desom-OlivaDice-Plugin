@@ -22,9 +22,9 @@ default_custom_message_dict = {
     'reply_list_missing': '展示失败：序号 {joke_id} 不存在。',
     'reply_list_invalid': '展示失败：请提供有效的正整数序号。',
     'reply_admin_usage': '用法：{prefix}矮人 admin add/del 用户ID',
-    'reply_admin_add_empty': '添加管理员失败：请提供数字用户 ID。',
+    'reply_admin_add_empty': '添加管理员失败：请提供用户 ID（QQ 数字账号或 .uinfo 哈希）。',
     'reply_admin_add_success': '已添加插件管理员：{admin_ids}。当前管理员：{admin_list}。',
-    'reply_admin_del_empty': '删除管理员失败：请提供数字用户 ID。',
+    'reply_admin_del_empty': '删除管理员失败：请提供用户 ID（QQ 数字账号或 .uinfo 哈希）。',
     'reply_admin_del_success': '已删除插件管理员：{admin_ids}。当前管理员：{admin_list}。',
     'reply_admin_list_empty': '无',
 }
@@ -96,6 +96,7 @@ category / platform / source_url / note / original_en 留空，正文写入 text
 7. {prefix}矮人admin add 用户ID
 {prefix}矮人admin del 用户ID
 添加或删除本插件管理员。
+用户ID 可以是 QQ 数字账号，也可以是 .uinfo 括号里的频道用户 ID，或记录哈希。
 权限：OlivaDiceCore 骰主 / 本插件骰主。
 
 GUI 菜单和 WebUI 可管理开关、骰主、管理员与笑话合集。

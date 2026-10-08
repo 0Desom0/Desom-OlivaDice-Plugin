@@ -196,6 +196,26 @@ class DwarfJokesFunctionTest(unittest.TestCase):
         self.assertTrue(draw_result['ok'])
         self.assertEqual(len(draw_result['jokes']), 2)
 
+    def test_normalize_id_list_keeps_uinfo_hash(self):
+        hex_id = 'A9EEAF03BE4844ED78B6523A63D0728F'
+        record_hash = '97044885a4820bae161671fb34253587'
+        self.assertEqual(self.utils.normalize_id_list(hex_id), [hex_id])
+        self.assertEqual(self.utils.normalize_id_list(f'({hex_id})'), [hex_id])
+        self.assertEqual(self.utils.normalize_id_list('12345'), ['12345'])
+        self.assertEqual(self.utils.normalize_id_list('host123|group456'), ['host123|group456'])
+        self.assertEqual(self.utils.normalize_id_list(['abc123', 'ABC123']), ['abc123'])
+        self.assertEqual(self.utils.normalize_id_list('oops'), [])
+        uinfo = (
+            f'[亮亮] - ({hex_id})\n'
+            f'记录哈希: {record_hash}\n'
+            '平台: qqGuild'
+        )
+        result = self.utils.normalize_id_list(uinfo)
+        self.assertEqual(result[0], hex_id)
+        self.assertIn(record_hash, result)
+        self.assertNotIn('qqGuild', result)
+        self.assertNotIn('9034844786523630728', result)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -139,6 +139,16 @@ class DwarfJokesWebUITest(unittest.TestCase):
         self.assertTrue(self.call('remove_admins', ids=['222'])['ok'])
         self.assertEqual(self.utils.get_configured_admin_list(self.child_hash), ['444'])
 
+    def test_admin_validation_keeps_uinfo_hash(self):
+        hex_id = 'A9EEAF03BE4844ED78B6523A63D0728F'
+        self.assertTrue(self.call('add_admins', ids=[hex_id, hex_id.lower(), f'({hex_id})'])['ok'])
+        self.assertEqual(self.utils.get_configured_admin_list(self.child_hash), [hex_id])
+        self.assertFalse(self.call('add_admins', ids=['-123'])['ok'])
+        self.assertFalse(self.call('add_admins', ids=['oops'])['ok'])
+        self.assertEqual(self.utils.get_configured_admin_list(self.child_hash), [hex_id])
+        self.assertTrue(self.call('remove_admins', ids=[hex_id.lower()])['ok'])
+        self.assertEqual(self.utils.get_configured_admin_list(self.child_hash), [])
+
     def test_bot_and_master_changes_preserve_admin_and_other_fields(self):
         self.utils.save_bot_config(self.child_hash, {
             'disabled_group_list': ['333'],

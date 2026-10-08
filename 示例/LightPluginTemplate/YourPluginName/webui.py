@@ -2,7 +2,6 @@
 """WebUI 配置接口：复用 GUI 的存储方法，认证与会话回包交给 OlivOS。"""
 
 import os
-import re
 
 from . import config, utils
 
@@ -67,13 +66,16 @@ def require_bool(payload: dict, key: str) -> bool:
 
 
 def require_master_ids(payload: dict) -> list[str]:
-    """完整校验后再保存，拒绝把混有字母的输入静默变成另一个用户 ID。"""
+    """校验用户 ID 列表：保留 QQ 数字、频道哈希和 .uinfo 记录哈希，不剥字母。"""
     values = payload.get('ids')
     if not isinstance(values, list) or not 1 <= len(values) <= 100:
-        raise ValueError('请提供 1 至 100 个数字用户 ID。')
-    if any(not isinstance(value, str) or re.fullmatch(r'[0-9]{1,32}', value) is None for value in values):
-        raise ValueError('用户 ID 必须是 1 至 32 位数字字符串。')
-    return list(dict.fromkeys(values))
+        raise ValueError('请提供 1 至 100 个用户 ID。')
+    if any(not isinstance(value, str) for value in values):
+        raise ValueError('用户 ID 必须是文本。')
+    normalized_id_list = utils.normalize_id_list(values)
+    if not normalized_id_list:
+        raise ValueError('用户 ID 必须是 QQ 数字账号、频道哈希或 .uinfo 中的用户 ID / 记录哈希。')
+    return normalized_id_list
 
 
 def save_bot_action(action: str, payload: dict, bot_hash: str) -> bool:
@@ -88,9 +90,9 @@ def save_bot_action(action: str, payload: dict, bot_hash: str) -> bool:
         ids = require_master_ids(payload)
         masters = utils.get_configured_master_list(bot_hash)
         if action == 'add_masters':
-            masters = list(dict.fromkeys(masters + ids))
+            masters = utils.extend_unique_ids(masters, ids)
         else:
-            masters = [master_id for master_id in masters if master_id not in ids]
+            masters = utils.subtract_ids(masters, ids)
         return utils.set_configured_master_list(bot_hash, masters)
 
     if action == 'reset_replies':

@@ -311,9 +311,7 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
             return
 
         if master_action == 'add':
-            for target_master_id in target_master_id_list:
-                if target_master_id not in configured_master_list:
-                    configured_master_list.append(target_master_id)
+            configured_master_list = utils.extend_unique_ids(configured_master_list, target_master_id_list)
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
             master_text = ', '.join(configured_master_list) or '无'
             utils.reply_message(
@@ -327,11 +325,7 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
             return
 
         if master_action == 'del':
-            configured_master_list = [
-                configured_master_id
-                for configured_master_id in configured_master_list
-                if configured_master_id not in target_master_id_list
-            ]
+            configured_master_list = utils.subtract_ids(configured_master_list, target_master_id_list)
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
             master_text = ', '.join(configured_master_list) or '无'
             utils.reply_message(

@@ -578,11 +578,11 @@
                         </button>
                     </div>
 
-                    <label for="master-input" class="spaced-label">添加数字用户 ID</label>
+                    <label for="master-input" class="spaced-label">添加用户 ID</label>
                     <input
                         id="master-input"
                         type="text"
-                        placeholder="多个 ID 用空格或逗号分隔"
+                        placeholder="QQ 数字或 .uinfo 哈希，多个用空格或逗号分隔"
                         autocomplete="off"
                         data-control
                         data-bot-control
@@ -606,11 +606,11 @@
                         </button>
                     </div>
 
-                    <label for="admin-input" class="spaced-label">添加数字用户 ID</label>
+                    <label for="admin-input" class="spaced-label">添加用户 ID</label>
                     <input
                         id="admin-input"
                         type="text"
-                        placeholder="多个 ID 用空格或逗号分隔"
+                        placeholder="QQ 数字或 .uinfo 哈希，多个用空格或逗号分隔"
                         autocomplete="off"
                         data-control
                         data-bot-control
@@ -1227,15 +1227,35 @@
             updateControlStates();
         }
 
+        function unwrapUserId(value) {
+            let text = String(value || '').trim();
+            const quotes = '"\'“”‘’';
+            if (text.length >= 2 && quotes.includes(text[0]) && quotes.includes(text[text.length - 1])) {
+                text = text.slice(1, -1).trim();
+            }
+            if (
+                text.length >= 2
+                && ((text[0] === '(' && text.endsWith(')')) || (text[0] === '[' && text.endsWith(']')))
+            ) {
+                text = text.slice(1, -1).trim();
+            }
+            return text;
+        }
+
+        function looksLikeUserId(value) {
+            const text = unwrapUserId(value);
+            return /^[0-9A-Za-z][0-9A-Za-z._|-]{0,127}$/.test(text) && /[0-9]/.test(text);
+        }
+
         async function handleAddMastersClick() {
             const input = getElement('master-input').value.trim();
             const ids = input.split(/[\s,;，；]+/).filter(Boolean);
 
-            // 数量和长度与 webui.py 的 require_master_ids 一致；后端仍会再次校验。
+            // 数量和格式与 webui.py 的 require_master_ids 一致；后端仍会再次校验。
             const invalidCount = ids.length === 0 || ids.length > 100;
-            const invalidId = ids.some((id) => !/^[0-9]{1,32}$/.test(id));
+            const invalidId = ids.some((id) => !looksLikeUserId(id));
             if (invalidCount || invalidId) {
-                showStatus('请输入 1 至 100 个数字用户 ID，每个 ID 最多 32 位。', true);
+                showStatus('请输入 1 至 100 个用户 ID；可用 QQ 数字账号或 .uinfo 哈希。', true);
                 return;
             }
 
@@ -1270,9 +1290,9 @@
             const input = getElement('admin-input').value.trim();
             const ids = input.split(/[\s,;，；]+/).filter(Boolean);
             const invalidCount = ids.length === 0 || ids.length > 100;
-            const invalidId = ids.some((id) => !/^[0-9]{1,32}$/.test(id));
+            const invalidId = ids.some((id) => !looksLikeUserId(id));
             if (invalidCount || invalidId) {
-                showStatus('请输入 1 至 100 个数字用户 ID，每个 ID 最多 32 位。', true);
+                showStatus('请输入 1 至 100 个用户 ID；可用 QQ 数字账号或 .uinfo 哈希。', true);
                 return;
             }
             const saved = await runAction('add_admins', {ids: ids}, renderAdminList, '管理员列表已更新。');

@@ -135,11 +135,18 @@ class WebUITest(unittest.TestCase):
         self.assertEqual(self.utils.get_configured_master_list(self.parent_hash), ['111'])
         self.assertTrue(self.utils.load_bot_config(self.parent_hash)['bot_enable_switch'])
 
-    def test_master_validation_rejects_mixed_or_non_string_ids(self):
-        for ids in ([], '123', ['123', 'oops456'], [123], ['-123'], ['1' * 33], ['１２３']):
+    def test_master_validation_rejects_invalid_ids(self):
+        for ids in ([], '123', [123], ['-123'], ['1' * 129], ['１２３'], ['oops'], ['!123']):
             with self.subTest(ids=ids):
                 self.assertFalse(self.call('add_masters', ids=ids)['ok'])
                 self.assertEqual(self.utils.get_configured_master_list(self.child_hash), [])
+
+    def test_master_validation_keeps_uinfo_hash(self):
+        hex_id = 'A9EEAF03BE4844ED78B6523A63D0728F'
+        self.assertTrue(self.call('add_masters', ids=[hex_id, hex_id.lower(), f'({hex_id})'])['ok'])
+        self.assertEqual(self.utils.get_configured_master_list(self.child_hash), [hex_id])
+        self.assertTrue(self.call('remove_masters', ids=[hex_id.lower()])['ok'])
+        self.assertEqual(self.utils.get_configured_master_list(self.child_hash), [])
 
     def overlay(self, bot_hash):
         path = Path(self.utils.get_message_custom_file_path(bot_hash))

@@ -41,6 +41,11 @@ runtime_proc = None
 
 reply_segment_pattern = re.compile(r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]', re.IGNORECASE)
 at_segment_pattern = re.compile(r'^\[(?:OP|CQ):at,(?P<params>[^\]]*)\]', re.IGNORECASE)
+id_token_pattern = re.compile(r'^[0-9A-Za-z][0-9A-Za-z._|-]{0,127}$')
+id_token_digit_pattern = re.compile(r'[0-9]')
+uinfo_paren_id_pattern = re.compile(r'\(([0-9A-Za-z][0-9A-Za-z._|-]{0,127})\)')
+uinfo_record_hash_pattern = re.compile(r'记录哈希\s*[:：]\s*([0-9A-Fa-f]{32})')
+id_quote_chars = '"\'“”‘’'
 
 
 def safe_str(value: Any) -> str:
@@ -829,7 +834,7 @@ def export_bot_config(bot_hash: Any) -> Dict[str, Any]:
 
 
 def import_bot_config(bot_hash: Any, data: Any) -> bool:
-    """导入 Bot 配置：同名字段覆盖，骰主和群禁用列表会按数字 ID 清洗。"""
+    """导入 Bot 配置：同名字段覆盖，骰主和群禁用列表会按用户/群 ID 清洗。"""
     incoming = require_json_object(data, 'Bot 配置')
     if 'bot_enable_switch' in incoming and not isinstance(incoming['bot_enable_switch'], bool):
         raise ValueError('bot_enable_switch 必须为 true 或 false。')
@@ -1151,21 +1156,98 @@ def is_force_reply_to_current_bot(at_item_list: List[Dict[str, str]], plugin_eve
     )
 
 
-def normalize_id_list(id_iterable: Any) -> List[str]:
-    """把用户输入的各种 id 列表统一清洗成去重后的字符串列表。"""
-    if isinstance(id_iterable, str):
-        raw_item_list = re.split(r'[\s,;，；]+', id_iterable)
-    elif isinstance(id_iterable, list):
-        raw_item_list = id_iterable
-    else:
-        raw_item_list = []
+def normalize_id_token(raw_item: Any) -> str:
+    """清洗单个用户/群 ID，保留 QQ 数字、频道哈希和 host|group。"""
+    text = safe_str(raw_item).strip()
+    if not text:
+        return ''
+    if len(text) >= 2 and text[0] in id_quote_chars and text[-1] in id_quote_chars:
+        text = text[1:-1].strip()
+    if len(text) >= 2 and (
+        (text[0] == '(' and text[-1] == ')')
+        or (text[0] == '[' and text[-1] == ']')
+    ):
+        text = text[1:-1].strip()
+    if id_token_pattern.fullmatch(text) and id_token_digit_pattern.search(text):
+        return text
+    return ''
 
+
+def ids_equal(left: Any, right: Any) -> bool:
+    """用户 ID 大小写不敏感比较，避免频道哈希大小写不一致时对不上。"""
+    left_text = safe_str(left)
+    right_text = safe_str(right)
+    return bool(left_text) and left_text.casefold() == right_text.casefold()
+
+
+def id_list_contains(id_list: Iterable[Any], target_id: Any) -> bool:
+    """判断 ID 是否已在列表中，大小写不敏感。"""
+    target_text = safe_str(target_id)
+    if not target_text:
+        return False
+    return any(ids_equal(item, target_text) for item in id_list)
+
+
+def collect_raw_id_items(id_iterable: Any) -> List[Any]:
+    """从字符串、列表或 .uinfo 粘贴文本里收集待清洗的 ID 片段。"""
+    if isinstance(id_iterable, str):
+        source_list = [id_iterable]
+    elif isinstance(id_iterable, list):
+        source_list = id_iterable
+    else:
+        source_list = []
+    raw_item_list = []
+    for source_item in source_list:
+        if not isinstance(source_item, str):
+            raw_item_list.append(source_item)
+            continue
+        for match in uinfo_paren_id_pattern.finditer(source_item):
+            raw_item_list.append(match.group(1))
+        for match in uinfo_record_hash_pattern.finditer(source_item):
+            raw_item_list.append(match.group(1))
+        raw_item_list.extend(re.split(r'[\s,;，；]+', source_item))
+    return raw_item_list
+
+
+def normalize_id_list(id_iterable: Any) -> List[str]:
+    """把用户输入的各种 id 列表清洗成去重后的字符串列表。
+
+    保留 QQ 数字账号、频道 openid、.uinfo 括号内用户 ID、记录哈希，以及 host|group。
+    不再剥掉字母，避免频道哈希被收成另一串数字。
+    """
     normalized_id_list = []
-    for raw_item in raw_item_list:
-        normalized_id = re.sub(r'[^0-9]', '', safe_str(raw_item))
-        if normalized_id and normalized_id not in normalized_id_list:
+    for raw_item in collect_raw_id_items(id_iterable):
+        normalized_id = normalize_id_token(raw_item)
+        if normalized_id and not id_list_contains(normalized_id_list, normalized_id):
             normalized_id_list.append(normalized_id)
     return normalized_id_list
+
+
+def extend_unique_ids(existing: Iterable[Any], extra: Iterable[Any]) -> List[str]:
+    """把 extra 追加到 existing，跳过已有项，保留首次出现的写法。"""
+    result = normalize_id_list(list(existing))
+    for item in normalize_id_list(list(extra)):
+        if not id_list_contains(result, item):
+            result.append(item)
+    return result
+
+
+def subtract_ids(existing: Iterable[Any], extra: Iterable[Any]) -> List[str]:
+    """从 existing 去掉 extra，大小写不敏感。"""
+    extra_list = normalize_id_list(list(extra))
+    return [
+        item
+        for item in normalize_id_list(list(existing))
+        if not id_list_contains(extra_list, item)
+    ]
+
+
+def sender_matches_configured_ids(plugin_event, configured_id_list: Iterable[Any]) -> bool:
+    """发送者的平台 user_id 或 .uinfo 记录哈希命中配置列表即视为同一人。"""
+    if id_list_contains(configured_id_list, get_sender_id_from_event(plugin_event)):
+        return True
+    user_hash = get_user_hash_from_event(plugin_event)
+    return bool(user_hash) and id_list_contains(configured_id_list, user_hash)
 
 
 def get_configured_master_list(bot_hash: Any) -> List[str]:
@@ -1183,9 +1265,8 @@ def set_configured_master_list(bot_hash: Any, master_id_list: Iterable[str]) -> 
 
 def is_sender_configured_master(plugin_event) -> bool:
     """判断发送者是否属于当前 bot 的本插件配置骰主。"""
-    sender_id = get_sender_id_from_event(plugin_event)
     config_bot_hash = get_bot_hash_from_event(plugin_event)
-    return sender_id in get_configured_master_list(config_bot_hash)
+    return sender_matches_configured_ids(plugin_event, get_configured_master_list(config_bot_hash))
 
 
 def is_sender_core_master(plugin_event) -> bool:

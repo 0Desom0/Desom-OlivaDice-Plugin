@@ -826,12 +826,12 @@ class TemplatePluginGui(object):
         def add_master() -> None:
             new_master_list = utils.normalize_id_list(entry_var.get())
             if not new_master_list:
-                messagebox.showwarning('提示', '请输入有效的数字 ID。')
+                messagebox.showwarning('提示', '请输入有效的用户 ID。')
                 return
-            configured_master_list = utils.get_configured_master_list(config_bot_hash)
-            for master_id in new_master_list:
-                if master_id not in configured_master_list:
-                    configured_master_list.append(master_id)
+            configured_master_list = utils.extend_unique_ids(
+                utils.get_configured_master_list(config_bot_hash),
+                new_master_list,
+            )
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
             entry_var.set('')
             refresh_master_tree()
@@ -845,11 +845,10 @@ class TemplatePluginGui(object):
             if not selected_id_set:
                 messagebox.showwarning('提示', '请先选择要删除的骰主。')
                 return
-            configured_master_list = [
-                master_id
-                for master_id in utils.get_configured_master_list(config_bot_hash)
-                if master_id not in selected_id_set
-            ]
+            configured_master_list = utils.subtract_ids(
+                utils.get_configured_master_list(config_bot_hash),
+                selected_id_set,
+            )
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
             refresh_master_tree()
 

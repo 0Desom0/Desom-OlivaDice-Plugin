@@ -832,12 +832,12 @@ class TemplatePluginGui(object):
         def add_master() -> None:
             new_master_list = utils.normalize_id_list(entry_var.get())
             if not new_master_list:
-                messagebox.showwarning('提示', '请输入有效的数字 ID。')
+                messagebox.showwarning('提示', '请输入有效的用户 ID。')
                 return
-            configured_master_list = utils.get_configured_master_list(config_bot_hash)
-            for master_id in new_master_list:
-                if master_id not in configured_master_list:
-                    configured_master_list.append(master_id)
+            configured_master_list = utils.extend_unique_ids(
+                utils.get_configured_master_list(config_bot_hash),
+                new_master_list,
+            )
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
             entry_var.set('')
             refresh_master_tree()
@@ -851,11 +851,10 @@ class TemplatePluginGui(object):
             if not selected_id_set:
                 messagebox.showwarning('提示', '请先选择要删除的骰主。')
                 return
-            configured_master_list = [
-                master_id
-                for master_id in utils.get_configured_master_list(config_bot_hash)
-                if master_id not in selected_id_set
-            ]
+            configured_master_list = utils.subtract_ids(
+                utils.get_configured_master_list(config_bot_hash),
+                selected_id_set,
+            )
             utils.set_configured_master_list(config_bot_hash, configured_master_list)
             refresh_master_tree()
 
@@ -869,7 +868,7 @@ class TemplatePluginGui(object):
         refresh_master_tree()
 
     def open_id_list_manager_dialog(self, title_text: str, label_text: str, load_callback, save_callback) -> None:
-        """骰主/管理员共用的数字 ID 列表窗口。"""
+        """骰主/管理员共用的用户 ID 列表窗口。"""
         config_bot_hash = self.get_current_config_bot_hash()
         if not config_bot_hash:
             messagebox.showwarning('提示', '当前没有可操作的 Bot。')
@@ -915,12 +914,9 @@ class TemplatePluginGui(object):
         def add_user_id() -> None:
             new_id_list = utils.normalize_id_list(entry_var.get())
             if not new_id_list:
-                messagebox.showwarning('提示', '请输入有效的数字 ID。')
+                messagebox.showwarning('提示', '请输入有效的用户 ID。')
                 return
-            current_list = load_callback(config_bot_hash)
-            for user_id in new_id_list:
-                if user_id not in current_list:
-                    current_list.append(user_id)
+            current_list = utils.extend_unique_ids(load_callback(config_bot_hash), new_id_list)
             save_callback(config_bot_hash, current_list)
             entry_var.set('')
             refresh_id_tree()
@@ -934,9 +930,7 @@ class TemplatePluginGui(object):
             if not selected_id_set:
                 messagebox.showwarning('提示', '请先选择要删除的项目。')
                 return
-            current_list = [
-                user_id for user_id in load_callback(config_bot_hash) if user_id not in selected_id_set
-            ]
+            current_list = utils.subtract_ids(load_callback(config_bot_hash), selected_id_set)
             save_callback(config_bot_hash, current_list)
             refresh_id_tree()
 
