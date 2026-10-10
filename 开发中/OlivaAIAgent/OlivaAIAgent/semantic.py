@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sqlite3
+import struct
 import threading
 import time
 from collections import OrderedDict
@@ -296,7 +297,7 @@ def upsertFacts(bot_hash, platform, group_id, facts, source=None):
                 json.dumps(item['keywords'], ensure_ascii=False),
                 _noneString(item['source_message_id']), _noneString(item['source_reference_id']),
                 _noneString(item['source_event_id']), _noneString(item['source_time']),
-                json.dumps(vector) if vector else None, model if vector else None, now, now,
+                _dumpEmbedding(vector), model if vector else None, now, now,
             ))
         conn.commit()
     finally:
@@ -306,6 +307,40 @@ def upsertFacts(bot_hash, platform, group_id, facts, source=None):
 
 def _noneString(value):
     return None if value in [None, '', '-1', -1] else str(value)
+
+
+def _dumpEmbedding(vector):
+    '''向量改存 float32 blob，避免检索时对几千条 JSON 数组做解析。'''
+    if not vector:
+        return None
+    return sqlite3.Binary(struct.pack('<%df' % len(vector), *[float(item) for item in vector]))
+
+
+def _loadEmbedding(raw, current_model='', row_model=''):
+    if not raw:
+        return None
+    if current_model and row_model and row_model != current_model:
+        return None
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+    if isinstance(raw, bytearray):
+        raw = bytes(raw)
+    if isinstance(raw, bytes):
+        if raw[:1] == b'[':
+            try:
+                return [float(item) for item in json.loads(raw.decode('utf-8'))]
+            except Exception:
+                return None
+        if len(raw) < 8 or len(raw) % 4:
+            return None
+        return list(struct.unpack('<%df' % (len(raw) // 4), raw))
+    text = str(raw).strip()
+    if not text.startswith('['):
+        return None
+    try:
+        return [float(item) for item in json.loads(text)]
+    except Exception:
+        return None
 
 
 def _tokens(text):
@@ -349,20 +384,21 @@ def searchFacts(bot_hash, platform, group_id, query, top_k=None, user_id=None, u
         return []
     limit = max(1, int(top_k or OlivaAIAgent.conf.get('semantic_memory', 'top_k', default=6)))
     per_scope = max(limit, int(OlivaAIAgent.conf.get(
-        'semantic_memory', 'max_scope_facts', default=2000,
+        'semantic_memory', 'max_scope_facts', default=400,
     )))
-    conditions = ' OR '.join(['(scope_type=? AND scope_id=?)'] * len(scopes))
-    params = [str(OlivaAIAgent.conf.dataBotHash(bot_hash)), str(platform)]
-    for scope_type, scope_id in scopes:
-        params.extend([scope_type, scope_id])
-    params.append(per_scope * len(scopes))
+    data_bot_hash = str(OlivaAIAgent.conf.dataBotHash(bot_hash))
     conn = _connect()
     try:
-        rows = conn.execute('''
-            SELECT * FROM facts
-            WHERE bot_hash=? AND platform=? AND (%s)
-            ORDER BY updated_at DESC LIMIT ?
-        ''' % conditions, params).fetchall()
+        rows = []
+        for scope_type, scope_id in scopes:
+            rows.extend(conn.execute('''
+                SELECT subject, content, keywords, embedding, embedding_model, updated_at,
+                       source_message_id, source_reference_id, source_event_id, source_time,
+                       scope_type, scope_id
+                FROM facts
+                WHERE bot_hash=? AND platform=? AND scope_type=? AND scope_id=?
+                ORDER BY updated_at DESC LIMIT ?
+            ''', (data_bot_hash, str(platform), scope_type, scope_id, per_scope)).fetchall())
     finally:
         conn.close()
     if not rows:
@@ -374,11 +410,7 @@ def searchFacts(bot_hash, platform, group_id, query, top_k=None, user_id=None, u
     now = time.time()
     found = []
     for row in rows:
-        try:
-            vector = json.loads(row['embedding']) \
-                if row['embedding'] and row['embedding_model'] == current_model else None
-        except Exception:
-            vector = None
+        vector = _loadEmbedding(row['embedding'], current_model, row['embedding_model'])
         keywords = []
         try:
             keywords = json.loads(row['keywords'])

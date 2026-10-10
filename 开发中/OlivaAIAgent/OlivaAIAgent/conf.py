@@ -294,7 +294,7 @@ DEFAULT_CONF = {
         'cache_size': 256,
         'top_k': 6,
         'min_score': 0.25,
-        'max_scope_facts': 2000,
+        'max_scope_facts': 400,
     },
     'message_registry': {
         '_说明': '插件自己的消息ID/引用索引注册表，不依赖修改 OlivOS；用于重启后恢复已收取消息的引用关系',
@@ -1640,7 +1640,6 @@ _TRACE_STAGE_ZH = {
     'message.qqguild_markdown.auto': '检测到Markdown格式，已通过Markdown消息发送',
     'message.qqguild_markdown.auto_failed': 'Markdown自动发送失败，退回普通发送',
     'logger.bridge.failed': 'OlivaDice团日志桥接失败',
-    'message.group.duplicate': '忽略重复群消息',
     'message.private.received': '收到私聊消息',
     'message.quote.resolved': '已读取引用消息',
     'message.quote.unresolved': '未能读取引用消息',

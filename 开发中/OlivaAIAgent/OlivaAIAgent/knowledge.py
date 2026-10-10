@@ -219,52 +219,56 @@ def getGroupSummary(bot_hash, group_id):
 
 # ---------------- 模糊检索 ----------------
 
-def searchRelevant(bot_hash, history, search_ageing, deepin=1):
-    '''对每条历史消息在 知识缓存/知识库/知识搜索 中模糊召回，返回 {关键词: 内容}。'''
+def _historySearchTarget(history):
+    '''把本轮历史拼成一次检索目标，避免对每条消息重复扫库。'''
     import re
+    parts = []
+    for entry in history or []:
+        msg = re.sub(r'\[(?:CQ|OP):[^\]]*\]', '', str(entry.get('message', ''))).strip()
+        if not msg:
+            continue
+        nick = entry.get('nickname')
+        parts.append(('%s(%s)：%s' % (nick, entry.get('user_id', ''), msg)) if nick else msg)
+    target = '\n'.join(parts)
+    return target[-8000:] if len(target) > 8000 else target
+
+
+def _safeKnowledgeItem(key, value, bot_hash):
+    text = '%s %s' % (key, value)
+    return (
+        not OlivaAIAgent.conf.isPersonaMutationText(text)
+        and not OlivaAIAgent.contentSafety.blocked(text, bot_hash=bot_hash)
+    )
+
+
+def searchRelevant(bot_hash, history, search_ageing, deepin=1):
+    '''在 知识缓存/知识库/知识搜索 中模糊召回，返回 {关键词: 内容}。'''
     mem = getMem(bot_hash)
-    found = {}
+    target = _historySearchTarget(history)
+    if not target:
+        return {}
     # 在锁内快照，避免后台记忆提炼线程并发写入时"dict changed size during iteration"
     with _lock:
         snap_cache = dict(mem['全局'].get('知识缓存', {}))
         snap_search = dict(mem['全局'].get('知识搜索', {}))
         snap_static = dict(_static)
-    snap_cache = {
-        key: value
-        for key, value in snap_cache.items()
-        if not OlivaAIAgent.conf.isPersonaMutationText('%s %s' % (key, value))
-        and not OlivaAIAgent.contentSafety.blocked('%s %s' % (key, value), bot_hash=bot_hash)
-    }
-    snap_search = {
-        key: value
-        for key, value in snap_search.items()
-        if not OlivaAIAgent.conf.isPersonaMutationText('%s %s' % (key, value))
-        and not OlivaAIAgent.contentSafety.blocked('%s %s' % (key, value), bot_hash=bot_hash)
-    }
-    snap_static = {
-        key: value
-        for key, value in snap_static.items()
-        if not OlivaAIAgent.conf.isPersonaMutationText('%s %s' % (key, value))
-        and not OlivaAIAgent.contentSafety.blocked('%s %s' % (key, value), bot_hash=bot_hash)
-    }
     sources = [
         ('知识缓存', snap_cache, 0.1),
         ('知识库', snap_static, 0.15),
         ('知识搜索', snap_search, 0.1),
     ]
+    found = {}
     for name, dmap, rate in sources:
         if not isinstance(dmap, dict) or not dmap:
             continue
-        patch = {}
-        for entry in history:
-            msg = re.sub(r'\[(?:CQ|OP):[^\]]*\]', '', str(entry.get('message', ''))).strip()
-            if not msg:
-                continue
-            nick = entry.get('nickname')
-            target = ('%s(%s)：%s' % (nick, entry.get('user_id', ''), msg)) if nick else msg
-            patch.update(OlivaAIAgent.pacing.peak_up_recommendMatch(
-                target=target, dictMap=dmap, dictName='oa_' + name,
-                ageing=search_ageing, rate=rate, matchedList=list(patch.keys())))
+        patch = OlivaAIAgent.pacing.peak_up_recommendMatch(
+            target=target, dictMap=dmap, dictName='oa_' + name,
+            ageing=search_ageing, rate=rate, matchedList=list(found.keys()))
+        patch = {
+            key: value
+            for key, value in patch.items()
+            if _safeKnowledgeItem(key, value, bot_hash)
+        }
         for _ in range(max(0, int(deepin))):
             deep = {}
             for k in list(patch.keys()):
@@ -274,7 +278,14 @@ def searchRelevant(bot_hash, history, search_ageing, deepin=1):
                 deep.update(OlivaAIAgent.pacing.peak_up_recommendMatch(
                     target=val, dictMap=dmap, dictName='oa_' + name,
                     ageing=search_ageing, rate=rate,
-                    matchedList=list(patch.keys()) + list(deep.keys()), father=k))
+                    matchedList=list(patch.keys()) + list(deep.keys()) + list(found.keys()),
+                    father=k,
+                ))
+            deep = {
+                key: value
+                for key, value in deep.items()
+                if _safeKnowledgeItem(key, value, bot_hash)
+            }
             patch.update(deep)
         found.update(patch)
     return found

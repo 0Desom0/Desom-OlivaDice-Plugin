@@ -193,7 +193,6 @@ class QuoteContextTest(unittest.TestCase):
                         mock.patch.object(OlivaAIAgent.memberDirectory, 'recordIncoming') as member_record, \
                         mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage') as quote_log, \
                         mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-                        mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
                         mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
                         mock.patch.object(
                             OlivaAIAgent.msgReply,
@@ -369,7 +368,6 @@ class QuoteContextTest(unittest.TestCase):
         with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
                 mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
                 mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
                 mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=False), \
@@ -394,7 +392,6 @@ class QuoteContextTest(unittest.TestCase):
                 mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
                 mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
                 mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
                 mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=True), \
@@ -422,7 +419,6 @@ class QuoteContextTest(unittest.TestCase):
                 mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
                 mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
                 mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
                 mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=False), \
@@ -437,7 +433,6 @@ class QuoteContextTest(unittest.TestCase):
         with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
                 mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
                 mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_unionKeywords', return_value=['小芙']), \
@@ -454,7 +449,6 @@ class QuoteContextTest(unittest.TestCase):
         with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
                 mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
                 mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=True), \
                 mock.patch.object(OlivaAIAgent.conf, 'isAmbientEnabled', return_value=False), \
@@ -481,7 +475,6 @@ class QuoteContextTest(unittest.TestCase):
         keyword_event = FakeEvent('小芙在吗')
         with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
                 mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
                 mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=False), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=False), \
                 mock.patch.object(OlivaAIAgent.ambient, 'process') as process:
@@ -491,7 +484,6 @@ class QuoteContextTest(unittest.TestCase):
         recovery_event = FakeEvent('.ai on')
         with mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
                 mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-                mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
                 mock.patch.object(OlivaAIAgent.conf, 'isMaster', return_value=True), \
                 mock.patch.object(OlivaAIAgent.msgReply, '_checkGroupUsable', return_value=False), \
                 mock.patch.object(OlivaAIAgent.conf, 'setGroupSwitch') as set_switch, \
@@ -501,6 +493,24 @@ class QuoteContextTest(unittest.TestCase):
         set_switch.assert_called_once_with('qqGuild', 'group-1', 'enabled', True)
         process.assert_not_called()
         self.assertTrue(recovery_event.blocked)
+
+    def test_text_only_registry_quote_does_not_log_media_failure(self):
+        source_event = FakeEvent('这是纯文字记录')
+        OlivaAIAgent.identifiers.recordOutgoing(source_event, '这是纯文字记录', ['text-record-1'])
+        event = FakeEvent('[CQ:reply,id=text-record-1]刚才那句什么意思？')
+        with mock.patch.object(OlivaAIAgent.ambient, 'getHistory', return_value=[]):
+            parsed = OlivaAIAgent.msgReply.parseMessage(event)
+        self.assertEqual('插件消息注册表', parsed['quote']['source'])
+        self.assertEqual('这是纯文字记录', parsed['quote']['text'])
+        self.assertEqual([], parsed['quote'].get('images') or [])
+        self.assertEqual([], parsed['quote'].get('video_urls') or [])
+        with mock.patch.object(OlivaAIAgent.conf, 'traceLog') as trace_log:
+            facts = OlivaAIAgent.msgReply.prepareQuotedImages(parsed, 'group-1', 'bot-hash')
+            media = OlivaAIAgent.msgReply.prepareQuotedMedia(parsed)
+        self.assertEqual([], facts)
+        self.assertEqual([], media)
+        stages = [call.args[1] for call in trace_log.call_args_list if len(call.args) > 1]
+        self.assertFalse(any('failed' in str(stage) for stage in stages))
 
     def test_quoted_image_uses_existing_vision_pipeline(self):
         event = FakeEvent(

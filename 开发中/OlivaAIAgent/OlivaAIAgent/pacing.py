@@ -12,6 +12,7 @@ import threading
 import time
 
 _gPeakUpCache = {}
+_gBigramIndex = {}
 
 
 class SlackableFairLock:
@@ -180,51 +181,81 @@ def get_recommendMatch(rank, gate_rank=1000):
     return rank < gate_rank
 
 
+def _bigrams(text):
+    value = str(text or '').lower()
+    if len(value) < 2:
+        return {value} if value else set()
+    return {value[index:index + 2] for index in range(len(value) - 1)}
+
+
+def _getBigramIndex(dictName, dictMap, ageing, timestamp):
+    '''按词典键建立 bigram 倒排，避免每次检索都扫完全表。'''
+    keys = list(dictMap.keys()) if isinstance(dictMap, dict) else []
+    signature = (len(keys), keys[0] if keys else '', keys[-1] if keys else '')
+    cached = _gBigramIndex.get(dictName)
+    if (
+        cached
+        and cached.get('sig') == signature
+        and timestamp - cached.get('timestamp', 0) < ageing
+    ):
+        return cached['index']
+    index = {}
+    for key in keys:
+        for token in _bigrams(key):
+            index.setdefault(token, []).append(key)
+    _gBigramIndex[dictName] = {
+        'sig': signature,
+        'index': index,
+        'timestamp': timestamp,
+    }
+    return index
+
+
 def peak_up_recommendMatch(target, dictMap, dictName, ageing, rate=1.0, matchedList=None, father=None):
-    '''对 dictMap 的键做模糊匹配，命中则返回子字典。带 bigram 预筛与结果缓存。'''
+    '''对 dictMap 的键做模糊匹配，命中则返回子字典。带 bigram 倒排预筛与结果缓存。'''
     timestamp = int(time.perf_counter())
     res = {}
     res_key_list = []
-    matchedList_this = matchedList if isinstance(matchedList, list) else []
+    matchedList_this = set(matchedList) if isinstance(matchedList, list) else set()
     if dictName not in _gPeakUpCache:
         _gPeakUpCache[dictName] = {}
     for k in list(_gPeakUpCache[dictName].keys()):
         if timestamp - _gPeakUpCache.get(dictName, {}).get(k, {}).get('timestamp', 0) >= ageing:
             _gPeakUpCache[dictName].pop(k, None)
     if isinstance(dictMap, dict):
-        dictMap_key_list = list(dictMap.keys())
         if target in _gPeakUpCache[dictName]:
             res_key_list = _gPeakUpCache.get(dictName, {}).get(target, {}).get('keylist', None)
         else:
-            target_lower = target.lower()
-            target_bigrams = set()
-            if len(target_lower) >= 2:
-                for i in range(len(target_lower) - 1):
-                    target_bigrams.add(target_lower[i:i + 2])
-            for k in dictMap_key_list:
-                if k not in matchedList_this:
-                    if target_bigrams:
-                        k_lower = k.lower()
-                        if len(k_lower) >= 2:
-                            has_overlap = False
-                            for i in range(len(k_lower) - 1):
-                                if k_lower[i:i + 2] in target_bigrams:
-                                    has_overlap = True
-                                    break
-                            if not has_overlap:
-                                continue
-                    rank = get_recommendRank(k, target, rate=rate)
-                    if get_recommendMatch(rank):
-                        res_key_list.append(k)
+            target_bigrams = _bigrams(target)
+            index = _getBigramIndex(dictName, dictMap, ageing, timestamp)
+            candidates = []
+            seen = set()
+            if target_bigrams and index:
+                for token in target_bigrams:
+                    for key in index.get(token, ()):
+                        if key in seen or key in matchedList_this:
+                            continue
+                        seen.add(key)
+                        candidates.append(key)
+            else:
+                candidates = [key for key in dictMap if key not in matchedList_this]
+            for key in dictMap:
+                if len(str(key)) < 2 and key not in seen and key not in matchedList_this:
+                    candidates.append(key)
+            for k in candidates:
+                rank = get_recommendRank(k, target, rate=rate)
+                if get_recommendMatch(rank):
+                    res_key_list.append(k)
         if not isinstance(res_key_list, list):
             res_key_list = []
         else:
             _gPeakUpCache[dictName][target] = {'timestamp': timestamp, 'keylist': res_key_list}
         for k in res_key_list:
-            if k in dictMap:
+            if k in dictMap and k not in matchedList_this:
                 res[k] = dictMap[k]
     return res
 
 
 def clear_peakup_cache():
     _gPeakUpCache.clear()
+    _gBigramIndex.clear()

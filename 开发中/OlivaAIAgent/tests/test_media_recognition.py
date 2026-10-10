@@ -690,6 +690,27 @@ class MediaRecognitionTest(unittest.TestCase):
         )
         self.assertEqual('[引用上文:之前发的内容 [语音:今晚八点开团]] 这是什么意思', result)
 
+    def test_unusable_quote_media_does_not_log_failure(self):
+        parsed = {
+            'quote': {
+                'text': '纯文字记录',
+                'audio_urls': ['', 'not-a-real-file'],
+                'video_urls': ['abc123hash'],
+            },
+        }
+        with mock.patch.object(OlivaAIAgent.conf, 'traceLog') as trace_log:
+            facts = OlivaAIAgent.media.prepareQuotedMedia(parsed, trace_id='no-media')
+            translated = OlivaAIAgent.media.translateIncoming(
+                '纯文字记录',
+                {'audio_urls': [''], 'video_urls': ['abc123hash']},
+                allow_network=True,
+                trace_id='no-media',
+            )
+        self.assertEqual([], facts)
+        self.assertEqual('纯文字记录', translated)
+        stages = [call.args[1] for call in trace_log.call_args_list if len(call.args) > 1]
+        self.assertFalse(any(str(stage).endswith('.failed') for stage in stages))
+
 
 if __name__ == '__main__':
     unittest.main()

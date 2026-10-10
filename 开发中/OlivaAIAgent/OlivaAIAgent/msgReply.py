@@ -16,25 +16,6 @@ _inflight = set()
 _inflight_lock = threading.Lock()
 _concurrent_sem = None
 
-# 去重：同一条消息(按 bot|群|消息id)只处理一次，防止重复投递或未来路径重叠导致双回复
-import collections  # noqa: E402
-_processed = collections.OrderedDict()
-_processed_lock = threading.Lock()
-
-
-def _seenMessage(bot_hash, group_id, message_id):
-    '''首次见到返回 False 并登记；重复返回 True。message_id 为空则不去重(放行)。'''
-    if message_id in [None, '', '-1', -1]:
-        return False
-    key = '%s|%s|%s' % (bot_hash, group_id, message_id)
-    with _processed_lock:
-        if key in _processed:
-            return True
-        _processed[key] = 1
-        while len(_processed) > 4000:
-            _processed.popitem(last=False)
-    return False
-
 
 def _getSem():
     global _concurrent_sem
@@ -64,6 +45,17 @@ def _messagePayloadText(payload):
     except Exception:
         pass
     return str(payload)
+
+
+def _collectIncomingMedia(kind, ref, urls, enabled=True):
+    '''有可取用资源才进入识别列表；空记录只留类型占位，不触发失败日志。'''
+    value = str(ref or '').strip()
+    if enabled and OlivaAIAgent.media.usableRef(value):
+        urls.append(value)
+        if kind == 'audio':
+            return OlivaAIAgent.media.audioPlaceholder(len(urls) - 1)
+        return OlivaAIAgent.media.videoPlaceholder(len(urls) - 1)
+    return '[语音]' if kind == 'audio' else '[视频]'
 
 
 def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media=False):
@@ -105,39 +97,43 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
             if isinstance(para, OlivOS.messageAPI.PARA.record):
                 audio_count += 1
                 ref = para.data.get('url') or para.data.get('file') or ''
-                if not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False):
-                    text_parts.append(OlivaAIAgent.media.audioPlaceholder(len(audio_urls)))
-                    audio_urls.append(str(ref))
-                else:
-                    text_parts.append('[语音]')
+                text_parts.append(_collectIncomingMedia(
+                    'audio',
+                    ref,
+                    audio_urls,
+                    enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False),
+                ))
                 continue
             if isinstance(para, OlivOS.messageAPI.PARA.video):
                 video_count += 1
                 ref = para.data.get('url') or para.data.get('file') or ''
-                if not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False):
-                    text_parts.append(OlivaAIAgent.media.videoPlaceholder(len(video_urls)))
-                    video_urls.append(str(ref))
-                else:
-                    text_parts.append('[视频]')
+                text_parts.append(_collectIncomingMedia(
+                    'video',
+                    ref,
+                    video_urls,
+                    enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False),
+                ))
                 continue
             if str(getattr(para, 'type', '') or '').lower() == 'file':
                 file_kind = OlivaAIAgent.media.fileMediaKind(para.data)
                 if file_kind == 'video':
                     video_count += 1
                     ref = para.data.get('url') or para.data.get('file') or para.data.get('path') or ''
-                    if not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False):
-                        text_parts.append(OlivaAIAgent.media.videoPlaceholder(len(video_urls)))
-                        video_urls.append(str(ref))
-                    else:
-                        text_parts.append('[视频]')
+                    text_parts.append(_collectIncomingMedia(
+                        'video',
+                        ref,
+                        video_urls,
+                        enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False),
+                    ))
                 elif file_kind == 'audio':
                     audio_count += 1
                     ref = para.data.get('url') or para.data.get('file') or para.data.get('path') or ''
-                    if not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False):
-                        text_parts.append(OlivaAIAgent.media.audioPlaceholder(len(audio_urls)))
-                        audio_urls.append(str(ref))
-                    else:
-                        text_parts.append('[语音]')
+                    text_parts.append(_collectIncomingMedia(
+                        'audio',
+                        ref,
+                        audio_urls,
+                        enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False),
+                    ))
                 else:
                     text_parts.append('[文件:%s]' % str(para.data.get('name') or '文件')[:120])
                 continue
@@ -181,17 +177,21 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
         def _quoted_audio(match):
             nonlocal audio_count
             audio_count += 1
-            if forward_media and not OlivaAIAgent.conf.get('forward', 'audio', default=False):
-                return '[语音]'
-            audio_urls.append(OlivaAIAgent.media.tagRef(match.group(0)))
-            return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+            return _collectIncomingMedia(
+                'audio',
+                OlivaAIAgent.media.tagRef(match.group(0)),
+                audio_urls,
+                enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False),
+            )
         def _quoted_video(match):
             nonlocal video_count
             video_count += 1
-            if forward_media and not OlivaAIAgent.conf.get('forward', 'video', default=False):
-                return ' [视频]'
-            video_urls.append(OlivaAIAgent.media.tagRef(match.group(0)))
-            return ' ' + OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+            return ' ' + _collectIncomingMedia(
+                'video',
+                OlivaAIAgent.media.tagRef(match.group(0)),
+                video_urls,
+                enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False),
+            )
         clean = OlivaAIAgent.media.OP_AUDIO_PATTERN.sub(_quoted_audio, clean)
         clean = OlivaAIAgent.media.OP_VIDEO_PATTERN.sub(_quoted_video, clean)
         def _quoted_file(match):
@@ -200,17 +200,21 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
             file_kind = OlivaAIAgent.media.fileMediaKind(tag)
             if file_kind == 'audio':
                 audio_count += 1
-                if forward_media and not OlivaAIAgent.conf.get('forward', 'audio', default=False):
-                    return '[语音]'
-                audio_urls.append(OlivaAIAgent.media.tagRef(tag))
-                return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+                return _collectIncomingMedia(
+                    'audio',
+                    OlivaAIAgent.media.tagRef(tag),
+                    audio_urls,
+                    enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False),
+                )
             if file_kind != 'video':
                 return '[文件]'
             video_count += 1
-            if forward_media and not OlivaAIAgent.conf.get('forward', 'video', default=False):
-                return '[视频]'
-            video_urls.append(OlivaAIAgent.media.tagRef(tag))
-            return OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+            return _collectIncomingMedia(
+                'video',
+                OlivaAIAgent.media.tagRef(tag),
+                video_urls,
+                enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False),
+            )
         clean = OlivaAIAgent.media.OP_FILE_PATTERN.sub(_quoted_file, clean)
         def _quoted_forward(match):
             nonlocal image_count, audio_count, video_count
@@ -236,17 +240,21 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
         file_kind = OlivaAIAgent.media.fileMediaKind(tag)
         if file_kind == 'audio':
             audio_count += 1
-            if forward_media and not OlivaAIAgent.conf.get('forward', 'audio', default=False):
-                return '[语音]'
-            audio_urls.append(OlivaAIAgent.media.tagRef(tag))
-            return OlivaAIAgent.media.audioPlaceholder(len(audio_urls) - 1)
+            return _collectIncomingMedia(
+                'audio',
+                OlivaAIAgent.media.tagRef(tag),
+                audio_urls,
+                enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'audio', default=False),
+            )
         if file_kind != 'video':
             return '[文件]'
         video_count += 1
-        if forward_media and not OlivaAIAgent.conf.get('forward', 'video', default=False):
-            return '[视频]'
-        video_urls.append(OlivaAIAgent.media.tagRef(tag))
-        return OlivaAIAgent.media.videoPlaceholder(len(video_urls) - 1)
+        return _collectIncomingMedia(
+            'video',
+            OlivaAIAgent.media.tagRef(tag),
+            video_urls,
+            enabled=not forward_media or OlivaAIAgent.conf.get('forward', 'video', default=False),
+        )
     text = OlivaAIAgent.media.OP_FILE_PATTERN.sub(_inline_quoted_file, text)
     text_limit = 12000 if forward_count else 4000
     return {
@@ -262,6 +270,57 @@ def _parseQuotedPayload(payload, plugin_event=None, trace_id=None, forward_media
         'forward_failed': forward_failed,
         'raw': raw,
     }
+
+
+def _quoteFromStored(
+    source,
+    stored_text,
+    reply_id,
+    reply_index,
+    sender_id,
+    sender_name,
+    from_self,
+    plugin_event,
+    trace_id=None,
+):
+    '''从历史/注册表正文还原引用。没有媒体资源时只保留正文，不触发识别失败。'''
+    stored_limit = 20000 if '[合并转发:' in stored_text else 4000
+    result = {
+        'message_id': reply_id,
+        'message_index': reply_index,
+        'sender_id': sender_id,
+        'sender_name': sender_name,
+        'text': stored_text[:stored_limit],
+        'images': [],
+        'image_count': 0,
+        'from_self': from_self,
+        'source': source,
+    }
+    needs_parse = bool(
+        OlivaAIAgent.forward.FORWARD_TAG_PATTERN.search(stored_text)
+        or OlivaAIAgent.vision.OP_IMAGE_PATTERN.search(stored_text)
+        or OlivaAIAgent.vision.MFACE_PATTERN.search(stored_text)
+        or OlivaAIAgent.media.OP_MEDIA_PATTERN.search(stored_text)
+        or OlivaAIAgent.media.OP_FILE_PATTERN.search(stored_text)
+    )
+    parsed_stored = _parseQuotedPayload(
+        stored_text,
+        plugin_event=plugin_event,
+        trace_id=trace_id,
+    ) if needs_parse else None
+    if isinstance(parsed_stored, dict):
+        result.update(parsed_stored)
+        result['message_id'] = reply_id or result.get('message_id')
+        result['message_index'] = reply_index or result.get('message_index')
+        result['sender_id'] = sender_id
+        result['sender_name'] = sender_name
+        result['from_self'] = from_self
+        result['source'] = source
+        if not str(result.get('text') or '').strip():
+            result['text'] = stored_text[:stored_limit]
+    if '[合并转发:' in stored_text:
+        result['forward_count'] = max(int(result.get('forward_count') or 0), 1)
+    return result
 
 
 def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None, trace_id=None):
@@ -288,30 +347,17 @@ def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None, trace_id=Non
                 ]
                 if not id_matched and not index_matched:
                     continue
-                stored_text = str(entry.get('message', ''))
-                stored_limit = 20000 if '[合并转发:' in stored_text else 4000
-                parsed_stored = None
-                if OlivaAIAgent.forward.FORWARD_TAG_PATTERN.search(stored_text):
-                    parsed_stored = _parseQuotedPayload(
-                        stored_text,
-                        plugin_event=plugin_event,
-                        trace_id=trace_id,
-                    )
-                result = {
-                    'message_id': reply_id,
-                    'message_index': reply_index,
-                    'sender_id': entry.get('user_id'),
-                    'sender_name': entry.get('nickname'),
-                    'text': stored_text[:stored_limit],
-                    'images': [],
-                    'image_count': 0,
-                    'from_self': entry.get('user_id') is None and entry.get('nickname') is None,
-                    'source': '潜行历史',
-                }
-                if isinstance(parsed_stored, dict):
-                    result.update(parsed_stored)
-                    result['source'] = '潜行历史'
-                return result
+                return _quoteFromStored(
+                    '潜行历史',
+                    str(entry.get('message', '')),
+                    reply_id,
+                    reply_index,
+                    entry.get('user_id'),
+                    entry.get('nickname'),
+                    entry.get('user_id') is None and entry.get('nickname') is None,
+                    plugin_event,
+                    trace_id=trace_id,
+                )
     except Exception:
         pass
 
@@ -325,32 +371,17 @@ def _resolveQuotedMessage(plugin_event, reply_id, reply_index=None, trace_id=Non
         ):
             registered = OlivaAIAgent.identifiers.getByMessageIndex(plugin_event, reply_index)
         if isinstance(registered, dict) and str(registered.get('content') or '').strip():
-            registered_content = str(registered.get('content') or '')
-            registered_limit = 20000 if '[合并转发:' in registered_content else 4000
-            parsed_registered = None
-            if OlivaAIAgent.forward.FORWARD_TAG_PATTERN.search(registered_content):
-                parsed_registered = _parseQuotedPayload(
-                    registered_content,
-                    plugin_event=plugin_event,
-                    trace_id=trace_id,
-                )
-            result = {
-                'message_id': registered.get('message_id') or reply_id,
-                'message_index': registered.get('message_index') or reply_index,
-                'sender_id': registered.get('sender_id'),
-                'sender_name': registered.get('sender_name'),
-                'text': registered_content[:registered_limit],
-                'images': [],
-                'image_count': 0,
-                'from_self': registered.get('direction') == 'outgoing',
-                'source': '插件消息注册表',
-            }
-            if '[合并转发:' in registered_content:
-                result['forward_count'] = 1
-            if isinstance(parsed_registered, dict):
-                result.update(parsed_registered)
-                result['source'] = '插件消息注册表'
-            return result
+            return _quoteFromStored(
+                '插件消息注册表',
+                str(registered.get('content') or ''),
+                registered.get('message_id') or reply_id,
+                registered.get('message_index') or reply_index,
+                registered.get('sender_id'),
+                registered.get('sender_name'),
+                registered.get('direction') == 'outgoing',
+                plugin_event,
+                trace_id=trace_id,
+            )
     except Exception:
         pass
 
@@ -1081,12 +1112,7 @@ def _onGroupMessage(plugin_event, Proc):
         # 群关闭/不在白名单时不新增消息正文和引用记录。
         OlivaAIAgent.identifiers.recordIncoming(plugin_event, parsed)
         _logQuotedMessage(Proc, parsed)
-    # 去重：同一条消息若被重复投递(或未来路径重叠)，只处理一次
-    bot_hash = plugin_event.bot_info.hash if plugin_event.bot_info else 'unity'
     OlivaAIAgent.reminder.registerSender(plugin_event)   # 刷新该bot的主动发送器(供定时提醒推送)
-    if _seenMessage(bot_hash, group_id, parsed.get('message_id')):
-        OlivaAIAgent.conf.traceLog(Proc, 'message.group.duplicate', trace_id)
-        return
     text = parsed['text']
 
     rest = _matchPrefix(text, platform, group_id)
@@ -2629,6 +2655,9 @@ def _sendQqGuildMarkdownMention(plugin_event, text, quote_msg_id=None, trace_id=
         return None
     normalized_text = _normalizeQqGuildSenderMention(plugin_event, text)
     auto_markdown = _qqGuildAutoMarkdown(plugin_event, normalized_text)
+    if auto_markdown:
+        # 官机 Markdown 不能同时带引用，否则别人看到的消息会错乱。
+        quote_msg_id = None
     markdown_content = _qqGuildMarkdownMentionContent(
         normalized_text,
         allow_plain=quote_msg_id not in [None, '', '-1', -1],

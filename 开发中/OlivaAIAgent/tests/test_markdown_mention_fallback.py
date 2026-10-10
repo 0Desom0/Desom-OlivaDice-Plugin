@@ -211,6 +211,47 @@ class MarkdownMentionFallbackTest(unittest.TestCase):
         self.assertEqual('current-1', records[0]['reference_message_id'])
         self.assertEqual('current-1', record_outgoing.call_args.kwargs['reference_message_id'])
 
+    def test_markdown_with_quote_drops_quote_and_sends_markdown_only(self):
+        event = FakeEvent()
+        content = '# 检定结果\n\n- 力量：80\n- 结果：成功'
+        with (
+            mock.patch.object(OlivaAIAgent.coreLogger, 'recordToolCall'),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.msgReply._safeReply(
+                event,
+                '[OP:reply,id=current-1]' + content,
+                {'message_id': 'current-1', 'trace_id': 'trace-md-quote'},
+                safety_check=False,
+            )
+
+        self.assertEqual([], event.replies)
+        self.assertEqual(1, len(event.markdown_calls))
+        self.assertNotIn('quote_msg_id', event.markdown_calls[0])
+        self.assertEqual({'content': content}, event.markdown_calls[0]['markdown'])
+
+    def test_ambient_markdown_with_quote_drops_quote(self):
+        event = FakeEvent()
+        content = '# 资料\n\n[规则书](https://example.com/rule)'
+        with (
+            mock.patch.object(OlivaAIAgent.ambient.time, 'sleep'),
+            mock.patch.object(OlivaAIAgent.coreLogger, 'recordToolCall'),
+            mock.patch.object(OlivaAIAgent.conf, 'traceLog'),
+            mock.patch.object(OlivaAIAgent.identifiers, 'recordOutgoing'),
+        ):
+            OlivaAIAgent.ambient._sendMulti(
+                event,
+                ['[OP:reply,id=current-1]' + content],
+                total_past=0,
+                trace_id='trace-ambient-md-quote',
+            )
+
+        self.assertEqual([], event.replies)
+        self.assertEqual(1, len(event.markdown_calls))
+        self.assertNotIn('quote_msg_id', event.markdown_calls[0])
+        self.assertEqual({'content': content}, event.markdown_calls[0]['markdown'])
+
     def test_quote_switch_disables_model_reply_segment(self):
         event = FakeEvent()
         original_get = OlivaAIAgent.conf.get

@@ -85,6 +85,24 @@ def tagRef(tag):
     return str(value).strip()
 
 
+def usableRef(ref):
+    '''只有真实可取用的资源才进入识别：http(s)、data URL 或本地已存在的文件。
+    平台文件哈希、空字段、过期记录里的占位路径都视为没有媒体，避免误报失败。'''
+    value = str(ref or '').strip()
+    if not value:
+        return False
+    if value.startswith(('http://', 'https://', 'data:')):
+        return True
+    if value.startswith('file://'):
+        value = unquote(urlsplit(value).path)
+        if re.match(r'^/[A-Za-z]:', value):
+            value = value[1:]
+    try:
+        return Path(value).is_file()
+    except Exception:
+        return False
+
+
 def _mediaConf():
     value = OlivaAIAgent.conf.get('media', default={}) or {}
     return value if isinstance(value, dict) else {}
@@ -332,6 +350,8 @@ def _traceUrl(ref):
 
 def _readBytes(ref, max_bytes, trace_id, kind):
     value = str(ref or '').strip()
+    if not value:
+        return None, '', 'empty_ref'
     if value.startswith('data:'):
         try:
             header, body = value.split(',', 1)
@@ -432,13 +452,14 @@ def _dataUrl(kind, ref, mode, trace_id, max_bytes=None):
             max_bytes = 52428800
     content, content_type, error = _readBytes(ref, max_bytes, trace_id, kind)
     if content is None:
-        OlivaAIAgent.conf.traceLog(
-            OlivaAIAgent.conf.gProc,
-            'media.%s.failed' % kind,
-            trace_id,
-            file=_refLabel(ref),
-            reason=error,
-        )
+        if error not in ('empty_ref',):
+            OlivaAIAgent.conf.traceLog(
+                OlivaAIAgent.conf.gProc,
+                'media.%s.failed' % kind,
+                trace_id,
+                file=_refLabel(ref),
+                reason=error,
+            )
         return None, ''
     if not content_type or not content_type.startswith(('audio/', 'video/')):
         content_type = _sniffContentType(kind, content) or content_type
@@ -781,6 +802,8 @@ def _callIndependent(kind, ref, cfg, trace_id, format_hint=None):
 
 
 def _recognize(kind, ref, trace_id=None, format_hint=None):
+    if not usableRef(ref):
+        return None
     cached = _cacheGet(kind, ref)
     if cached:
         return cached
@@ -796,6 +819,8 @@ def _recognize(kind, ref, trace_id=None, format_hint=None):
 
 def _recognizeMainVideoForHistory(ref, trace_id=None):
     '''主模型直传视频时，额外生成一份可持久化的事实摘要。'''
+    if not usableRef(ref):
+        return None
     cached = _cacheGet('video', ref)
     if cached:
         return cached
@@ -866,11 +891,16 @@ def _replace(text, pattern, facts, kind):
 
     def repl(match):
         index = int(match.group(1))
-        return facts[index] if index < len(facts) else factFormat(kind, '未识别成功')
+        value = facts[index] if index < len(facts) else None
+        if value:
+            return value
+        return '[语音]' if kind == 'audio' else '[视频]'
 
     output = pattern.sub(repl, str(text))
     if not had and facts:
-        output = (output + ' ' + ' '.join(facts)).strip()
+        extra = ' '.join(str(item) for item in facts if item)
+        if extra:
+            output = (output + ' ' + extra).strip()
     return output
 
 
@@ -949,7 +979,10 @@ def translateIncoming(message, parsed, allow_network=True, trace_id=None):
                     )
                     if adopted:
                         facts[index] = factFormat('audio', official_text)
-        unresolved = [index for index, fact in enumerate(facts) if fact is None]
+        unresolved = [
+            index for index, fact in enumerate(facts)
+            if fact is None and usableRef(refs[index])
+        ]
         if not unresolved:
             result = _replace(result, pattern, facts, kind)
             parsed[key] = []
@@ -967,13 +1000,17 @@ def translateIncoming(message, parsed, allow_network=True, trace_id=None):
             model=(OlivaAIAgent.aiClient.getBackendConf() if route == 'main' else _independentConf(kind)).get('model', ''),
         )
         if route == 'main':
+            usable_unresolved = []
             for index in unresolved:
+                if not usableRef(refs[index]):
+                    continue
                 if kind == 'video':
                     facts[index] = _recognizeMainVideoForHistory(refs[index], trace_id=trace_id)
                 if not facts[index]:
                     facts[index] = '[语音]' if kind == 'audio' else '[视频]'
+                usable_unresolved.append(index)
             result = _replace(result, pattern, facts, kind)
-            parsed[key] = [refs[index] for index in unresolved]
+            parsed[key] = [refs[index] for index in usable_unresolved]
             if kind == 'audio':
                 parsed['audio_format_hints'] = [format_hints[index] for index in unresolved]
                 parsed['audio_official_texts'] = [''] * len(unresolved)
@@ -982,6 +1019,8 @@ def translateIncoming(message, parsed, allow_network=True, trace_id=None):
             result = _replaceAvailable(result, pattern, facts)
             continue
         for index in unresolved:
+            if not usableRef(refs[index]):
+                continue
             hint = format_hints[index] if kind == 'audio' else ''
             if hint:
                 facts[index] = _recognize(kind, refs[index], trace_id=trace_id, format_hint=hint)
@@ -1006,6 +1045,8 @@ def prepareMainInputs(parsed, trace_id=None):
             continue
         mode = str(_mediaConf().get(kind, {}).get('main_mode', 'base64' if kind == 'audio' else 'url'))
         for ref in list(parsed.get(key) or [])[:4]:
+            if not usableRef(ref):
+                continue
             prepared, _ = _dataUrl(kind, ref, mode, trace_id)
             target.append(prepared or ref)
     return audios, videos
@@ -1020,5 +1061,9 @@ def prepareQuotedMedia(parsed, trace_id=None):
         if not isEnabled(kind) or _route(kind) == 'main':
             continue
         for ref in list(quote.get(key) or [])[:4]:
-            facts.append(_recognize(kind, ref, trace_id=trace_id))
+            if not usableRef(ref):
+                continue
+            fact = _recognize(kind, ref, trace_id=trace_id)
+            if fact:
+                facts.append(fact)
     return list(dict.fromkeys(facts))

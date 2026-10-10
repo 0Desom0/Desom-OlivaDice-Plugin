@@ -322,7 +322,6 @@ class CoreLoggerTest(unittest.TestCase):
              mock.patch.object(OlivaAIAgent.identifiers, 'recordIncoming'), \
              mock.patch.object(OlivaAIAgent.msgReply, '_logQuotedMessage'), \
              mock.patch.object(OlivaAIAgent.reminder, 'registerSender'), \
-             mock.patch.object(OlivaAIAgent.msgReply, '_seenMessage', return_value=False), \
              mock.patch.object(OlivaAIAgent.msgReply, '_matchPrefix', return_value=None), \
              mock.patch.object(OlivaAIAgent.coreLogger, 'shouldBlockForLogOn', return_value=True), \
              mock.patch.object(OlivaAIAgent.ambient, 'process') as ambient_process, \
