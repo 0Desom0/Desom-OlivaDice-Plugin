@@ -65,10 +65,12 @@ default_global_config = {
 
 default_bot_config = {
     'bot_enable_switch': True,
+    'bot_openid': '',
     'configured_master_list': [],
     'disabled_group_list': [],
     'unified_panel_mode': False,
     'chat_current_scope': SCOPE_C2C,
+    'chat_selected_scopes': [SCOPE_C2C],
     'menu_draft': {
         'items': [],
         'version': None,

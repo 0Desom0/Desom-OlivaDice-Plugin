@@ -367,6 +367,7 @@ def clearGroupHistory(platform, group_id):
     with _history_lock:
         _history[key] = _newQueue()
         _persist(key)
+    OlivaAIAgent.conversation.clearThread(platform, group_id)
     _loadMemoryState()
     suffix = '|%s|%s' % (platform, group_id)
     with _memory_state_lock:
@@ -744,7 +745,7 @@ def _scheduleMemoryExtraction(platform, group_id, bot_hash, trace_id=None):
 
 # ---------------- 触发判定 ----------------
 
-def shouldReply(parsed, config_get):
+def shouldReply(parsed, config_get, probability_scale=1.0):
     '''普通潜行消息做随机判定；纯表情包使用更低的独立候选概率。'''
     standalone_emoji = bool(parsed.get('standalone_emoji'))
     probability_key = (
@@ -754,7 +755,11 @@ def shouldReply(parsed, config_get):
     )
     prob = config_get(probability_key, 0.05 if standalone_emoji else 1.0)
     try:
-        if random.random() < float(prob):
+        scale = float(probability_scale)
+    except (TypeError, ValueError):
+        scale = 1.0
+    try:
+        if random.random() < float(prob) * max(0.0, scale):
             return True
     except Exception:
         pass
@@ -797,13 +802,28 @@ def _historyWithoutCurrentTurn(history, parsed):
 # ---------------- 主流程 ----------------
 
 
-def _logConversationDecision(Proc, trace_id, decision, reason, result=None, messages=None):
-    fields = {'decision': decision, 'reason': reason}
-    if result is not None:
-        fields['result'] = json.dumps(result, ensure_ascii=False) if isinstance(result, list) else str(result)
-    if messages is not None:
-        fields['messages'] = messages
-    OlivaAIAgent.conf.traceLog(Proc, 'conversation.decision', trace_id, **fields)
+def _logConversationDecision(
+    Proc,
+    trace_id,
+    decision,
+    reason,
+    result=None,
+    messages=None,
+    history_count=0,
+    tools=False,
+    interrupted='',
+):
+    OlivaAIAgent.conversation.logDecision(
+        Proc,
+        trace_id,
+        decision,
+        reason=reason,
+        history_count=history_count,
+        tools=tools,
+        interrupted=interrupted,
+        result=result,
+        messages=messages,
+    )
 
 
 def process(plugin_event, Proc, parsed, self_id,
@@ -1083,32 +1103,76 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         return conf.get('ambient', k, default=d)
 
     history = getHistory(platform, group_id, bot_hash=bot_hash)
+    sender_name = ''
+    try:
+        sender_name = plugin_event.data.sender.get('name', '') or plugin_event.data.sender.get('nickname', '')
+    except Exception:
+        pass
+    affinity = OlivaAIAgent.conversation.observeIncoming(
+        platform,
+        group_id,
+        parsed,
+        getattr(getattr(plugin_event, 'data', None), 'user_id', None),
+        nickname=sender_name,
+        force=force,
+        directed=directed,
+    )
+    local_reason = OlivaAIAgent.conversation.classifyReason(
+        parsed, affinity, plugin_event, self_id,
+    )
+    interrupt_name = ''
+    if affinity.get('is_interrupt'):
+        interrupt_name = affinity.get('owner_name') or affinity.get('owner_id') or ''
+    visible_history = _historyWithoutCurrentTurn(history, parsed)
+    isolated_history, crowd_digest = OlivaAIAgent.conversation.splitContext(visible_history, affinity)
+    if OlivaAIAgent.conversation.isolationEnabled():
+        context_source = isolated_history
+    else:
+        context_source = visible_history
+        crowd_digest = ''
+
+    def _skip(reason_code, tools_on=False):
+        _logConversationDecision(
+            Proc,
+            trace_id,
+            '跳过',
+            reason_code,
+            history_count=len(context_source),
+            tools=tools_on,
+            interrupted=interrupt_name,
+        )
+
     # 被动自行插话需要足够历史；定向或显式触发(@/引用/关键词/.ai)不受此限
     if not force and len(history) <= int(cfg('history_size_min', 4)):
-        _logConversationDecision(Proc, trace_id, '跳过', '群聊历史不足')
+        _skip(OlivaAIAgent.conversation.REASON_HISTORY)
         return
     # force 只负责绕过概率等前置门槛；是否调用小模型由 skip_first_thinking 单独决定。
-    if not force and not shouldReply(parsed, cfg):
-        reason = (
-            '纯表情包已理解并记入上下文，本轮默认不主动接话'
-            if parsed.get('standalone_emoji')
-            else '未满足触发概率或条件'
-        )
-        _logConversationDecision(Proc, trace_id, '跳过', reason)
+    probability_scale = 1.0
+    if not force and affinity.get('is_interrupt'):
+        probability_scale = OlivaAIAgent.conversation.interruptProbabilityScale()
+    if not force and not shouldReply(parsed, cfg, probability_scale=probability_scale):
+        if parsed.get('standalone_emoji'):
+            _skip(OlivaAIAgent.conversation.REASON_CHITCHAT)
+        elif affinity.get('is_interrupt'):
+            _skip(OlivaAIAgent.conversation.REASON_INTERRUPT)
+        else:
+            _skip(OlivaAIAgent.conversation.REASON_PROBABILITY)
         return
 
     # 节律：等一会，若期间来了更新的消息则让位。
     # 定向或显式触发(.ai/@/引用/关键词)不参与让位，否则忙群里会被静默丢弃。
     total_start = time.perf_counter()
     if not force and lock is not None and not lock.slack():
-        _logConversationDecision(Proc, trace_id, '跳过', '等待期间出现更新消息')
+        _skip(OlivaAIAgent.conversation.REASON_SLACK)
         return
     _ensureGroupAgentActive(agent_token)
 
     # 收集动态上下文
     search_ageing = cfg('search_ageing', 900)
     deepin = cfg('search_knowledge_deepin', 1)
-    knowledge = OlivaAIAgent.knowledge.searchRelevant(bot_hash, history, search_ageing, deepin)
+    knowledge = OlivaAIAgent.knowledge.searchRelevant(
+        bot_hash, context_source or history, search_ageing, deepin,
+    )
     if knowledge:
         conf.traceLog(
             Proc,
@@ -1119,15 +1183,16 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         )
     semantic_facts = []
     if conf.isGroupLongMemory(platform, group_id):
+        query_rows = context_source or history
         query = '\n'.join(
             str(item.get('message', ''))
-            for item in history[-4:]
+            for item in query_rows[-4:]
             if item.get('nickname') is not None
         )
         # 近期发言者的个人事实一并召回，使跨群记忆在潜行插话时也生效。
         recent_user_ids = list(dict.fromkeys(
             str(item.get('user_id'))
-            for item in reversed(history[-4:])
+            for item in reversed(query_rows[-4:])
             if item.get('user_id') not in [None, '']
         ))
         semantic_facts = OlivaAIAgent.semantic.searchFacts(
@@ -1149,7 +1214,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                 ),
                 materials='、'.join(item['subject'] for item in semantic_facts),
             )
-    profiles = OlivaAIAgent.knowledge.relevantProfiles(bot_hash, history)
+    profiles = OlivaAIAgent.knowledge.relevantProfiles(bot_hash, context_source or history)
     summary = OlivaAIAgent.knowledge.getGroupSummary(bot_hash, group_id) \
         if conf.isGroupHistoryMemory(platform, group_id) else OlivaAIAgent.knowledge.GROUP_SUMMARY_DEFAULT
     # 与全权限 Agent 互通：拉取 Agent 侧的用户跨群长期记忆 + 本群共享记忆
@@ -1184,7 +1249,9 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     skills_ctx = ''
     if conf.get('skills', 'enable', default=True):
         try:
-            skills_ctx = OlivaAIAgent.skills.getContext(history, bot_hash, trace_id=trace_id)
+            skills_ctx = OlivaAIAgent.skills.getContext(
+                context_source or history, bot_hash, trace_id=trace_id,
+            )
         except Exception:
             skills_ctx = ''
 
@@ -1209,32 +1276,35 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         int(cfg('intent_image_cache_size', 10)),
     )
     aux_tasks = {}
+    think_history = context_source or history
     if allow_tools:
         aux_tasks['tools'] = lambda: OlivaAIAgent.tools.selectToolNames(
-            runtime_tool_ctx, message, history=history, trace_id=trace_id,
+            runtime_tool_ctx, message, history=think_history, trace_id=trace_id,
         )
     if allow_tools and runtime_tool_ctx is not None and OlivaAIAgent.research.enabled():
         # 前置检索只在本轮允许工具时有意义；失败返回 None 即回退主模型自调工具。
         aux_tasks['research'] = lambda: OlivaAIAgent.research.runPreflight(
-            runtime_tool_ctx, message, history=history, trace_id=trace_id,
+            runtime_tool_ctx, message, history=think_history, trace_id=trace_id,
         )
     if _shouldFirstThink(cfg('first_thinking', False), skip_first_thinking):
         aux_tasks['reply'] = lambda: _firstThink(
             Proc,
             bot_hash,
             group_id,
-            history,
+            think_history,
             {},
             '',
             self_id,
             trace_id=trace_id,
             directed=bool(directed),
-        )[0]
+            affinity=affinity,
+            parsed=parsed,
+        )
     if image_cache:
         aux_tasks['image'] = lambda: OlivaAIAgent.preflight.selectImageIntent(
             Proc,
             message,
-            history,
+            think_history,
             image_cache,
             trace_id=trace_id,
         )
@@ -1247,8 +1317,18 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         sem.release()
     _ensureGroupAgentActive(agent_token)
 
-    if aux_results.get('reply') == 'SKIP':
-        _logConversationDecision(Proc, trace_id, '跳过', '独立参与判断决定不进入主回复模型')
+    reply_payload = aux_results.get('reply')
+    reply_decision = reply_payload
+    reply_reason = local_reason
+    if isinstance(reply_payload, (tuple, list)) and reply_payload:
+        reply_decision = reply_payload[0]
+        if len(reply_payload) > 1 and reply_payload[1]:
+            reply_reason = reply_payload[1]
+    elif isinstance(reply_payload, dict):
+        reply_decision = reply_payload.get('decision')
+        reply_reason = reply_payload.get('reason') or local_reason
+    if reply_decision == 'SKIP':
+        _skip(reply_reason or OlivaAIAgent.conversation.REASON_FIRST_THINK, tools_on=allow_tools)
         return
     _previewGroupAgentHandoff(agent_token)
     selected_tool_names = aux_results.get('tools')
@@ -1256,6 +1336,9 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         selected_tool_names = [
             item['name'] for item in OlivaAIAgent.tools.getToolsForRequest(runtime_tool_ctx)
         ] if allow_tools else []
+    selected_tool_names = OlivaAIAgent.conversation.filterToolNames(
+        selected_tool_names, runtime_tool_ctx or {},
+    )
     if not allow_tools and voice_ready:
         selected_tool_names = ['send_voice']
     research_context = {}
@@ -1374,6 +1457,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
                           '撤回和获取消息必须使用消息ID，事件ID只用于平台事件/被动响应，不能代替消息ID撤回。')},
         '当前记忆': {'知识': knowledge, '用户侧写': profiles, '前情提要': summary},
     }
+    if crowd_digest:
+        patch['全群近况'] = crowd_digest
     if chat_context_summary:
         patch['当前会话接口参数'] = chat_context_summary
     if research_context:
@@ -1415,6 +1500,10 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     if skills_ctx:
         patch['技能片段'] = skills_ctx.strip()
     main_history_size = max(1, int(cfg('history_size', 8)))
+    if OlivaAIAgent.conversation.isolationEnabled():
+        context_history = isolated_history[-main_history_size:]
+    else:
+        context_history = visible_history[-main_history_size:]
     if force:
         session_key = OlivaAIAgent.memory.sessionKey(
             platform,
@@ -1424,7 +1513,7 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         personal_session = OlivaAIAgent.memory.getSession(session_key, bot_hash=bot_hash)[-6:]
         visible_ids = set()
         visible_contents = set()
-        visible_history = _historyWithoutCurrentTurn(history, parsed)[-main_history_size:]
+        visible_history = context_history[-main_history_size:]
         for entry in visible_history:
             visible_ids.update(
                 str(item)
@@ -1456,7 +1545,6 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         if quote_candidates:
             patch['可引用消息'] = quote_candidates
 
-    context_history = _historyWithoutCurrentTurn(history, parsed)[-main_history_size:]
     messages = buildContextMessages(system_content, context_history, patch)
     # force 会随触发方式变化，不能拼入第一条稳定 system，否则兼容端可能整块缓存失效。
     messages.append({'role': 'system', 'content': _mainDecisionTask(force)})
@@ -1536,9 +1624,15 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     voice_sent = OlivaAIAgent.voice.hasSentVoice(runtime_tool_ctx)
     if reply_list is None:
         if voice_sent:
-            _logConversationDecision(Proc, trace_id, '回复', '语音已经发送，本轮不再发送文字')
+            _logConversationDecision(
+                Proc, trace_id, '回复', reply_reason or 'voice',
+                history_count=len(context_history), tools=allow_tools,
+            )
             return
-        _logConversationDecision(Proc, trace_id, '失败', '主回复模型没有返回有效结果')
+        _logConversationDecision(
+            Proc, trace_id, '失败', '主回复模型没有返回有效结果',
+            history_count=len(context_history), tools=allow_tools,
+        )
         # 定向或显式请求(.ai/@/引用/关键词)遇后端错误时给一句反馈，避免用户对着空气发指令
         if force:
             tpl = str(conf.get('agent', 'error_reply', default='AI出错: {err}'))
@@ -1552,14 +1646,24 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         return
     if len(reply_list) == 0:
         if voice_sent:
-            _logConversationDecision(Proc, trace_id, '回复', '语音已经发送，本轮不再发送文字')
+            _logConversationDecision(
+                Proc, trace_id, '回复', reply_reason or 'voice',
+                history_count=len(context_history), tools=allow_tools,
+            )
         else:
-            _logConversationDecision(Proc, trace_id, '跳过', '主回复模型决定不参与')
+            _logConversationDecision(
+                Proc, trace_id, '跳过', reply_reason or OlivaAIAgent.conversation.REASON_MAIN_SKIP,
+                history_count=len(context_history), tools=allow_tools,
+                interrupted=interrupt_name,
+            )
         return
 
     reply_list = _replyWash(reply_list, plugin_event=plugin_event)
     if not reply_list:
-        _logConversationDecision(Proc, trace_id, '跳过', '回复清洗后没有可发送内容')
+        _logConversationDecision(
+            Proc, trace_id, '跳过', '回复清洗后没有可发送内容',
+            history_count=len(context_history), tools=allow_tools,
+        )
         return
 
     # 只有前置审查通过且主模型已经产出可发送回复，才接管同群旧 Agent。
@@ -1587,10 +1691,17 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     reply_list = cleaned_reply_list
     reply_list = OlivaAIAgent.vision.repairVisionDenial(reply_list, history)
     if not reply_list:
-        _logConversationDecision(Proc, trace_id, '跳过', '回复清洗后没有可发送内容')
+        _logConversationDecision(
+            Proc, trace_id, '跳过', '回复清洗后没有可发送内容',
+            history_count=len(context_history), tools=allow_tools,
+        )
         return
-    _logConversationDecision(Proc, trace_id, '回复', '主回复模型决定参与', result=reply_list,
-                             messages=len(reply_list))
+    _logConversationDecision(
+        Proc, trace_id, '回复', reply_reason or local_reason,
+        result=reply_list, messages=len(reply_list),
+        history_count=len(context_history), tools=allow_tools,
+        interrupted=interrupt_name,
+    )
 
     # 拟人发送节奏
     _groupAgentSleep(agent_token, 1 + (random.random() * 2 - 1) * 0.9)
@@ -1613,6 +1724,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             message_indexes=record['message_indexes'],
             reference_message_id=record.get('reference_message_id'),
         )
+    if sent_records:
+        OlivaAIAgent.conversation.observeOutgoing(platform, group_id)
     _ensureGroupAgentActive(agent_token)
     if saveUserSession(plugin_event, message, sent_records, bot_hash=bot_hash):
         conf.traceLog(
@@ -1813,27 +1926,7 @@ def _intentBackend():
 
 def _parseParticipationDecision(raw):
     '''兼容 JSON 字段别名和直接文本；无法识别时默认 NEXT。'''
-    text = str(raw or '').strip()
-    value = None
-    match = re.search(r'\{.*\}', text, re.S)
-    if match:
-        try:
-            data = json.loads(match.group(0))
-        except Exception:
-            data = None
-        if isinstance(data, dict):
-            for key in ('d', 'decision', 'reply', 'should_reply', 'result'):
-                if key in data:
-                    value = data.get(key)
-                    break
-    if isinstance(value, bool):
-        return 'NEXT' if value else 'SKIP'
-    target = str(value if value is not None else text).strip().upper()
-    if re.search(r'\bSKIP\b|不回复|不参与|跳过|无需回复|不需要(?:回复|接话)?|保持沉默', target, re.I):
-        return 'SKIP'
-    if re.search(r'\bNEXT\b|回复|参与|接话|需要回答', target, re.I):
-        return 'NEXT'
-    return 'NEXT'
+    return OlivaAIAgent.conversation.parseParticipation(raw)[0]
 
 
 def _firstThink(
@@ -1847,14 +1940,21 @@ def _firstThink(
     trace_id=None,
     image_candidates=None,
     directed=False,
+    affinity=None,
+    parsed=None,
 ):
-    '''独立参与判断，兼容旧返回结构 ('NEXT'|'SKIP', '')。失败默认 NEXT。'''
+    '''独立参与判断，兼容旧返回结构 ('NEXT'|'SKIP', reason)。失败默认 NEXT。'''
+    fallback_reason = OlivaAIAgent.conversation.classifyReason(
+        parsed, affinity, None, self_id,
+    )
     try:
         sys_prompt = '''# 你是二分类器，只判断最新一条群消息是否值得交给正式回复模型
-- 值得回复只输出 NEXT，不值得回复只输出 SKIP
+- 只输出严格 JSON：{"d":"NEXT或SKIP","r":"at_me|named|thread_continue|chitchat"}
+- d=NEXT 表示值得回复，d=SKIP 表示不值得回复
+- r 是理由码：at_me=最新消息@你或引用你；named=正在叫你名字；thread_continue=当前线程延续；chitchat=群友互聊/闲聊
 - NEXT: 最新消息@你/回复你/正在叫你名字/问候你/向你提问/要求你做事，或明显在邀请你接话
 - SKIP: 只是群友互相闲聊、与你无关、纯语气词短句且你无合适接话点
-- 消息里出现你的名字或称呼时，先分清是在叫你，还是群友互聊时提到你；后者判 SKIP
+- 消息里出现你的名字或称呼时，先分清是在叫你，还是群友互聊时提到你；后者判 SKIP 且 r=chitchat
 - [图片:...] 和 [表情包:...] 是已经识别出的正常视觉内容，必须理解其含义，不能当作看不到
 - 最新消息只有[表情包:...]且没有定向信号、文字问题或请求时，通常视为群友对前文的反应并判 SKIP；只有确实在邀请你接话时才判 NEXT
 - 表情包附带实际文字问题/请求，或本轮有明确@你、引用你的定向信号时，按完整语境判 NEXT
@@ -1866,14 +1966,12 @@ def _firstThink(
             visible[-history_limit:] if history_limit else [],
             {},
         )
-        directed_hint = (
-            '本轮有明确的@你或引用你的定向信号。'
-            if directed
-            else '本轮没有明确的@你或引用你的定向信号。'
+        directed_hint = OlivaAIAgent.conversation.participationHint(
+            parsed, affinity or {}, directed=bool(directed),
         )
         messages.append({
             'role': 'user',
-            'content': directed_hint + '完成参与判断，只输出 NEXT 或 SKIP。',
+            'content': directed_hint + '完成参与判断，只输出 JSON。',
         })
         bc = _intentBackend()
         OlivaAIAgent.conf.traceLog(
@@ -1895,15 +1993,18 @@ def _firstThink(
                 error=res.get('error', ''),
                 fallback='NEXT',
             )
-            return 'NEXT', ''
-        decision = _parseParticipationDecision(res.get('text', ''))
+            return 'NEXT', fallback_reason
+        decision, reason = OlivaAIAgent.conversation.parseParticipation(
+            res.get('text', ''), fallback_reason=fallback_reason,
+        )
         OlivaAIAgent.conf.traceLog(
             Proc,
             'first_thinking.result',
             trace_id,
             decision=decision,
+            reason=reason,
         )
-        return decision, ''
+        return decision, reason
     except Exception as e:
         OlivaAIAgent.conf.traceLog(
             Proc,
@@ -1912,7 +2013,7 @@ def _firstThink(
             error='%s: %s' % (type(e).__name__, e),
             fallback='NEXT',
         )
-        return 'NEXT', ''
+        return 'NEXT', fallback_reason
 
 
 # ---------------- 回复模型调用 ----------------

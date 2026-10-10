@@ -1,12 +1,20 @@
 # -*- encoding: utf-8 -*-
 """日志、配置读写与 Bot 辅助方法。"""
 
+import base64
 import copy
 import json
 import os
+import tempfile
 import threading
+import time
 import traceback
+from collections import OrderedDict
+from io import BytesIO
 from typing import Any, Dict, Optional
+from urllib.parse import quote
+
+import requests
 
 from . import config
 from . import function
@@ -22,6 +30,14 @@ except Exception:
 
 file_lock = threading.RLock()
 runtime_proc = None
+
+# 头像：先拉 QQ 在线头像并写入该 bot 目录的 avatar.png，失败再用该目录里的 avatar 图片。
+# 点刷新可跳过内存缓存重拉；在线和本地都没有时，前端用原来的蓝色渐变圈。
+AVATAR_STEM = 'avatar'
+AVATAR_SUFFIXES = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')
+MAX_AVATAR_BYTES = 4 * 1024 * 1024
+_avatar_cache = OrderedDict()
+_avatar_lock = threading.Lock()
 
 
 def safe_str(value: Any) -> str:
@@ -145,6 +161,7 @@ def get_bot_config_path(bot_hash: Any) -> str:
 
 
 def normalize_bot_config(raw_config: Any) -> dict:
+    raw_selected_present = isinstance(raw_config, dict) and 'chat_selected_scopes' in raw_config
     merged_config = merge_dict_with_default(raw_config, config.default_bot_config)
     merged_config['menu_draft'] = function.normalize_menu_draft(merged_config.get('menu_draft', {}))
     panel_drafts = merged_config.get('panel_drafts', {})
@@ -161,6 +178,20 @@ def normalize_bot_config(raw_config: Any) -> dict:
         ]
     merged_config['panel_drafts'] = normalized_panel_drafts
     merged_config['unified_panel_mode'] = bool(merged_config.get('unified_panel_mode', False))
+    current_scope = merged_config.get('chat_current_scope', config.SCOPE_C2C)
+    if current_scope not in config.SCOPE_LIST:
+        current_scope = config.SCOPE_C2C
+    if not raw_selected_present and merged_config.get('unified_panel_mode'):
+        selected = list(config.SCOPE_LIST)
+    else:
+        selected = function.normalize_scope_list(
+            merged_config.get('chat_selected_scopes'),
+            current_scope,
+        )
+    if current_scope not in selected:
+        current_scope = selected[0]
+    merged_config['chat_current_scope'] = current_scope
+    merged_config['chat_selected_scopes'] = selected
     return merged_config
 
 
@@ -223,6 +254,176 @@ def filter_qqguildv2_bots(bot_info_dict) -> dict:
         if is_qqguildv2_bot(bot_info):
             result[safe_str(bot_hash)] = bot_info
     return result
+
+
+def normalize_avatar(data: bytes) -> bytes:
+    from PIL import Image, ImageOps
+
+    with Image.open(BytesIO(data)) as source:
+        if source.width * source.height > 16_000_000:
+            raise ValueError('Avatar dimensions exceeded')
+        image = ImageOps.exif_transpose(source).convert('RGBA')
+        image.thumbnail((256, 256))
+        output = BytesIO()
+        image.save(output, format='PNG')
+    return output.getvalue()
+
+
+def qq_avatar(appid: str, openid: str, refresh: bool = False) -> bytes:
+    """只访问 QQ 头像域名，不带账号密钥；成功缓存一小时，失败冷却一分钟。"""
+    appid = safe_str(appid)
+    openid = safe_str(openid).strip()
+    if not openid or not appid.isdecimal():
+        return b''
+    key = (appid, openid)
+    with _avatar_lock:
+        now = time.monotonic()
+        cached = _avatar_cache.get(key)
+        if not refresh and cached and cached[0] > now:
+            return cached[1]
+        data = b''
+        try:
+            url = 'https://q.qlogo.cn/qqapp/%s/%s/0' % (quote(appid, safe=''), quote(openid, safe=''))
+            with requests.get(url, timeout=(3, 5), stream=True, allow_redirects=False) as response:
+                response.raise_for_status()
+                if response.status_code != 200:
+                    raise ValueError('Unexpected avatar response')
+                if int(response.headers.get('Content-Length', '0')) > MAX_AVATAR_BYTES:
+                    raise ValueError('Avatar response exceeded')
+                body = bytearray()
+                deadline = now + 10
+                for chunk in response.iter_content(65536):
+                    body.extend(chunk)
+                    if len(body) > MAX_AVATAR_BYTES or time.monotonic() > deadline:
+                        raise ValueError('Avatar download exceeded')
+                data = normalize_avatar(bytes(body))
+        except Exception:
+            pass
+        _avatar_cache[key] = (time.monotonic() + (3600 if data else 60), data)
+        _avatar_cache.move_to_end(key)
+        while len(_avatar_cache) > 64:
+            _avatar_cache.popitem(last=False)
+        return data
+
+
+def cache_avatar(bot_hash: Any, data: bytes) -> None:
+    """只写当前 bot 目录的 avatar.png。"""
+    folder = get_config_bot_root_dir(bot_hash)
+    destination = os.path.join(folder, AVATAR_STEM + '.png')
+    temporary = None
+    try:
+        if os.path.isfile(destination):
+            with open(destination, 'rb') as file_obj:
+                if file_obj.read() == data:
+                    return
+        fd, tmp_name = tempfile.mkstemp(dir=folder, suffix='.tmp')
+        temporary = tmp_name
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+        os.replace(temporary, destination)
+        temporary = None
+    except OSError:
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def local_avatar(bot_hash: Any) -> bytes:
+    folder = get_config_bot_root_dir(bot_hash)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return b''
+    files = {}
+    for name in names:
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            files[name.lower()] = path
+    for suffix in AVATAR_SUFFIXES:
+        candidate = files.get(AVATAR_STEM + suffix)
+        if not candidate:
+            continue
+        try:
+            if os.path.getsize(candidate) > MAX_AVATAR_BYTES:
+                continue
+            with open(candidate, 'rb') as file_obj:
+                return normalize_avatar(file_obj.read())
+        except Exception:
+            continue
+    return b''
+
+
+def get_sdk_bot_openid(bot_hash: Any) -> str:
+    try:
+        import OlivOS
+
+        sdk = getattr(OlivOS, 'qqGuildv2SDK', None)
+        cache = getattr(sdk, 'sdkSubSelfOpenInfo', None)
+        if not isinstance(cache, dict):
+            return ''
+        groups = cache.get(safe_str(bot_hash), {})
+        if isinstance(groups, dict):
+            for value in groups.values():
+                text = safe_str(value).strip()
+                if text:
+                    return text
+    except Exception:
+        pass
+    return ''
+
+
+def remember_bot_openid(bot_hash: Any, openid: Any) -> None:
+    text = safe_str(openid).strip()
+    if not text:
+        return
+    bot_config = load_bot_config(bot_hash)
+    if safe_str(bot_config.get('bot_openid', '')).strip() == text:
+        return
+    bot_config['bot_openid'] = text
+    save_bot_config(bot_hash, bot_config)
+
+
+def remember_bot_openid_from_event(plugin_event) -> None:
+    try:
+        if not is_qqguildv2_event(plugin_event):
+            return
+        extend = getattr(getattr(plugin_event, 'data', None), 'extend', None) or {}
+        remember_bot_openid(
+            get_raw_bot_hash_from_event(plugin_event),
+            extend.get('sub_self_open_id'),
+        )
+    except Exception:
+        pass
+
+
+def resolve_bot_openid(bot_hash: Any) -> str:
+    saved = safe_str(load_bot_config(bot_hash).get('bot_openid', '')).strip()
+    if saved:
+        return saved
+    sdk_openid = get_sdk_bot_openid(bot_hash)
+    if sdk_openid:
+        remember_bot_openid(bot_hash, sdk_openid)
+        return sdk_openid
+    return ''
+
+
+def bot_avatar_data_uri(bot_hash: Any, bot_info=None, refresh: bool = False) -> str:
+    appid = safe_str(getattr(bot_info, 'id', '')) if bot_info is not None else ''
+    data = qq_avatar(appid, resolve_bot_openid(bot_hash), refresh=refresh)
+    if data:
+        cache_avatar(bot_hash, data)
+    else:
+        data = local_avatar(bot_hash)
+    if not data:
+        return ''
+    try:
+        return 'data:image/png;base64,' + base64.b64encode(data).decode('ascii')
+    except Exception:
+        return ''
 
 
 def get_bot_display_text(bot_hash: str, bot_info=None) -> str:

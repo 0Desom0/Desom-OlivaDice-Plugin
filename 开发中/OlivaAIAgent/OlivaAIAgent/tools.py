@@ -152,6 +152,10 @@ def execToolRaw(name, args, ctx):
     if not allowed:
         OlivaAIAgent.conf.traceLog(ctx.get('Proc'), 'tool.denied', trace_id, name=name, reason=why)
         return {'error': '权限不足: %s' % why}
+    gated, gate_why = OlivaAIAgent.conversation.checkToolGate(name, ctx, consume=True)
+    if not gated:
+        OlivaAIAgent.conf.traceLog(ctx.get('Proc'), 'tool.denied', trace_id, name=name, reason=gate_why)
+        return {'error': gate_why}
     try:
         if mcp_item is not None:
             result = OlivaAIAgent.mcp.execute(name, args or {}, ctx)
@@ -222,6 +226,10 @@ def getToolsForRequest(ctx, voice_only=False, names=None):
     if names is not None:
         selected = {str(name) for name in names}
         tools = [item for item in tools if item.get('name') in selected]
+    allowed_names = set(OlivaAIAgent.conversation.filterToolNames(
+        [item.get('name') for item in tools], ctx or {},
+    ))
+    tools = [item for item in tools if item.get('name') in allowed_names]
     return tools
 
 

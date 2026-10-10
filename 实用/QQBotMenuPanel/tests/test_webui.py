@@ -1,5 +1,6 @@
 """使用 OlivOS 核心消息桥和临时数据验证接入；QQ 平台调用全部替身化。"""
 
+import base64
 import importlib
 import json
 import os
@@ -10,8 +11,12 @@ import threading
 import uuid
 import webbrowser
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
+
+from PIL import Image
 
 import OlivOS
 import pytest
@@ -172,6 +177,30 @@ def test_menu_and_panel_platform_actions(panel):
     assert 'delete_qq_command_panel' in methods
 
 
+def test_selected_scopes_persist_and_unified_send_subset(panel):
+    saved = request(panel, 'draft', chat_selected_scopes=['group', 'c2c', 'group', 'nope'])
+    assert saved['data']['chat_selected_scopes'] == ['c2c', 'group']
+    assert panel.module.function.scopes_allow_specific(['c2c', 'group'])
+    assert not panel.module.function.scopes_allow_specific(['c2c', 'channel'])
+
+    assert request(panel, 'example', kind='panel', scope='c2c')['ok']
+    panel.calls.clear()
+    response = request(
+        panel, 'panel/send',
+        scope='c2c',
+        panel_index=0,
+        unified_panel_mode=True,
+        scopes=['c2c', 'group'],
+        chat_selected_scopes=['c2c', 'group'],
+    )
+    assert response['ok']
+    create_scopes = [
+        kwargs.get('scope') for method, kwargs in panel.calls
+        if method == 'create_qq_command_panel'
+    ]
+    assert create_scopes == ['c2c', 'group']
+
+
 @pytest.mark.parametrize('payload', [
     [], {'action': []}, {'action': 'unknown'}, {'action': 'draft'},
     {'action': 'draft', 'bot_hash': '../escape'}, {'action': 'state', 'bot_hash': []},
@@ -191,6 +220,137 @@ def test_unknown_event_and_handler_failure_return_errors(panel, monkeypatch):
     response = request(panel, 'state')
     assert response['ok'] is False
     assert 'test-only detail' not in response['message']
+
+
+def png_bytes(color='#4060c0'):
+    output = BytesIO()
+    Image.new('RGB', (32, 32), color).save(output, format='PNG')
+    return output.getvalue()
+
+
+def test_page_marks_panel_id_readonly_and_hides_empty_editors():
+    html = (PLUGIN / 'webui/index.html').read_text(encoding='utf-8')
+    assert 'id="panelId" readonly' in html
+    assert 'data-action="copy-panel-id"' in html
+    assert 'id="menuEditor" hidden' in html
+    assert 'id="itemEditor" hidden' in html
+    assert 'flex-wrap: nowrap' in html
+    assert 'overflow-x: auto' in html
+    assert 'id="botAvatar"' in html
+    assert 'id="botMiniAvatar"' in html
+    assert 'linear-gradient(180deg, #9fd2ff, #4aa7ff)' in html
+    assert 'refresh_avatar' in html
+    assert '--topbar-control-bg' in html
+    assert 'id="scopePicks"' in html
+    assert 'id="targetSpecificBox"' in html
+    assert 'id="groupOpenidBox"' in html
+    assert '至少保留一个' in html
+    assert "getElement('panelId').addEventListener('input'" not in html
+
+
+def avatar_response(data):
+    response = Mock()
+    response.status_code = 200
+    response.headers = {'Content-Length': str(len(data))}
+    response.iter_content.return_value = [data]
+    response.raise_for_status = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    return response
+
+
+def current_bot(response, panel):
+    return next(item for item in response['bots'] if item['hash'] == panel.bot.hash)
+
+
+def test_local_avatar_uses_only_bot_folder_file(panel, monkeypatch):
+    data_dir = Path('plugin/data/QQBotMenuPanel')
+    bot_dir = data_dir / panel.bot.hash
+    other_dir = data_dir / 'other-bot'
+    bot_dir.mkdir(parents=True, exist_ok=True)
+    other_dir.mkdir(parents=True, exist_ok=True)
+    panel.module.utils._avatar_cache.clear()
+    monkeypatch.setattr(
+        panel.module.utils.requests, 'get',
+        Mock(side_effect=AssertionError('Unexpected avatar network')),
+    )
+
+    (data_dir / 'avatar.png').write_bytes(png_bytes('#4060c0'))
+    (data_dir / (panel.bot.hash + '.png')).write_bytes(png_bytes('#111111'))
+    (other_dir / 'avatar.png').write_bytes(png_bytes('#222222'))
+    bot = current_bot(request(panel, 'state')['data'], panel)
+    assert bot['avatar'] == ''
+
+    own = png_bytes('#c05040')
+    (bot_dir / 'avatar.png').write_bytes(own)
+    bot = current_bot(request(panel, 'state')['data'], panel)
+    raw = base64.b64decode(bot['avatar'].split(',', 1)[1])
+    assert raw == panel.module.utils.normalize_avatar(own)
+    assert (data_dir / 'avatar.png').read_bytes() == png_bytes('#4060c0')
+    assert (data_dir / (panel.bot.hash + '.png')).read_bytes() == png_bytes('#111111')
+
+
+def test_online_avatar_writes_bot_folder_png_and_ignores_root_avatar(panel, monkeypatch):
+    data_dir = Path('plugin/data/QQBotMenuPanel')
+    data_dir.mkdir(parents=True, exist_ok=True)
+    shared = png_bytes('#4060c0')
+    (data_dir / 'avatar.png').write_bytes(shared)
+    bot_config = panel.module.utils.load_bot_config(panel.bot.hash)
+    bot_config['bot_openid'] = 'BOT_OPENID'
+    panel.module.utils.save_bot_config(panel.bot.hash, bot_config)
+    panel.module.utils._avatar_cache.clear()
+    online = png_bytes('#c05040')
+    download = Mock(return_value=avatar_response(online))
+    monkeypatch.setattr(panel.module.utils.requests, 'get', download)
+
+    bot = current_bot(request(panel, 'state')['data'], panel)
+    assert bot['avatar'].startswith('data:image/png;base64,')
+    download.assert_called_once()
+    assert download.call_args[0][0] == 'https://q.qlogo.cn/qqapp/%s/BOT_OPENID/0' % panel.bot.id
+    cached = data_dir / panel.bot.hash / 'avatar.png'
+    assert cached.read_bytes() == panel.module.utils.normalize_avatar(online)
+    assert (data_dir / 'avatar.png').read_bytes() == shared
+    current_bot(request(panel, 'state')['data'], panel)
+    assert download.call_count == 1
+
+
+def test_refresh_avatar_retries_online_fetch(panel, monkeypatch):
+    data_dir = Path('plugin/data/QQBotMenuPanel')
+    data_dir.mkdir(parents=True, exist_ok=True)
+    bot_config = panel.module.utils.load_bot_config(panel.bot.hash)
+    bot_config['bot_openid'] = 'BOT_OPENID'
+    panel.module.utils.save_bot_config(panel.bot.hash, bot_config)
+    panel.module.utils._avatar_cache.clear()
+    first = png_bytes('#c05040')
+    second = png_bytes('#20a060')
+    download = Mock(side_effect=[avatar_response(first), avatar_response(second)])
+    monkeypatch.setattr(panel.module.utils.requests, 'get', download)
+
+    bot = current_bot(request(panel, 'state')['data'], panel)
+    first_uri = bot['avatar']
+    assert download.call_count == 1
+    current_bot(request(panel, 'state')['data'], panel)
+    assert download.call_count == 1
+
+    bot = current_bot(request(panel, 'bootstrap', refresh_avatar=True)['data'], panel)
+    assert download.call_count == 2
+    assert bot['avatar'] != first_uri
+    cached = data_dir / panel.bot.hash / 'avatar.png'
+    assert cached.read_bytes() == panel.module.utils.normalize_avatar(second)
+
+
+def test_group_message_remembers_bot_openid(panel, monkeypatch):
+    monkeypatch.setattr(
+        panel.module.utils.requests, 'get',
+        Mock(side_effect=AssertionError('Unexpected avatar network')),
+    )
+    event = SimpleNamespace(
+        platform={'sdk': 'qqGuildv2_link'},
+        bot_info=panel.bot,
+        data=SimpleNamespace(extend={'sub_self_open_id': 'EVENT_OPENID'}),
+    )
+    panel.module.main.Event.group_message(event, panel.loader)
+    assert panel.module.utils.load_bot_config(panel.bot.hash)['bot_openid'] == 'EVENT_OPENID'
 
 
 def test_no_bots_still_allows_global_settings(panel):

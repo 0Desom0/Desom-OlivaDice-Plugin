@@ -277,6 +277,10 @@ class TokenOptimizationTest(unittest.TestCase):
         )
         self.assertEqual('SKIP', OlivaAIAgent.ambient._parseParticipationDecision('不需要回复'))
         self.assertEqual('NEXT', OlivaAIAgent.ambient._parseParticipationDecision('NEXT，因为被点名了'))
+        self.assertEqual(
+            'SKIP',
+            OlivaAIAgent.ambient._parseParticipationDecision('{"d":"SKIP","r":"chitchat"}'),
+        )
 
     def test_image_parser_accepts_alias_filename_and_plain_text(self):
         candidates = {'fox.gif': {'content': '狐狸捂脸', 'intent': '无奈'}}

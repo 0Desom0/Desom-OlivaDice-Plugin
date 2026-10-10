@@ -99,6 +99,7 @@ https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/
 
 - `plugin/data/QQBotMenuPanel/global_config.json`
 - `plugin/data/QQBotMenuPanel/<bot_hash>/bot_config.json`
+- `plugin/data/QQBotMenuPanel/<bot_hash>/avatar.png`
 
 常用字段：
 

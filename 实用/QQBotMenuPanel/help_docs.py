@@ -77,14 +77,21 @@ FIELD_HINT_DICT = {
     'sub_name': '子菜单名称 name：最多 14 个字符，约 7 个中文汉字。二级菜单不能再嵌套子菜单。',
     'sub_type': '子菜单类型 type：只支持 send_message（发送消息）和 link（链接跳转），不支持 menu。',
     'panel_remark': '备注 remark：给开发者自己看的标记，最多 255 个字符，不会展示给用户。',
-    'panel_id': '面板 ID panel_id：平台返回的面板编号。后续修改、删除、查详情、改关联对象都要用它。',
+    'panel_id': (
+        '面板 ID panel_id：由 QQ 平台创建后自动填入，页面上只读可复制，不能手改。'
+        '后续修改、删除、查详情、改关联对象都要用它。'
+    ),
     'target_type': (
         '作用范围 target_type：all=对该场景下所有用户/群生效；specific=仅对指定用户/群生效。'
-        '只有消息列表和 QQ 群支持 specific；频道和频道私信只能 all。'
+        '只有所选场景仅包含消息列表和 QQ 群时才能选指定对象；包含 QQ 频道或频道私信时只显示全局生效。'
     ),
     'openid': (
-        '关联对象 openid：c2c 填用户 openid，group 填群 openid。'
+        '关联对象 openid：仅在作用范围为指定对象时显示。c2c 填用户 openid，group 填群 openid。'
         '创建时可带最多 20 个，之后用「修改关联对象」增删，详情最多 1000 个。'
+    ),
+    'scope': (
+        '生效场景 scope：c2c=消息列表单聊；group=QQ 群；channel=文字子频道；dm=频道私信。'
+        '可多选，至少保留一个。勾选统一配置会四个全选。自定义菜单只在 c2c 生效。'
     ),
     'panel_item_name': (
         '元素名称 name：type=command 时，用户点击后该内容会填入聊天输入框；'
@@ -94,10 +101,6 @@ FIELD_HINT_DICT = {
     'panel_item_type': '元素类型 type：command=指令；link=链接跳转。',
     'panel_item_link': '跳转链接 link：仅 type=link 时有效。用户点击后在浏览器中打开该地址。',
     'panel_item_admin': '仅管理员 only_admin：true 时仅频道/群管理员可点击，false 时所有用户可点击。',
-    'scope': (
-        '生效场景 scope：c2c=消息列表单聊；group=QQ 群；channel=文字子频道；dm=频道私信。'
-        '自定义菜单只在 c2c 生效。'
-    ),
 }
 
 

@@ -66,6 +66,8 @@
             /* 顶部工具栏 */
             --topbar-bg: #00a0ea;
             --topbar-text: #ffffff;
+            --topbar-control-bg: #ffffff;
+            --topbar-control-text: #1a1a1a;
 
             /* 按钮 */
             --primary-button: #40c3ff;
@@ -126,6 +128,8 @@
                 --bg: #191f28;
                 --card: #242e3b;
                 --topbar-bg: #164b6b;
+                --topbar-control-bg: #e8eef5;
+                --topbar-control-text: #15202b;
                 --primary-button: #176e98;
                 --gray-button: #546476;
                 --danger-button: #a93d4c;
@@ -199,6 +203,9 @@
             border: 0;
             border-radius: 6px;
             font-size: 13px;
+            background: var(--topbar-control-bg);
+            color: var(--topbar-control-text);
+            cursor: pointer;
         }
 
         /* 选择框可以收缩，按钮始终保持一行，避免窄屏时文字被拆开。 */
@@ -210,6 +217,12 @@
         .topbar button {
             flex: 0 0 auto;
             white-space: nowrap;
+            font-weight: 600;
+        }
+
+        .topbar button:hover,
+        .topbar select:hover {
+            filter: brightness(0.97);
         }
 
         .topbar .url {
@@ -330,6 +343,26 @@
             margin-top: 10px;
         }
 
+        .id-row {
+            flex-wrap: nowrap;
+            align-items: center;
+        }
+
+        .id-row input {
+            flex: 1;
+            min-width: 0;
+            width: auto;
+        }
+
+        .id-row .btn {
+            flex: 0 0 auto;
+        }
+
+        input[readonly] {
+            background: var(--hover-row);
+            cursor: text;
+        }
+
         .btn {
             padding: 8px 12px;
             border: 0;
@@ -385,6 +418,20 @@
 
         .check input {
             width: auto;
+        }
+
+        .scope-picks {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 16px;
+            margin: 4px 0 8px;
+            padding: 10px 12px;
+            border-radius: var(--control-radius);
+            background: var(--hover-row);
+        }
+
+        .scope-picks .check {
+            margin: 0;
         }
 
         /* 根据当前菜单项类型，只显示对应的一组输入框。 */
@@ -565,19 +612,28 @@
 
         .pill-stage {
             position: relative;
+            min-width: 0;
+            max-width: 100%;
         }
 
         .pills {
             display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
+            flex-wrap: nowrap;
+            justify-content: flex-start;
+            align-items: center;
             gap: 8px;
             margin: 0 0 12px;
+            padding: 2px 4px 8px;
+            max-width: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            overscroll-behavior-x: contain;
         }
 
         .pill {
             padding: 8px 11px;
             display: inline-flex;
+            flex: 0 0 auto;
             align-items: center;
             gap: 5px;
             border: 1px solid var(--pill-border);
@@ -713,6 +769,7 @@
 
         .panel-tabs span {
             padding: 4px 2px;
+            border-bottom: 2px solid transparent;
             color: var(--sub);
             cursor: pointer;
             user-select: none;
@@ -721,6 +778,10 @@
         .panel-tabs span.active {
             color: var(--blue);
             font-weight: 500;
+        }
+
+        .panel-tabs span.current {
+            border-bottom-color: var(--blue);
         }
 
         .phone {
@@ -759,10 +820,20 @@
             width: 22px;
             height: 22px;
             flex: 0 0 auto;
+            overflow: hidden;
             border-radius: 50%;
             background:
                 radial-gradient(circle at 35% 30%, #ffffff 0 18%, transparent 19%),
                 linear-gradient(180deg, #9fd2ff, #4aa7ff);
+        }
+
+        .avatar img,
+        .mini-avatar img {
+            width: 100%;
+            height: 100%;
+            display: block;
+            object-fit: cover;
+            border-radius: 50%;
         }
 
         .cmd-list {
@@ -898,7 +969,7 @@
                     </div>
                 </div>
 
-                <div class="card">
+                <div class="card" id="menuEditor" hidden>
                     <h3>菜单项编辑</h3>
 
                     <label for="menuName">名称 name <span class="count" id="menuNameCount">0/10</span></label>
@@ -960,8 +1031,10 @@
             <section id="tab-panel" role="tabpanel" hidden>
                 <label class="check">
                     <input type="checkbox" id="unified">
-                    统一配置 unified（四个场景共用一份内容）
+                    统一配置 unified（勾选后四个场景全选并共用一份内容）
                 </label>
+                <div class="scope-picks" id="scopePicks"></div>
+                <div class="hint">场景可多选，再点一次取消；至少保留一个。勾选统一配置会四个全选。</div>
 
                 <div class="card">
                     <h3>当前场景的指令面板（每机器人最多 20 个）</h3>
@@ -976,15 +1049,26 @@
                     <label for="panelRemark">备注 remark</label>
                     <input id="panelRemark">
                     <label for="panelId">面板ID panel_id</label>
-                    <input id="panelId">
+                    <div class="row id-row">
+                        <input id="panelId" readonly placeholder="新建提交后由平台自动填入" spellcheck="false" autocomplete="off">
+                        <button type="button" class="btn gray" data-action="copy-panel-id">复制</button>
+                    </div>
                     <label for="targetType">作用范围 target_type</label>
                     <select id="targetType"></select>
                     <div class="hint" id="panelHint"></div>
-                    <label for="openidBox">关联对象 openid（每行一个：c2c 用户 / group 群）</label>
-                    <textarea id="openidBox"></textarea>
-                    <div class="row">
-                        <button type="button" class="btn" data-action="send-target" data-op="add">确认添加关联</button>
-                        <button type="button" class="btn gray" data-action="send-target" data-op="del">确认移除关联</button>
+                    <div id="targetSpecificBox" hidden>
+                        <div id="userOpenidWrap">
+                            <label for="openidBox">关联用户 openid（消息列表，每行一个）</label>
+                            <textarea id="openidBox"></textarea>
+                        </div>
+                        <div id="groupOpenidWrap">
+                            <label for="groupOpenidBox">关联群 openid（QQ 群，每行一个）</label>
+                            <textarea id="groupOpenidBox"></textarea>
+                        </div>
+                        <div class="row">
+                            <button type="button" class="btn" data-action="send-target" data-op="add">确认添加关联</button>
+                            <button type="button" class="btn gray" data-action="send-target" data-op="del">确认移除关联</button>
+                        </div>
                     </div>
                 </div>
 
@@ -999,22 +1083,24 @@
                         <button type="button" class="btn gray" data-action="move-item" data-delta="1">下移</button>
                     </div>
 
-                    <label for="itemName">名称 name <span class="count" id="itemNameCount">0/14</span></label>
-                    <input id="itemName">
-                    <label for="itemDesc">描述 desc <span class="count" id="itemDescCount">0/30</span></label>
-                    <input id="itemDesc">
-                    <label for="itemType">类型 type</label>
-                    <select id="itemType"></select>
-                    <div class="type-only" id="boxItemLink">
-                        <label for="itemLink">链接 link</label>
-                        <input id="itemLink">
+                    <div id="itemEditor" hidden>
+                        <label for="itemName">名称 name <span class="count" id="itemNameCount">0/14</span></label>
+                        <input id="itemName">
+                        <label for="itemDesc">描述 desc <span class="count" id="itemDescCount">0/30</span></label>
+                        <input id="itemDesc">
+                        <label for="itemType">类型 type</label>
+                        <select id="itemType"></select>
+                        <div class="type-only" id="boxItemLink">
+                            <label for="itemLink">链接 link</label>
+                            <input id="itemLink">
+                        </div>
+                        <label for="itemAdmin">仅管理员 only_admin</label>
+                        <select id="itemAdmin">
+                            <option value="false">关闭 False</option>
+                            <option value="true">开启 True</option>
+                        </select>
+                        <div class="hint" id="itemHint"></div>
                     </div>
-                    <label for="itemAdmin">仅管理员 only_admin</label>
-                    <select id="itemAdmin">
-                        <option value="false">关闭 False</option>
-                        <option value="true">开启 True</option>
-                    </select>
-                    <div class="hint" id="itemHint"></div>
                 </div>
 
                 <div class="row">
@@ -1181,12 +1267,12 @@
                         <div class="phone-bar"></div>
                         <div class="phone-body">
                             <div class="bot-row">
-                                <div class="avatar"></div>
+                                <div class="avatar" id="botAvatar"></div>
                                 <div id="botName">官方机器人</div>
                             </div>
                             <div class="cmd-list" id="panelRows"></div>
                             <div class="phone-foot">
-                                <div class="mini-avatar"></div>
+                                <div class="mini-avatar" id="botMiniAvatar"></div>
                             </div>
                         </div>
                     </div>
@@ -1228,6 +1314,8 @@
             ['group', 'QQ群'],
             ['c2c', '消息列表'],
         ];
+        const SPECIFIC_SCOPES = ['c2c', 'group'];
+        const SCOPE_KEYS = SCOPE_ORDER.map(([key]) => key);
 
         // 菜单项与子菜单项的行内图标，用于右侧预览。
         const ICON_SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
@@ -1590,6 +1678,115 @@
             return ((state.panel_drafts || {})[scope]) || [];
         }
 
+        function selectedScopes() {
+            const raw = (state && state.chat_selected_scopes) || [];
+            const result = SCOPE_KEYS.filter((key) => raw.indexOf(key) !== -1);
+            if (result.length) {
+                return result;
+            }
+            return SCOPE_KEYS.indexOf(scope) === -1 ? [SCOPE_KEYS[0]] : [scope];
+        }
+
+        function allowsSpecific(scopes) {
+            const keys = scopes || selectedScopes();
+            return keys.length > 0 && keys.every((key) => SPECIFIC_SCOPES.indexOf(key) !== -1);
+        }
+
+        function parseOpenids(text) {
+            return String(text || '')
+                .split(/[\s,;，；]+/)
+                .map((item) => item.trim())
+                .filter(Boolean);
+        }
+
+        function updateTargetTypeControls(panel, selected, fillOpenids) {
+            selected = selected || selectedScopes();
+            const specificOk = allowsSpecific(selected);
+            if (panel && !specificOk && panel.target_type === 'specific') {
+                panel.target_type = 'all';
+            }
+            const typeOptions = specificOk
+                ? state.target_type_options
+                : (state.target_type_options || []).filter((opt) => opt.value !== 'specific');
+            fillSelect('targetType', typeOptions, (panel && panel.target_type) || 'all');
+            getElement('panelHint').textContent = specificOk
+                ? ((state.field_hints || {}).target_type || '')
+                : '当前选中的场景包含 QQ 频道或频道私信，只能全局生效。';
+            const showSpecific = !!(panel && specificOk && panel.target_type === 'specific');
+            getElement('targetSpecificBox').hidden = !showSpecific;
+            getElement('userOpenidWrap').hidden = !showSpecific || selected.indexOf('c2c') === -1;
+            getElement('groupOpenidWrap').hidden = !showSpecific || selected.indexOf('group') === -1;
+            if (showSpecific && fillOpenids) {
+                getElement('openidBox').value = (panel.user_openids || []).join('\n');
+                getElement('groupOpenidBox').value = (panel.group_openids || []).join('\n');
+            }
+        }
+
+        function applyScopeSelection(next, focus, syncFrom) {
+            const unique = SCOPE_KEYS.filter((key) => next.indexOf(key) !== -1);
+            if (!unique.length) {
+                return false;
+            }
+            const source = syncFrom || currentPanel();
+            const prevScope = scope;
+            state.chat_selected_scopes = unique;
+            if (focus && unique.indexOf(focus) !== -1) {
+                scope = focus;
+            } else if (unique.indexOf(scope) === -1) {
+                scope = unique[0];
+            }
+            if (source && !allowsSpecific(unique) && source.target_type === 'specific') {
+                source.target_type = 'all';
+            }
+            if (state.unified_panel_mode && source) {
+                syncUnified(source);
+            }
+            if (prevScope !== scope) {
+                panelIndex = 0;
+                itemIndex = 0;
+            }
+            render();
+            return true;
+        }
+
+        function toggleScope(key) {
+            const current = selectedScopes().slice();
+            const source = currentPanel();
+            const has = current.indexOf(key) !== -1;
+            if (!has) {
+                current.push(key);
+                applyScopeSelection(current, key, source);
+                return;
+            }
+            if (scope !== key) {
+                scope = key;
+                panelIndex = 0;
+                itemIndex = 0;
+                render();
+                return;
+            }
+            if (current.length === 1) {
+                showNotice('至少保留一个场景');
+                return;
+            }
+            current.splice(current.indexOf(key), 1);
+            applyScopeSelection(current, current[0], source);
+        }
+
+        function adoptChatScopes() {
+            if (!state) {
+                return;
+            }
+            if (!Array.isArray(state.chat_selected_scopes) || !state.chat_selected_scopes.length) {
+                state.chat_selected_scopes = state.unified_panel_mode ? SCOPE_KEYS.slice() : [scope];
+            }
+            const selected = selectedScopes();
+            state.chat_selected_scopes = selected;
+            if (selected.indexOf(scope) === -1) {
+                scope = selected[0];
+            }
+        }
+
         function currentPanel() {
             return currentPanels()[panelIndex] || null;
         }
@@ -1612,6 +1809,18 @@
         }
 
         // ==================== 8. 各区域渲染 ====================
+        function setAvatarElement(id, uri) {
+            const element = getElement(id);
+            element.replaceChildren();
+            if (typeof uri !== 'string' || uri.indexOf('data:image/') !== 0) {
+                return;
+            }
+            const image = document.createElement('img');
+            image.src = uri;
+            image.alt = '';
+            element.appendChild(image);
+        }
+
         function renderBots() {
             getElement('botSelect').innerHTML = (state.bots || [])
                 .map((bot) => `<option value="${escapeHtml(bot.hash)}">${escapeHtml(bot.display)}</option>`)
@@ -1621,10 +1830,16 @@
 
             const bot = (state.bots || []).find((item) => item.hash === botHash);
             getElement('botName').textContent = bot ? (bot.name || bot.display) : '官方机器人';
+            const avatar = bot && bot.avatar ? bot.avatar : '';
+            setAvatarElement('botAvatar', avatar);
+            setAvatarElement('botMiniAvatar', avatar);
         }
 
         function renderMenuList() {
             const items = (state.menu_draft && state.menu_draft.items) || [];
+            if (menuIndex >= items.length) {
+                menuIndex = Math.max(0, items.length - 1);
+            }
             getElement('menuList').innerHTML = items.map((item, index) => {
                 const extra = item.type === 'menu'
                     ? ((item.sub_menu_items || []).length + ' 个子项')
@@ -1635,15 +1850,11 @@
                     + `${escapeHtml(extra)}</div>`;
             }).join('') || "<div class='hint'>还没有菜单项</div>";
 
-            // 右侧表单显示当前选中的菜单项；没有选中项时用空白项占位。
-            const item = currentMenu() || {
-                name: '',
-                type: 'send_message',
-                send_message: '',
-                link: '',
-                switch: {switch_id: '', default: false},
-                sub_menu_items: [],
-            };
+            const item = currentMenu();
+            getElement('menuEditor').hidden = !item;
+            if (!item) {
+                return;
+            }
             getElement('menuName').value = item.name || '';
             getElement('menuNameCount').textContent = qqWidth(item.name || '') + '/10';
             fillSelect('menuType', state.menu_type_options, item.type);
@@ -1684,6 +1895,12 @@
 
         function renderPanelList() {
             getElement('unified').checked = !!state.unified_panel_mode;
+            const selected = selectedScopes();
+            getElement('scopePicks').innerHTML = SCOPE_ORDER.map(([key, label]) => {
+                const checked = selected.indexOf(key) !== -1 ? ' checked' : '';
+                return `<label class="check"><input type="checkbox" data-scope="${key}"${checked}>`
+                    + `${escapeHtml(label)}</label>`;
+            }).join('');
 
             const panels = currentPanels();
             getElement('panelList').innerHTML = panels.map((panel, index) => {
@@ -1705,14 +1922,13 @@
             };
             getElement('panelRemark').value = panel.remark || '';
             getElement('panelId').value = panel.panel_id || '';
-            fillSelect('targetType', state.target_type_options, panel.target_type || 'all');
-            getElement('panelHint').textContent = (state.field_hints || {}).target_type || '';
 
-            // 只有 c2c 场景用用户 openid，group 场景用群 openid。
-            const openids = scope === 'c2c' ? (panel.user_openids || []) : (panel.group_openids || []);
-            getElement('openidBox').value = openids.join('\n');
+            updateTargetTypeControls(panel, selected, true);
 
             const items = panel.items || [];
+            if (itemIndex >= items.length) {
+                itemIndex = Math.max(0, items.length - 1);
+            }
             getElement('itemList').innerHTML = items.map((item, index) => {
                 const active = index === itemIndex ? ' active' : '';
                 const adminMark = item.only_admin ? ' [管理员]' : '';
@@ -1720,9 +1936,13 @@
                     + `[${escapeHtml(item.type)}] ${escapeHtml(item.desc || '')}${adminMark}`;
                 return `<div class="mini-item${active}" data-action="select-item" data-index="${index}">`
                     + summary + '</div>';
-            }).join('');
+            }).join('') || "<div class='hint'>还没有面板元素</div>";
 
-            const item = items[itemIndex] || {name: '', desc: '', type: 'command', link: '', only_admin: false};
+            const item = items[itemIndex] || null;
+            getElement('itemEditor').hidden = !item;
+            if (!item) {
+                return;
+            }
             getElement('itemName').value = item.name || '';
             getElement('itemDesc').value = item.desc || '';
             getElement('itemNameCount').textContent = qqWidth(item.name || '') + '/14';
@@ -1786,8 +2006,14 @@
             }
 
             getElement('previewScopeTabs').innerHTML = SCOPE_ORDER.map(([key, label]) => {
-                const active = key === scope ? 'active' : '';
-                return `<span class="${active}" data-action="change-scope" data-scope="${key}">${label}</span>`;
+                const classes = [];
+                if (selectedScopes().indexOf(key) !== -1) {
+                    classes.push('active');
+                }
+                if (key === scope) {
+                    classes.push('current');
+                }
+                return `<span class="${classes.join(' ')}" data-action="toggle-scope" data-scope="${key}">${label}</span>`;
             }).join('');
 
             const panel = currentPanel();
@@ -1911,10 +2137,7 @@
         }
 
         function changeScope(nextScope) {
-            scope = nextScope;
-            panelIndex = 0;
-            itemIndex = 0;
-            render();
+            toggleScope(nextScope);
         }
 
         // ==================== 10. 表单 → 草稿 ====================
@@ -1957,28 +2180,25 @@
                 return;
             }
             panel.remark = getElement('panelRemark').value;
-            panel.panel_id = getElement('panelId').value;
             panel.target_type = getElement('targetType').value;
             panel.scope = scope;
-
-            const openids = getElement('openidBox').value
-                .split(/[\s,;，；]+/)
-                .map((item) => item.trim())
-                .filter(Boolean);
-            if (scope === 'c2c') {
-                panel.user_openids = openids;
-            }
-            if (scope === 'group') {
-                panel.group_openids = openids;
-            }
-            // 频道与频道私信不支持定向，强制回全量。
-            if (['channel', 'dm'].includes(scope)) {
+            if (!allowsSpecific()) {
                 panel.target_type = 'all';
+            }
+            if (allowsSpecific() && panel.target_type === 'specific') {
+                const selected = selectedScopes();
+                if (selected.indexOf('c2c') !== -1) {
+                    panel.user_openids = parseOpenids(getElement('openidBox').value);
+                }
+                if (selected.indexOf('group') !== -1) {
+                    panel.group_openids = parseOpenids(getElement('groupOpenidBox').value);
+                }
             }
 
             if (state.unified_panel_mode) {
                 syncUnified(panel);
             }
+            updateTargetTypeControls(panel, selectedScopes(), false);
             renderPreview();
         }
 
@@ -1998,9 +2218,9 @@
             render();
         }
 
-        // 统一配置：把当前面板复制到其他三个场景，保留各自的 panel_id。
+        // 统一配置：把当前面板复制到已选场景，保留各自的 panel_id。
         function syncUnified(source) {
-            SCOPE_ORDER.forEach(([key]) => {
+            selectedScopes().forEach((key) => {
                 const copy = JSON.parse(JSON.stringify(source));
                 copy.scope = key;
                 if (['channel', 'dm'].includes(key)) {
@@ -2022,8 +2242,9 @@
 
         function onUnified() {
             state.unified_panel_mode = getElement('unified').checked;
-            if (state.unified_panel_mode && currentPanel()) {
-                syncUnified(currentPanel());
+            if (state.unified_panel_mode) {
+                applyScopeSelection(SCOPE_KEYS.slice(), scope, currentPanel());
+                return;
             }
             render();
         }
@@ -2235,6 +2456,7 @@
                 panel_drafts: state.panel_drafts,
                 unified_panel_mode: state.unified_panel_mode,
                 chat_current_scope: scope,
+                chat_selected_scopes: selectedScopes(),
                 bot_enable_switch: state.bot_enable_switch,
             };
         }
@@ -2245,6 +2467,34 @@
 
         function closeModal() {
             getElement('resultModal').hidden = true;
+        }
+
+        function copyPanelId() {
+            const input = getElement('panelId');
+            const value = (input.value || '').trim();
+            if (!value) {
+                showNotice('还没有 panel_id，新建提交后才会由平台填入');
+                return;
+            }
+            input.focus();
+            input.select();
+            try {
+                if (document.execCommand('copy')) {
+                    showNotice('已复制 panel_id');
+                    return;
+                }
+            } catch (error) {
+                // 沙箱里优先 execCommand，失败再试 Clipboard API。
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(value).then(() => {
+                    showNotice('已复制 panel_id');
+                }).catch(() => {
+                    showNotice('复制失败，请手动选中后复制');
+                });
+                return;
+            }
+            showNotice('请手动选中后复制');
         }
 
         function showSendDialog(title, data) {
@@ -2271,11 +2521,12 @@
                 botHash = state.current_bot_hash;
             }
             scope = state.chat_current_scope || scope;
+            adoptChatScopes();
             render();
         }
 
-        // 完整刷新：先读草稿，再拉取平台当前配置。
-        async function bootstrap() {
+        // 完整刷新：先读草稿，再拉取平台当前配置。点刷新时会重新尝试拉取 bot 头像。
+        async function bootstrap(refreshAvatar) {
             getElement('resultBox').textContent = '正在读取本地草稿…';
             await reloadState();
             if (!botHash) {
@@ -2285,12 +2536,17 @@
 
             getElement('resultBox').textContent = '正在拉取平台当前配置…';
             try {
-                const data = await api('bootstrap', {bot_hash: botHash});
+                const payload = {bot_hash: botHash};
+                if (refreshAvatar) {
+                    payload.refresh_avatar = true;
+                }
+                const data = await api('bootstrap', payload);
                 state = data.data;
                 if (!botHash && state.current_bot_hash) {
                     botHash = state.current_bot_hash;
                 }
                 scope = state.chat_current_scope || scope;
+                adoptChatScopes();
                 menuIndex = 0;
                 panelIndex = 0;
                 itemIndex = 0;
@@ -2331,7 +2587,7 @@
         }
 
         async function pullPanel(all) {
-            const scopes = all ? ['all'] : [scope];
+            const scopes = all ? ['all'] : selectedScopes();
             const data = await api('panel/pull', {bot_hash: botHash, scopes: scopes});
             state = data.data;
             panelIndex = 0;
@@ -2345,6 +2601,7 @@
             }
             const body = Object.assign(draftBody(), {
                 scope: scope,
+                scopes: selectedScopes(),
                 panel_index: panelIndex,
                 unified_panel_mode: state.unified_panel_mode,
             });
@@ -2373,7 +2630,12 @@
             if (!await confirmAction('即将对当前面板执行关联对象 ' + op + '，是否确认？')) {
                 return;
             }
-            const body = Object.assign(draftBody(), {scope: scope, panel_index: panelIndex, op: op});
+            const body = Object.assign(draftBody(), {
+                scope: scope,
+                scopes: selectedScopes(),
+                panel_index: panelIndex,
+                op: op,
+            });
             const data = await api('panel/target', body);
             state = data.data;
             showSendDialog('修改关联对象结果', data.data);
@@ -2440,7 +2702,7 @@
         // 列表项是动态生成的，同样用 data-action，所以不需要逐个绑定。
         const ACTION_HANDLERS = {
             // 顶部工具栏
-            'refresh': () => bootstrap(),
+            'refresh': () => bootstrap(true),
             // 页签
             'show-tab': (trigger) => showTab(trigger.dataset.tab),
             // 自定义菜单
@@ -2458,6 +2720,7 @@
             // 指令面板
             'add-panel': () => addPanel(),
             'delete-panel': () => delPanel(),
+            'copy-panel-id': () => copyPanelId(),
             'select-panel': (trigger) => selectPanel(Number(trigger.dataset.index)),
             'send-target': (trigger) => sendTarget(trigger.dataset.op),
             'add-item': () => addItem(),
@@ -2470,7 +2733,8 @@
             // 预览区
             'click-menu': (trigger) => clickMenu(Number(trigger.dataset.index)),
             'click-sub': (trigger) => clickSub(Number(trigger.dataset.parent), Number(trigger.dataset.index)),
-            'change-scope': (trigger) => changeScope(trigger.dataset.scope),
+            'change-scope': (trigger) => toggleScope(trigger.dataset.scope),
+            'toggle-scope': (trigger) => toggleScope(trigger.dataset.scope),
             // 全局设置
             'save-global': () => saveGlobal(),
             'add-master': () => addMaster(),
@@ -2509,10 +2773,37 @@
             getElement('subLink').addEventListener('input', applySub);
 
             getElement('unified').addEventListener('change', onUnified);
+            getElement('scopePicks').addEventListener('change', (event) => {
+                const input = event.target;
+                if (!input || !input.dataset || !input.dataset.scope) {
+                    return;
+                }
+                const key = input.dataset.scope;
+                const current = selectedScopes().slice();
+                const source = currentPanel();
+                const has = current.indexOf(key) !== -1;
+                if (input.checked && !has) {
+                    current.push(key);
+                    applyScopeSelection(current, scope, source);
+                    return;
+                }
+                if (!input.checked && has) {
+                    if (current.length === 1) {
+                        input.checked = true;
+                        showNotice('至少保留一个场景');
+                        return;
+                    }
+                    current.splice(current.indexOf(key), 1);
+                    applyScopeSelection(current, scope, source);
+                }
+            });
             getElement('panelRemark').addEventListener('input', applyPanel);
-            getElement('panelId').addEventListener('input', applyPanel);
+            getElement('panelId').addEventListener('focus', function () {
+                this.select();
+            });
             getElement('targetType').addEventListener('change', applyPanel);
             getElement('openidBox').addEventListener('input', applyPanel);
+            getElement('groupOpenidBox').addEventListener('input', applyPanel);
             getElement('itemName').addEventListener('input', applyItem);
             getElement('itemDesc').addEventListener('input', applyItem);
             getElement('itemType').addEventListener('change', applyItem);
@@ -2520,6 +2811,11 @@
             getElement('itemAdmin').addEventListener('change', applyItem);
 
             getElement('browseKey').addEventListener('input', renderBrowse);
+            getElement('menuPills').addEventListener('scroll', () => {
+                if (expandedMenu >= 0) {
+                    placeSubmenu(expandedMenu);
+                }
+            });
         }
 
         // ==================== 15. 初始化 ====================
@@ -2540,6 +2836,7 @@
                 state = window.__DEMO__;
                 botHash = state.current_bot_hash || '';
                 scope = state.chat_current_scope || scope;
+                adoptChatScopes();
                 render();
                 applyQueryTab();
                 return;

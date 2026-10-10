@@ -48,7 +48,7 @@ def summarize_api_result(api_result) -> dict:
     }
 
 
-def _get_bots():
+def _get_bots(refresh_avatar=False):
     Proc = utils.get_runtime_proc()
     bot_info_dict = {}
     if Proc is not None:
@@ -64,6 +64,9 @@ def _get_bots():
                 utils.safe_str(getattr(bot_info, 'name', ''))
                 or ('Bot ' + utils.safe_str(getattr(bot_info, 'id', '')))
             ),
+            'avatar': utils.bot_avatar_data_uri(
+                bot_hash, bot_info=bot_info, refresh=refresh_avatar,
+            ),
         })
     bots.sort(key=lambda item: item['display'])
     return bots, filtered
@@ -74,9 +77,9 @@ def _get_bot_info(bot_hash: str):
     return filtered.get(utils.safe_str(bot_hash))
 
 
-def _snapshot(bot_hash: str) -> dict:
+def _snapshot(bot_hash: str, refresh_avatar=False) -> dict:
     global_config = utils.load_global_config()
-    bots, _filtered = _get_bots()
+    bots, _filtered = _get_bots(refresh_avatar=refresh_avatar)
     if not bot_hash and bots:
         bot_hash = bots[0]['hash']
     bot_config = utils.load_bot_config(bot_hash) if bot_hash else utils.normalize_bot_config({})
@@ -88,6 +91,7 @@ def _snapshot(bot_hash: str) -> dict:
         'bot_enable_switch': bool(bot_config.get('bot_enable_switch', True)),
         'unified_panel_mode': bool(bot_config.get('unified_panel_mode', False)),
         'chat_current_scope': bot_config.get('chat_current_scope', config.SCOPE_C2C),
+        'chat_selected_scopes': bot_config.get('chat_selected_scopes', [config.SCOPE_C2C]),
         'menu_draft': function.normalize_menu_draft(bot_config.get('menu_draft', {})),
         'panel_drafts': bot_config.get('panel_drafts', {}),
         'core_masters': utils.get_olivadice_master_id_list(bot_hash) if bot_hash else [],
@@ -131,6 +135,11 @@ def _save_draft(bot_hash: str, payload: dict) -> dict:
         scope = utils.safe_str(payload.get('chat_current_scope'))
         if scope in config.SCOPE_LIST:
             bot_config['chat_current_scope'] = scope
+    if 'chat_selected_scopes' in payload:
+        bot_config['chat_selected_scopes'] = function.normalize_scope_list(
+            payload.get('chat_selected_scopes'),
+            bot_config.get('chat_current_scope', config.SCOPE_C2C),
+        )
     if 'bot_enable_switch' in payload:
         bot_config['bot_enable_switch'] = bool(payload.get('bot_enable_switch'))
     utils.save_bot_config(bot_hash, bot_config)
@@ -268,18 +277,19 @@ def api_panel_pull(payload):
 
 def api_bootstrap(payload):
     bot_hash = utils.safe_str(payload.get('bot_hash', ''))
+    refresh_avatar = bool(payload.get('refresh_avatar'))
     bots, _filtered = _get_bots()
     if not bot_hash and bots:
         bot_hash = bots[0]['hash']
     bot_info = _get_bot_info(bot_hash) if bot_hash else None
     results = {}
     if bot_info is None:
-        data = _snapshot(bot_hash)
+        data = _snapshot(bot_hash, refresh_avatar=refresh_avatar)
         data['api_result'] = results
         return _ok(data, '没有可拉取的 qqGuildV2 Bot，已显示本地草稿')
     results['menu'] = _pull_menu(bot_hash, bot_info)
     results['panels'] = _pull_panels(bot_hash, bot_info, ['all'])
-    data = _snapshot(bot_hash)
+    data = _snapshot(bot_hash, refresh_avatar=refresh_avatar)
     data['api_result'] = results
     menu_ok = bool(results['menu'].get('active'))
     panel_ok = any(item.get('active') for item in results['panels'].values())
@@ -301,6 +311,10 @@ def api_panel_send(payload):
     scope = utils.safe_str(payload.get('scope', bot_config.get('chat_current_scope', config.SCOPE_C2C)))
     if scope not in config.SCOPE_LIST:
         scope = config.SCOPE_C2C
+    selected = function.normalize_scope_list(
+        payload.get('scopes') or payload.get('chat_selected_scopes') or bot_config.get('chat_selected_scopes'),
+        scope,
+    )
     panels = bot_config.get('panel_drafts', {}).get(scope, [])
     index = int(payload.get('panel_index', 0) or 0)
     if index < 0 or index >= len(panels):
@@ -311,26 +325,38 @@ def api_panel_send(payload):
         return _error('校验失败：' + '；'.join(errors[:8]))
     results = {}
     if unified:
-        for one_scope in config.SCOPE_LIST:
+        for one_scope in selected:
             scoped = function.normalize_panel_record(record, fallback_scope=one_scope)
             scoped['scope'] = one_scope
             existing = bot_config['panel_drafts'].get(one_scope, [])
-            if existing:
-                scoped['panel_id'] = existing[0].get('panel_id', '')
+            scoped['panel_id'] = existing[0].get('panel_id', '') if existing else ''
             if one_scope in [config.SCOPE_CHANNEL, config.SCOPE_DM]:
                 scoped['target_type'] = 'all'
                 scoped['user_openids'] = []
                 scoped['group_openids'] = []
+            elif not function.scopes_allow_specific(selected):
+                scoped['target_type'] = 'all'
+            scoped_errors = function.validate_panel_record(scoped)
+            if scoped_errors:
+                return _error('校验失败：' + '；'.join(scoped_errors[:8]))
             if scoped.get('panel_id'):
                 result = api_bridge.update_panel(bot_info, scoped, utils.get_runtime_proc())
             else:
                 result = api_bridge.create_panel(bot_info, scoped, utils.get_runtime_proc())
             results[one_scope] = result
-            if result.get('active') and existing:
-                existing[0]['panel_id'] = api_bridge.extract_panel_id(result) or scoped.get('panel_id', '')
-                existing[0]['version'] = api_bridge.extract_version(result)
+            if not result.get('active'):
+                continue
+            panel_id = api_bridge.extract_panel_id(result) or scoped.get('panel_id', '')
+            version = api_bridge.extract_version(result)
+            if existing:
+                existing[0]['panel_id'] = panel_id
+                existing[0]['version'] = version
                 existing[0]['items'] = function.deepcopy_data(record.get('items', []))
                 existing[0]['remark'] = record.get('remark', '')
+            else:
+                scoped['panel_id'] = panel_id
+                scoped['version'] = version
+                bot_config['panel_drafts'][one_scope] = [scoped]
     else:
         if record.get('panel_id'):
             result = api_bridge.update_panel(bot_info, record, utils.get_runtime_proc())
@@ -382,19 +408,31 @@ def api_panel_target(payload):
     _save_draft(bot_hash, payload)
     bot_config = utils.load_bot_config(bot_hash)
     scope = utils.safe_str(payload.get('scope', config.SCOPE_C2C))
-    panels = bot_config.get('panel_drafts', {}).get(scope, [])
-    index = int(payload.get('panel_index', 0) or 0)
-    if index < 0 or index >= len(panels):
-        return _error('请先选择指令面板')
-    record = panels[index]
+    unified = bool(payload.get('unified_panel_mode', bot_config.get('unified_panel_mode', False)))
+    selected = function.normalize_scope_list(
+        payload.get('scopes') or payload.get('chat_selected_scopes') or bot_config.get('chat_selected_scopes'),
+        scope,
+    )
+    target_scopes = selected if unified else [scope]
     op = utils.safe_str(payload.get('op', 'add'))
-    if record.get('target_type') != 'specific' or not record.get('panel_id'):
+    results = []
+    for one_scope in target_scopes:
+        if one_scope not in [config.SCOPE_C2C, config.SCOPE_GROUP]:
+            continue
+        panels = bot_config.get('panel_drafts', {}).get(one_scope, [])
+        index = 0 if unified else int(payload.get('panel_index', 0) or 0)
+        if index < 0 or index >= len(panels):
+            continue
+        record = panels[index]
+        if record.get('target_type') != 'specific' or not record.get('panel_id'):
+            continue
+        if one_scope == config.SCOPE_C2C:
+            openids = record.get('user_openids', [])
+        else:
+            openids = record.get('group_openids', [])
+        results.extend(api_bridge.update_panel_targets(bot_info, record, op, openids, utils.get_runtime_proc()))
+    if not results:
         return _error('只有已提交的 specific 面板才能改关联对象')
-    if scope == config.SCOPE_C2C:
-        openids = record.get('user_openids', [])
-    else:
-        openids = record.get('group_openids', [])
-    results = api_bridge.update_panel_targets(bot_info, record, op, openids, utils.get_runtime_proc())
     data = _snapshot(bot_hash)
     data['api_result'] = results
     data['send_summary'] = summarize_api_result(results)

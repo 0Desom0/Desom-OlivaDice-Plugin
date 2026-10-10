@@ -16,5 +16,26 @@ class Event(object):
     def save(plugin_event, Proc):
         message.handle_save(plugin_event, Proc)
 
+    def group_message(plugin_event, Proc):
+        try:
+            utils.set_runtime_proc(Proc)
+            utils.remember_bot_openid_from_event(plugin_event)
+        except Exception:
+            pass
+
+    def private_message(plugin_event, Proc):
+        try:
+            utils.set_runtime_proc(Proc)
+            utils.remember_bot_openid_from_event(plugin_event)
+        except Exception:
+            pass
+
+    def group_member_increase(plugin_event, Proc):
+        try:
+            utils.set_runtime_proc(Proc)
+            utils.remember_bot_openid_from_event(plugin_event)
+        except Exception:
+            pass
+
     def menu(plugin_event, Proc):
         webui.handle_menu_event(plugin_event, Proc)

@@ -38,6 +38,28 @@ def parse_openid_list(text) -> list:
     return result
 
 
+def normalize_scope_list(raw_scopes, fallback: str = '') -> list:
+    seen = set()
+    if isinstance(raw_scopes, (list, tuple)):
+        for item in raw_scopes:
+            key = safe_str(item)
+            if key in config.SCOPE_LIST:
+                seen.add(key)
+    result = [key for key in config.SCOPE_LIST if key in seen]
+    if result:
+        return result
+    if fallback in config.SCOPE_LIST:
+        return [fallback]
+    return [config.SCOPE_C2C]
+
+
+def scopes_allow_specific(scopes) -> bool:
+    if not scopes:
+        return False
+    allowed = {config.SCOPE_C2C, config.SCOPE_GROUP}
+    return all(scope in allowed for scope in scopes)
+
+
 def join_openid_list(openid_list) -> str:
     if not isinstance(openid_list, list):
         return ''
