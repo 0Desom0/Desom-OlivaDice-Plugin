@@ -16,7 +16,7 @@ from io import BytesIO
 from pathlib import Path
 
 from . import config
-from .resources import read_json
+from .resources import avatar_basename, read_json
 
 WIDTH = 1560
 HEIGHT = 2130
@@ -152,6 +152,12 @@ def render_png(document, browser_path=''):
         return output.getvalue()
 
 
+def cache_paths(profile):
+    """每个 bot 各自一张图和一份摘要，文件名 auth_<bot_hash>。"""
+    stem = 'auth_' + avatar_basename(profile.bot_hash)
+    return profile.folder / (stem + '.png'), profile.folder / (stem + '.cache.json')
+
+
 def read_cache(path):
     try:
         from PIL import Image
@@ -171,12 +177,14 @@ def read_cache(path):
 def guide_image(profile):
     with _render_lock:
         current_svn = config.current_svn()
-        needs_upgrade = current_svn > config.load()['svn']
         document = page_html(profile)
         digest = hashlib.sha256((f'PNG:{IMAGE_SIZE}:' + document).encode('utf-8')).hexdigest()[:24]
-        destination = profile.folder / 'authorization.png'
-        metadata_path = profile.folder / 'authorization.cache.json'
+        destination, metadata_path = cache_paths(profile)
         metadata = read_json(metadata_path)
+        cached_svn = metadata.get('svn', 0)
+        if type(cached_svn) is not int or cached_svn < 0:
+            cached_svn = 0
+        needs_upgrade = current_svn > config.load()['svn'] or current_svn > cached_svn
         cached = read_cache(destination) if not needs_upgrade and metadata.get('document_sha256') == digest else b''
         if cached and hashlib.sha256(cached).hexdigest() == metadata.get('image_sha256'):
             return ImageResult(cached, destination, cached=True)
@@ -191,7 +199,11 @@ def guide_image(profile):
                 temporary = Path(stream.name)
                 stream.write(data)
             temporary.replace(destination)
-            metadata = {'document_sha256': digest, 'image_sha256': hashlib.sha256(data).hexdigest()}
+            metadata = {
+                'document_sha256': digest,
+                'image_sha256': hashlib.sha256(data).hexdigest(),
+                'svn': current_svn,
+            }
             with tempfile.NamedTemporaryFile(
                 dir=destination.parent,
                 suffix='.tmp',

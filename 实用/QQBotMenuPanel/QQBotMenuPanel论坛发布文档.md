@@ -3,8 +3,8 @@
 - **名称**：`QQ自定义菜单与指令面板 (QQBotMenuPanel)`
 - **作者**：`Desom-fu`
 - **版本**：`1.0.0`
-- **兼容版本**：`0.11.90+`
-- **平台**：`仅支持 QQ 官方机器人（qqGuildV2 / qqGuildv2_link）`
+- **兼容版本**：`1.0.0+`
+- **平台**：`仅支持 QQ 官方机器人 qqGuildV2`
 - **操作系统**：`理论来说都可以`
 - **前置插件**：`可选：OlivaDiceCore（用于显示只读全局骰主列表、全局骰主权限判定；未安装也可使用本插件骰主）`
 
@@ -12,13 +12,9 @@
 
 ## 注意
 
-此插件为 AI 辅助编写，实际可用。有 bug 我会修。
-
 官方文档对照：
 
 https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/
-
-本插件 **不直接请求官方 HTTP**，一律调用 OlivOS 暴露的 `indeAPI`。请先更新青果主项目中的 `qqGuildv2SDK`（需包含 `get_qq_global_menu` 等接口）。
 
 ---
 
@@ -46,11 +42,6 @@ https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/
 
 - ### 插件包
 
-`QQBotMenuPanel.opk`
-
-（论坛发布时可替换成附件，例如：
-`[upl-file uuid=... size=... ]QQBotMenuPanel.opk[/upl-file]`
-）
 
 ---
 
@@ -123,17 +114,6 @@ https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/
 
 ## 更新日志
 
-### 2026.9.19
+### v1.0.0
 
-- WebUI 接入 OlivOS 侧栏插件页面，前后端交互改走宿主消息桥。
-- 移除独立 Flask 服务、端口设置及桌面启动窗口。
-- 发送与删除改用页面内确认框，兼容 OlivOS 插件页面沙箱。
-- 初版：自定义菜单、指令面板、四场景独立/统一配置、实时预览、确认发送。
-- 配置改为本地 WebUI，预览对照官方自定义菜单 / 指令面板。
-- 桌面 GUI 只保留 WebUI 开关。
-- 内置帮助文档与官方字段中英对照。
-- 全局骰主只读展示，插件骰主可在 WebUI 编辑。
-- 不再提供聊天命令，配置只走 WebUI。
-- 打开 WebUI 自动拉取平台当前配置；帮助文档用 Markdown。
-
-<!-- end -->
+- 初版更新

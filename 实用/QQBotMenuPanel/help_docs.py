@@ -104,13 +104,21 @@ FIELD_HINT_DICT = {
 }
 
 
-def get_help_markdown() -> str:
+def _read_help_markdown() -> str:
+    # OPK 在 init 后会清掉解包目录，运行时再读 help.md 会失败，导入时写入内存。
     help_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'help.md')
     try:
         with open(help_path, 'r', encoding='utf-8') as help_file:
             return help_file.read()
     except Exception:
         return '# 帮助文档\n\n读取 `help.md` 失败。'
+
+
+HELP_MARKDOWN = _read_help_markdown()
+
+
+def get_help_markdown() -> str:
+    return HELP_MARKDOWN
 
 
 def menu_type_label(value: str) -> str:

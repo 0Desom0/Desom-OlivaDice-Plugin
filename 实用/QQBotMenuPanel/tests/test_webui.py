@@ -228,6 +228,25 @@ def png_bytes(color='#4060c0'):
     return output.getvalue()
 
 
+def test_help_markdown_stays_in_memory_after_sidecar_gone(panel, monkeypatch):
+    docs = panel.module.help_docs
+    text = docs.get_help_markdown()
+    assert 'QQ 自定义菜单与指令面板' in text
+    assert '读取 `help.md` 失败' not in text
+    assert request(panel, 'state')['data']['help_text'] == text
+
+    original_open = open
+
+    def deny_help_md(path, *args, **kwargs):
+        if os.path.basename(str(path)) == 'help.md':
+            raise FileNotFoundError(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr('builtins.open', deny_help_md)
+    assert docs.get_help_markdown() == text
+    assert request(panel, 'state')['data']['help_text'] == text
+
+
 def test_page_marks_panel_id_readonly_and_hides_empty_editors():
     html = (PLUGIN / 'webui/index.html').read_text(encoding='utf-8')
     assert 'id="panelId" readonly' in html

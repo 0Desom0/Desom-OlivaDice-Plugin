@@ -564,7 +564,7 @@ def test_old_webp_cache_is_not_reused(monkeypatch, tmp_path):
     draw = Mock(return_value=png())
     monkeypatch.setattr(renderer, 'render_png', draw)
     result = renderer.guide_image(profile)
-    assert result.path == tmp_path / 'authorization.png'
+    assert result.path == tmp_path / 'auth_bot.png'
     assert result.data.startswith(renderer.PNG_SIGNATURE)
     assert draw.call_count == 1
     assert old.read_bytes() == b'old cached resource'
@@ -941,6 +941,55 @@ def png():
     return stream.getvalue()
 
 
+def test_each_bot_keeps_its_own_authorization_image(monkeypatch, tmp_path):
+    draw = Mock(return_value=png())
+    monkeypatch.setattr(renderer, 'render_png', draw)
+    first = resources.BotProfile('bot1', '橘波特', '23001', tmp_path)
+    second = resources.BotProfile('bot2', '青苹果', '23002', tmp_path)
+    left = renderer.guide_image(first)
+    right = renderer.guide_image(second)
+    assert left.path == tmp_path / 'auth_bot1.png'
+    assert right.path == tmp_path / 'auth_bot2.png'
+    assert left.path.read_bytes() and right.path.read_bytes()
+    assert draw.call_count == 2
+    assert renderer.guide_image(first).cached
+    assert renderer.guide_image(second).cached
+    assert draw.call_count == 2
+    first.name = '新名字'
+    assert not renderer.guide_image(first).cached
+    assert renderer.guide_image(second).cached
+    assert draw.call_count == 3
+    assert (tmp_path / 'authorization.png').exists() is False
+
+
+def test_plugin_upgrade_regenerates_each_bot_image(monkeypatch, tmp_path):
+    draw = Mock(return_value=png())
+    monkeypatch.setattr(renderer, 'render_png', draw)
+    first = resources.BotProfile('bot1', '橘波特', '23001', tmp_path)
+    second = resources.BotProfile('bot2', '青苹果', '23002', tmp_path)
+    renderer.guide_image(first)
+    renderer.guide_image(second)
+    assert draw.call_count == 2
+    monkeypatch.setattr(config, 'PLUGIN_SVN', config.PLUGIN_SVN + 1)
+    assert not renderer.guide_image(first).cached
+    assert not renderer.guide_image(second).cached
+    assert draw.call_count == 4
+    assert renderer.guide_image(first).cached
+    assert renderer.guide_image(second).cached
+    assert draw.call_count == 4
+
+
+def test_unsafe_bot_hash_authorization_filename_is_sanitized(monkeypatch, tmp_path):
+    draw = Mock(return_value=png())
+    monkeypatch.setattr(renderer, 'render_png', draw)
+    profile = resources.BotProfile('../outside', '橘波特', '23001', tmp_path)
+    result = renderer.guide_image(profile)
+    stem = 'auth_' + resources.avatar_basename('../outside')
+    assert result.path == tmp_path / (stem + '.png')
+    assert result.path.is_file()
+    assert '..' not in result.path.name
+
+
 def test_single_image_cache_reused_and_bot_changes_rebuild(monkeypatch, tmp_path):
     profile = resources.BotProfile('bot1', '橘波特', '23001', tmp_path)
     draw = Mock(return_value=png())
@@ -954,9 +1003,9 @@ def test_single_image_cache_reused_and_bot_changes_rebuild(monkeypatch, tmp_path
     assert draw.call_count == 2
     profile.appid = 'another-bot'
     third = renderer.guide_image(profile)
-    assert third.path == first.path == tmp_path / 'authorization.png'
+    assert third.path == first.path == tmp_path / 'auth_bot1.png'
     assert draw.call_count == 3
-    assert len(list(tmp_path.glob('*.png'))) == 1
+    assert len(list(tmp_path.glob('auth_*.png'))) == 1
     assert renderer.guide_image(profile).cached
     profile.appid = '23001'
     assert not renderer.guide_image(profile).cached
@@ -973,7 +1022,7 @@ def test_single_cache_wrong_image_or_metadata_never_reused(monkeypatch, tmp_path
     result.path.write_bytes(other.getvalue())
     assert not renderer.guide_image(profile).cached
     assert draw.call_count == 2
-    (tmp_path / 'authorization.cache.json').write_text('broken JSON', encoding='utf-8')
+    (tmp_path / 'auth_bot.cache.json').write_text('broken JSON', encoding='utf-8')
     assert not renderer.guide_image(profile).cached
     assert draw.call_count == 3
 
