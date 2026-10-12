@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>多自定义回复切换</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#24292f;--muted:#666f78;--line:#d6dce2;--accent:#0969a2;--sub:#f5f7f9;--error:#b42318}
+@media(prefers-color-scheme:dark){:root{--bg:#202428;--fg:#e4e8ec;--muted:#a5adb5;--line:#444c56;--accent:#71c4f3;--sub:#282e34;--error:#ff9c91}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 system-ui,'Microsoft YaHei',sans-serif}
+main{max-width:1600px;margin:auto;padding:20px}h1{font-size:22px;margin:0 0 4px}p{margin:6px 0 14px;color:var(--muted)}
+button,input,select,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:7px 10px}
+button{cursor:pointer}button:hover:not(:disabled){border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}button.primary{color:var(--accent)}
+input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}.toolbar select{min-width:180px}.toolbar label{color:var(--muted)}
+.split{display:grid;grid-template-columns:minmax(300px,2fr) minmax(320px,3fr);gap:20px;border-top:1px solid var(--line);padding-top:18px}
+.filters{display:flex;gap:8px}.filters input{flex:1;min-width:100px}.list{margin-top:12px;height:500px;overflow:auto;border:1px solid var(--line)}
+.row{display:flex;width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;text-align:left;gap:10px;padding:9px 12px}
+.row.active{background:var(--sub);box-shadow:inset 3px 0 var(--accent)}.row code{flex:1;overflow-wrap:anywhere}.row span{font-size:12px;color:var(--muted);white-space:nowrap}
+.editor-title{font:600 18px/1.5 ui-monospace,Consolas,monospace;overflow-wrap:anywhere}.note{white-space:pre-wrap;color:var(--muted);min-height:45px;margin:8px 0}
+textarea{width:100%;min-height:330px;resize:vertical;font:14px/1.7 ui-monospace,Consolas,monospace;tab-size:4}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+#status{min-height:26px;white-space:pre-wrap;overflow-wrap:anywhere}#status.error{color:var(--error)}.info{white-space:pre-wrap;border-top:1px solid var(--line);padding:10px 0;color:var(--muted)}
+dialog{color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;max-width:min(90vw,900px);max-height:85vh;padding:24px}
+dialog::backdrop{background:#0006}dialog label{display:block;margin:10px 0 4px}dialog input,dialog select{width:100%}dialog h2{margin-top:0;font-size:19px}
+dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,'Microsoft YaHei',sans-serif}dialog textarea{min-height:220px}
+table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;border-bottom:1px solid var(--line)}table input{width:100px}
+.pagination{display:flex;align-items:center;gap:8px;margin:8px 0}.pagination span{color:var(--muted)}#copy-dialog select{min-width:280px}
+[hidden]{display:none!important}@media(max-width:760px){main{padding:12px}.split{grid-template-columns:1fr}.list{height:270px}textarea{min-height:250px}}
+</style>
+</head>
+<body><main>
+<h1>多自定义回复切换</h1>
+<p>1/default 与 Core 共用回复；2/smp 为只读全默认回复。unity 模板须导入 bot 才可调用。</p>
+<div class="toolbar"><label for="scope">回复库</label><select id="scope"></select><label for="baseline">unity 比较基线</label><select id="baseline"></select><button id="help">编写帮助</button></div>
+<div class="toolbar"><label for="pack">当前回复</label><select id="pack"></select><button id="create">新建复制</button><button id="transfer">从其他库导入</button><button id="rename">改名</button><button id="reindex">改序号</button><button id="settings">Bot / 群设置</button><button id="recover">恢复模块</button></div>
+<div class="toolbar"><button id="import">导入 JSON</button><button id="download">下载 JSON</button><button id="export">导出 JSON</button><button id="refresh">刷新文件</button><input type="file" id="file" accept=".json,application/json" hidden></div>
+<div id="status" role="status" aria-live="polite"></div><div id="config-info" class="info"></div>
+<div class="split"><section aria-label="回复键列表"><div class="filters"><input id="query" placeholder="搜索回复键、内容或说明" aria-label="搜索回复"><select id="filter" aria-label="修改状态"><option value="all">全部</option><option value="modified">已修改</option><option value="unmodified">未修改</option></select></div><div id="entries" class="list"></div><div class="pagination"><button id="prev">上一页</button><span id="page"></span><button id="next">下一页</button></div></section>
+<section aria-label="回复编辑"><div id="key" class="editor-title">选择一套回复</div><div id="note" class="note"></div><label for="text">回复内容</label><textarea id="text" disabled spellcheck="false"></textarea><div class="actions"><button id="save" class="primary">保存回复</button><button id="reset">恢复默认</button><button id="add-key">新增回复键</button><button id="delete-key">删除自定义键</button></div><p id="edit-state"></p></section></div>
+</main>
+<dialog id="collision"><h2>已存在同名回复</h2><p id="collision-name"></p><div class="actions"><button data-choice="overwrite">覆盖</button><button data-choice="copy">创建为副本</button><button data-choice="cancel">取消导入</button></div></dialog>
+<dialog id="copy-dialog"><h2 id="copy-title">复制回复</h2><label for="source-scope">来源回复库</label><select id="source-scope"></select><label for="source-pack">来源回复</label><select id="source-pack"></select><label for="copy-name">目标回复名称</label><input id="copy-name" maxlength="100"><div class="actions"><button id="copy-submit">确定</button><button data-close="copy-dialog">取消</button></div></dialog>
+<dialog id="number-dialog"><h2>更改回复序号</h2><p>序号必须 ≥3。保存会同步全局默认和所有群文件；可一次交换序号。</p><table><thead><tr><th>回复</th><th>新序号</th></tr></thead><tbody id="numbers"></tbody></table><div class="actions"><button id="number-submit">保存并修正引用</button><button data-close="number-dialog">取消</button></div></dialog>
+<dialog id="settings-dialog"><h2>当前 Bot / 群设置</h2><label for="target">设置对象</label><select id="target"></select><label><input type="checkbox" id="enabled" style="width:auto"> 开启插件</label><label for="selected-model">回复</label><select id="selected-model"></select><p>全局关闭时所有群均使用 Core 原始回复。没有单独设置的群及私聊继承全局回复。</p><div class="actions"><button id="settings-submit">保存</button><button data-close="settings-dialog">取消</button></div></dialog>
+<dialog id="recover-dialog"><h2>Core 共用恢复模块</h2><p>每行一个模块名，按顺序覆盖同名键。保存会直接修改 Core 的同一份 recover_model.json。</p><textarea id="modules" aria-label="恢复模块列表"></textarea><div class="actions"><button id="recover-submit">保存共用配置</button><button data-close="recover-dialog">取消</button></div></dialog>
+<dialog id="help-dialog"><h2>自定义回复编写帮助</h2><pre id="help-content"></pre><button data-close="help-dialog">关闭</button></dialog>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const pending = new Map();
+let sequence = 0, accounts = [], scope = 'unity', state = null, selection = null, snapshot = null, active = null, page = 1, copyMode = false, busy = false;
+const PAGE_SIZE = 100, CHUNK = 192 * 1024;
+function message(text, error = false) { $('status').textContent = text; $('status').classList.toggle('error', error); }
+function rawRequest(payload) {
+  if (window.parent === window) return Promise.reject(new Error('请从 OlivOS WebUI 的插件页面入口打开。'));
+  return new Promise((resolve, reject) => {
+    const id = `mcs-${Date.now()}-${++sequence}`;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('请求超时；写入可能已经完成，请刷新确认后再操作。')); }, 30000);
+    pending.set(id, { resolve, reject, timer });
+    try { window.parent.postMessage({ type: 'olivos:plugin_event', event: 'MultiCustomSwitch_Request', request_id: id, payload }, '*'); }
+    catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
+  });
+}
+window.addEventListener('message', event => {
+  const data = event.data;
+  if (event.source !== window.parent || !data || data.type !== 'olivos:plugin_reply' || !pending.has(data.request_id)) return;
+  const item = pending.get(data.request_id); pending.delete(data.request_id); clearTimeout(item.timer);
+  if (typeof data.error === 'string') { item.reject(new Error(data.error)); return; }
+  if (!data.payload || data.payload.ok !== true) { item.reject(new Error(data.payload?.error || '插件返回了无效数据。')); return; }
+  item.resolve(data.payload.result);
+});
+async function request(op, data = {}) {
+  const payload = { op, scope, ...data };
+  // 用 ASCII JSON 分片，避免 JS/Python 对非 BMP 字符长度的差异。
+  const encoded = JSON.stringify(payload).replace(/[\u007f-\uffff]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+  let result;
+  if (encoded.length > CHUNK) {
+    const upload = await rawRequest({ transport: 'upload_start' });
+    let offset = 0;
+    for (let start = 0; start < encoded.length; start += CHUNK) {
+      const received = await rawRequest({ transport: 'upload_chunk', token: upload.token, offset, text: encoded.slice(start, start + CHUNK) });
+      offset = received.received;
+    }
+    result = await rawRequest({ transport: 'upload_finish', token: upload.token });
+  } else result = await rawRequest(payload);
+  if (result && typeof result.download_token === 'string') {
+    let text = '', part;
+    do { part = await rawRequest({ transport: 'download_chunk', token: result.download_token, offset: text.length }); text += part.text; } while (!part.done);
+    result = JSON.parse(text);
+  }
+  return result;
+}
+async function run(action) {
+  if (busy) return;
+  busy = true; updateButtons();
+  try { await action(); }
+  catch (error) {
+    const text = error.message || '操作失败'; message(text, true);
+    const dialog = document.querySelector('dialog[open]');
+    if (dialog) {
+      let output = dialog.querySelector('.dialog-error');
+      if (!output) { output = document.createElement('p'); output.className = 'dialog-error'; output.style.color = 'var(--error)'; dialog.append(output); }
+      output.textContent = text;
+    }
+  }
+  finally { busy = false; updateButtons(); }
+}
+function dirty() { return active && $('text').value !== active.value; }
+function discard() { return !dirty() || confirm('当前回复尚未保存，放弃编辑框中的改动？'); }
+function options(element, values, current) {
+  element.replaceChildren();
+  for (const item of values) { const option = document.createElement('option'); option.value = String(item.value); option.textContent = item.label; element.append(option); }
+  if (current !== null && current !== undefined) element.value = String(current);
+}
+function currentSelection() { return scope === 'unity' ? $('pack').value : Number($('pack').value); }
+function updateButtons() {
+  const writable = snapshot && !snapshot.readonly;
+  $('save').disabled = busy || !writable || !active || (!active.new && !dirty());
+  $('reset').disabled = busy || !writable || !active || active.default === null || active.default === undefined;
+  $('delete-key').disabled = busy || !writable || !active || active.default !== null || active.new;
+  $('add-key').disabled = busy || !writable;
+  for (const id of ['refresh', 'create', 'transfer', 'import', 'download', 'help']) $(id).disabled = busy;
+  $('scope').disabled = busy; $('pack').disabled = busy || !state?.replies.length;
+  $('baseline').disabled = busy || scope !== 'unity';
+  $('rename').disabled = busy || selection === null || (scope !== 'unity' && selection < 3);
+  $('export').disabled = busy || selection === null;
+  for (const id of ['reindex', 'settings', 'recover']) $(id).disabled = busy || scope === 'unity';
+  $('text').disabled = !active || !writable;
+  $('edit-state').textContent = snapshot?.readonly ? 'smp 为只读全默认回复。' : dirty() || active?.new ? '未保存' : active ? '已保存' : '';
+}
+function setActive(item) {
+  active = item;
+  $('key').textContent = item?.key || '选择一个回复键';
+  $('note').textContent = item?.note || '';
+  $('text').value = item?.value || '';
+  updateButtons();
+}
+function filtered() {
+  const query = $('query').value.toLocaleLowerCase(), filter = $('filter').value;
+  return (snapshot?.entries || []).filter(item => (filter === 'all' || item.modified === (filter === 'modified')) && `${item.key} ${item.value} ${item.note}`.toLocaleLowerCase().includes(query));
+}
+function render() {
+  const items = filtered(), pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  page = Math.max(1, Math.min(page, pages));
+  $('entries').replaceChildren();
+  for (const item of items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'row' + (active?.key === item.key ? ' active' : '');
+    const key = document.createElement('code'); key.textContent = item.key;
+    const status = document.createElement('span'); status.textContent = item.modified ? '已修改' : '未修改';
+    button.append(key, status); button.onclick = () => { if (!busy && discard()) { setActive(item); render(); } }; $('entries').append(button);
+  }
+  $('page').textContent = `${items.length} 项 · ${page} / ${pages}`; $('prev').disabled = page <= 1; $('next').disabled = page >= pages;
+}
+async function loadSnapshot() {
+  setActive(null); page = 1;
+  snapshot = selection === null ? null : await request('snapshot', { selection, baseline: $('baseline').value || null });
+  if (snapshot?.entries.length) setActive(snapshot.entries[0]);
+  render(); updateButtons();
+}
+async function loadState(reload = false) {
+  state = await request(reload ? 'reload' : 'state');
+  const available = state.replies.filter(item => item.available);
+  if (!available.some(item => item.selection === selection)) selection = available[0]?.selection ?? null;
+  options($('pack'), state.replies.map(item => ({ value: item.selection, label: (scope === 'unity' ? '' : `${item.selection}. `) + item.name + (item.available ? '' : '（文件不可用）') })), selection);
+  renderConfig();
+  await loadSnapshot();
+}
+function renderConfig() {
+  if (state.config) {
+    const item = state.replies.find(item => item.selection === state.config.reply_model);
+    $('config-info').textContent = `全局开关：${state.config.enabled ? '开' : '关'} · 未单独设置群及私聊使用：${state.config.reply_model}. ${item?.name || '缺失回复'} · 已单独设置 ${Object.keys(state.groups).length} 个群`;
+  } else $('config-info').textContent = 'unity 仅保存共享模板。使用“从其他库导入”加载到 bot，或从 bot 导入到 unity。';
+}
+function collision(name) {
+  return new Promise(resolve => {
+    const dialog = $('collision'); $('collision-name').textContent = `「${name}」已存在。覆盖保留原序号与群引用。`;
+    let finished = false;
+    const finish = value => { if (!finished) { finished = true; dialog.close(); resolve(value); } };
+    for (const button of dialog.querySelectorAll('[data-choice]')) button.onclick = () => finish(button.dataset.choice);
+    dialog.oncancel = event => { event.preventDefault(); finish('cancel'); };
+    dialog.showModal();
+  });
+}
+async function importData(name, data) {
+  let result = await request('import', { name, data });
+  if (result.conflict) result = await request('import', { name, data, conflict: await collision(result.name) });
+  if (result.cancelled) { message('已取消导入。'); return; }
+  selection = result.selection; await loadState(); message(`已导入「${result.name}」。`);
+}
+$('scope').onchange = () => run(async () => {
+  if (!discard()) { $('scope').value = scope; return; }
+  scope = $('scope').value; selection = null; await loadState(); message('回复库已切换。');
+});
+$('pack').onchange = () => run(async () => {
+  if (!discard()) { $('pack').value = String(selection); return; }
+  selection = currentSelection(); await loadSnapshot(); message('回复已切换。');
+});
+let baselineValue = '';
+$('baseline').onchange = () => run(async () => {
+  if (!discard()) { $('baseline').value = baselineValue; return; }
+  baselineValue = $('baseline').value; await loadSnapshot(); message('比较基线已更新。');
+});
+$('query').oninput = $('filter').onchange = () => { page = 1; render(); };
+$('prev').onclick = () => { page--; render(); }; $('next').onclick = () => { page++; render(); };
+$('text').oninput = updateButtons;
+async function edit(options = {}) {
+  if (!active || !snapshot) return;
+  const key = active.key;
+  snapshot = await request('edit', { selection, key, value: $('text').value, revision: snapshot.revision, baseline: $('baseline').value || null, ...options });
+  setActive(snapshot.entries.find(item => item.key === key) || null); render(); message('回复已保存。');
+}
+$('save').onclick = () => run(() => edit());
+$('reset').onclick = () => run(async () => { if (confirm('恢复当前回复项的默认文本？')) await edit({ reset: true }); });
+$('delete-key').onclick = () => run(async () => { if (confirm('删除当前自定义回复键？内置键不能删除。')) await edit({ delete: true }); });
+$('add-key').onclick = () => {
+  if (!discard()) return; const key = prompt('新增回复键名称，例如 strMyReply'); if (!key) return;
+  if (snapshot.entries.some(item => item.key === key)) { message('回复键已存在。', true); return; }
+  setActive({ key, value: '', default: null, note: '填写内容后保存。', new: true }); render();
+};
+$('refresh').onclick = () => run(async () => { if (discard()) { await loadState(true); message('文件与 Core 内存状态已刷新。'); } });
+$('rename').onclick = () => run(async () => {
+  if (!discard()) return; const name = prompt('新回复名称（同步重命名文件，保持序号）', state.replies.find(item => item.selection === selection)?.name); if (!name) return;
+  const result = await request('rename', { selection, name }); selection = result.selection; await loadState(); message('名称与文件名已更新。');
+});
+$('import').onclick = () => { if (discard()) { $('file').value = ''; $('file').click(); } };
+$('file').onchange = () => run(async () => {
+  const file = $('file').files[0]; if (!file) return; if (file.size > 8 * 1024 * 1024) throw new Error('文件超过 8 MiB。');
+  const data = JSON.parse((await file.text()).replace(/^\uFEFF/, '')); const name = prompt('导入后的回复名称', file.name.replace(/\.json$/i, ''));
+  if (name) await importData(name, data);
+});
+$('download').onclick = () => run(async () => {
+  if (!discard()) return; const url = prompt('HTTP/HTTPS JSON 下载链接'); if (!url) return;
+  const name = prompt('下载后使用的回复名称'); if (!name) return; message('正在下载并验证回复 JSON…');
+  const result = await request('download', { url }); await importData(name, result.data);
+});
+$('export').onclick = () => run(async () => {
+  if (!discard()) return; const result = await request('export', { selection });
+  const blob = new Blob([JSON.stringify(result.data, null, 4)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url;
+  link.download = `${state.replies.find(item => item.selection === selection)?.name || '回复'}.json`; document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000); message('已导出完整回复 JSON。');
+});
+async function sourcePacks() {
+  const source = $('source-scope').value, sourceState = await request('state', { scope: source });
+  options($('source-pack'), sourceState.replies.filter(item => item.available).map(item => ({ value: item.selection, label: `${item.selection}. ${item.name}` })));
+}
+async function openCopy(importing) {
+  if (!discard()) return; copyMode = importing;
+  $('copy-title').textContent = importing ? '从其他库导入回复' : '从已有回复新建'; $('copy-name').value = '';
+  options($('source-scope'), accounts.map(item => ({ value: item.hash, label: item.label })), scope); await sourcePacks();
+  $('copy-dialog').showModal();
+}
+$('create').onclick = () => run(() => openCopy(false)); $('transfer').onclick = () => run(() => openCopy(true));
+$('source-scope').onchange = () => run(sourcePacks);
+$('copy-submit').onclick = () => run(async () => {
+  const source_scope = $('source-scope').value, name = $('copy-name').value;
+  const source_selection = source_scope === 'unity' ? $('source-pack').value : Number($('source-pack').value);
+  if (!name.trim() || !$('source-pack').value) throw new Error('请填写名称并选择来源回复。');
+  if (copyMode) {
+    const result = await request('export', { scope: source_scope, selection: source_selection });
+    $('copy-dialog').close(); await importData(name, result.data);
+  } else {
+    const result = await request('create', { name, source_scope, source_selection }); selection = result.selection;
+    $('copy-dialog').close(); await loadState(); message(`已创建「${result.name}」。`);
+  }
+});
+$('reindex').onclick = () => {
+  if (!discard()) return; $('numbers').replaceChildren();
+  for (const item of state.replies.filter(item => item.selection >= 3)) {
+    const row = document.createElement('tr'), label = document.createElement('td'), field = document.createElement('td'), input = document.createElement('input');
+    label.textContent = `${item.selection}. ${item.name}`; input.type = 'number'; input.min = '3'; input.step = '1'; input.value = item.selection; input.dataset.old = item.selection; input.setAttribute('aria-label', `${item.name}的新序号`);
+    field.append(input); row.append(label, field); $('numbers').append(row);
+  } $('number-dialog').showModal();
+};
+$('number-submit').onclick = () => run(async () => {
+  const mapping = {}; for (const input of $('numbers').querySelectorAll('input')) { if (!input.reportValidity()) return; mapping[input.dataset.old] = Number(input.value); }
+  await request('reindex', { mapping, index_revision: state.index_revision }); if (selection >= 3) selection = mapping[selection]; $('number-dialog').close(); await loadState(); message('序号及所有群引用已同步。');
+});
+function targetSettings() {
+  const target = $('target').value, config = target === '' ? state.config : state.groups[target];
+  $('enabled').checked = config.enabled; $('selected-model').value = String(config.reply_model);
+}
+$('settings').onclick = () => {
+  options($('target'), [{ value: '', label: '当前 Bot 全局' }, ...Object.keys(state.groups).map(hash => ({ value: hash, label: `群 ${hash}` }))], '');
+  options($('selected-model'), state.replies.filter(item => item.available).map(item => ({ value: item.selection, label: `${item.selection}. ${item.name}` })));
+  targetSettings(); $('settings-dialog').showModal();
+};
+$('target').onchange = targetSettings;
+$('settings-submit').onclick = () => run(async () => {
+  await request('settings', { model: Number($('selected-model').value), enabled: $('enabled').checked, group_hash: $('target').value || null });
+  $('settings-dialog').close(); state = await request('state'); renderConfig(); message('Bot / 群设置已保存。');
+});
+$('recover').onclick = () => { $('modules').value = state.modules.join('\n'); $('recover-dialog').showModal(); };
+$('recover-submit').onclick = () => run(async () => {
+  if (!discard()) return; const modules = $('modules').value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  await request('recover', { modules }); $('recover-dialog').close(); await loadState(); message('已保存到 Core 原有 recover_model.json。');
+});
+$('help').onclick = () => run(async () => { const result = await request('help'); $('help-content').textContent = result.markdown; $('help-dialog').showModal(); });
+for (const button of document.querySelectorAll('[data-close]')) button.onclick = () => $(button.dataset.close).close();
+window.addEventListener('beforeunload', event => { if (dirty()) { event.preventDefault(); event.returnValue = ''; } });
+run(async () => {
+  const result = await request('accounts'); accounts = result.accounts;
+  options($('scope'), accounts.map(item => ({ value: item.hash, label: item.label })), 'unity');
+  options($('baseline'), [{ value: '', label: '全部默认模块' }, ...accounts.filter(item => item.hash !== 'unity').map(item => ({ value: item.hash, label: item.label }))], '');
+  await loadState(); message(`MultiCustomSwitch ${result.version} 已就绪。`);
+});
+</script></body></html>

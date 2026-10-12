@@ -519,6 +519,30 @@ Rating 100.00%'''
         self.assertIn('已匹配：MONONOKE（章节号 Inf-105，难度 Master）', error)
         self.assertIn('无法按该谱面的 4.0+ 整数公式还原', error)
 
+    def test_float_boundary_game_score_matches_judgements(self) -> None:
+        songs = function.load_song_data()
+        for score in (988_188, 988_189):
+            for judgements in ('', '\n2232\n54\n0\nHarmony\nTune\nFail'):
+                with self.subTest(score=score, judgements=bool(judgements)):
+                    text = f"Nyarlathotep's Dreamland\nMASTER\n{score:07d}\nRank{judgements}"
+                    record, error = score_overrides._parse_ocr(text, songs, 'global')
+                    self.assertFalse(error)
+                    self.assertEqual(record['score'], score)
+                    self.assertEqual(record['rating_percent'], 98.46)
+                    self.assertEqual(
+                        record['validation_status'],
+                        'game_judgement_validated' if judgements else 'game_score_validated',
+                    )
+
+    def test_float_boundary_percentages_restore_unique_judgements(self) -> None:
+        self.assertEqual(
+            score_overrides._infer_judgement_triplet_from_percentages([97, 2, 0], 2286, 988_189),
+            (2232, 54, 0),
+        )
+        self.assertIsNone(
+            score_overrides._infer_judgement_triplet_from_percentages([97, 2, 0], 2286, 988_190),
+        )
+
     def test_portal_ocr_failure_reports_matched_song_and_chart(self) -> None:
         text = '\n'.join([
             'Lanota',

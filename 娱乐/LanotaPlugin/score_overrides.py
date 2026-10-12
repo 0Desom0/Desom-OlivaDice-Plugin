@@ -664,15 +664,16 @@ def _infer_judgement_triplet_from_percentages(
     score: int,
 ) -> tuple[int, int, int] | None:
     """判定小数字漏识别时，用画面百分比和已校验分数恢复唯一的 H/T/F。"""
+    from . import b30
+
     if len(percentages) < 3 or total <= 0:
         return None
     displayed = percentages[-3:]
     if any(abs(value - round(value)) > 0.01 for value in displayed):
         return None
     displayed_values = tuple(int(round(value)) for value in displayed)
-    max_ex_score = 2 * total
-    ex_score = (max_ex_score * score + 999_999) // 1_000_000
-    if 1_000_000 * ex_score // max_ex_score != score:
+    ex_score = b30.recover_ex_score(score, total)
+    if ex_score is None:
         return None
 
     candidates = []
@@ -988,7 +989,7 @@ def _parse_game_result_ocr(
     if calculated is None:
         return None, f'{match_summary}\n截图分数无法按该谱面的 4.0+ 整数公式还原，未录入。'
     calculated_score = int(calculated['score'])
-    if calculated_score != screenshot_score:
+    if b30.recover_ex_score(screenshot_score, total) != calculated['exScore']:
         return None, (
             f'{match_summary}\n游戏结算图分数校验失败：截图 {screenshot_score:07d}，'
             f'按 H/T/F 应为 {calculated_score:07d}；未录入。'

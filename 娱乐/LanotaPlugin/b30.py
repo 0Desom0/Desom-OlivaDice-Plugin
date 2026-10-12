@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime
 import math
+import struct
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,30 @@ def get_rating_constants(chart_constant: float) -> tuple[float, float]:
     return 1.5 * constant - 7.5, 1.5 * constant - 6
 
 
+def _score_from_ex(ex_score: int, max_ex_score: int) -> int:
+    """按单精度除法、乘法后截断；整数边界处可能与有理数取整差一分。"""
+    accuracy = struct.unpack('<f', struct.pack('<f', ex_score / max_ex_score))[0]
+    scaled_score = struct.unpack('<f', struct.pack('<f', accuracy * 1_000_000))[0]
+    return math.floor(scaled_score)
+
+
+def recover_ex_score(score: int, total: int) -> int | None:
+    """兼容整数公式与单精度分数，只有前向换算完全匹配才恢复 EX。"""
+    score_value = _safe_int(score)
+    total_value = _safe_int(total)
+    if score_value is None or not 0 <= score_value <= 1_000_000 or total_value is None or total_value <= 0:
+        return None
+    max_ex_score = 2 * total_value
+    initial_ex_score = (max_ex_score * score_value + 999_999) // 1_000_000
+    # 单精度结果可能跨过整数边界，原来的 ceil 候选也可能因此偏移一档。
+    for ex_score in (initial_ex_score, initial_ex_score - 1, initial_ex_score + 1):
+        if not 0 <= ex_score <= max_ex_score:
+            continue
+        if score_value in (1_000_000 * ex_score // max_ex_score, _score_from_ex(ex_score, max_ex_score)):
+            return ex_score
+    return None
+
+
 def _calculate_ex_rating(ex_score: int, total: int, chart_constant: float) -> dict[str, float | int]:
     max_ex_score = 2 * total
     accuracy = ex_score / max_ex_score
@@ -67,7 +92,7 @@ def _calculate_ex_rating(ex_score: int, total: int, chart_constant: float) -> di
     return {
         'exScore': ex_score,
         'maxExScore': max_ex_score,
-        'score': 1_000_000 * ex_score // max_ex_score,
+        'score': _score_from_ex(ex_score, max_ex_score),
         'accuracyExact': accuracy,
         'scoreAccuracy': truncate_two(accuracy * 100),
         'baseRating': base_rating,
@@ -94,12 +119,13 @@ def calculate_score_rating(score: int, total: int, chart_constant: float) -> dic
     ):
         return None
 
-    max_ex_score = 2 * total_value
-    ex_score = (max_ex_score * score_value + 999_999) // 1_000_000
-    if 1_000_000 * ex_score // max_ex_score != score_value:
+    ex_score = recover_ex_score(score_value, total_value)
+    if ex_score is None:
         return None
 
-    return _calculate_ex_rating(ex_score, total_value, constant_value)
+    result = _calculate_ex_rating(ex_score, total_value, constant_value)
+    result['score'] = score_value
+    return result
 
 
 def infer_score_from_single_rating(
@@ -432,7 +458,14 @@ def build_exact_entries(
         ):
             invalid_count += 1
             continue
-        score = 1_000_000 * ex_score // max_ex_score
+        score = _score_from_ex(ex_score, max_ex_score)
+        current_score = current_scores.get(key)
+        if (
+            max_ex_score == 2 * total
+            and current_score is not None
+            and recover_ex_score(current_score, total) == ex_score
+        ):
+            score = current_score
         calculated = calculate_score_rating(score, total, constant)
         if calculated is None:
             invalid_count += 1
@@ -470,7 +503,6 @@ def build_exact_entries(
             and harmony + tune + fail == total
             and 2 * harmony + tune == ex_score
         )
-        current_score = current_scores.get(key)
         if current_score is not None and current_score != score:
             item['warning'] = f'B30 记录与当前最高分 {current_score:,} 不一致'
             item['currentHighestScore'] = current_score

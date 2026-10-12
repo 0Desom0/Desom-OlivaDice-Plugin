@@ -29,6 +29,29 @@ class B30FormulaTest(unittest.TestCase):
         self.assertEqual(result['singleRating'], 17.26)
         self.assertEqual(result['ratingPercent'], 92.10)
 
+    def test_nyarlathotep_float_score_is_restored_without_changing_rating(self) -> None:
+        for score in (988_188, 988_189):
+            with self.subTest(score=score):
+                result = b30.calculate_score_rating(score, 2286, 16.0)
+                self.assertIsNotNone(result)
+                self.assertEqual(result['score'], score)
+                self.assertEqual(result['exScore'], 4518)
+                self.assertEqual(result['singleRating'], 17.72)
+                self.assertEqual(result['ratingPercent'], 98.46)
+        for score in (988_187, 988_190):
+            with self.subTest(invalid_score=score):
+                self.assertIsNone(b30.calculate_score_rating(score, 2286, 16.0))
+
+    def test_float_score_can_fall_below_an_exact_integer(self) -> None:
+        for score in (32_499, 32_500):
+            with self.subTest(score=score):
+                result = b30.calculate_score_rating(score, 1000, 16.0)
+                self.assertIsNotNone(result)
+                self.assertEqual(result['score'], score)
+                self.assertEqual(result['exScore'], 65)
+        result = b30.calculate_judgement_rating(32, 1, 967, 1000, 16.0)
+        self.assertEqual(result['score'], 32_499)
+
     def test_invalid_old_score_is_rejected(self) -> None:
         self.assertIsNone(b30.calculate_score_rating(123_456, 1000, 15.8))
 
@@ -55,6 +78,7 @@ class B30FormulaTest(unittest.TestCase):
             (1497, 1, 0, 1498, 999_666),
             (1912, 100, 7, 2019, 971_768),
             (2261, 20, 5, 2286, 993_438),
+            (2232, 54, 0, 2286, 988_189),
         ]
         for harmony, tune, fail, total, expected_score in samples:
             with self.subTest(total=total, expected_score=expected_score):
@@ -134,6 +158,64 @@ class B30FormulaTest(unittest.TestCase):
         self.assertEqual(entries[0]['score'], 995_000)
         self.assertIn('当前最高分 1,000,000', entries[0]['warning'])
         self.assertEqual(validation['mismatch'], 1)
+
+    def test_float_score_is_kept_in_inferred_b30_and_exact_overflow(self) -> None:
+        song_id = 'nyarlathotepsdreamland'
+        chart = {
+            'songId': song_id,
+            'title': "Nyarlathotep's Dreamland",
+            'difficulty': 3,
+            'difficultyName': 'Master',
+            'chartConstant': 16.0,
+            'total': 2286,
+        }
+        catalog = {(song_id, 3): chart}
+        entries, validation = b30.build_inferred_entries(
+            {'songs': [{'songId': song_id, 'difficulty': 3, 'friendScore': 988_189}]},
+            catalog,
+        )
+        self.assertEqual(validation['invalid'], 0)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['rank'], 1)
+        self.assertEqual(entries[0]['score'], 988_189)
+        self.assertEqual(entries[0]['ratingPercent'], 98.46)
+
+        entries, validation = b30.build_exact_entries(
+            {'best30': {'entries': []}},
+            {'songs': [{'songId': song_id, 'difficulty': 3, 'score': 988_189}]},
+            catalog,
+        )
+        self.assertEqual(validation['overflowInvalid'], 0)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['rank'], 31)
+        self.assertEqual(entries[0]['score'], 988_189)
+
+    def test_exact_b30_uses_matching_official_score_without_stale_warning(self) -> None:
+        source = {
+            'songId': 'nyarlathotepsdreamland',
+            'difficulty': 3,
+            'level': 16,
+            'levelFraction': 0,
+            'harmony': 2232,
+            'tune': 54,
+            'fail': 0,
+            'total': 2286,
+            'exScore': 4518,
+            'maxExScore': 4572,
+        }
+        for score in (988_188, 988_189):
+            with self.subTest(score=score):
+                entries, validation = b30.build_exact_entries(
+                    {'best30': {'entries': [source]}},
+                    {'songs': [{'songId': source['songId'], 'difficulty': 3, 'score': score}]},
+                    {},
+                )
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0]['score'], score)
+                self.assertEqual(entries[0]['warning'], '')
+                self.assertEqual(validation['mismatch'], 0)
+        entries, validation = b30.build_exact_entries({'best30': {'entries': [source]}}, None, {})
+        self.assertEqual(entries[0]['score'], 988_189)
 
     def test_exact_entries_append_inferred_overflow(self) -> None:
         exact_source = {
