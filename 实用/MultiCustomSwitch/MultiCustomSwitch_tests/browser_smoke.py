@@ -50,7 +50,13 @@ DRIVER = r"""
     $('settings').click(); $('enabled').checked = false; $('settings-submit').click(); await settled();
     assert(!state.config.enabled && $('config-info').textContent.includes('关'), '全局开关和界面同步');
     $('help').click(); await settled(); assert($('help-content').textContent.includes('1/default'), '独立 Markdown 编写帮助');
-    $('help-dialog').close();
+    assert($('help-content').scrollTop === 0 && $('help-dialog').scrollTop === 0, '帮助首次打开从顶部显示');
+    $('help-content').scrollTop = $('help-content').scrollHeight;
+    assert($('help-content').scrollTop > 0 && $('help-close').getBoundingClientRect().top < $('help-content').getBoundingClientRect().top, '滚动帮助后右上角关闭按钮仍可见');
+    $('help-close').click(); assert(!$('help-dialog').open, '右上角叉号关闭帮助');
+    $('help').click(); await settled();
+    assert($('help-content').scrollTop === 0 && $('help-dialog').scrollTop === 0, '帮助再次打开重置到顶部');
+    $('help-close').click();
     const large = {}; for (let i=0; i<40; i++) large['strBig'+i] = '中文🦊'.repeat(1500);
     const imported = await request('import', {name:'Unicode 大回复', data:large});
     const exported = await request('export', {selection:imported.selection});
@@ -117,7 +123,7 @@ def main():
     args = parser.parse_args()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    plugin = Path(__file__).resolve().parents[1] / 'MultiCustomSwitch'
+    plugin = Path(__file__).resolve().parents[1]
     page = (plugin / 'webui' / 'index.html').read_text(encoding='utf-8') + DRIVER
     page_json = json.dumps(page, ensure_ascii=True).replace('<', '\\u003c')
     help_json = json.dumps((plugin / 'writer_help.md').read_text(encoding='utf-8'), ensure_ascii=True).replace(

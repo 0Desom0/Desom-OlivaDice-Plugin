@@ -190,6 +190,14 @@ def test_actual_tk_editor_save_readonly_and_layout(env):
         manager.root.update_idletasks()
         assert manager.root.winfo_reqwidth() >= 850
         assert manager.tree.get_children()
+        manager.help()
+        help_window = next(child for child in manager.root.winfo_children() if isinstance(child, tk.Toplevel))
+        text_frame = next(child for child in help_window.winfo_children() if isinstance(child, tk.Frame))
+        help_text = next(child for child in text_frame.winfo_children() if isinstance(child, tk.Text))
+        help_window.update_idletasks()
+        assert help_text.yview()[0] == 0
+        assert help_text.index('insert') == '1.0'
+        help_window.destroy()
     finally:
         if manager is not None:
             manager.close()

@@ -24,6 +24,10 @@ textarea{width:100%;min-height:330px;resize:vertical;font:14px/1.7 ui-monospace,
 dialog{color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;max-width:min(90vw,900px);max-height:85vh;padding:24px}
 dialog::backdrop{background:#0006}dialog label{display:block;margin:10px 0 4px}dialog input,dialog select{width:100%}dialog h2{margin-top:0;font-size:19px}
 dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,'Microsoft YaHei',sans-serif}dialog textarea{min-height:220px}
+#help-dialog{width:min(90vw,900px);height:min(85vh,780px);padding:0;overflow:hidden}
+#help-dialog[open]{display:flex;flex-direction:column}.help-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);flex-shrink:0}
+.help-header h2{margin:0}.help-header button{width:36px;height:36px;padding:0;font-size:24px;line-height:1;flex-shrink:0}
+#help-content{margin:0;padding:20px;overflow:auto;min-height:0;flex:1}
 table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;border-bottom:1px solid var(--line)}table input{width:100px}
 .pagination{display:flex;align-items:center;gap:8px;margin:8px 0}.pagination span{color:var(--muted)}#copy-dialog select{min-width:280px}
 [hidden]{display:none!important}@media(max-width:760px){main{padding:12px}.split{grid-template-columns:1fr}.list{height:270px}textarea{min-height:250px}}
@@ -44,7 +48,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;bord
 <dialog id="number-dialog"><h2>更改回复序号</h2><p>序号必须 ≥3。保存会同步全局默认和所有群文件；可一次交换序号。</p><table><thead><tr><th>回复</th><th>新序号</th></tr></thead><tbody id="numbers"></tbody></table><div class="actions"><button id="number-submit">保存并修正引用</button><button data-close="number-dialog">取消</button></div></dialog>
 <dialog id="settings-dialog"><h2>当前 Bot / 群设置</h2><label for="target">设置对象</label><select id="target"></select><label><input type="checkbox" id="enabled" style="width:auto"> 开启插件</label><label for="selected-model">回复</label><select id="selected-model"></select><p>全局关闭时所有群均使用 Core 原始回复。没有单独设置的群及私聊继承全局回复。</p><div class="actions"><button id="settings-submit">保存</button><button data-close="settings-dialog">取消</button></div></dialog>
 <dialog id="recover-dialog"><h2>Core 共用恢复模块</h2><p>每行一个模块名，按顺序覆盖同名键。保存会直接修改 Core 的同一份 recover_model.json。</p><textarea id="modules" aria-label="恢复模块列表"></textarea><div class="actions"><button id="recover-submit">保存共用配置</button><button data-close="recover-dialog">取消</button></div></dialog>
-<dialog id="help-dialog"><h2>自定义回复编写帮助</h2><pre id="help-content"></pre><button data-close="help-dialog">关闭</button></dialog>
+<dialog id="help-dialog" aria-labelledby="help-title"><div class="help-header"><h2 id="help-title">自定义回复编写帮助</h2><button id="help-close" data-close="help-dialog" aria-label="关闭编写帮助" title="关闭" autofocus>×</button></div><pre id="help-content"></pre></dialog>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
@@ -296,7 +300,11 @@ $('recover-submit').onclick = () => run(async () => {
   if (!discard()) return; const modules = $('modules').value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   await request('recover', { modules }); $('recover-dialog').close(); await loadState(); message('已保存到 Core 原有 recover_model.json。');
 });
-$('help').onclick = () => run(async () => { const result = await request('help'); $('help-content').textContent = result.markdown; $('help-dialog').showModal(); });
+$('help').onclick = () => run(async () => {
+  const result = await request('help'); $('help-content').textContent = result.markdown;
+  $('help-dialog').showModal(); $('help-dialog').scrollTop = 0; $('help-content').scrollTop = 0;
+  $('help-close').focus({ preventScroll: true });
+});
 for (const button of document.querySelectorAll('[data-close]')) button.onclick = () => $(button.dataset.close).close();
 window.addEventListener('beforeunload', event => { if (dirty()) { event.preventDefault(); event.returnValue = ''; } });
 run(async () => {

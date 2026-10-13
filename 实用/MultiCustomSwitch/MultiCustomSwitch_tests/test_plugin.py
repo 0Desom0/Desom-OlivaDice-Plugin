@@ -506,3 +506,31 @@ def test_initialization_failure_reports_type_and_call_site_without_private_detai
     assert '不应出现在日志或界面中的私有配置内容' not in log
     with pytest.raises(env.plugin.store.InvalidInput, match='ValueError'):
         env.plugin.api.dispatch({'op': 'accounts'})
+
+
+def test_default_helper_compatibility_and_local_module_merge_fallback(env, monkeypatch):
+    expected = env.core.msgCustomManager.getDictStrCustomDefault()
+    calls = []
+
+    def available_helper():
+        calls.append(True)
+        return expected
+
+    monkeypatch.setattr(env.core.msgCustomManager, 'getDictStrCustomDefault', available_helper)
+    assert env.plugin.store.core_defaults() == expected
+    assert calls == [True]
+    monkeypatch.delattr(env.core.msgCustomManager, 'getDictStrCustomDefault')
+    first = types.ModuleType('McsFirstDefaults')
+    first.msgCustom = types.SimpleNamespace(dictStrCustom={'strRoll': '先加载', 'strExtra': '额外默认'})
+    second = types.ModuleType('McsLastDefaults')
+    second.msgCustom = types.SimpleNamespace(dictStrCustom={'strRoll': '后加载', 'invalid': 123})
+    monkeypatch.setitem(__import__('sys').modules, first.__name__, first)
+    monkeypatch.setitem(__import__('sys').modules, second.__name__, second)
+    defaults = env.plugin.store.core_defaults()
+    assert defaults['strRoll'] == '后加载' and defaults['strExtra'] == '额外默认'
+    assert 'invalid' not in defaults
+    bot = env.bots[0]
+    assert env.store.smp(bot)['strRoll'] == '后加载'
+    created = env.store.clone(bot, '旧版默认副本', bot, 2)
+    assert env.store.values(bot, created['selection'])['strExtra'] == '额外默认'
+    assert env.store.snapshot(bot, 2)['readonly']

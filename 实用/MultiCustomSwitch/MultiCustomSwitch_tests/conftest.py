@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-PLUGIN = Path(__file__).resolve().parents[1] / 'MultiCustomSwitch'
+PLUGIN = Path(__file__).resolve().parents[1]
 PROJECT = PLUGIN.parents[3] / '青果主项目'
 CORE = Path(os.environ.get('OLIVADICE_CORE_SOURCE', PROJECT / 'OlivaDiceCore' / 'OlivaDiceCore'))
 WEBUI = PROJECT / 'OlivaDiceWebUI' / 'OlivaDiceWebUI'

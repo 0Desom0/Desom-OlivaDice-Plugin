@@ -82,6 +82,22 @@ def main():
         driver.find_element(By.ID, 'help').click()
         wait.until(lambda browser: '群链' in browser.find_element(By.ID, 'help-content').get_attribute('textContent'))
         checks.append('OPK 清理后帮助内容仍可加载')
+        assert driver.execute_script('return $("help-content").scrollTop === 0 && $("help-dialog").scrollTop === 0;')
+        driver.save_screenshot(str(output / 'webui-help-top.png'))
+        driver.execute_script('$("help-content").scrollTop = $("help-content").scrollHeight;')
+        assert driver.execute_script('return $("help-content").scrollTop > 0;')
+        close = driver.find_element(By.ID, 'help-close')
+        assert close.is_displayed() and close.text == '×'
+        assert close.rect['y'] < driver.find_element(By.ID, 'help-content').rect['y']
+        driver.save_screenshot(str(output / 'webui-help-scrolled.png'))
+        close.click()
+        wait.until(lambda browser: browser.execute_script('return !$("help-dialog").open;'))
+        checks.append('帮助右上角叉号在滚动后仍可关闭')
+        driver.find_element(By.ID, 'help').click()
+        wait.until(lambda browser: browser.execute_script('return !busy && $("help-dialog").open;'))
+        assert driver.execute_script('return $("help-content").scrollTop === 0 && $("help-dialog").scrollTop === 0;')
+        checks.append('帮助首次及再次打开均从顶部显示')
+        driver.find_element(By.ID, 'help-close').click()
         result = {'ok': True, 'checks': checks}
         (output / 'browser-report.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
         print(json.dumps(result, ensure_ascii=False))

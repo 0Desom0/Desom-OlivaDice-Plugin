@@ -516,6 +516,8 @@ class Manager:
         text = scrolledtext.ScrolledText(window, width=100, height=36, wrap='word')
         text.pack(fill='both', expand=True)
         text.insert('1.0', resources.WRITER_HELP)
+        text.mark_set('insert', '1.0')
+        text.yview_moveto(0)
         text.configure(state='disabled')
 
     def close(self):

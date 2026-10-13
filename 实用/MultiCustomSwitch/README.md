@@ -21,7 +21,8 @@ WebUI 使用宿主插件消息桥和静态资源缓存；
 不额外启动网络服务，不需要 Node.js、npm 或第三方前端依赖。
 GUI 使用 Python 自带 Tk；无 Tk 的服务器仍可使用聊天指令及 WebUI。
 首次进入 unity 模板库时，尚未导入模板则回复列表为空；在“回复库”中选择具体 bot 即可查看 1/default 和 2/smp。
-若使用 1.0.0 时提示“插件尚未初始化”，请替换为 1.0.1 OPK 并重载插件；不需要为此修改 Core 源码。
+若使用 1.0.0 时提示“插件尚未初始化”，请替换为 1.0.2 OPK 并重载插件；不需要为此修改 Core 源码。
+编写帮助使用右上角叉号关闭，滚动文档时关闭按钮保持可见，每次打开均从顶部显示。
 
 ## 指令
 
@@ -96,7 +97,7 @@ NativeGUI 的文件上下文接入同一锁。模糊搜索等待、消息发送�
 
 ## 本地验证与打包
 
-测试放在同级 `MultiCustomSwitch_tests/`，不进入 OPK。测试加载本机真实 Core/WebUI 函数，
+测试放在本目录的 `MultiCustomSwitch_tests/`，不进入 OPK。测试加载本机真实 Core/WebUI 函数，
 替换宿主 SDK、账号登录与消息出口，在独立临时目录验证数据及事件行为。
 另有真实 Tk 编辑器操作、HTTP JSON 下载校验与 OPK 清理后的首次命令测试。
 浏览器检查使用已有 Chrome/Selenium，在沙箱 iframe 中运行页面并提供合成宿主消息桥。
@@ -107,8 +108,10 @@ NativeGUI 的文件上下文接入同一锁。模糊搜索等待、消息发送�
 测试只读取账号 ID 与平台用于生成相同 bot_hash，不连接消息协议，不改动实例原有回复及群配置。
 
 ```powershell
-python -m pytest 实用/MultiCustomSwitch_tests -q
-ruff check 实用/MultiCustomSwitch 实用/MultiCustomSwitch_tests --config 实用/MultiCustomSwitch/.ruff.toml
+Push-Location 实用/MultiCustomSwitch/MultiCustomSwitch_tests
+python -m pytest . -q --confcutdir=.
+Pop-Location
+ruff check 实用/MultiCustomSwitch --config 实用/MultiCustomSwitch/.ruff.toml
 python 实用/MultiCustomSwitch/tools/build_opk.py
 ```
 

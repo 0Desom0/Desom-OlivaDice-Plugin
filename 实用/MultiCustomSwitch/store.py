@@ -68,11 +68,10 @@ def model_int(value):
 
 
 def core_defaults():
-    manager = OlivaDiceCore.msgCustomManager
-    getter = getattr(manager, 'getDictStrCustomDefault', None)
+    getter = getattr(OlivaDiceCore.msgCustomManager, 'getDictStrCustomDefault', None)
     if callable(getter):
         return dict(getter())
-    # Core 3.5.0 没有此辅助接口，按新版 Core 相同的已加载模块顺序汇总源码默认值。
+    # 旧版 Core 没有辅助接口，由插件按相同的模块加载顺序构建默认回复集合。
     result = dict(OlivaDiceCore.msgCustom.dictStrCustom)
     for module in list(sys.modules.values()):
         try:
