@@ -67,6 +67,26 @@ def model_int(value):
     raise InvalidInput('回复序号必须是正整数。')
 
 
+def core_defaults():
+    manager = OlivaDiceCore.msgCustomManager
+    getter = getattr(manager, 'getDictStrCustomDefault', None)
+    if callable(getter):
+        return dict(getter())
+    # Core 3.5.0 没有此辅助接口，按新版 Core 相同的已加载模块顺序汇总源码默认值。
+    result = dict(OlivaDiceCore.msgCustom.dictStrCustom)
+    for module in list(sys.modules.values()):
+        try:
+            values = getattr(getattr(module, 'msgCustom', None), 'dictStrCustom', None)
+            if type(values) is dict:
+                result.update(
+                    {key: text for key, text in values.items() if isinstance(key, str) and isinstance(text, str)}
+                )
+        except Exception:
+            # 与 Core 一样，忽略不提供默认回复的模块属性访问异常。
+            continue
+    return {key: text for key, text in result.items() if isinstance(key, str) and isinstance(text, str)}
+
+
 class ReplyStore:
     def __init__(self, proc, root=None):
         self.proc = proc
@@ -204,7 +224,7 @@ class ReplyStore:
 
     def smp(self, bot=None):
         with files.LOCK:
-            values = dict(OlivaDiceCore.msgCustomManager.getDictStrCustomDefault())
+            values = core_defaults()
             if bot is not None:
                 self.check_scope(bot, False)
                 # 登录 API 不可用时用账号 ID；不会使用虚假的三字母 Bot。
@@ -314,7 +334,7 @@ class ReplyStore:
             mapping = core.msgCustom.dictStrCustomDict
             old = self.default_values(scope)
             old_updates = copy.deepcopy(core.msgCustom.dictStrCustomUpdateDict.get(scope, {}))
-            defaults = core.msgCustomManager.getDictStrCustomDefault()
+            defaults = core_defaults()
             mapping[scope] = dict(values)
             core.msgCustom.dictStrCustomUpdateDict[scope] = {
                 key: text for key, text in values.items() if key not in defaults or defaults[key] != text

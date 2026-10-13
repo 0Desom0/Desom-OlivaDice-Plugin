@@ -10,6 +10,15 @@ from .commands import is_command
 
 _MISSING = object()
 _STATE_ATTRIBUTE = '_statushud_message_state'
+_TARGET_MODULES = frozenset({
+    'OlivaDiceCore.msgReply', 'OlivaDiceCore.msgReplyModel',
+    'OlivaDiceShouHun.msgReply', 'OlivaDiceSanchi.msgReply', 'OlivaDiceMS.msgReply', 'OlivaDiceTA.msgReply',
+})
+_NOTICE_KEYS = frozenset({
+    'strShHideShow', 'strShHideShowAtOther',
+    'strTQHideShow', 'strTQHideShowMore', 'strTQHideShowAtOther', 'strTQHideShowAtOtherMore',
+    'strTQAHideShow', 'strTQAHideShowAtOther',
+})
 
 
 @dataclass(frozen=True)
@@ -25,6 +34,8 @@ class MessageState:
     bot_hash: str
     default_target: Target
     rolls: dict = field(default_factory=dict)
+    confirmed: set = field(default_factory=set)
+    notices: list = field(default_factory=list)
     sent: dict = field(default_factory=dict)
     lock: object = field(default_factory=threading.RLock)
 
@@ -72,6 +83,7 @@ class HookManager:
         self._install_roll()
         self._install_proxy()
         self._install_save_record()
+        self._install_notice_formatter()
         self._install_notice()
         self._install_outputs()
         self._install_markdown()
@@ -116,8 +128,8 @@ class HookManager:
         if event is None:
             return invocation
         if invocation is not None and str(event.bot_info.hash) == invocation.state.bot_hash:
-            if event is invocation.event or event.plugin_info.get('func_type') == 'fake_event':
-                return invocation
+            # 同一处理调用中的合成 Event 仍属于原指令；跨消息通过 ContextVar 隔离。
+            return invocation
         state = getattr(event, _STATE_ATTRIBUTE, None)
         if state is not None and state.owner is self:
             return Invocation(state, event)
@@ -161,30 +173,37 @@ class HookManager:
             del frame
         return None
 
-    def _roll_target(self, invocation):
-        # 只读取已核对的 Core 处理变量；不按消息中的 at 猜测代投对象。
+    def _roll_target(self, invocation, rd):
+        # 读取已核对的处理变量；不按任意 at 猜测代投，也不依赖插件的全局骰点记录。
         frame = inspect.currentframe()
         try:
             for _ in range(80):
                 if frame is None:
                     break
                 module = frame.f_globals.get('__name__')
-                if module in ('OlivaDiceCore.msgReply', 'OlivaDiceCore.msgReplyModel'):
+                if module in _TARGET_MODULES:
                     values = frame.f_locals
                     user_id = None
                     if frame.f_code.co_name in ('team_r', 'team_ra', 'team_sc', 'team_st'):
                         user_id = values.get('member_id')
+                    if module == 'OlivaDiceSanchi.msgReply':
+                        if values.get('rd_my') is rd:
+                            user_id = values.get('my_pc_id')
+                        elif values.get('rd_other') is rd:
+                            user_id = values.get('other_pc_id')
+                    if user_id is None and module in ('OlivaDiceMS.msgReply', 'OlivaDiceTA.msgReply'):
+                        user_id = values.get('target_user_id')
                     if user_id is None:
                         user_id = values.get('tmp_pc_id')
                     if user_id is not None:
                         default = invocation.state.default_target
                         platform = values.get('tmp_pc_platform', default.platform)
                         hag_id = values.get('tmp_hagID', default.hag_id)
-                        return Target(str(user_id), platform, hag_id)
+                        return Target(str(user_id), platform, hag_id), True
                 frame = frame.f_back
         finally:
             del frame
-        return invocation.proxy_target or invocation.state.default_target
+        return invocation.proxy_target or invocation.state.default_target, invocation.proxy_target is not None
 
     def _install_roll(self):
         rd_class = self.core.onedice.RD
@@ -197,9 +216,11 @@ class HookManager:
             try:
                 invocation = self._context() or self._stack_context()
                 if invocation is not None and self.roll_depth.get() == 0:
-                    target = self._roll_target(invocation)
+                    target, confirmed = self._roll_target(invocation, rd)
                     with invocation.state.lock:
                         invocation.state.rolls[id(rd)] = (rd, target)
+                        if confirmed:
+                            invocation.state.confirmed.add(id(rd))
             except Exception as error:
                 self.log('记录 OneDice 调用失败，继续原骰点', error)
                 invocation = self._context()
@@ -236,12 +257,12 @@ class HookManager:
             # 第三方若使用 Core 骰点记录接口，可以取得其实际 userId。
             if self.active:
                 try:
-                    invocation = self._context()
+                    invocation = self._context() or self._stack_context()
                     values = signature.bind(*args, **kwargs).arguments
                     if invocation is not None and str(values['botHash']) == invocation.state.bot_hash:
                         rd = values['data']
                         with invocation.state.lock:
-                            if id(rd) in invocation.state.rolls:
+                            if id(rd) in invocation.state.rolls and id(rd) not in invocation.state.confirmed:
                                 target = Target(
                                     str(values['userId']), values['platform'], invocation.state.default_target.hag_id,
                                 )
@@ -252,9 +273,50 @@ class HookManager:
 
         self._patch(self.core.onediceOverride, 'saveRDDataUser', save_record)
 
+    def _notice_template(self, data):
+        frame = inspect.currentframe()
+        try:
+            for _ in range(80):
+                if frame is None:
+                    break
+                if frame.f_globals.get('__name__') in _TARGET_MODULES:
+                    values = frame.f_locals
+                    if values.get('flag_hide') and values.get('flag_is_from_group'):
+                        templates = values.get('dictStrCustom', {})
+                        if any(key in templates and data == templates[key] for key in _NOTICE_KEYS):
+                            return True
+                frame = frame.f_back
+        finally:
+            del frame
+        return False
+
+    def _install_notice_formatter(self):
+        original = self.core.msgCustomManager.formatReplySTR
+
+        @wraps(original)
+        def format_reply(data, *args, **kwargs):
+            # 格式化仅执行一次，兼容自定义回复、随机分支和变量展开。
+            result = original(data, *args, **kwargs)
+            if self.active:
+                try:
+                    invocation = self._context() or self._stack_context()
+                    if invocation is not None and self._notice_template(data) and isinstance(result, str):
+                        with invocation.state.lock:
+                            invocation.state.notices.append(result)
+                except Exception as error:
+                    self.log('标记暗骰提示失败，继续原格式化', error)
+            return result
+
+        self._patch(self.core.msgCustomManager, 'formatReplySTR', format_reply)
+
     def _hidden_notice(self, event, message):
         if event.plugin_info.get('func_type') != 'group_message' or not isinstance(message, str):
             return False
+        invocation = self._context(event)
+        if invocation is not None:
+            with invocation.state.lock:
+                if any(message.rstrip(' ') == notice.rstrip(' ') for notice in invocation.state.notices):
+                    return True
         frame = inspect.currentframe()
         try:
             for _ in range(80):
@@ -314,7 +376,7 @@ class HookManager:
             if not lines:
                 return message
             try:
-                hud = ' | '.join(lines)
+                hud = '\n'.join(lines)
                 hud = self.core.censorAPI.doCensorReplaceOlivOSSafe(botHash=state.bot_hash, msg=hud)
                 if not hud.strip():
                     return message
@@ -329,8 +391,9 @@ class HookManager:
                 channel = string_channel or event.plugin_info.get('message_mode_rx')
                 if channel in ('old_string', 'olivos_string'):
                     hud = hud.replace('&', '&amp;').replace('[', '&#91;').replace(']', '&#93;')
+                hud = '\n'.join(f'『{line}』' for line in hud.splitlines()) + '\n\n'
                 result = self.olivos.messageAPI.Message_templet(
-                    'olivos_para', [self.olivos.messageAPI.PARA.text(hud + '\n'), *original.data],
+                    'olivos_para', [self.olivos.messageAPI.PARA.text(hud), *original.data],
                 )
                 sent.update(selected)
                 return result
@@ -363,7 +426,11 @@ class HookManager:
             remote = args[1] if len(args) > 1 else kwargs.get('remote', False)
             if not self.active or remote:
                 return original_reply(event, message, *args, **kwargs)
-            return self._deliver(original_reply, event, message, self._reply_route(event), args, kwargs)
+            try:
+                route = self._reply_route(event)
+            except (AttributeError, KeyError):
+                return original_reply(event, message, *args, **kwargs)
+            return self._deliver(original_reply, event, message, route, args, kwargs)
 
         @wraps(original_send)
         def send(event, send_type, target_id, message, *args, **kwargs):
@@ -390,7 +457,9 @@ class HookManager:
 
         @wraps(original)
         def markdown(plugin_event, message):
-            decorated = self._prepare(plugin_event, message, self._reply_route(plugin_event), 'old_string') if self.active else message
+            decorated = message
+            if self.active:
+                decorated = self._prepare(plugin_event, message, self._reply_route(plugin_event), 'old_string')
             if isinstance(decorated, self.olivos.messageAPI.Message_templet):
                 decorated = decorated.get('old_string')
             return original(plugin_event, decorated)

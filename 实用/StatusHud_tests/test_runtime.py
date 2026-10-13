@@ -11,14 +11,16 @@ def test_real_core_rolls(runtime, command):
     event = runtime.Event(command)
     runtime.proc.run(event)
     assert event.sent
-    assert event.sent[0][2].startswith('Alice HP10/12 SAN')
+    assert event.sent[0][2].startswith('『Alice HP10/12 SAN')
+    hud, result = event.sent[0][2].split('』\n\n', 1)
+    assert hud.count('『') == 1 and result
     assert sum(text.count('Alice HP10/12') for _, _, text in event.sent) == 1
 
 
 def test_no_roll_or_no_card_is_unchanged(runtime):
     event = runtime.Event('.r 1d6')
     runtime.proc.run(event)
-    assert event.sent and not event.sent[0][2].startswith('Alice')
+    assert event.sent and not event.sent[0][2].startswith('『Alice')
     runtime.card()
     event = runtime.Event('.hud show')
     runtime.hud(event)
@@ -43,7 +45,8 @@ def test_linked_defaults_and_overrides(runtime):
     assert runtime.storage.status('bot', '1', 'qq')['enabled']
     assert not runtime.storage.status('bot', '2', 'qq')['enabled']
     assert not (runtime.storage.root / 'slave').exists()
-    assert not (runtime.storage.root / 'bot/user' / (runtime.core.userConfig.getUserHash('2', 'user', 'qq') + '.json')).exists()
+    user_hash = runtime.core.userConfig.getUserHash('2', 'user', 'qq')
+    assert not (runtime.storage.root / 'bot/user' / (user_hash + '.json')).exists()
 
 
 def test_global_permission_uses_current_bot(runtime):
@@ -66,12 +69,12 @@ def test_proxy_uses_target_setting_and_last_at(runtime):
     runtime.storage.set_user('bot', '1', 'qq', False)
     event = runtime.Event('.ra 侦查 [CQ:at,qq=2][CQ:at,qq=3]', role='admin')
     runtime.proc.run(event)
-    assert event.sent[0][2].startswith('Carol HP10/12')
-    assert not event.sent[0][2].startswith('Alice')
+    assert event.sent[0][2].startswith('『Carol HP10/12')
+    assert not event.sent[0][2].startswith('『Alice')
     runtime.storage.set_user('bot', '3', 'qq', False)
     event = runtime.Event('.ra 侦查 [CQ:at,qq=3]', role='admin')
     runtime.proc.run(event)
-    assert not event.sent[0][2].startswith('Carol')
+    assert not event.sent[0][2].startswith('『Carol')
 
 
 def test_unprivileged_at_and_plain_r_do_not_become_proxy(runtime):
@@ -83,7 +86,7 @@ def test_unprivileged_at_and_plain_r_do_not_become_proxy(runtime):
     assert 'Alice HP10/12' not in event.sent[0][2]
     event = runtime.Event('.r 1d6 [CQ:at,qq=2]', role='admin')
     runtime.proc.run(event)
-    assert event.sent[0][2].startswith('Alice HP10/12')
+    assert event.sent[0][2].startswith('『Alice HP10/12')
 
 
 def test_hidden_notice_is_unchanged_and_all_private_results_have_hud(runtime):
@@ -97,7 +100,7 @@ def test_hidden_notice_is_unchanged_and_all_private_results_have_hud(runtime):
     assert 'Alice HP10/12' not in event.sent[0][2]
     private = [text for kind, _, text in event.sent if kind == 'private']
     assert len(private) == 2
-    assert all(text.startswith('Alice HP10/12') for text in private)
+    assert all(text.startswith('『Alice HP10/12') for text in private)
 
 
 def test_hidden_proxy_keeps_initiator_delivery(runtime):
@@ -107,14 +110,14 @@ def test_hidden_proxy_keeps_initiator_delivery(runtime):
     runtime.proc.run(event)
     assert 'Bob HP10/12' not in event.sent[0][2]
     assert event.sent[1][:2] == ('private', '1')
-    assert event.sent[1][2].startswith('Bob HP10/12')
+    assert event.sent[1][2].startswith('『Bob HP10/12')
 
 
 def test_private_sn_uses_global_selection(runtime):
     runtime.card('1', 'Alice', 'Private {tName}')
     event = runtime.Event('.r 1d6', group=None)
     runtime.proc.run(event)
-    assert event.sent[0][2].startswith('Private Alice\n')
+    assert event.sent[0][2].startswith('『Private Alice』\n\n')
 
 
 def test_sn_precedence_group_binding_and_no_card_writes(runtime):
@@ -124,7 +127,9 @@ def test_sn_precedence_group_binding_and_no_card_writes(runtime):
     pc.dictPcCardData['unity'][pc_hash]['Bound'] = {'HP': 7, 'HPMAX': 9}
     pc.dictPcCardTemplate['unity'][pc_hash]['Bound'] = {
         'template': 'default',
-        'noteRecord': {'名片' + runtime.core.userConfig.getUserHash('guild|100', 'group', 'qq')[:8]: 'Group {tName} {HP}'},
+        'noteRecord': {
+            '名片' + runtime.core.userConfig.getUserHash('guild|100', 'group', 'qq')[:8]: 'Group {tName} {HP}',
+        },
     }
     before = copy.deepcopy(pc.dictPcCardData)
     assert runtime.sn.get('1', 'qq', 'guild|100') == 'Group Bound 7'
@@ -143,8 +148,13 @@ def test_team_displays_every_member(runtime, team_command):
     runtime.core.userConfig.setUserConfigByKey('100', 'group', 'qq', 'activeTeam', 'squad', 'bot')
     event = runtime.Event(team_command, role='owner')
     runtime.proc.run(event)
-    first = event.sent[-1][2].splitlines()[0]
-    assert 'Alice HP' in first and 'Bob HP' in first
+    lines = event.sent[-1][2].splitlines()
+    assert lines[0].startswith('『Alice HP')
+    assert lines[1].startswith('『Bob HP')
+    assert all(line.endswith('』') and line.count('『') == line.count('』') == 1 for line in lines[:2])
+    assert lines[2] == ''
+    assert lines[3]
+    assert ' | ' not in '\n'.join(lines[:2])
 
 
 def test_third_party_direct_send_and_nested_roll_are_covered_once(runtime):
@@ -156,9 +166,10 @@ def test_third_party_direct_send_and_nested_roll_are_covered_once(runtime):
         plugin_event.reply('second')
         plugin_event.send('private', '1', 'secret')
     runtime.proc.run(event, handler, namespace='Custom')
-    assert event.sent[0][2].startswith('Alice HP10/12')
+    prefix = f"『{runtime.sn.get('1', 'qq', '100')}』\n\n"
+    assert event.sent[0][2] == prefix + 'first'
     assert event.sent[1][2] == 'second'
-    assert event.sent[2][2].startswith('Alice HP10/12')
+    assert event.sent[2][2] == prefix + 'secret'
 
 
 def test_third_party_core_record_identifies_target(runtime):
@@ -171,7 +182,7 @@ def test_third_party_core_record_identifies_target(runtime):
         runtime.core.onediceOverride.saveRDDataUser(rd, 'bot', '2', 'qq')
         plugin_event.reply('result')
     runtime.proc.run(event, handler, namespace='Custom')
-    assert event.sent[0][2].startswith('Bob HP10/12')
+    assert event.sent[0][2].startswith('『Bob HP10/12')
     assert 'Alice HP10/12' not in event.sent[0][2]
 
 
@@ -184,8 +195,9 @@ def test_page_header_follows_hud_and_subsequent_pages_do_not_repeat(runtime):
         runtime.core.msgReply.replyMsg(plugin_event, 'x' * 45)
     runtime.proc.run(event, handler)
     assert len(event.sent) == 3
-    assert event.sent[0][2].startswith('Alice HP10/12')
-    assert event.sent[0][2].splitlines()[1].startswith('---[第')
+    assert event.sent[0][2].startswith('『Alice HP10/12')
+    assert event.sent[0][2].splitlines()[1] == ''
+    assert event.sent[0][2].splitlines()[2].startswith('---[第')
     assert all('Alice HP10/12' not in text for _, _, text in event.sent[1:])
 
 
@@ -203,7 +215,7 @@ def test_concurrent_events_and_context_cleanup(runtime):
         return event.sent[0][2]
     with ThreadPoolExecutor(max_workers=2) as pool:
         a, b = list(pool.map(run, ('1', '2')))
-    assert a.startswith('Alice') and b.startswith('Bob')
+    assert a.startswith('『Alice') and b.startswith('『Bob')
     assert runtime.manager.current.get() is None
 
 
@@ -227,7 +239,7 @@ def test_event_carrying_background_worker(runtime):
     thread.start()
     thread.join(timeout=5)
     assert not thread.is_alive()
-    assert event.sent[0][2].startswith('Alice HP10/12')
+    assert event.sent[0][2].startswith('『Alice HP10/12')
 
 
 def test_reload_does_not_stack_and_uninstall_restores(runtime):
@@ -253,7 +265,7 @@ def test_corrupt_storage_preserves_result_and_data(runtime):
     path.write_text('{broken', encoding='utf-8')
     event = runtime.Event('.r 1d6')
     runtime.proc.run(event)
-    assert event.sent and not event.sent[0][2].startswith('Alice HP10/12')
+    assert event.sent and not event.sent[0][2].startswith('『Alice HP10/12')
     assert path.read_text(encoding='utf-8') == '{broken'
 
 
@@ -266,7 +278,7 @@ def test_multimodal_payload_and_literal_sn_are_preserved(runtime):
     runtime.proc.run(event, handler, namespace='Custom', mode='olivos_string')
     assert '[CQ:image,file=https://example.invalid/image.png]' in event.sent[0][2]
     assert '[CQ:at,qq=123]' not in event.sent[0][2]
-    assert 'B\n' in event.sent[0][2]
+    assert 'B』\n\n' in event.sent[0][2]
 
 
 def test_no_roll_direct_reply_preserves_payload_identity(runtime):
@@ -288,7 +300,7 @@ def test_remote_placeholder_does_not_consume_first_hud(runtime):
         plugin_event.reply('actual')
     runtime.proc.run(event, handler, namespace='Custom')
     assert len(event.sent) == 1
-    assert event.sent[0][2].startswith('Alice HP10/12')
+    assert event.sent[0][2].startswith('『Alice HP10/12')
 
 
 def test_empty_sn_preserves_result_and_default_template_fallback(runtime):
@@ -296,7 +308,7 @@ def test_empty_sn_preserves_result_and_default_template_fallback(runtime):
     assert runtime.sn.get('1', 'qq', '100') is None
     event = runtime.Event('.r 1d6')
     runtime.proc.run(event)
-    assert not event.sent[0][2].startswith('Alice HP10/12')
+    assert not event.sent[0][2].startswith('『Alice HP10/12')
     pc_hash = runtime.card()
     runtime.core.pcCard.dictPcCardTemplateDefault['unity']['without_sn'] = {'defaultSkillValue': {}}
     runtime.core.pcCard.dictPcCardTemplate['unity'][pc_hash]['Alice']['template'] = 'without_sn'
@@ -315,31 +327,59 @@ def test_team_respects_each_members_personal_switch(runtime):
     runtime.proc.run(event)
     first = event.sent[0][2].splitlines()[0]
     assert 'Alice HP' in first and 'Bob HP' not in first
+    assert event.sent[0][2].startswith(f"『{runtime.sn.get('1', 'qq', '100')}』\n\n")
 
 
-def test_core_markdown_success_and_plain_fallback_do_not_duplicate(runtime):
+@pytest.mark.parametrize('success', [True, False])
+def test_core_markdown_success_and_plain_fallback_do_not_duplicate(runtime, success):
     runtime.card()
-    for success in (True, False):
-        event = runtime.Event('.custom')
-        event.platform['sdk'] = 'qqGuildv2_link'
-        event.data.extend = {'flag_from_qq': True}
-        captures = []
-        class Inde:
-            def hasAPI(self, name):
-                return name == 'create_markdown_message'
-            def create_markdown_message(self, **kwargs):
-                captures.append(kwargs['markdown']['content'])
-                return {'active': success}
-        runtime.olivos.qqGuildv2SDK = type('SDK', (), {
-            'markdown_tag': type('Tags', (), {'at_para': staticmethod(lambda para: '<@' + para.data['id'] + '>')}),
-        })
-        event.indeAPI = Inde()
-        def handler(plugin_event, Proc):
-            runtime.core.onedice.RD('1d6').roll()
-            runtime.core.msgReply.replyMsg(plugin_event, '[CQ:at,qq=1] result')
-        runtime.proc.run(event, handler)
-        assert captures[0].startswith('Alice HP10/12')
-        if success:
-            assert not event.sent
-        else:
-            assert event.sent[0][2].count('Alice HP10/12') == 1
+    event = runtime.Event('.custom')
+    event.platform['sdk'] = 'qqGuildv2_link'
+    event.data.extend = {'flag_from_qq': True}
+    captures = []
+    class Inde:
+        def hasAPI(self, name):
+            return name == 'create_markdown_message'
+        def create_markdown_message(self, **kwargs):
+            captures.append(kwargs['markdown']['content'])
+            return {'active': success}
+    runtime.olivos.qqGuildv2SDK = type('SDK', (), {
+        'markdown_tag': type('Tags', (), {'at_para': staticmethod(lambda para: '<@' + para.data['id'] + '>')}),
+    })
+    event.indeAPI = Inde()
+    def handler(plugin_event, Proc):
+        runtime.core.onedice.RD('1d6').roll()
+        runtime.core.msgReply.replyMsg(plugin_event, '[CQ:at,qq=1] result')
+    runtime.proc.run(event, handler)
+    assert captures[0].startswith(f"『{runtime.sn.get('1', 'qq', '100')}』\n\n")
+    if success:
+        assert not event.sent
+    else:
+        assert event.sent[0][2].count('Alice HP10/12') == 1
+
+
+def test_background_core_record_preserves_proxy_identity(runtime):
+    runtime.card('1', 'Alice')
+    runtime.card('2', 'Bob')
+    event = runtime.Event('.custom')
+    def worker(plugin_event):
+        rd = runtime.core.onedice.RD('1d6')
+        rd.roll()
+        runtime.core.onediceOverride.saveRDDataUser(rd, 'bot', '2', 'qq')
+        plugin_event.reply('result')
+    thread = threading.Thread(target=worker, args=(event,))
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert event.sent[0][2].startswith('『Bob HP10/12')
+
+
+def test_synthetic_event_in_same_command_keeps_roll_context(runtime):
+    runtime.card('1', 'Alice')
+    event = runtime.Event('.custom')
+    synthetic = runtime.Event('.synthetic', user_id='3', group=None)
+    def handler(plugin_event, Proc):
+        runtime.core.onedice.RD('1d6').roll()
+        synthetic.reply('result')
+    runtime.proc.run(event, handler, namespace='Custom')
+    assert synthetic.sent[0][2].startswith('『Alice HP10/12')

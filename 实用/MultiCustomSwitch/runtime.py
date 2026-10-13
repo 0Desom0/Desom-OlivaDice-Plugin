@@ -14,6 +14,7 @@ from .store import ReplyStore
 CONTEXT = contextvars.ContextVar('mcs_reply_context', default=None)
 ORIGINAL_MODE = contextvars.ContextVar('mcs_original_mode', default=False)
 STORE = None
+INIT_ERROR = None
 _RESTORE = []
 
 
@@ -63,8 +64,9 @@ def _original_command(event):
 
 
 def install(proc):
-    global STORE
+    global STORE, INIT_ERROR
     uninstall()
+    INIT_ERROR = None
     STORE = ReplyStore(proc)
     core = OlivaDiceCore
     with files.LOCK:
@@ -84,7 +86,10 @@ def install(proc):
             'pruneAndSaveMsgCustom',
             'saveMsgCustom',
         ):
-            _patch(manager, key, _protect(getattr(manager, key)))
+            # 旧版 Core 仅有初始化与保存接口；不存在的新版辅助函数无需包装。
+            original = getattr(manager, key, None)
+            if callable(original):
+                _patch(manager, key, _protect(original))
         # 与现有 WebUI 共用同一把可重入锁，避免互相持锁后等待另一把锁。
         webui = sys.modules.get('OlivaDiceWebUI')
         service = getattr(webui, 'service', None)

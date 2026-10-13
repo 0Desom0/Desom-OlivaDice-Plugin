@@ -47,6 +47,6 @@ def test_first_command_after_opk_extraction_is_removed(runtime, monkeypatch):
         assert not unpacked.exists()
         event = runtime.Event('.r 1d6')
         runtime.proc.run(event)
-        assert event.sent[0][2].startswith('Alice HP10/12')
+        assert event.sent[0][2].startswith('『Alice HP10/12 SAN65/94』\n\n')
     finally:
         plugin.main.Event.save(None, runtime.proc)

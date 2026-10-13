@@ -1,7 +1,7 @@
 # 多自定义回复切换（MultiCustomSwitch）
 
 为同一个骰子在不同群使用不同回复风格，提供独立 WebUI 和桌面 GUI。
-强依赖 **OlivaDiceCore**，以本机 Core 3.5.1 源码及当前 OlivaDiceWebUI/NativeGUI 接口为依据。
+强依赖 **OlivaDiceCore**，已验证本机 Core 3.5.1 源码与 `D:\OlivOS` 中的 Core 3.5.0 OPK。
 沿用强依赖 Core 的规则插件模板与生命周期，回复库和界面业务共用实现。
 
 ## 安装与入口
@@ -15,10 +15,13 @@ OPK 包根目录直接包含 `app.json`，不能再套一层同名目录。
 - GUI：托盘插件菜单“多自定义回复切换”。
 - 编写帮助：[writer_help.md](writer_help.md)，在导入时独立加载进内存，两个界面均可查看。
 
-需要支持 `plugin_event_router(event, plugin_model, plugin_name)` 的 OlivOS 宿主，以及提供
-`getDictStrCustomDefault()` 的 Core。WebUI 使用宿主插件消息桥和静态资源缓存；
+需要支持 `plugin_event_router(event, plugin_model, plugin_name)` 的 OlivOS 宿主。
+Core 有 `getDictStrCustomDefault()` 时直接调用；3.5.0 缺少该辅助函数时，按同样的已加载模块顺序汇总默认回复。
+WebUI 使用宿主插件消息桥和静态资源缓存；
 不额外启动网络服务，不需要 Node.js、npm 或第三方前端依赖。
 GUI 使用 Python 自带 Tk；无 Tk 的服务器仍可使用聊天指令及 WebUI。
+首次进入 unity 模板库时，尚未导入模板则回复列表为空；在“回复库”中选择具体 bot 即可查看 1/default 和 2/smp。
+若使用 1.0.0 时提示“插件尚未初始化”，请替换为 1.0.1 OPK 并重载插件；不需要为此修改 Core 源码。
 
 ## 指令
 
@@ -98,6 +101,10 @@ NativeGUI 的文件上下文接入同一锁。模糊搜索等待、消息发送�
 另有真实 Tk 编辑器操作、HTTP JSON 下载校验与 OPK 清理后的首次命令测试。
 浏览器检查使用已有 Chrome/Selenium，在沙箱 iframe 中运行页面并提供合成宿主消息桥。
 这些检查不代表已连接实际 QQ 机器人验证。
+
+另使用 `D:\OlivOS` 的 Python、宿主加载器及已安装 OPK，在独立测试目录验证了实际账号列表、
+托盘菜单打开 GUI、default 与官方面板双向保存、smp 只读，以及真实宿主 WebUI 登录、页面缓存和消息桥。
+测试只读取账号 ID 与平台用于生成相同 bot_hash，不连接消息协议，不改动实例原有回复及群配置。
 
 ```powershell
 python -m pytest 实用/MultiCustomSwitch_tests -q

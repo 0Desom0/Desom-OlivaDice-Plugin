@@ -42,7 +42,7 @@ def dispatch(payload):
         raise InvalidInput('请求必须是 JSON 对象。')
     store = runtime.STORE
     if store is None:
-        raise InvalidInput('插件尚未初始化，请检查 OlivaDiceCore 是否成功加载。')
+        raise InvalidInput(runtime.INIT_ERROR or '插件尚未初始化，请检查 OlivaDiceCore 是否成功加载。')
     op = payload.get('op')
     scope = payload.get('scope', 'unity')
     if op == 'accounts':

@@ -529,7 +529,7 @@ class Manager:
 
 def open_window():
     if runtime.STORE is None:
-        raise ValueError('插件尚未初始化。')
+        raise ValueError(runtime.INIT_ERROR or '插件尚未初始化。')
     if tk is None:
         raise ValueError('当前 Python 没有 Tk 支持，请使用 WebUI 管理。')
 

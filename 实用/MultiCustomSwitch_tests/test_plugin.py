@@ -461,3 +461,48 @@ def test_uninstall_restores_official_state_and_route(env):
     assert env.core.msgCustom.dictStrCustomDict is not core_dict
     assert not hasattr(env.core.msgCustomManager, 'open')
     assert env.webui.service.LOCK is not env.plugin.files.LOCK
+
+
+def test_legacy_core_without_optional_helpers_initializes_and_has_builtin_replies(env, monkeypatch):
+    manager = env.core.msgCustomManager
+    env.plugin.runtime.uninstall()
+    defaults = manager.getDictStrCustomDefault()
+    helpers = ('getDictStrCustomDefault', 'setMsgCustomByBotHash', 'pruneMsgCustomByBotHash', 'pruneAndSaveMsgCustom')
+    for name in helpers:
+        monkeypatch.delattr(manager, name)
+    # 旧版 Core 的实际保存函数没有 defaults/prune 参数。
+    def legacy_save(bot):
+        env.plugin.files.write_json(
+            env.store.core_file(bot, 'customReply.json'), env.core.msgCustom.dictStrCustomUpdateDict.get(bot, {})
+        )
+
+    monkeypatch.setattr(manager, 'saveMsgCustomByBotHash', legacy_save)
+    env.plugin.main.Event.init_after(None, env.proc)
+    store = env.plugin.runtime.STORE
+    assert store is not None and env.plugin.runtime.INIT_ERROR is None
+    assert env.plugin.store.core_defaults() == defaults
+    bot = env.bots[0]
+    assert [row['selection'] for row in store.list_replies(bot)] == [1, 2]
+    assert store.snapshot(bot, 1)['entries']
+    assert store.snapshot(bot, 2)['readonly']
+    snapshot = store.snapshot(bot, 1)
+    store.edit(bot, 1, 'strRoll', '旧版 Core 保存', snapshot['revision'])
+    assert env.webui.gui_parity.replies_snapshot(env.proc, bot)['strRoll'] == '旧版 Core 保存'
+    assert env.plugin.files.read_json(store.core_file(bot, 'customReply.json'))['strRoll'] == '旧版 Core 保存'
+
+
+def test_initialization_failure_reports_type_and_call_site_without_private_details(env, monkeypatch):
+    env.plugin.runtime.uninstall()
+
+    def broken_install(proc):
+        raise ValueError('不应出现在日志或界面中的私有配置内容')
+
+    monkeypatch.setattr(env.plugin.runtime, 'install', broken_install)
+    env.plugin.main.Event.init_after(None, env.proc)
+    assert env.plugin.runtime.STORE is None
+    assert 'ValueError' in env.plugin.runtime.INIT_ERROR
+    log = env.proc.logs[-1][0][1]
+    assert 'broken_install' in log
+    assert '不应出现在日志或界面中的私有配置内容' not in log
+    with pytest.raises(env.plugin.store.InvalidInput, match='ValueError'):
+        env.plugin.api.dispatch({'op': 'accounts'})

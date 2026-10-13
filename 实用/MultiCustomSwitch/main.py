@@ -1,9 +1,16 @@
 """OlivOS 生命周期、命令入口与官方 WebUI 消息桥。"""
 
 import hashlib
+import traceback
 
 from . import api, commands, gui, runtime
 from .store import InvalidInput
+
+
+def error_location(exc):
+    return '\n'.join(
+        f'{frame.filename}:{frame.lineno} in {frame.name}' for frame in traceback.extract_tb(exc.__traceback__)
+    )
 
 
 class Event:
@@ -16,9 +23,11 @@ class Event:
         try:
             runtime.install(Proc)
             Proc.log(2, 'MultiCustomSwitch: 已接入 Core，自定义回复管理就绪。')
-        except Exception:
+        except Exception as exc:
             runtime.uninstall()
-            Proc.log(4, 'MultiCustomSwitch: 初始化失败，请检查 Core 版本及回复配置文件。')
+            runtime.INIT_ERROR = f'初始化失败（{type(exc).__name__}），请查看 OlivOS 日志中的调用位置。'
+            # 输出调用位置与异常类型，不记录配置内容、账号凭据或网络请求信息。
+            Proc.log(4, f'MultiCustomSwitch: {runtime.INIT_ERROR}\n{error_location(exc)}')
 
     @staticmethod
     def group_message(plugin_event, Proc):
@@ -42,8 +51,12 @@ class Event:
             if getattr(plugin_event.data, 'event', None) == 'MultiCustomSwitch_Open':
                 try:
                     gui.open_window()
-                except Exception:
-                    Proc.log(4, 'MultiCustomSwitch: 桌面管理窗口无法打开。')
+                except Exception as exc:
+                    Proc.log(
+                        4,
+                        f'MultiCustomSwitch: 桌面管理窗口无法打开（{type(exc).__name__}）。\n'
+                        f'{runtime.INIT_ERROR or ""}\n{error_location(exc)}',
+                    )
             return
         request_id = context.get('request_id')
         if not isinstance(request_id, str) or not request_id or len(request_id) > 128:

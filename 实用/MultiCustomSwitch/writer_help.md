@@ -16,6 +16,7 @@
 1/default 是 Core 原有回复，与 OlivaDiceWebUI、OlivaDiceNativeGUI、Core 的 `.str` 共用内存与
 `plugin/data/OlivaDice/<bot_hash>/console/customReply.json`，修改后其他面板刷新即可看到。
 2/smp 是 `OlivaDiceCore.msgCustomManager.getDictStrCustomDefault()` 汇总的全默认回复，只读。
+Core 3.5.0 未提供该辅助函数时，使用相同的已加载模块默认回复汇总规则。
 其 Bot 名来自账号登录信息；登录接口暂不可用时显示账号 ID。
 自定义回复序号必须 >=3，序号可不连续。
 
