@@ -50,6 +50,14 @@ DRIVER = r"""
     $('settings').click(); $('enabled').checked = false; $('settings-submit').click(); await settled();
     assert(!state.config.enabled && $('config-info').textContent.includes('关'), '全局开关和界面同步');
     $('help').click(); await settled(); assert($('help-content').textContent.includes('1/default'), '独立 Markdown 编写帮助');
+    assert($('help-content').querySelector('h1').textContent === 'MultiCustomSwitch 自定义回复编写帮助' && $('help-content').querySelectorAll('h2').length >= 5, 'Markdown 标题渲染为分级标题');
+    assert($('help-content').querySelectorAll('ul li').length >= 5 && $('help-content').querySelectorAll('pre code').length >= 5, 'Markdown 列表和代码块正确渲染');
+    assert(JSON.parse($('help-content').querySelector('pre code').textContent).strBotName === '青果', 'JSON 代码块保持原始格式');
+    assert([...$('help-content').querySelectorAll('code')].some(node=>node.textContent === '[CQ:image,file=图片地址]') && [...$('help-content').querySelectorAll('pre code')].some(node=>node.textContent.includes('【随机数1>=<100】')), '图片码及程心示例保持字面内容');
+    const sample = document.createElement('article');
+    sample.append(renderHelpMarkdown('**重点**与*强调* [文档](https://example.com/help)\n\n1. 有序列表\n\n`**字面代码**` `<bot_hash>`\n\n<img src=x onerror=alert(1)>\n\n[错误链接](javascript:alert(1))'));
+    assert(sample.querySelector('strong').textContent === '重点' && sample.querySelector('em').textContent === '强调' && sample.querySelector('a').protocol === 'https:' && sample.querySelector('ol li'), 'Markdown 强调、链接和有序列表正确渲染');
+    assert(sample.querySelector('code').textContent === '**字面代码**' && sample.textContent.includes('<bot_hash>') && !sample.querySelector('img,script,[onerror]') && sample.querySelectorAll('a').length === 1, '代码不再格式化且 HTML 与脚本链接不执行');
     assert($('help-content').scrollTop === 0 && $('help-dialog').scrollTop === 0, '帮助首次打开从顶部显示');
     $('help-content').scrollTop = $('help-content').scrollHeight;
     assert($('help-content').scrollTop > 0 && $('help-close').getBoundingClientRect().top < $('help-content').getBoundingClientRect().top, '滚动帮助后右上角关闭按钮仍可见');

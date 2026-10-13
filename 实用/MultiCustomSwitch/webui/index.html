@@ -28,6 +28,11 @@ dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,'
 #help-dialog[open]{display:flex;flex-direction:column}.help-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);flex-shrink:0}
 .help-header h2{margin:0}.help-header button{width:36px;height:36px;padding:0;font-size:24px;line-height:1;flex-shrink:0}
 #help-content{margin:0;padding:20px;overflow:auto;min-height:0;flex:1}
+#help-content h1{font-size:24px;margin:0 0 20px}#help-content h2{font-size:19px;margin:28px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+#help-content h3{font-size:16px;margin:22px 0 10px}#help-content p{margin:12px 0;color:var(--fg)}#help-content ul,#help-content ol{padding-left:26px;margin:12px 0}#help-content li{margin:6px 0}
+#help-content code{font:13px/1.7 ui-monospace,Consolas,monospace;background:var(--sub);padding:2px 5px;border-radius:3px}
+#help-content pre{margin:14px 0;padding:14px 16px;border:1px solid var(--line);border-radius:4px;background:var(--sub);overflow:auto;white-space:pre;font:13px/1.7 ui-monospace,Consolas,monospace}
+#help-content pre code{font:inherit;background:none;padding:0;border-radius:0}#help-content a{color:var(--accent);text-underline-offset:3px}
 table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;border-bottom:1px solid var(--line)}table input{width:100px}
 .pagination{display:flex;align-items:center;gap:8px;margin:8px 0}.pagination span{color:var(--muted)}#copy-dialog select{min-width:280px}
 [hidden]{display:none!important}@media(max-width:760px){main{padding:12px}.split{grid-template-columns:1fr}.list{height:270px}textarea{min-height:250px}}
@@ -48,13 +53,72 @@ table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;bord
 <dialog id="number-dialog"><h2>更改回复序号</h2><p>序号必须 ≥3。保存会同步全局默认和所有群文件；可一次交换序号。</p><table><thead><tr><th>回复</th><th>新序号</th></tr></thead><tbody id="numbers"></tbody></table><div class="actions"><button id="number-submit">保存并修正引用</button><button data-close="number-dialog">取消</button></div></dialog>
 <dialog id="settings-dialog"><h2>当前 Bot / 群设置</h2><label for="target">设置对象</label><select id="target"></select><label><input type="checkbox" id="enabled" style="width:auto"> 开启插件</label><label for="selected-model">回复</label><select id="selected-model"></select><p>全局关闭时所有群均使用 Core 原始回复。没有单独设置的群及私聊继承全局回复。</p><div class="actions"><button id="settings-submit">保存</button><button data-close="settings-dialog">取消</button></div></dialog>
 <dialog id="recover-dialog"><h2>Core 共用恢复模块</h2><p>每行一个模块名，按顺序覆盖同名键。保存会直接修改 Core 的同一份 recover_model.json。</p><textarea id="modules" aria-label="恢复模块列表"></textarea><div class="actions"><button id="recover-submit">保存共用配置</button><button data-close="recover-dialog">取消</button></div></dialog>
-<dialog id="help-dialog" aria-labelledby="help-title"><div class="help-header"><h2 id="help-title">自定义回复编写帮助</h2><button id="help-close" data-close="help-dialog" aria-label="关闭编写帮助" title="关闭" autofocus>×</button></div><pre id="help-content"></pre></dialog>
+<dialog id="help-dialog" aria-labelledby="help-title"><div class="help-header"><h2 id="help-title">自定义回复编写帮助</h2><button id="help-close" data-close="help-dialog" aria-label="关闭编写帮助" title="关闭" autofocus>×</button></div><article id="help-content"></article></dialog>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
 const pending = new Map();
 let sequence = 0, accounts = [], scope = 'unity', state = null, selection = null, snapshot = null, active = null, page = 1, copyMode = false, busy = false;
 const PAGE_SIZE = 100, CHUNK = 192 * 1024;
+// 帮助使用标题、段落、列表、代码、强调和链接；以 DOM 文本节点输出，保留示例中的尖括号。
+function markdownInline(value) {
+  const result = document.createDocumentFragment();
+  const tokens = /(`+)(.*?)\1|\*\*([^*]+)\*\*|\*([^*\n]+)\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let start = 0, match;
+  while ((match = tokens.exec(value)) !== null) {
+    result.append(document.createTextNode(value.slice(start, match.index)));
+    const node = document.createElement(match[1] ? 'code' : match[3] ? 'strong' : match[4] ? 'em' : 'a');
+    if (match[1]) node.textContent = match[2];
+    else {
+      node.append(markdownInline(match[3] || match[4] || match[5]));
+      if (node.tagName === 'A') { node.href = match[6]; node.target = '_blank'; node.rel = 'noopener noreferrer'; }
+    }
+    result.append(node); start = tokens.lastIndex;
+  }
+  result.append(document.createTextNode(value.slice(start)));
+  return result;
+}
+function renderHelpMarkdown(source) {
+  const result = document.createDocumentFragment();
+  let paragraph = [], list = null, fence = null, code = [];
+  function flushParagraph() {
+    if (!paragraph.length) return;
+    const node = document.createElement('p'); node.append(markdownInline(paragraph.join(' ')));
+    result.append(node); paragraph = [];
+  }
+  function flushCode() {
+    const pre = document.createElement('pre'), node = document.createElement('code');
+    node.textContent = code.join('\n'); pre.append(node); result.append(pre); fence = null; code = [];
+  }
+  for (const line of String(source || '').replace(/\r\n?/g, '\n').split('\n')) {
+    if (fence !== null) {
+      if (new RegExp('^\\s{0,3}' + fence[0] + '{' + fence.length + ',}\\s*$').test(line)) flushCode();
+      else code.push(line);
+      continue;
+    }
+    const opening = line.match(/^\s{0,3}(`{3,}|~{3,})[^`]*$/);
+    if (opening) { flushParagraph(); list = null; fence = opening[1]; continue; }
+    if (!line.trim()) { flushParagraph(); list = null; continue; }
+    const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*$/);
+    if (heading) {
+      flushParagraph(); list = null;
+      const node = document.createElement('h' + heading[1].length); node.append(markdownInline(heading[2])); result.append(node);
+      continue;
+    }
+    if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flushParagraph(); list = null; result.append(document.createElement('hr')); continue; }
+    const item = line.match(/^\s*(?:[-+*]|(\d+)[.)])\s+(.+)$/);
+    if (item) {
+      flushParagraph(); const tag = item[1] ? 'OL' : 'UL';
+      if (!list || list.tagName !== tag) {
+        list = document.createElement(tag); if (item[1]) list.start = Number(item[1]); result.append(list);
+      }
+      const node = document.createElement('li'); node.append(markdownInline(item[2])); list.append(node); continue;
+    }
+    list = null; paragraph.push(line);
+  }
+  if (fence !== null) flushCode();
+  flushParagraph(); return result;
+}
 function message(text, error = false) { $('status').textContent = text; $('status').classList.toggle('error', error); }
 function rawRequest(payload) {
   if (window.parent === window) return Promise.reject(new Error('请从 OlivOS WebUI 的插件页面入口打开。'));
@@ -301,7 +365,7 @@ $('recover-submit').onclick = () => run(async () => {
   await request('recover', { modules }); $('recover-dialog').close(); await loadState(); message('已保存到 Core 原有 recover_model.json。');
 });
 $('help').onclick = () => run(async () => {
-  const result = await request('help'); $('help-content').textContent = result.markdown;
+  const result = await request('help'); $('help-content').replaceChildren(renderHelpMarkdown(result.markdown));
   $('help-dialog').showModal(); $('help-dialog').scrollTop = 0; $('help-content').scrollTop = 0;
   $('help-close').focus({ preventScroll: true });
 });

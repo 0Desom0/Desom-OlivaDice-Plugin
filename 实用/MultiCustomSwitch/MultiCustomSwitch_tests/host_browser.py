@@ -82,8 +82,29 @@ def main():
         driver.find_element(By.ID, 'help').click()
         wait.until(lambda browser: '群链' in browser.find_element(By.ID, 'help-content').get_attribute('textContent'))
         checks.append('OPK 清理后帮助内容仍可加载')
+        assert driver.find_element(By.CSS_SELECTOR, '#help-content h1').text == 'MultiCustomSwitch 自定义回复编写帮助'
+        assert len(driver.find_elements(By.CSS_SELECTOR, '#help-content h2')) >= 5
+        assert len(driver.find_elements(By.CSS_SELECTOR, '#help-content ul li')) >= 5
+        code = driver.find_element(By.CSS_SELECTOR, '#help-content pre code').get_attribute('textContent')
+        assert json.loads(code)['strBotName'] == '青果'
+        assert driver.execute_script(
+            'return [...$("help-content").querySelectorAll("code")].some(node => '
+            'node.textContent === "[CQ:image,file=图片地址]");'
+        )
+        checks.append('帮助 Markdown 标题、列表、行内代码和 JSON 代码块实际渲染')
         assert driver.execute_script('return $("help-content").scrollTop === 0 && $("help-dialog").scrollTop === 0;')
         driver.save_screenshot(str(output / 'webui-help-top.png'))
+        driver.execute_cdp_cmd(
+            'Emulation.setEmulatedMedia', {'features': [{'name': 'prefers-color-scheme', 'value': 'dark'}]}
+        )
+        driver.save_screenshot(str(output / 'webui-help-dark.png'))
+        driver.execute_cdp_cmd(
+            'Emulation.setEmulatedMedia', {'features': [{'name': 'prefers-color-scheme', 'value': 'light'}]}
+        )
+        driver.set_window_size(440, 1000)
+        assert driver.find_element(By.ID, 'help-close').is_displayed()
+        driver.save_screenshot(str(output / 'webui-help-mobile.png'))
+        driver.set_window_size(1440, 1100)
         driver.execute_script('$("help-content").scrollTop = $("help-content").scrollHeight;')
         assert driver.execute_script('return $("help-content").scrollTop > 0;')
         close = driver.find_element(By.ID, 'help-close')
