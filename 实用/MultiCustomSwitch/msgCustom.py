@@ -25,8 +25,4 @@ COMMAND_HELP = """多自定义回复切换（MultiCustomSwitch）
 
 全局开关优先于群开关；关闭后恢复 1/default。
 单独设置过的群保留自己的选择，其他群及私聊使用全局默认。
-本插件不遵循 OlivaDiceCore 的群链；各群的回复选择与开关独立，不沿群链同步或继承。
-名称未精确匹配时，按 .st set 的方式显示候选并等待选择。
-候选序号仅用于当次选择，不是 .mcs list 中的回复序号。
-global 的所有操作只作用于当前 bot。
-命令按前缀贪婪匹配，可省略空格：.mcs3、.mcs回复名、.mcsglobal2、.mcsglobaloff。"""
+候选序号仅用于当次选择，不是 .mcs list 中的回复序号。"""

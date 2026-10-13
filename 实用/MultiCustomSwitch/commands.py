@@ -109,7 +109,7 @@ def handle(event, proc):
             send(
                 event,
                 f'{label}插件已{"开启" if enabled else "关闭"}。'
-                + ('关闭期间使用 Core 原始回复。' if not enabled else ''),
+                + ('关闭期间使用原始回复。' if not enabled else ''),
             )
             return
         if not text:

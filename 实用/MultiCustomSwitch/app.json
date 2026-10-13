@@ -3,7 +3,7 @@
     "author": "Desom-fu",
     "namespace": "MultiCustomSwitch",
     "message_mode": "old_string",
-    "info": "强依赖 OlivaDiceCore，提供按群切换自定义回复及独立 WebUI、GUI 管理。使用 .mcs help 查看帮助。",
+    "info": "提供按群切换自定义回复及独立 WebUI、GUI 管理。使用 .mcs help 查看帮助。",
     "version": "1.0.1",
     "svn": 2,
     "compatible_svn": 190,

@@ -83,12 +83,12 @@
 命令参考轻量模板，采用贪婪匹配，支持省略关键字之间的空格：
 
 ```text
-.hudon
-.hudoff
-.hudshow
-.hudhelp
-.hudglobalon
-.hudglobaloff
+.hud on
+.hud off
+.hud show
+.hud help
+.hud global on
+.hud global off
 。hud on
 /hud show
 ```
