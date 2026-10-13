@@ -41,11 +41,14 @@ def send(event, text):
 
 
 def allowed(event, global_action):
-    if global_action:
-        user_hash = OlivaDiceCore.userConfig.getUserHash(event.data.user_id, 'user', event.platform['platform'])
-        return OlivaDiceCore.ordinaryInviteManager.isInMasterList(event.bot_info.hash, user_hash)
-    # 群切换严格限 owner/admin；骰主身份本身不越过群管理权限。
-    return event.plugin_info.get('func_type') == 'group_message' and event.data.sender.get('role') in ('owner', 'admin')
+    if not global_action:
+        if event.plugin_info.get('func_type') != 'group_message':
+            return False
+        if event.data.sender.get('role') in ('owner', 'admin'):
+            return True
+    # 本群设置允许群管理或当前 bot 的骰主；全局设置仍仅允许骰主。
+    user_hash = OlivaDiceCore.userConfig.getUserHash(event.data.user_id, 'user', event.platform['platform'])
+    return OlivaDiceCore.ordinaryInviteManager.isInMasterList(event.bot_info.hash, user_hash)
 
 
 def _name(store, bot, number):
@@ -99,7 +102,12 @@ def handle(event, proc):
             send(event, '本群设置只能在群内使用。全局设置请使用 .mcs global …。')
             return
         if not allowed(event, global_action):
-            send(event, '仅骰主可修改当前 bot 的全局设置。' if global_action else '仅群主或管理员可修改本群设置。')
+            send(
+                event,
+                '仅骰主可修改当前 bot 的全局设置。'
+                if global_action
+                else '仅群主、管理员或当前 bot 的骰主可修改本群设置。',
+            )
             return
         target = None if global_action else group_hash
         label = '当前 bot 全局' if global_action else '本群'

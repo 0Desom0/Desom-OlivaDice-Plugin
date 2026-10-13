@@ -13,6 +13,11 @@
             "sdk": "onebot",
             "platform": "qq",
             "model": "default"
+        },
+        {
+            "sdk": "qqGuildv2_link",
+            "platform": "qqGuild",
+            "model": "all"
         }
     ]
 }

@@ -1,10 +1,15 @@
 # -*- encoding=utf8 -*-
 
+import html
+import json
+import re
+import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.error
-import json
-import ssl
+
+from PIL import ImageFile
+
 from . import load
 
 oliva_dice_core_available = False
@@ -172,6 +177,195 @@ class MusicSearchProcessor:
         cls.debug_log(None, f"构建的 CQ 码: {cq_code}")
         
         return cq_code
+
+    @classmethod
+    def complete_song_details(cls, song_data, Proc=None):
+        """qqGuildv2 展示时补充时长和专辑；详情失败不影响已有搜索结果。"""
+        song = song_data.copy()
+        if song.get('duration'):
+            return song
+        try:
+            song_id = int(song.get('id', 0))
+            if song_id <= 0:
+                return song
+            params = urllib.parse.urlencode({'id': song_id, 'ids': json.dumps([song_id])})
+            request = urllib.request.Request(
+                f'https://music.163.com/api/song/detail/?{params}',
+                headers={**cls.DEFAULT_HEADERS, 'Referer': 'https://music.163.com/'},
+                method='GET',
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                result = json.loads(response.read().decode('utf-8'))
+            if result.get('code') == 200:
+                for detail in result.get('songs', []):
+                    if str(detail.get('id')) == str(song_id):
+                        song['duration'] = detail.get('duration')
+                        song['album'] = detail.get('album', {}).get('name', '')
+                        if not song.get('picurl'):
+                            song['picurl'] = detail.get('album', {}).get('picUrl', '')
+                        break
+        except Exception as e:
+            cls.debug_log(Proc, f'获取歌曲时长失败: {type(e).__name__}')
+        return song
+
+    @staticmethod
+    def format_duration(duration):
+        """网易云详情接口的 duration 单位为毫秒。"""
+        try:
+            milliseconds = int(duration)
+            if milliseconds <= 0:
+                return '未知'
+            seconds = milliseconds // 1000
+            hours, seconds = divmod(seconds, 3600)
+            minutes, seconds = divmod(seconds, 60)
+            if hours:
+                return f'{hours}:{minutes:02d}:{seconds:02d}'
+            return f'{minutes:02d}:{seconds:02d}'
+        except (TypeError, ValueError, OverflowError):
+            return '未知'
+
+    @staticmethod
+    def escape_markdown(value):
+        # 歌名等外部文本只作为文字显示，避免标签或 Markdown 改变正文结构。
+        text = html.escape(' '.join(str(value).split()), quote=False)
+        return re.sub(r'([\\`*_{}\[\]()#+.!|~\-])', r'\\\1', text)
+
+    @classmethod
+    def get_cover_size(cls, cover_url):
+        """读取原始图片头获取实际宽高，不缩放、裁剪或假设正方形。"""
+        try:
+            request = urllib.request.Request(cover_url, headers=cls.DEFAULT_HEADERS, method='GET')
+            parser = ImageFile.Parser()
+            with urllib.request.urlopen(request, timeout=5) as response:
+                # 只读取识别尺寸所需的图片头，最多 256 KiB，不完整解码封面。
+                for _ in range(64):
+                    chunk = response.read(4096)
+                    if not chunk:
+                        break
+                    parser.feed(chunk)
+                    if parser.image is not None:
+                        width, height = parser.image.size
+                        if width > 0 and height > 0:
+                            return width, height
+        except Exception as e:
+            cls.debug_log(None, f'读取封面尺寸失败: {type(e).__name__}')
+        return None
+
+    @classmethod
+    def build_song_markdown(cls, song_data):
+        """构造歌曲信息及所有人可用的链接按钮。"""
+        title = cls.escape_markdown(song_data.get('name') or '未知歌曲')
+        singers = '/'.join(
+            str(s.get('name')) for s in song_data.get('singers', [])
+            if isinstance(s, dict) and s.get('name')
+        )
+        # 使用 QQ 原生图片尺寸语法，封面与信息纵向排列，不依赖 HTML 布局。
+        cover_url = str(song_data.get('picurl') or '').strip()
+        try:
+            cover = urllib.parse.urlsplit(cover_url)
+            valid_cover = cover.scheme in ('http', 'https') and bool(cover.netloc)
+        except ValueError:
+            valid_cover = False
+        blocks = []
+        if valid_cover:
+            cover_url = urllib.parse.quote(cover_url, safe=':/?&=+#%@,;!$*\'~')
+            cover_size = cls.get_cover_size(cover_url)
+            # 无法识别时交由客户端决定自然尺寸，绝不填入猜测的宽高。
+            dimensions = f' #{cover_size[0]}px #{cover_size[1]}px' if cover_size else ''
+            blocks.append(f'![歌曲封面{dimensions}]({cover_url})')
+        blocks.append(f'## {title}')
+        album = str(song_data.get('album') or '').strip()
+        # 字段标签保留，信息区只换行，不为每个字段单独增加段落空白。
+        blocks.append('\n'.join([
+            f'歌手：{cls.escape_markdown(singers or "未知歌手")}　·　'
+            f'时长：{cls.format_duration(song_data.get("duration"))}',
+            f'专辑：{cls.escape_markdown(album or "未知")}',
+            f'歌曲 ID：{cls.escape_markdown(song_data.get("id") or "未知")}',
+        ]))
+        if song_data.get('pay') is True:
+            blocks.append('付费歌曲 · 播放权限以网易云音乐为准')
+        content = '\n\n'.join(blocks)
+
+        jump_url = str(song_data.get('jumpurl') or '').strip()
+        try:
+            parsed_url = urllib.parse.urlsplit(jump_url)
+            valid_url = parsed_url.scheme in ('http', 'https') and bool(parsed_url.netloc)
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            song_id = str(song_data.get('id') or '')
+            jump_url = f'https://music.163.com/song?id={song_id}' if song_id.isdecimal() else ''
+        keyboard = None
+        if jump_url:
+            keyboard = {
+                'content': {
+                    'rows': [{
+                        'buttons': [{
+                            'id': 'music_open',
+                            'render_data': {
+                                'label': '打开网易云音乐',
+                                'visited_label': '打开网易云音乐',
+                                'style': 1,
+                            },
+                            'action': {
+                                'type': 0,
+                                'permission': {'type': 2},
+                                'data': jump_url,
+                                'unsupport_tips': '请更新 QQ 后打开歌曲链接',
+                            },
+                        }],
+                    }],
+                },
+            }
+        return {'content': content}, keyboard
+
+    @classmethod
+    def reply_song_markdown(cls, plugin_event, Proc, song_data, is_group):
+        """按 QQ 群、C2C、频道或频道私信的真实事件字段选择发送目标。"""
+        song = cls.complete_song_details(song_data, Proc)
+        markdown, keyboard = cls.build_song_markdown(song)
+        try:
+            extend = getattr(plugin_event.data, 'extend', {}) or {}
+            flag_direct = bool(extend.get('flag_from_direct', not is_group))
+            host_id = extend.get('host_group_id') or getattr(plugin_event.data, 'host_id', None)
+            flag_qq = bool(extend.get('flag_from_qq', not host_id))
+            if flag_qq:
+                chat_type = 'qq_private' if flag_direct else 'qq_group'
+                chat_id = plugin_event.data.user_id if flag_direct else plugin_event.data.group_id
+            else:
+                chat_type = 'guild_private' if flag_direct else 'guild_channel'
+                chat_id = (host_id or plugin_event.data.group_id) if flag_direct else plugin_event.data.group_id
+            inde_api = getattr(plugin_event, 'indeAPI', None)
+            if inde_api is None or not inde_api.hasAPI('create_markdown_message'):
+                raise RuntimeError('当前 OlivOS 不支持 Markdown 接口')
+            result = inde_api.create_markdown_message(
+                chat_type=chat_type,
+                chat_id=chat_id,
+                markdown=markdown,
+                keyboard=keyboard,
+                msg_id=getattr(plugin_event.data, 'message_id', None),
+            )
+            if not isinstance(result, dict) or not result.get('active'):
+                raise RuntimeError('Markdown 发送失败')
+            return True
+        except Exception as e:
+            Proc.log(3, f'>>> 歌曲 Markdown 发送失败，改用文字链接: {type(e).__name__}', [])
+            # qqGuildv2 失败时仍不发送不支持的 CQ 音乐卡片。
+            singers = '/'.join(
+                str(s.get('name')) for s in song.get('singers', [])
+                if isinstance(s, dict) and s.get('name')
+            )
+            text = (
+                f'歌曲：{song.get("name") or "未知歌曲"}\n'
+                f'歌手：{singers or "未知歌手"}\n'
+                f'时长：{cls.format_duration(song.get("duration"))}\n'
+                f'专辑：{song.get("album") or "未知"}\n'
+                f'歌曲 ID：{song.get("id") or "未知"}'
+            )
+            if keyboard:
+                text += '\n' + keyboard['content']['rows'][0]['buttons'][0]['action']['data']
+            plugin_event.reply(text)
+            return False
 
     @classmethod
     def get_hag_id(cls, plugin_event):
@@ -521,12 +715,15 @@ class MusicSearchProcessor:
         first_song = song_list[0]
         cls.debug_log(Proc, f"找到歌曲: {first_song.get('name', '')} - {[s.get('name', '') for s in first_song.get('singers', [])]}")
         
-        # 构建 CQ 码
+        # QQ 官方机器人使用 Markdown 和链接按钮；其他平台保留音乐卡片。
+        if str(plugin_event.platform.get('sdk', '')).lower() == 'qqguildv2_link':
+            if cls.reply_song_markdown(plugin_event, Proc, first_song, is_group):
+                Proc.log(2, f">>> 成功返回歌曲 Markdown: {first_song.get('name', '')}", [])
+            return
+
         cq_music = cls.build_cq_music(first_song)
-        
-        # 返回结果
-        Proc.log(2, f">>> 成功返回歌曲: {first_song.get('name', '')}", [])
         plugin_event.reply(cq_music)
+        Proc.log(2, f">>> 成功返回歌曲: {first_song.get('name', '')}", [])
 
 
 # 事件处理类

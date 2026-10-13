@@ -25,7 +25,7 @@
 
 ## 状态与显示
 
-- 首次全局默认开启。没有个人设置的用户跟随全局；个人 on/off 始终优先。
+- 首次全局默认关闭。没有个人设置的用户跟随全局；个人 on/off 始终优先。已有保存的全局设置保留；需要关闭原有全局默认时由骰主执行 `.hud global off`。
 - 全局默认和个人设置都通过 Core 的 `getRedirectedBotHash` 跟随 link。权限检查仍使用当前实际 bot 的 Core 骰主列表。
 - 检测实际的 `roll()` 调用，因此纯计算及骰点错误回复同样适用；没有调用 roll 的指令保留原回复。
 - 代投读取 Core 已解析的实际目标，不根据任意 at 猜测。权限不足的代投提示不加；普通 `.r` 中的 at 不会被当成代投。
@@ -52,7 +52,7 @@ plugin/data/StatusHud/
 `config.json` 默认内容：
 
 ```json
-{"global_enabled": true}
+{"global_enabled": false}
 ```
 
 个人文件仅在手动设置时创建：
@@ -75,11 +75,11 @@ Core 的代投和暗骰识别使用已核对的处理变量；升级 Core 后若
 
 ## 验证
 
-测试目录为相邻的 `StatusHud_tests/`，不打入 OPK。使用真实 Core/OneDice 与 OlivOS 消息解析源码，宿主和远端发送使用离线替身。
+测试目录为插件内的 `StatusHud_tests/`，不打入 OPK。以下命令在 `StatusHud/` 源码目录执行。`--confcutdir` 避免 pytest 在离线替身装载前导入插件包和真实宿主。使用真实 Core/OneDice 与 OlivOS 消息解析源码，宿主和远端发送使用离线替身。
 
 ```powershell
-python -B -m pytest StatusHud_tests -q -p no:cacheprovider --core-source "<OlivaDiceCore 仓库目录>" --olivos-source "<OlivOS 仓库目录>"
-python -B -m ruff check StatusHud --select E,W,F,I,B,C4,UP --config 'lint.pycodestyle.max-line-length=120'
+python -B -m pytest StatusHud_tests --confcutdir=StatusHud_tests -q -p no:cacheprovider --core-source "<OlivaDiceCore 仓库目录>" --olivos-source "<OlivOS 仓库目录>"
+python -B -m ruff check . --select E,W,F,I,B,C4,UP --config 'lint.pycodestyle.max-line-length=120'
 ```
 
 测试覆盖命令、群链、个人优先级、权限、代投、暗骰与旁观者、私聊、多人结果、分页、第三方发送、并发、重载、损坏数据和 OPK 解包目录清理后的首次使用。manifest 为 UTF-8 无 BOM。

@@ -38,7 +38,7 @@ class Event:
             manager.log('HUD 接入失败', error)
             return
         gManager = manager
-        Proc.log(2, 'StatusHud 已接入 OneDice；初始全局默认开启。', [('StatusHud', 'default')])
+        Proc.log(2, 'StatusHud 已接入 OneDice；初始全局默认关闭。', [('StatusHud', 'default')])
 
     def private_message(plugin_event, Proc):
         unity_reply(plugin_event, Proc)

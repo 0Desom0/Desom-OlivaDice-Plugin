@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def test_manifest_and_python_sources_are_valid():
-    root = Path(__file__).resolve().parents[1] / 'StatusHud'
+    root = Path(__file__).resolve().parents[1]
     manifest_bytes = (root / 'app.json').read_bytes()
     assert not manifest_bytes.startswith(b'\xef\xbb\xbf')
     manifest = json.loads(manifest_bytes.decode('utf-8'))
@@ -20,7 +20,7 @@ def test_manifest_and_python_sources_are_valid():
 
 
 def test_first_command_after_opk_extraction_is_removed(runtime, monkeypatch):
-    root = Path(__file__).resolve().parents[1] / 'StatusHud'
+    root = Path(__file__).resolve().parents[1]
     archive = runtime.path / 'StatusHud.opk'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as package:
         for path in root.iterdir():
@@ -43,10 +43,11 @@ def test_first_command_after_opk_extraction_is_removed(runtime, monkeypatch):
         runtime.card()
         event = runtime.Event('.hud show')
         runtime.proc.run(event, plugin.main.Event.group_message, namespace='StatusHud', mode='olivos_string')
-        assert 'HUD：开启' in event.sent[0][2]
+        assert 'HUD：关闭' in event.sent[0][2]
         assert not unpacked.exists()
+        plugin.main.gManager.storage.set_user('bot', '1', 'qq', True)
         event = runtime.Event('.r 1d6')
         runtime.proc.run(event)
-        assert event.sent[0][2].startswith('『Alice HP10/12 SAN65/94』\n\n')
+        assert event.sent[0][2].startswith(f"『{runtime.sn.get('1', 'qq', '100')}』\n\n")
     finally:
         plugin.main.Event.save(None, runtime.proc)

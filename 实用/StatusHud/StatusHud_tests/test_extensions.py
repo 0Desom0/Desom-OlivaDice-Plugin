@@ -13,7 +13,7 @@ def extension(runtime, monkeypatch, name):
     for key in list(sys.modules):
         if key == name or key.startswith(name + '.'):
             monkeypatch.delitem(sys.modules, key)
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     if not (root / name).is_dir():
         pytest.skip(f'本地缺少 {name} 源码')
     module = importlib.import_module(name)
@@ -36,6 +36,7 @@ CASES = [
 
 
 @pytest.mark.parametrize('name,command', CASES)
+@pytest.mark.usefixtures('hud_enabled')
 def test_real_plugin_normal_rolls_add_hud(runtime, monkeypatch, name, command):
     module = extension(runtime, monkeypatch, name)
     runtime.card()
@@ -48,6 +49,7 @@ def test_real_plugin_normal_rolls_add_hud(runtime, monkeypatch, name, command):
 
 
 @pytest.mark.parametrize('name,command', CASES)
+@pytest.mark.usefixtures('hud_enabled')
 def test_real_plugin_proxy_uses_target_settings(runtime, monkeypatch, name, command):
     module = extension(runtime, monkeypatch, name)
     runtime.card('1', 'Alice')
@@ -71,6 +73,7 @@ def test_real_plugin_proxy_uses_target_settings(runtime, monkeypatch, name, comm
     ('OlivaDiceCore', '.rah 侦查'),
 ])
 @pytest.mark.parametrize('proxy', [False, True])
+@pytest.mark.usefixtures('hud_enabled')
 def test_real_plugin_hidden_notices_and_results(runtime, monkeypatch, name, command, proxy):
     module = extension(runtime, monkeypatch, name)
     runtime.card('1', 'Alice')
@@ -110,6 +113,7 @@ def test_real_plugin_without_roll_keeps_original_reply(runtime, monkeypatch, nam
     ('OlivaDiceShouHun', '.shh 3#2'),
     ('OlivaDiceSanchi', '.tqh 2#3'),
 ])
+@pytest.mark.usefixtures('hud_enabled')
 def test_extension_custom_hidden_notice_keeps_text_and_observer_gets_hud(runtime, monkeypatch, name, command):
     module = extension(runtime, monkeypatch, name)
     runtime.card()
@@ -127,6 +131,7 @@ def test_extension_custom_hidden_notice_keeps_text_and_observer_gets_hud(runtime
     assert all(text.startswith('『Alice HP10/12') and text.count('Alice HP10/12') == 1 for text in private)
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_extension_rival_rolls_show_both_users(runtime, monkeypatch):
     module = extension(runtime, monkeypatch, 'OlivaDiceSanchi')
     runtime.card('1', 'Alice')
@@ -138,3 +143,25 @@ def test_extension_rival_rolls_show_both_users(runtime, monkeypatch):
     assert lines[1].startswith('『Bob HP10/12') and lines[1].endswith('』')
     assert lines[2] == ''
     assert lines[3]
+
+
+
+@pytest.mark.parametrize('enabled_users', [[], ['1'], ['2'], ['1', '2']])
+def test_extension_rival_reads_each_users_switch(runtime, monkeypatch, enabled_users):
+    module = extension(runtime, monkeypatch, 'OlivaDiceSanchi')
+    runtime.card('1', 'Alice')
+    runtime.card('2', 'Bob')
+    for user in ('1', '2'):
+        runtime.storage.set_user('bot', user, 'qq', user in enabled_users)
+    event = runtime.Event('.tqav 1#1 [CQ:at,qq=2]')
+    runtime.proc.run(event, module.main.Event.group_message, namespace='OlivaDiceSanchi')
+    assert event.sent
+    result = event.sent[0][2]
+    if enabled_users:
+        expected = '\n'.join(f"『{runtime.sn.get(user, 'qq', '100')}』" for user in enabled_users) + '\n\n'
+        assert result.startswith(expected)
+        hud = result.split('\n\n', 1)[0]
+        for user, name in [('1', 'Alice'), ('2', 'Bob')]:
+            assert (name in hud) is (user in enabled_users)
+    else:
+        assert not result.startswith('『')

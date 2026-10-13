@@ -9,7 +9,7 @@ HELP = (
     '.hud：切换当前有效开关，并保存为个人设置\n'
     '.hud show：查看当前开关、来源和全局默认\n'
     '.hud global on / off：设置全局默认，仅当前 bot 的骰主可用\n'
-    '首次默认开启；个人 on/off 优先于全局默认，未手动设置者跟随全局。\n'
+    '首次默认关闭；个人 on/off 优先于全局默认，未手动设置者跟随全局。\n'
     '调用过 OneDice roll 的结果（例如 .ra / .r / .ww / .sh / .dd 等）会在首行显示当前 sn；纯计算和骰点错误也适用。\n'
     '本插件支持群链。'
     '代投使用被代投人的开关与 sn'
@@ -91,10 +91,10 @@ def handle(event, proc, manager, olivos):
             response = '个人 HUD 已' + ('开启。' if enabled else '关闭。')
         elif argument == 'show':
             status = manager.storage.status(bot_hash, user_id, platform)
-            source = '个人设置' if status['source'] == 'user' else '群链全局默认'
+            source = '个人设置' if status['source'] == 'user' else 'HUD 全局默认'
             response = (
                 f"HUD：{'开启' if status['enabled'] else '关闭'}（{source}）\n"
-                f"群链全局默认：{'开启' if status['global_enabled'] else '关闭'}"
+                f"HUD 全局默认：{'开启' if status['global_enabled'] else '关闭'}"
             )
         elif argument.startswith('global'):
             action = argument[6:].strip()
@@ -106,7 +106,7 @@ def handle(event, proc, manager, olivos):
                 response = '只有当前 bot 的 OlivaDiceCore 骰主可以修改全局默认。'
             else:
                 manager.storage.set_global(bot_hash, action == 'on')
-                response = '群链全局默认已' + ('开启。' if action == 'on' else '关闭。')
+                response = 'HUD 全局默认已' + ('开启。' if action == 'on' else '关闭。')
         else:
             response = '未知的 HUD 参数，请使用 .hud help 查看帮助。'
     except StorageError as error:

@@ -11,7 +11,7 @@ import pytest
 
 
 def load_storage():
-    path = Path(__file__).resolve().parents[1] / 'StatusHud/storage.py'
+    path = Path(__file__).resolve().parents[1] / 'storage.py'
     spec = importlib.util.spec_from_file_location('statushud_storage_test', path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -48,7 +48,7 @@ def test_parallel_toggle_is_one_read_modify_write(data):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda _: storage.set_user('bot', '1', 'qq'), range(100)))
     assert storage.status('bot', '1', 'qq') == {
-        'enabled': True, 'source': 'user', 'global_enabled': True,
+        'enabled': False, 'source': 'user', 'global_enabled': False,
     }
 
 
@@ -65,7 +65,7 @@ def test_cross_process_toggle_does_not_lose_updates(data):
             process.join(timeout=5)
             pytest.fail('文件锁测试进程超时')
         assert process.exitcode == 0
-    assert storage.status('bot', '1', 'qq')['enabled']
+    assert not storage.status('bot', '1', 'qq')['enabled']
 
 
 def test_missing_user_and_english_json_keys(data):
@@ -76,7 +76,7 @@ def test_missing_user_and_english_json_keys(data):
     storage.set_user('bot', '1', 'qq', False)
     with module._bot_lock(storage.root / 'bot'):
         with (storage.root / 'bot/config.json').open(encoding='utf-8') as stream:
-            assert json.load(stream) == {'global_enabled': True}
+            assert json.load(stream) == {'global_enabled': False}
         with next((storage.root / 'bot/user').glob('*.json')).open(encoding='utf-8') as stream:
             assert json.load(stream) == {'enabled': False}
         assert not list((storage.root / 'bot').rglob('*.tmp'))
@@ -114,3 +114,32 @@ def test_path_traversal_is_rejected(data):
     module, storage = data
     with pytest.raises(module.StorageError):
         storage.initialize('../outside')
+
+
+
+@pytest.mark.parametrize('config', [None, {}])
+def test_default_off_when_config_or_flag_is_missing(data, config):
+    module, storage = data
+    directory = storage.root / 'bot'
+    if config is not None:
+        with module._bot_lock(directory):
+            (directory / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+    assert storage.status('bot', '1', 'qq') == {
+        'enabled': False, 'source': 'global', 'global_enabled': False,
+    }
+    assert storage.set_user('bot', '1', 'qq')
+    storage.initialize('bot')
+    assert storage.status('bot', '1', 'qq')['enabled']
+    assert not storage.status('bot', '2', 'qq')['enabled']
+
+
+@pytest.mark.parametrize('saved_default', [False, True])
+def test_initialize_preserves_saved_default_and_personal_overrides(data, saved_default):
+    _, storage = data
+    storage.set_global('bot', saved_default)
+    storage.set_user('bot', '1', 'qq', True)
+    storage.set_user('bot', '2', 'qq', False)
+    storage.initialize('bot')
+    assert storage.status('bot', '3', 'qq')['enabled'] is saved_default
+    assert storage.status('bot', '1', 'qq')['enabled']
+    assert not storage.status('bot', '2', 'qq')['enabled']

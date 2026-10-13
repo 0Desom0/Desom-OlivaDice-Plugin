@@ -11,11 +11,11 @@ dictStrCustomNote = {
     'strMcsNotFound': 'MultiCustomSwitch 未匹配到回复或选择无效。',
 }
 COMMAND_HELP = """多自定义回复切换（MultiCustomSwitch）
-.mcs [回复名或序号]：本群切换，仅群主/管理员
+.mcs [回复名或序号]：本群切换，仅群主/管理员/当前 bot 的骰主
 .mcs global [回复名或序号]：当前 bot 的全局默认切换，仅骰主
 .mcs list：查看当前 bot 已加载的回复
 .mcs show 或 .mcs：查看本群选择、开关及实际生效回复
-.mcs on/off：本群开启/关闭，仅群主/管理员
+.mcs on/off：本群开启/关闭，仅群主/管理员/当前 bot 的骰主
 .mcs global on/off：当前 bot 全局开启/关闭，仅骰主
 .mcs help：显示本帮助
 

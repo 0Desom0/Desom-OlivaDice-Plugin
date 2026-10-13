@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
 
 def pytest_addoption(parser):
@@ -172,3 +172,9 @@ def runtime(request, monkeypatch, tmp_path):
     )
     yield rt
     manager.uninstall()
+
+
+@pytest.fixture
+def hud_enabled(runtime):
+    """显式开启全局默认，供 HUD 显示功能测试使用。"""
+    runtime.storage.set_global('bot', True)

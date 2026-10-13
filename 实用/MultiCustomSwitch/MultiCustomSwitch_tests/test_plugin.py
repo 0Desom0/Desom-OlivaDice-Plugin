@@ -297,9 +297,13 @@ def test_core_saving_inside_custom_context_never_saves_selected_pack(env):
     [
         ('admin', '456', False, True),
         ('owner', '456', False, True),
-        ('member', '123', False, False),
-        ('sub_admin', '123', False, False),
+        ('member', '123', False, True),
+        ('sub_admin', '123', False, True),
+        ('member', '456', False, False),
+        ('sub_admin', '456', False, False),
         ('admin', '456', True, False),
+        ('owner', '456', True, False),
+        ('member', '456', True, False),
         ('member', '123', True, True),
     ],
 )
@@ -310,6 +314,36 @@ def test_command_permissions(env, role, user, global_action, allowed):
     status = env.store.status(env.bots[0], None if global_action else env.store.group_hash(event))
     actual = status['global']['enabled'] if global_action else (status['group'] or {'enabled': True})['enabled']
     assert actual is (not allowed)
+    if allowed:
+        event.data.message = '.mcsglobalon' if global_action else '.mcson'
+        env.plugin.commands.handle(event, env.proc)
+        assert env.store.status(env.bots[0], None if global_action else env.store.group_hash(event))['enabled']
+
+
+@pytest.mark.parametrize('message', ['.mcs2', '.mcssmp'])
+@pytest.mark.parametrize('current_bot_master', [True, False])
+def test_master_group_switch_uses_current_bot_master_list(env, message, current_bot_master):
+    bot = env.bots[0]
+    if not current_bot_master:
+        env.core.console.dictConsoleSwitch[bot]['masterList'] = []
+    event = env.event(message=message, role='member', user='123')
+    env.plugin.commands.handle(event, env.proc)
+    status = env.store.status(bot, env.store.group_hash(event))
+    assert status['selected'] == (2 if current_bot_master else 1)
+    assert (status['group'] is not None) is current_bot_master
+    assert env.store.status(bot)['selected'] == 1
+    assert env.store.status(bot, env.store.group_hash(env.event(group='20')))['selected'] == 1
+    assert env.store.status(env.bots[1])['selected'] == 1
+    if not current_bot_master:
+        assert '仅群主、管理员或当前 bot 的骰主' in event.sent[-1]
+
+
+def test_master_cannot_apply_group_settings_in_private_messages(env):
+    event = env.event(message='.mcs2', group=None, role='member', user='123')
+    assert not env.plugin.commands.allowed(event, global_action=False)
+    env.plugin.commands.handle(event, env.proc)
+    assert '只能在群内使用' in event.sent[-1]
+    assert env.store.status(env.bots[0])['selected'] == 1
 
 
 def test_mcs_show_list_help_private_and_numeric_switch(env):
@@ -356,7 +390,7 @@ def test_actual_core_fuzzy_selection_without_file_lock_during_wait(env, monkeypa
         return '1'
 
     monkeypatch.setattr(env.core.msgReplyModel, 'replyCONTEXT_regWait', wait)
-    event = env.event(message='.mcs 可爱回')
+    event = env.event(message='.mcs 可爱回', role='member', user='123')
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         command = pool.submit(env.plugin.commands.handle, event, env.proc)
         assert entered.wait(3)

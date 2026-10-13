@@ -122,9 +122,9 @@ class Storage:
             with _bot_lock(directory):
                 (directory / 'user').mkdir(exist_ok=True)
                 if not config_path.exists():
-                    _write(config_path, {'global_enabled': True})
+                    _write(config_path, {'global_enabled': False})
                 else:
-                    _boolean(_read(config_path, {}), 'global_enabled', True)
+                    _boolean(_read(config_path, {}), 'global_enabled', False)
         except (OSError, ValueError, TypeError) as error:
             raise StorageError('初始化 HUD 数据失败') from error
 
@@ -132,7 +132,7 @@ class Storage:
         try:
             directory, config_path, user_path = self._paths(bot_hash, user_id, platform)
             with _bot_lock(directory):
-                global_enabled = _boolean(_read(config_path, {}), 'global_enabled', True)
+                global_enabled = _boolean(_read(config_path, {}), 'global_enabled', False)
                 user = _read(user_path, {})
                 if 'enabled' in user:
                     enabled = _boolean(user, 'enabled', global_enabled)
@@ -149,7 +149,7 @@ class Storage:
             with _bot_lock(directory):
                 user = _read(user_path, {})
                 if enabled is None:
-                    global_enabled = _boolean(_read(config_path, {}), 'global_enabled', True)
+                    global_enabled = _boolean(_read(config_path, {}), 'global_enabled', False)
                     enabled = not _boolean(user, 'enabled', global_enabled)
                 if type(enabled) is not bool:
                     raise StorageError('enabled 必须为布尔值')
@@ -164,7 +164,7 @@ class Storage:
             directory, config_path, _ = self._paths(bot_hash)
             with _bot_lock(directory):
                 config = _read(config_path, {})
-                _boolean(config, 'global_enabled', True)
+                _boolean(config, 'global_enabled', False)
                 if type(enabled) is not bool:
                     raise StorageError('global_enabled 必须为布尔值')
                 config['global_enabled'] = enabled

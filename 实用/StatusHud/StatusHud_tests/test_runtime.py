@@ -6,6 +6,7 @@ import pytest
 
 
 @pytest.mark.parametrize('command', ['.r 1d6', '.r 4#1d6', '.r 1+2', '.r 1d0', '.ra 侦查', '.sc 0/1'])
+@pytest.mark.usefixtures('hud_enabled')
 def test_real_core_rolls(runtime, command):
     runtime.card()
     event = runtime.Event(command)
@@ -24,12 +25,12 @@ def test_no_roll_or_no_card_is_unchanged(runtime):
     runtime.card()
     event = runtime.Event('.hud show')
     runtime.hud(event)
-    assert event.sent[0][2].startswith('HUD：开启')
+    assert event.sent[0][2].startswith('HUD：关闭')
     assert 'Alice' not in event.sent[0][2]
 
 
 @pytest.mark.parametrize('prefix', ['.', '。', '/'])
-@pytest.mark.parametrize('action,enabled', [('hudon', True), ('HUD off', False), ('hud', False)])
+@pytest.mark.parametrize('action,enabled', [('hudon', True), ('HUD off', False), ('hud', True)])
 def test_commands_and_greedy_matching(runtime, prefix, action, enabled):
     event = runtime.Event(prefix + action)
     runtime.hud(event)
@@ -52,16 +53,17 @@ def test_linked_defaults_and_overrides(runtime):
 def test_global_permission_uses_current_bot(runtime):
     runtime.core.console.setAccountRelation('slave', 'bot')
     runtime.core.console.dictConsoleSwitch['bot']['masterList'] = [['1', 'qq']]
-    event = runtime.Event('.hud global off', bot='slave')
+    event = runtime.Event('.hud global on', bot='slave')
     runtime.hud(event)
     assert '只有当前 bot' in event.sent[0][2]
-    assert runtime.storage.status('slave', '1', 'qq')['enabled']
+    assert not runtime.storage.status('slave', '1', 'qq')['enabled']
     runtime.core.console.dictConsoleSwitch['slave']['masterList'] = [['1', 'qq']]
-    event = runtime.Event('.hud global off', bot='slave')
+    event = runtime.Event('.hud global on', bot='slave')
     runtime.hud(event)
-    assert not runtime.storage.status('bot', '2', 'qq')['enabled']
+    assert runtime.storage.status('bot', '2', 'qq')['enabled']
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_proxy_uses_target_setting_and_last_at(runtime):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
@@ -77,6 +79,7 @@ def test_proxy_uses_target_setting_and_last_at(runtime):
     assert not event.sent[0][2].startswith('『Carol')
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_unprivileged_at_and_plain_r_do_not_become_proxy(runtime):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
@@ -89,6 +92,7 @@ def test_unprivileged_at_and_plain_r_do_not_become_proxy(runtime):
     assert event.sent[0][2].startswith('『Alice HP10/12')
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_hidden_notice_is_unchanged_and_all_private_results_have_hud(runtime):
     runtime.card()
     observer = runtime.core.userConfig.getUserHash('2', 'user', 'qq')
@@ -103,6 +107,7 @@ def test_hidden_notice_is_unchanged_and_all_private_results_have_hud(runtime):
     assert all(text.startswith('『Alice HP10/12') for text in private)
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_hidden_proxy_keeps_initiator_delivery(runtime):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
@@ -113,6 +118,7 @@ def test_hidden_proxy_keeps_initiator_delivery(runtime):
     assert event.sent[1][2].startswith('『Bob HP10/12')
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_private_sn_uses_global_selection(runtime):
     runtime.card('1', 'Alice', 'Private {tName}')
     event = runtime.Event('.r 1d6', group=None)
@@ -139,6 +145,7 @@ def test_sn_precedence_group_binding_and_no_card_writes(runtime):
 
 
 @pytest.mark.parametrize('team_command', ['.team r 1d6', '.team ra 侦查', '.team sc 0/1', '.team st HP+1d6'])
+@pytest.mark.usefixtures('hud_enabled')
 def test_team_displays_every_member(runtime, team_command):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
@@ -157,6 +164,7 @@ def test_team_displays_every_member(runtime, team_command):
     assert ' | ' not in '\n'.join(lines[:2])
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_third_party_direct_send_and_nested_roll_are_covered_once(runtime):
     runtime.card()
     event = runtime.Event('.custom')
@@ -172,6 +180,7 @@ def test_third_party_direct_send_and_nested_roll_are_covered_once(runtime):
     assert event.sent[2][2] == prefix + 'secret'
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_third_party_core_record_identifies_target(runtime):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
@@ -186,6 +195,7 @@ def test_third_party_core_record_identifies_target(runtime):
     assert 'Alice HP10/12' not in event.sent[0][2]
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_page_header_follows_hud_and_subsequent_pages_do_not_repeat(runtime):
     runtime.card()
     runtime.core.console.dictConsoleSwitch['bot']['messageSplitGate'] = 20
@@ -201,6 +211,7 @@ def test_page_header_follows_hud_and_subsequent_pages_do_not_repeat(runtime):
     assert all('Alice HP10/12' not in text for _, _, text in event.sent[1:])
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_concurrent_events_and_context_cleanup(runtime):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
@@ -229,6 +240,7 @@ def test_callback_exception_resets_context(runtime):
     assert runtime.manager.current.get() is None
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_event_carrying_background_worker(runtime):
     runtime.card()
     event = runtime.Event('.custom')
@@ -242,6 +254,7 @@ def test_event_carrying_background_worker(runtime):
     assert event.sent[0][2].startswith('『Alice HP10/12')
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_reload_does_not_stack_and_uninstall_restores(runtime):
     from StatusHud.hooks import HookManager
     original_roll = runtime.manager.patches[1][2]
@@ -269,6 +282,7 @@ def test_corrupt_storage_preserves_result_and_data(runtime):
     assert path.read_text(encoding='utf-8') == '{broken'
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_multimodal_payload_and_literal_sn_are_preserved(runtime):
     runtime.card(title='A [CQ:at,qq=123]\nB')
     event = runtime.Event('.custom')
@@ -290,6 +304,7 @@ def test_no_roll_direct_reply_preserves_payload_identity(runtime):
     assert event.sent[0][2] == payload.get('old_string')
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_remote_placeholder_does_not_consume_first_hud(runtime):
     runtime.card()
     event = runtime.Event('.custom')
@@ -303,6 +318,7 @@ def test_remote_placeholder_does_not_consume_first_hud(runtime):
     assert event.sent[0][2].startswith('『Alice HP10/12')
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_empty_sn_preserves_result_and_default_template_fallback(runtime):
     runtime.card(title='')
     assert runtime.sn.get('1', 'qq', '100') is None
@@ -315,22 +331,32 @@ def test_empty_sn_preserves_result_and_default_template_fallback(runtime):
     assert runtime.sn.get('1', 'qq', '100').startswith('Alice HP10/12')
 
 
-def test_team_respects_each_members_personal_switch(runtime):
+@pytest.mark.parametrize('global_enabled', [False, True])
+@pytest.mark.parametrize('enabled_user', ['1', '2'])
+def test_team_respects_each_members_personal_switch(runtime, global_enabled, enabled_user):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
-    runtime.storage.set_user('bot', '2', 'qq', False)
+    runtime.card('3', 'Carol')
+    runtime.storage.set_global('bot', global_enabled)
+    runtime.storage.set_user('bot', '1', 'qq', enabled_user == '1')
+    runtime.storage.set_user('bot', '2', 'qq', enabled_user == '2')
     runtime.core.userConfig.setUserConfigByKey(
-        '100', 'group', 'qq', 'teamConfig', {'squad': {'members': ['1', '2']}}, 'bot',
+        '100', 'group', 'qq', 'teamConfig', {'squad': {'members': ['1', '2', '3']}}, 'bot',
     )
     runtime.core.userConfig.setUserConfigByKey('100', 'group', 'qq', 'activeTeam', 'squad', 'bot')
     event = runtime.Event('.team r 1d6', role='owner')
     runtime.proc.run(event)
-    first = event.sent[0][2].splitlines()[0]
-    assert 'Alice HP' in first and 'Bob HP' not in first
-    assert event.sent[0][2].startswith(f"『{runtime.sn.get('1', 'qq', '100')}』\n\n")
+    expected_users = [enabled_user] + (['3'] if global_enabled else [])
+    expected = '\n'.join(f"『{runtime.sn.get(user, 'qq', '100')}』" for user in expected_users) + '\n\n'
+    assert event.sent[0][2].startswith(expected)
+    hud = event.sent[0][2].split('\n\n', 1)[0]
+    disabled_name = 'Bob' if enabled_user == '1' else 'Alice'
+    assert disabled_name not in hud
+    assert ('Carol' in hud) is global_enabled
 
 
 @pytest.mark.parametrize('success', [True, False])
+@pytest.mark.usefixtures('hud_enabled')
 def test_core_markdown_success_and_plain_fallback_do_not_duplicate(runtime, success):
     runtime.card()
     event = runtime.Event('.custom')
@@ -358,6 +384,7 @@ def test_core_markdown_success_and_plain_fallback_do_not_duplicate(runtime, succ
         assert event.sent[0][2].count('Alice HP10/12') == 1
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_background_core_record_preserves_proxy_identity(runtime):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
@@ -374,6 +401,7 @@ def test_background_core_record_preserves_proxy_identity(runtime):
     assert event.sent[0][2].startswith('『Bob HP10/12')
 
 
+@pytest.mark.usefixtures('hud_enabled')
 def test_synthetic_event_in_same_command_keeps_roll_context(runtime):
     runtime.card('1', 'Alice')
     event = runtime.Event('.custom')
@@ -383,3 +411,20 @@ def test_synthetic_event_in_same_command_keeps_roll_context(runtime):
         synthetic.reply('result')
     runtime.proc.run(event, handler, namespace='Custom')
     assert synthetic.sent[0][2].startswith('『Alice HP10/12')
+
+
+
+def test_default_off_requires_explicit_enable(runtime):
+    runtime.card()
+    event = runtime.Event('.r 1d6')
+    runtime.proc.run(event)
+    assert event.sent and '『Alice' not in event.sent[0][2]
+    status = runtime.Event('.hud show')
+    runtime.hud(status)
+    assert 'HUD：关闭' in status.sent[0][2]
+    toggle = runtime.Event('.hud')
+    runtime.hud(toggle)
+    assert '个人 HUD 已开启' in toggle.sent[0][2]
+    event = runtime.Event('.r 1d6')
+    runtime.proc.run(event)
+    assert event.sent[0][2].startswith('『Alice HP10/12')
