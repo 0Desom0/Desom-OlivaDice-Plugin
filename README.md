@@ -46,6 +46,10 @@
   * `OlivaDiceManager` -- 群管插件。论坛发布地址：https://forum.olivos.run/d/866-olivadicemanager
   * `StatusPlugin` -- 系统状态查询插件。论坛发布地址：https://forum.olivos.run/d/887-statusplugin
   * `BiliShareInfo` -- 自动识别 B 站链接/小程序的插件 论坛发布地址：https://forum.olivos.run/d/920-bilishareinfo-b
+  * `StatusHud` -- 骰点结果状态栏，在骰点回复前显示当前人物卡的状态，支持个人开关与全局默认设置。论坛发布地址：https://forum.olivos.run/d/939-statushud
+  * `MultiCustomSwitch` -- 多自定义回复切换，支持各群独立选择回复风格、每个 bot 设置全局默认，并提供 WebUI 与桌面 GUI 管理。论坛发布地址：https://forum.olivos.run/d/938-multicustomswitch
+  * `QQGroupAuthorize` -- QQ 官方机器人群授权指引，生成接收群内全部消息与主动发言的设置说明图，支持可选的机器人入群自动发图。论坛发布地址：https://forum.olivos.run/d/932-qq-bot-qqgroupauthorize
+  * `QQBotMenuPanel` -- QQ 官方机器人自定义菜单与指令面板管理，支持 WebUI 编辑预览及四个场景的独立或统一配置。论坛发布地址：https://forum.olivos.run/d/933-qq-qqbotmenupanel
 
 ### 📚示例
   * `OlivaDice插件模板` -- 一个自用的，用于规则类插件的插件模板，论坛发布地址：https://forum.olivos.run/d/833-olivadicecoregui
