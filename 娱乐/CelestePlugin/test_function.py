@@ -618,5 +618,59 @@ class CelestePluginFunctionTest(unittest.TestCase):
 
 
 
+    def test_prewarm_worker_refreshes_silently_and_logs_failure(self):
+        class FakeThread(object):
+            def __init__(self, target=None, name=None, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        message.prewarm_started = False
+        ok_result = {
+            'ok': True,
+            'database_count': 12000,
+            'updater_count': 4000,
+            'database_from_cache': True,
+            'updater_from_cache': True,
+            'error': '',
+        }
+        log_records = []
+        with (
+            mock.patch.object(message.threading, 'Thread', FakeThread),
+            mock.patch.object(message.function, 'load_mod_database', return_value={'ok': True, 'error': ''}),
+            mock.patch.object(message.function, 'load_updater_index', return_value={'ok': True, 'error': ''}),
+            mock.patch.object(message.function, 'refresh_community_data', return_value=ok_result) as refresh_mock,
+            mock.patch.object(message.utils, 'info_log', side_effect=lambda _p, t: log_records.append(('info', t))),
+            mock.patch.object(message.utils, 'error_log', side_effect=lambda _p, t: log_records.append(('error', t))),
+        ):
+            message.start_prewarm_thread(None)
+        refresh_mock.assert_called_once_with()
+        self.assertTrue(any('12,000' in text for _level, text in log_records))
+
+        message.prewarm_started = False
+        fail_result = {
+            'ok': False,
+            'database_count': 0,
+            'updater_count': 0,
+            'database_from_cache': True,
+            'updater_from_cache': True,
+            'error': 'Mod 数据库：网络连接失败',
+        }
+        with (
+            mock.patch.object(message.threading, 'Thread', FakeThread),
+            mock.patch.object(message.function, 'load_mod_database', return_value={'ok': True, 'error': ''}),
+            mock.patch.object(message.function, 'load_updater_index', return_value={'ok': True, 'error': ''}),
+            mock.patch.object(message.function, 'refresh_community_data', return_value=fail_result),
+            mock.patch.object(message.utils, 'info_log', side_effect=lambda _p, t: log_records.append(('info', t))),
+            mock.patch.object(message.utils, 'error_log', side_effect=lambda _p, t: log_records.append(('error', t))),
+        ):
+            message.start_prewarm_thread(None)
+        self.assertTrue(any(level == 'error' and '后台更新失败' in text for level, text in log_records))
+
+        message.prewarm_started = False
+
+
+
 if __name__ == '__main__':
     unittest.main()

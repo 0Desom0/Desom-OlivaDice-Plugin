@@ -97,7 +97,7 @@ endless_action_alias_dict = {
 
 
 def start_prewarm_thread(Proc) -> None:
-    """后台预热大型社区数据库，避免首次作者查询长时间阻塞。"""
+    """后台预热大型社区数据库并静默刷新 Mod 列表，避免首次查询长时间阻塞。"""
     global prewarm_started
     if prewarm_started:
         return
@@ -112,6 +112,18 @@ def start_prewarm_thread(Proc) -> None:
             utils.debug_log(
                 Proc,
                 f'缓存预热未完全成功：{database_result.get("error", "")} {updater_result.get("error", "")}',
+            )
+        refresh_result = function.refresh_community_data()
+        if not refresh_result.get('ok'):
+            utils.error_log(Proc, f'Celeste Mod 列表后台更新失败：{refresh_result.get("error", "未知错误")}')
+        elif refresh_result.get('error'):
+            utils.info_log(Proc, f'Celeste Mod 列表后台更新未能联网，已沿用本地缓存：{refresh_result["error"]}')
+        else:
+            utils.info_log(
+                Proc,
+                'Celeste Mod 列表后台更新完成：'
+                f'社区数据库 {refresh_result["database_count"]:,} 条、'
+                f'Everest 更新库 {refresh_result["updater_count"]:,} 项。',
             )
 
     threading.Thread(target=worker, name='CelestePluginPrewarm', daemon=True).start()
