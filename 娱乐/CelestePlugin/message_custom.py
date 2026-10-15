@@ -15,8 +15,9 @@ help_text = '''【CelestePlugin 帮助】
 搜索列表可直接回复序号；翻页使用：下一页 / 上一页 / 跳页3。
 
 【地图推荐】
-.clst 随机 [1-10]         通过 Maddie 随机地图接口抽取
-.clst today               每日一图，当天所有用户结果相同
+.clst 随机 [1-10]         通过 Maddie 随机地图接口抽取；多个只显示概要，单个展示完整简介
+.clst today               每日一图，每人每天随机一图，当天固定不变
+.clst 更新                骰主限定：手动更新本地 Mod 列表缓存
 
 【Celeste Endless】
 .clst 无尽 帮助            查看玩法、操作和个人记录命令

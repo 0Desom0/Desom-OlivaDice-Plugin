@@ -41,6 +41,11 @@ subcommand_alias_dict = {
     'today': 'today',
     '每日': 'today',
     '今日': 'today',
+    'update': 'update',
+    'refresh': 'update',
+    '刷新': 'update',
+    '更新列表': 'update',
+    '更新': 'update',
     'endless': 'endless',
     '无尽': 'endless',
     'status': 'plugin_status',
@@ -353,17 +358,15 @@ def handle_random(plugin_event, argument: str) -> None:
     if not random_result.get('ok'):
         utils.reply_message(plugin_event, f'随机失败：{random_result.get("error", "未知错误")}')
         return
+    results = random_result.get('results', [])
+    if count == 1 and results:
+        # 只随机一个时与查询结果一致，展示完整简介
+        reply_detail(plugin_event, results[0])
+        return
     detail_texts = []
-    for index, item in enumerate(random_result.get('results', []), start=1):
-        if count == 1:
-            detail_result = function.hydrate_item(item)
-            if not detail_result.get('ok'):
-                continue
-            detail = detail_result['data']
-        else:
-            detail = item
-        heading = f'【随机 {index}/{count}】' if count > 1 else ''
-        detail_texts.append(function.format_detail(detail, compact=count > 1, heading=heading))
+    for index, item in enumerate(results, start=1):
+        heading = f'【随机 {index}/{count}】'
+        detail_texts.append(function.format_detail(item, compact=True, heading=heading))
     if not detail_texts:
         utils.reply_message(plugin_event, '随机到了候选条目，但详情暂时无法获取。')
         return
@@ -371,8 +374,8 @@ def handle_random(plugin_event, argument: str) -> None:
 
 
 def get_today_file_path(plugin_event) -> str:
-    linked_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
-    return os.path.join(utils.get_storage_dir(linked_hash), 'today.json')
+    """每日推荐按人隔离：跟随群链，同一个人跨群共享当日结果。"""
+    return os.path.join(utils.get_personal_storage_dir(plugin_event), 'today.json')
 
 
 def handle_today(plugin_event) -> None:
@@ -400,6 +403,25 @@ def handle_today(plugin_event) -> None:
         )
     text = function.format_detail(detail, heading=f'【{today_date} 每日 Celeste Mod】')
     utils.reply_long_text(plugin_event, text)
+
+
+def handle_refresh(plugin_event) -> None:
+    """骰主手动更新本地 Mod 列表缓存。"""
+    if not utils.is_sender_core_master(plugin_event):
+        utils.reply_message(plugin_event, '仅 OlivaDiceCore 骰主可以手动更新 Mod 列表。')
+        return
+    utils.reply_message(plugin_event, '正在更新 Celeste Mod 列表，数据包较大，请稍候……')
+    refresh_result = function.refresh_community_data()
+    if not refresh_result.get('ok'):
+        utils.reply_message(plugin_event, f'Mod 列表更新失败：{refresh_result.get("error", "未知错误")}')
+        return
+    fresh_text_dict = {True: '数据源无变化', False: '已重新下载'}
+    utils.reply_message(
+        plugin_event,
+        'Celeste Mod 列表更新完成：\n'
+        f'社区数据库 {refresh_result["database_count"]:,} 条（{fresh_text_dict[refresh_result["database_from_cache"]]}）\n'
+        f'Everest 更新库 {refresh_result["updater_count"]:,} 项（{fresh_text_dict[refresh_result["updater_from_cache"]]}）',
+    )
 
 
 def get_endless_file_path(plugin_event) -> str:
@@ -691,6 +713,9 @@ def dispatch_clst_command(plugin_event, command_argument: str) -> None:
         return
     if subcommand == 'today':
         handle_today(plugin_event)
+        return
+    if subcommand == 'update':
+        handle_refresh(plugin_event)
         return
     if subcommand == 'endless':
         handle_endless(plugin_event, sub_argument)
