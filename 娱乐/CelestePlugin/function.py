@@ -770,7 +770,9 @@ def get_item_by_id(
     if isinstance(cached_detail, dict) and cached_detail.get('id'):
         return {'ok': True, 'data': cached_detail, 'error': '', 'from_cache': True}
 
-    query = urllib.parse.urlencode({'itemtype': item_type, 'itemid': item_id})
+    # 上游已改契约：gamebanana-info 不再接受 itemtype/itemid，改为单个 id 参数，
+    # 取值形如 GameBanana/Mod/<数字>（旧写法现在返回 400）。
+    query = urllib.parse.urlencode({'id': f'GameBanana/{item_type}/{item_id}'})
     try:
         raw_item = decode_json_response(http_get(f'{config.info_api_url}?{query}'))
         base_item = normalize_item(raw_item)
