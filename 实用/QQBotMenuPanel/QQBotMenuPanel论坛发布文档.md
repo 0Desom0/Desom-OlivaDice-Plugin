@@ -2,8 +2,8 @@
 
 - **名称**：`QQ自定义菜单与指令面板 (QQBotMenuPanel)`
 - **作者**：`Desom-fu`
-- **版本**：`1.0.0`
-- **兼容版本**：`1.0.0+`
+- **版本**：`1.0.1`
+- **兼容版本**：`1.0.1+`
 - **平台**：`仅支持 QQ 官方机器人 qqGuildV2`
 - **操作系统**：`理论来说都可以`
 - **前置插件**：`可选：OlivaDiceCore（用于显示只读全局骰主列表、全局骰主权限判定；未安装也可使用本插件骰主）`
@@ -78,6 +78,8 @@ https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/
 
 打开 WebUI 或切换 Bot / 点刷新时，会先拉取平台当前自定义菜单和四个场景的指令面板。
 
+页面顶部显示的 Bot 昵称与头像来自官方 **`GET /users/@me`**：头像直接用返回的 `avatar` 地址下载，昵称取 `username`，都不再需要 OpenID 参与拼装。该接口不可用时才退回旧的 `q.qlogo.cn/qqapp/<AppID>/<OpenID>/0` 地址，再退回当前 bot 数据目录里的 `avatar.png` 图片。
+
 自定义菜单、指令面板页的右侧预览固定在视口里，跟着当前编辑内容变。指令浏览 / 全局设置 / 帮助没有右侧预览，左侧铺满。
 
 建议流程：打开即拉取 → 编辑并看预览 → 确认发送到平台 → 看返回结果。
@@ -113,6 +115,13 @@ https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/
 ---
 
 ## 更新日志
+
+### v1.0.1
+
+- Bot 头像与昵称改为优先取官方 `GET /users/@me`：头像直接用返回的 `avatar` 地址下载，不再依赖 OpenID 拼地址；昵称取 `username`。
+- 旧的 `q.qlogo.cn/qqapp/<AppID>/<OpenID>/0` 退为兜底，之后再回退到本地 `avatar.png`。
+- 头像与自身资料按 bot 缓存一小时（取不到头像时冷却一分钟），点刷新会同时重拉两者。
+- 只有存在 access_token 时才发这个请求，异常一律吞掉并按原顺序回退。
 
 ### v1.0.0
 

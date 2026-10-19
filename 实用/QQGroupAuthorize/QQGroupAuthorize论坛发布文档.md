@@ -1,6 +1,6 @@
 - **名称**：获取主动授权 / QQGroupAuthorize
 - **作者**：Desom-fu
-- **版本**：1.2.9
+- **版本**：1.2.10
 - **适用平台**：QQ 官方机器人，OlivOS 的 qqGuildV2 接入
 - **适用场景**：QQ 群聊
 - **前置插件**：OlivaDiceCore 可选，未安装也能使用
@@ -18,7 +18,7 @@
 - 群成员通过命令获取设置说明图。
 - 可选的机器人自身入群自动发图，默认关闭，每个 bot 独立开关。
 - 中英文命令与帮助，支持免空格输入。
-- QQ 在线头像、当前 bot 下载缓存、用户 avatar 双层图片兜底，最后回退到名称首字。
+- 官方 `/users/@me` 头像优先，旧的 AppID + OpenID 地址、当前 bot 下载缓存、用户 avatar 逐层兜底，最后回退到名称首字。
 - 白色界面、红框和红色圈号；机器人资料页保留 QQbot 背景，删除简介。
 - 无损 PNG 缓存，正常情况下只发送一张图片。
 - 图片渲染、缓存或上传失败时，改为发送文字步骤。
@@ -233,10 +233,11 @@ plugin/data/QQGroupAuthorize/
 
 ### 头像优先级
 
-1. 有 bot OpenID 时，通过 `https://q.qlogo.cn/qqapp/<AppID>/<OpenID>/0` 获取 QQ 在线头像。成功就保存到资源目录的 **`<bot_hash>.png`**，不创建子目录。
-2. OpenID 缺失、下载失败或图片无效时，读取当前 bot hash 命名的已下载头像，这是第一层图片兜底。
-3. 当前 bot 的缓存也不可用时，读取用户提供的 **`avatar.png`**，这是最终图片兜底。
-4. 仍无有效头像时，取 bot 名称首字生成占位头像。
+1. 优先读取官方 **`GET /users/@me`** 返回的 `avatar` 完整地址下载头像，不再需要 OpenID 参与拼装；OlivOS qqGuildv2 SDK 已缓存同一份结果时直接复用，不再发请求。成功就保存到资源目录的 **`<bot_hash>.png`**，不创建子目录。
+2. 该接口不可用（没有 access_token、请求失败或未返回 `avatar`）时，退回旧的 `https://q.qlogo.cn/qqapp/<AppID>/<OpenID>/0`；有 bot OpenID 才尝试，成功同样写入 **`<bot_hash>.png`**。
+3. 两种在线地址都拿不到时，读取当前 bot hash 命名的已下载头像，这是第一层图片兜底。
+4. 当前 bot 的缓存也不可用时，读取用户提供的 **`avatar.png`**，这是最终图片兜底。
+5. 仍无有效头像时，取 bot 名称首字生成占位头像。
 
 bot hash 头像和用户 avatar 支持同样的 png、jpg、jpeg、webp、gif、bmp 后缀，大小写均可。比如 `<bot_hash>.jpg`、`<bot_hash>.webp` 或 `avatar.jpeg` 都可以读取。新下载头像规范化为 PNG 后存成 `<bot_hash>.png`，不会把 PNG 内容伪装成其他格式；无效文件会继续查找其他后缀。
 
@@ -244,7 +245,7 @@ bot hash 头像和用户 avatar 支持同样的 png、jpg、jpeg、webp、gif、
 
 头像居中裁切为圆形显示，根据主要颜色设置页面主色；无头像时用常见随机色。页面裁切不会改变用户 avatar 文件。
 
-AppID 取自 OlivOS 当前已加载 bot 配置，不需要手填。在线头像内存缓存一小时，失败冷却一分钟；再次成功获取时更新磁盘缓存，内容未变则不重复写盘。
+AppID 取自 OlivOS 当前已加载 bot 配置，不需要手填。头像与自身资料内存缓存一小时，失败冷却一分钟；再次成功获取时更新磁盘缓存，内容未变则不重复写盘。`/users/@me` 请求由 OlivOS qqGuildv2 SDK 自带的 API 对象发出，插件不接触 access_token，也没有可用的令牌时不发这个请求。
 
 ### 名称和统一配置
 
@@ -309,6 +310,12 @@ bot 名称先取已加载 Core 的当前 bot 名称，再尝试 QQ 自身账号�
 
 
 ## 更新日志
+
+### 2026-10-19 · v1.2.10
+
+- 头像优先取官方 `GET /users/@me` 返回的 `avatar` 完整地址，不再依赖 OpenID 拼地址；SDK 已缓存同一份结果时直接复用，省一次请求。
+- `https://q.qlogo.cn/qqapp/<AppID>/<OpenID>/0` 退为兜底，本地 `<bot_hash>.png`、用户 `avatar.png`、名称首字占位顺序不变。
+- 头像地址统一升级到 https；`/users/@me` 只通过 OlivOS qqGuildv2 SDK 的 API 对象请求，插件不接触 access_token，缺令牌时不发请求。
 
 ### 2026-10-09 · v1.2.9
 

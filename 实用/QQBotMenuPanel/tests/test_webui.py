@@ -34,6 +34,8 @@ def panel(tmp_path, monkeypatch):
     module = importlib.import_module(NAMESPACE)
     monkeypatch.setattr(module.utils, 'runtime_proc', None)
     monkeypatch.setattr(module.utils, 'has_oliva_dice_core', False)
+    module.utils._avatar_cache.clear()
+    module.utils._self_profile_cache.clear()
     bot = OlivOS.API.bot_info_T(
         id=10001, platform_sdk='qqGuildv2_link', platform_platform='qqGuild', platform_model='public',
     )
@@ -356,6 +358,112 @@ def test_refresh_avatar_retries_online_fetch(panel, monkeypatch):
     assert bot['avatar'] != first_uri
     cached = data_dir / panel.bot.hash / 'avatar.png'
     assert cached.read_bytes() == panel.module.utils.normalize_avatar(second)
+
+
+def test_users_me_avatar_skips_openid_assembly(panel, monkeypatch):
+    data_dir = Path('plugin/data/QQBotMenuPanel')
+    data_dir.mkdir(parents=True, exist_ok=True)
+    panel.module.utils._avatar_cache.clear()
+    panel.module.utils._self_profile_cache.clear()
+    profile = {
+        'id': '17007011874109759386',
+        'username': '芙萝妮娅Fronia_hermes',
+        'avatar': 'http://thirdqq.qlogo.cn/g?b=oidb&k=AVATARKEY&s=0&t=1',
+    }
+    monkeypatch.setattr(
+        panel.module.api_bridge, 'fetch_self_profile', Mock(return_value=profile),
+    )
+    online = png_bytes('#20a060')
+    download = Mock(return_value=avatar_response(online))
+    monkeypatch.setattr(panel.module.utils.requests, 'get', download)
+
+    bot = current_bot(request(panel, 'state')['data'], panel)
+    assert bot['avatar'].startswith('data:image/png;base64,')
+    # 直接用 /users/@me 的 avatar 地址，只把 http 升级成 https，不再拼 qlogo/qqapp。
+    assert download.call_args[0][0] == 'https://thirdqq.qlogo.cn/g?b=oidb&k=AVATARKEY&s=0&t=1'
+    assert bot['name'] == '芙萝妮娅Fronia_hermes'
+    cached = data_dir / panel.bot.hash / 'avatar.png'
+    assert cached.read_bytes() == panel.module.utils.normalize_avatar(online)
+
+
+def test_self_profile_is_cached_until_refresh(panel, monkeypatch):
+    panel.module.utils._avatar_cache.clear()
+    panel.module.utils._self_profile_cache.clear()
+    calls = []
+
+    def fake_profile(bot_info, Proc=None):
+        calls.append(bot_info)
+        return {
+            'username': 'bot-%d' % len(calls),
+            'avatar': 'https://thirdqq.qlogo.cn/g?b=oidb&k=K%d&s=0&t=1' % len(calls),
+        }
+
+    monkeypatch.setattr(panel.module.api_bridge, 'fetch_self_profile', fake_profile)
+    monkeypatch.setattr(
+        panel.module.utils.requests, 'get',
+        Mock(side_effect=lambda url, **kwargs: avatar_response(png_bytes('#101010'))),
+    )
+
+    current_bot(request(panel, 'state')['data'], panel)
+    assert len(calls) == 1
+    current_bot(request(panel, 'state')['data'], panel)
+    assert len(calls) == 1
+    bot = current_bot(request(panel, 'bootstrap', refresh_avatar=True)['data'], panel)
+    assert len(calls) == 2
+    assert bot['name'] == 'bot-2'
+
+
+def test_openid_avatar_still_serves_as_fallback(panel, monkeypatch):
+    panel.module.utils._avatar_cache.clear()
+    panel.module.utils._self_profile_cache.clear()
+    bot_config = panel.module.utils.load_bot_config(panel.bot.hash)
+    bot_config['bot_openid'] = 'BOT_OPENID'
+    panel.module.utils.save_bot_config(panel.bot.hash, bot_config)
+    monkeypatch.setattr(panel.module.api_bridge, 'fetch_self_profile', Mock(return_value={}))
+    download = Mock(return_value=avatar_response(png_bytes('#c05040')))
+    monkeypatch.setattr(panel.module.utils.requests, 'get', download)
+
+    current_bot(request(panel, 'state')['data'], panel)
+    assert download.call_args[0][0] == 'https://q.qlogo.cn/qqapp/%s/BOT_OPENID/0' % panel.bot.id
+
+
+def test_fetch_self_profile_reads_users_me_through_sdk(panel, monkeypatch):
+    class FakeApi:
+        res = json.dumps({
+            'id': '17007011874109759386',
+            'username': '芙萝妮娅Fronia_hermes',
+            'avatar': 'http://thirdqq.qlogo.cn/g?b=oidb&k=K&s=0&t=1',
+        })
+        res_code = 200
+
+        def do_api(self, req_type='POST'):
+            assert req_type == 'GET'
+
+    sdk = SimpleNamespace(
+        get_SDK_bot_info_from_Plugin_bot_info=Mock(return_value='sdk-bot-info'),
+        API=SimpleNamespace(getMe=Mock(return_value=FakeApi())),
+    )
+    monkeypatch.setattr(
+        panel.module.api_bridge, 'OlivOS', SimpleNamespace(qqGuildv2SDK=sdk),
+    )
+    bot = SimpleNamespace(id=10001, post_info=SimpleNamespace(access_token='TOKEN'))
+    profile = panel.module.api_bridge.fetch_self_profile(bot)
+    assert profile['username'] == '芙萝妮娅Fronia_hermes'
+    assert profile['avatar'] == 'http://thirdqq.qlogo.cn/g?b=oidb&k=K&s=0&t=1'
+    sdk.API.getMe.assert_called_once_with('sdk-bot-info')
+
+
+def test_fetch_self_profile_skips_request_without_token(panel, monkeypatch):
+    sdk = SimpleNamespace(
+        get_SDK_bot_info_from_Plugin_bot_info=Mock(),
+        API=SimpleNamespace(getMe=Mock(side_effect=AssertionError('Unexpected request'))),
+    )
+    monkeypatch.setattr(
+        panel.module.api_bridge, 'OlivOS', SimpleNamespace(qqGuildv2SDK=sdk),
+    )
+    bot = SimpleNamespace(id=10001, post_info=SimpleNamespace(access_token=''))
+    assert panel.module.api_bridge.fetch_self_profile(bot) == {}
+    sdk.API.getMe.assert_not_called()
 
 
 def test_group_message_remembers_bot_openid(panel, monkeypatch):

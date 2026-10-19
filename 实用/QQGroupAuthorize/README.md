@@ -94,14 +94,15 @@ AppID 使用事件 bot hash，从 `Proc.Proc_data['bot_info_dict']` 匹配已加
 
 头像顺序：
 
-1. 群事件有 `extend['sub_self_open_id']` 时，使用 `https://q.qlogo.cn/qqapp/<Proc AppID>/<OpenID>/0` 获取在线头像；成功即把规范化 PNG 写入资源目录的 `<bot_hash>.png`。
-2. 在线获取失败、图片无效或 OpenID 缺失时，读取同目录中以当前 bot hash 命名的图片。
-3. 当前 bot 的图片也不可用时，读取用户提供的 `avatar` 图片，这是最终图片兜底。
-4. 所有头像都不可用时，以名称首字生成占位头像。
+1. 优先取官方 `GET /users/@me` 返回的 `avatar` 完整地址下载头像；OlivOS qqGuildv2 SDK 已缓存同一份结果时直接复用，不再发请求。成功即把规范化 PNG 写入资源目录的 `<bot_hash>.png`。
+2. 该接口不可用（没有 access_token、请求失败或未返回 `avatar`）时，退回 `https://q.qlogo.cn/qqapp/<Proc AppID>/<OpenID>/0`，群事件有 `extend['sub_self_open_id']` 才尝试。
+3. 两种在线地址都失败、图片无效时，读取同目录中以当前 bot hash 命名的图片。
+4. 当前 bot 的图片也不可用时，读取用户提供的 `avatar` 图片，这是最终图片兜底。
+5. 所有头像都不可用时，以名称首字生成占位头像。
 
 bot hash 图片与用户 `avatar` 均支持 png / jpg / jpeg / webp / gif / bmp，后缀大小写均可，按列出顺序查找有效图片；无效图片会继续尝试后面的后缀。自动下载统一保存为真实 PNG，不把 PNG 内容套用其他后缀。缓存直接用 bot hash 命名，不创建头像子目录，不读取其他 bot 的头像。
 
-在线头像按 AppID / OpenID 缓存在内存一小时，失败冷却一分钟；新的有效头像会更新当前 bot 的下载缓存，数据未变化时不重复写盘。不会覆盖用户的 `avatar.png` 或其他后缀文件。下载缓存写入失败时仍使用本次已取得的头像，不影响发图。头像根据主要颜色调整主色，灰度头像使用灰色；页面居中圆形裁切，不修改用户头像文件。
+头像与自身资料在内存缓存一小时，失败冷却一分钟；新的有效头像会更新当前 bot 的下载缓存，数据未变化时不重复写盘。`/users/@me` 通过 OlivOS qqGuildv2 SDK 自带的 API 对象请求，插件不接触 access_token，没有可用令牌时不发请求；返回的头像地址统一升级到 https。不会覆盖用户的 `avatar.png` 或其他后缀文件。下载缓存写入失败时仍使用本次已取得的头像，不影响发图。头像根据主要颜色调整主色，灰度头像使用灰色；页面居中圆形裁切，不修改用户头像文件。
 
 名称先取已加载 Core 的当前 bot 名称，再尝试 QQ 自身账号名称。取得有效名称时显示它，并写入 `config.json` 的 `bots[bot_hash].name`；获取失败才读取对应 bot 保存的 `name`，最后回退到带 AppID 的默认名。自动生成的默认名不会写成缓存。不同 bot 的 name 独立，名字变更会更新保存值；名称或头像缓存写入失败时依然使用本次数据。所有显示文字均做 HTML 转义。
 

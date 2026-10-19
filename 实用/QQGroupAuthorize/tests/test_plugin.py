@@ -23,6 +23,8 @@ SDK = OlivOS.qqGuildv2SDK
 @pytest.fixture(autouse=True)
 def isolated_plugin_data(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    resources._avatar_cache.clear()
+    resources._self_profile_cache.clear()
 
 
 @pytest.fixture
@@ -625,6 +627,87 @@ def test_qq_avatar_precedes_local_and_appid_comes_from_proc(context, monkeypatch
     assert not (shared / 'unity').exists()
     with Image.open(shared / 'avatar.png') as local:
         assert local.getpixel((0, 0)) == (64, 96, 192)
+
+
+def test_users_me_avatar_prefers_full_url_over_openid(context, monkeypatch):
+    bot, proc, _ = context
+    resources._avatar_cache.clear()
+    resources._self_profile_cache.clear()
+    monkeypatch.setattr(
+        resources,
+        'fetch_self_profile',
+        Mock(return_value={
+            'id': '23001',
+            'username': '芙萝妮娅Fronia_hermes',
+            'avatar': 'http://thirdqq.qlogo.cn/g?b=oidb&k=AVATARKEY&s=0&t=1',
+        }),
+    )
+    download = Mock(return_value=avatar_response(image_bytes()))
+    monkeypatch.setattr(resources.requests, 'get', download)
+    event = group_event(bot)
+    # 有 OpenID 也不该再拼 qlogo/qqapp 地址。
+    event.data.extend['sub_self_open_id'] = 'BOT_OPENID'
+    profile = resources.bot_profile(event, proc)
+    download.assert_called_once_with(
+        'https://thirdqq.qlogo.cn/g?b=oidb&k=AVATARKEY&s=0&t=1',
+        timeout=(3, 5),
+        stream=True,
+        allow_redirects=False,
+    )
+    with Image.open(BytesIO(profile.avatar)) as image:
+        assert image.getpixel((0, 0))[:3] == (192, 80, 64)
+
+
+def test_sdk_cached_self_info_skips_users_me_request(context, monkeypatch):
+    bot, proc, _ = context
+    resources._avatar_cache.clear()
+    resources._self_profile_cache.clear()
+    monkeypatch.setattr(
+        common, 'sdkSelfInfo',
+        {bot.hash: {
+            'id': '23001',
+            'username': '橘波特',
+            'avatar': 'https://thirdqq.qlogo.cn/g?b=oidb&k=SDKKEY&s=0&t=1',
+        }},
+    )
+    monkeypatch.setattr(
+        resources, 'fetch_self_profile',
+        Mock(side_effect=AssertionError('Unexpected /users/@me request')),
+    )
+    download = Mock(return_value=avatar_response(image_bytes()))
+    monkeypatch.setattr(resources.requests, 'get', download)
+    profile = resources.bot_profile(group_event(bot), proc)
+    assert profile.avatar
+    assert download.call_args[0][0] == 'https://thirdqq.qlogo.cn/g?b=oidb&k=SDKKEY&s=0&t=1'
+
+
+def test_fetch_self_profile_reads_users_me_through_sdk(context, monkeypatch):
+    bot, _proc, _sent = context
+    bot.post_info.access_token = 'TOKEN'
+
+    class FakeApi:
+        res = json.dumps({
+            'id': '23001',
+            'username': '芙萝妮娅Fronia_hermes',
+            'avatar': 'http://thirdqq.qlogo.cn/g?b=oidb&k=K&s=0&t=1',
+        })
+        res_code = 200
+
+        def do_api(self, req_type='POST'):
+            assert req_type == 'GET'
+
+    monkeypatch.setattr(SDK.API, 'getMe', Mock(return_value=FakeApi()))
+    profile = resources.fetch_self_profile(bot)
+    assert profile['username'] == '芙萝妮娅Fronia_hermes'
+    assert profile['avatar'] == 'http://thirdqq.qlogo.cn/g?b=oidb&k=K&s=0&t=1'
+
+
+def test_fetch_self_profile_skips_request_without_token(context, monkeypatch):
+    bot, _proc, _sent = context
+    monkeypatch.setattr(
+        SDK.API, 'getMe', Mock(side_effect=AssertionError('Unexpected /users/@me request')),
+    )
+    assert resources.fetch_self_profile(bot) == {}
 
 
 def test_missing_openid_uses_shared_local_avatar_without_http(context, monkeypatch):

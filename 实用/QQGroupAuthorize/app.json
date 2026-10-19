@@ -4,8 +4,8 @@
     "namespace": "QQGroupAuthorize",
     "info": "QQ 群授权设置 PNG 指引；骰主可按 bot 开启自身入群自动发图，默认关闭。",
     "priority": 20000,
-    "svn": 12,
-    "version": "1.2.9",
+    "svn": 13,
+    "version": "1.2.10",
     "compatible_svn": 190,
     "message_mode": "olivos_para",
     "support": [

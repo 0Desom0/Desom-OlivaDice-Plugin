@@ -5,6 +5,7 @@ import base64
 import copy
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -31,13 +32,21 @@ except Exception:
 file_lock = threading.RLock()
 runtime_proc = None
 
-# 头像：先拉 QQ 在线头像并写入该 bot 目录的 avatar.png，失败再用该目录里的 avatar 图片。
-# 点刷新可跳过内存缓存重拉；在线和本地都没有时，前端用原来的蓝色渐变圈。
+# 头像：优先用 GET /users/@me 给出的 avatar 地址（含完整地址，不需要 OpenID 拼装），
+# 再退回旧的 AppID + OpenID 组合地址，最后用该 bot 目录里的 avatar 图片。
+# 拉到的头像写入该 bot 目录的 avatar.png；点刷新可跳过内存缓存重拉；
+# 在线和本地都没有时，前端用原来的蓝色渐变圈。
 AVATAR_STEM = 'avatar'
 AVATAR_SUFFIXES = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')
 MAX_AVATAR_BYTES = 4 * 1024 * 1024
 _avatar_cache = OrderedDict()
 _avatar_lock = threading.Lock()
+
+# /users/@me 结果按 bot 缓存：成功一小时，没拿到 avatar 时一分钟后再试。
+SELF_PROFILE_TTL = 3600
+SELF_PROFILE_RETRY_TTL = 60
+_self_profile_cache = OrderedDict()
+_self_profile_lock = threading.Lock()
 
 
 def safe_str(value: Any) -> str:
@@ -269,21 +278,29 @@ def normalize_avatar(data: bytes) -> bytes:
     return output.getvalue()
 
 
-def qq_avatar(appid: str, openid: str, refresh: bool = False) -> bytes:
-    """只访问 QQ 头像域名，不带账号密钥；成功缓存一小时，失败冷却一分钟。"""
-    appid = safe_str(appid)
-    openid = safe_str(openid).strip()
-    if not openid or not appid.isdecimal():
+def normalize_http_url(url: Any) -> str:
+    """接受 http/https 图片地址，统一升级成 https；其他值一律视为无效。"""
+    text = safe_str(url).strip()
+    lower = text.lower()
+    if lower.startswith('https://'):
+        return text
+    if lower.startswith('http://'):
+        return 'https://' + text[len('http://'):]
+    return ''
+
+
+def download_avatar(url: str, refresh: bool = False) -> bytes:
+    """只访问头像地址本身，不带账号密钥；成功缓存一小时，失败冷却一分钟。"""
+    url = normalize_http_url(url)
+    if not url:
         return b''
-    key = (appid, openid)
     with _avatar_lock:
         now = time.monotonic()
-        cached = _avatar_cache.get(key)
+        cached = _avatar_cache.get(url)
         if not refresh and cached and cached[0] > now:
             return cached[1]
         data = b''
         try:
-            url = 'https://q.qlogo.cn/qqapp/%s/%s/0' % (quote(appid, safe=''), quote(openid, safe=''))
             with requests.get(url, timeout=(3, 5), stream=True, allow_redirects=False) as response:
                 response.raise_for_status()
                 if response.status_code != 200:
@@ -299,11 +316,72 @@ def qq_avatar(appid: str, openid: str, refresh: bool = False) -> bytes:
                 data = normalize_avatar(bytes(body))
         except Exception:
             pass
-        _avatar_cache[key] = (time.monotonic() + (3600 if data else 60), data)
-        _avatar_cache.move_to_end(key)
+        _avatar_cache[url] = (time.monotonic() + (3600 if data else 60), data)
+        _avatar_cache.move_to_end(url)
         while len(_avatar_cache) > 64:
             _avatar_cache.popitem(last=False)
         return data
+
+
+def qq_avatar(appid: str, openid: str, refresh: bool = False) -> bytes:
+    """旧接口兜底：用 AppID + OpenID 拼 qlogo 地址，拿不到 OpenID 时直接放弃。"""
+    appid = safe_str(appid)
+    openid = safe_str(openid).strip()
+    if not openid or not appid.isdecimal():
+        return b''
+    url = 'https://q.qlogo.cn/qqapp/%s/%s/0' % (quote(appid, safe=''), quote(openid, safe=''))
+    return download_avatar(url, refresh=refresh)
+
+
+def sdk_self_profile(bot_hash: Any) -> dict:
+    """OlivOS qqGuildv2 SDK 已缓存的 /users/@me 结果，命中时可省一次请求。"""
+    cache = None
+    common = sys.modules.get('OlivOS.adapter.qqGuild.qqGuildv2SDKCommon')
+    if common is not None:
+        cache = getattr(common, 'sdkSelfInfo', None)
+    if not isinstance(cache, dict):
+        try:
+            import OlivOS
+
+            cache = getattr(getattr(OlivOS, 'qqGuildv2SDK', None), 'sdkSelfInfo', None)
+        except Exception:
+            return {}
+    if not isinstance(cache, dict):
+        return {}
+    profile = cache.get(safe_str(bot_hash))
+    if isinstance(profile, dict):
+        return dict(profile)
+    return {}
+
+
+def self_profile(bot_info=None, bot_hash: Any = '', refresh: bool = False) -> dict:
+    """机器人自身资料：优先 GET /users/@me，其次 SDK 里缓存的同一份结果。
+
+    返回的 avatar 是可直接下载的完整地址，不再需要 OpenID 参与拼装。
+    """
+    from . import api_bridge
+
+    key = get_config_bot_hash(bot_hash)
+    now = time.monotonic()
+    with _self_profile_lock:
+        cached = _self_profile_cache.get(key)
+        if not refresh and cached and cached[0] > now:
+            return dict(cached[1])
+    profile = {}
+    if not refresh:
+        profile = sdk_self_profile(key)
+    if not safe_str(profile.get('avatar', '')).strip():
+        fetched = api_bridge.fetch_self_profile(bot_info)
+        if isinstance(fetched, dict) and fetched:
+            profile = fetched
+    profile = dict(profile) if isinstance(profile, dict) else {}
+    ttl = SELF_PROFILE_TTL if safe_str(profile.get('avatar', '')).strip() else SELF_PROFILE_RETRY_TTL
+    with _self_profile_lock:
+        _self_profile_cache[key] = (time.monotonic() + ttl, profile)
+        _self_profile_cache.move_to_end(key)
+        while len(_self_profile_cache) > 64:
+            _self_profile_cache.popitem(last=False)
+    return dict(profile)
 
 
 def cache_avatar(bot_hash: Any, data: bytes) -> None:
@@ -411,9 +489,19 @@ def resolve_bot_openid(bot_hash: Any) -> str:
     return ''
 
 
-def bot_avatar_data_uri(bot_hash: Any, bot_info=None, refresh: bool = False) -> str:
-    appid = safe_str(getattr(bot_info, 'id', '')) if bot_info is not None else ''
-    data = qq_avatar(appid, resolve_bot_openid(bot_hash), refresh=refresh)
+def bot_avatar_data_uri(
+    bot_hash: Any,
+    bot_info=None,
+    refresh: bool = False,
+    profile: Optional[dict] = None,
+) -> str:
+    if not isinstance(profile, dict):
+        profile = self_profile(bot_info, bot_hash, refresh=refresh) if bot_info is not None else {}
+    data = download_avatar(profile.get('avatar', ''), refresh=refresh)
+    if not data:
+        # 兜底：旧接口需要 AppID + bot OpenID 才能拼出头像地址。
+        appid = safe_str(getattr(bot_info, 'id', '')) if bot_info is not None else ''
+        data = qq_avatar(appid, resolve_bot_openid(bot_hash), refresh=refresh)
     if data:
         cache_avatar(bot_hash, data)
     else:

@@ -56,16 +56,19 @@ def _get_bots(refresh_avatar=False):
     filtered = utils.filter_qqguildv2_bots(bot_info_dict)
     bots = []
     for bot_hash, bot_info in filtered.items():
+        # 一次 /users/@me 同时拿到头像与昵称，头像缺省时才走旧的 OpenID 接口。
+        profile = utils.self_profile(bot_info, bot_hash, refresh=refresh_avatar)
         bots.append({
             'hash': utils.safe_str(bot_hash),
             'display': utils.get_bot_display_text(bot_hash, bot_info=bot_info),
             'id': utils.safe_str(getattr(bot_info, 'id', '')),
             'name': (
                 utils.safe_str(getattr(bot_info, 'name', ''))
+                or utils.safe_str(profile.get('username', '')).strip()
                 or ('Bot ' + utils.safe_str(getattr(bot_info, 'id', '')))
             ),
             'avatar': utils.bot_avatar_data_uri(
-                bot_hash, bot_info=bot_info, refresh=refresh_avatar,
+                bot_hash, bot_info=bot_info, refresh=refresh_avatar, profile=profile,
             ),
         })
     bots.sort(key=lambda item: item['display'])

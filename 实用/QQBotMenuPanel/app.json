@@ -4,8 +4,8 @@
     "namespace": "QQBotMenuPanel",
     "message_mode": "olivos_string",
     "info": "通过 OlivOS qqGuildV2 接口管理 QQ 官方机器人自定义菜单与指令面板，配置与实时预览集成在 OlivOS WebUI 的插件页面中。",
-    "version": "1.0.0",
-    "svn": 1,
+    "version": "1.0.1",
+    "svn": 2,
     "compatible_svn": 190,
     "priority": 30000,
     "support": [

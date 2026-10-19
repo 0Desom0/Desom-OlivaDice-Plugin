@@ -1,5 +1,10 @@
 # -*- encoding: utf-8 -*-
-"""只通过 OlivOS 暴露的 indeAPI 调用官方菜单/面板能力。"""
+"""只通过 OlivOS 暴露的 indeAPI，以及 qqGuildv2 SDK 自带的 API 对象调用官方能力。
+
+插件始终不接触令牌和 HTTP 细节：请求由 OlivOS 拼装并附带凭据。
+"""
+
+import json
 
 import OlivOS
 
@@ -96,6 +101,35 @@ def get_response_data(result: dict):
     if not isinstance(data, dict):
         return None
     return data.get('response', None)
+
+
+def fetch_self_profile(bot_info, Proc=None) -> dict:
+    """GET /users/@me：机器人自身资料，avatar 就是可直接下载的头像地址。
+
+    直接复用 OlivOS qqGuildv2 SDK 的 API 对象，凭据由 SDK 注入；
+    没有可用 access_token 时直接返回空字典，不发无效请求。
+    """
+    if bot_info is None:
+        return {}
+    access_token = utils.safe_str(
+        getattr(getattr(bot_info, 'post_info', None), 'access_token', ''),
+    ).strip()
+    if not access_token:
+        return {}
+    try:
+        sdk = getattr(OlivOS, 'qqGuildv2SDK', None)
+        if sdk is None:
+            return {}
+        sdk_bot_info = sdk.get_SDK_bot_info_from_Plugin_bot_info(bot_info)
+        api_object = sdk.API.getMe(sdk_bot_info)
+        api_object.do_api('GET')
+        if getattr(api_object, 'res_code', None) != 200 or not api_object.res:
+            return {}
+        payload = json.loads(api_object.res)
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exception_object:
+        utils.debug_log(Proc, f'读取机器人自身资料失败：{utils.exception_text(exception_object)}')
+        return {}
 
 
 def fetch_global_menu(bot_info, Proc=None) -> dict:
