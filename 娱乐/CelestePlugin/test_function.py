@@ -481,5 +481,196 @@ class CelestePluginFunctionTest(unittest.TestCase):
             dispatch_mock.assert_not_called()
 
 
+    def build_fake_event(self, user_id='10001', group_id='20001'):
+        class Object(object):
+            pass
+
+        event = Object()
+        event.bot_info = Object()
+        event.bot_info.hash = 'bot'
+        event.data = Object()
+        event.data.user_id = user_id
+        event.data.group_id = group_id
+        event.data.host_id = None
+        event.platform = {'platform': 'qq'}
+        return event
+
+    def test_compact_detail_hides_description(self):
+        detail = {
+            'id': 1,
+            'item_type': 'Mod',
+            'name': 'Compact Test',
+            'author': 'Tester',
+            'description': 'D' * 300,
+        }
+        with mock.patch.object(
+            function.utils,
+            'load_global_config',
+            return_value={
+                'description_max_length': 320,
+                'credit_max_length': 180,
+                'show_cover_image_switch': False,
+            },
+        ):
+            full_text = function.format_detail(detail)
+            compact_text = function.format_detail(detail, compact=True, heading='【随机 1/3】')
+        self.assertIn('简介：DDDD', full_text)
+        self.assertNotIn('简介', compact_text)
+        self.assertNotIn('D' * 50, compact_text)
+        self.assertIn('Mod 页面', compact_text)
+
+    def test_today_cache_is_per_user(self):
+        event_a = self.build_fake_event(user_id='10001', group_id='20001')
+        event_b = self.build_fake_event(user_id='10002', group_id='20001')
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with mock.patch.object(utils, 'get_storage_dir', return_value=temporary_dir):
+                path_a1 = message.get_today_file_path(event_a)
+                path_a2 = message.get_today_file_path(self.build_fake_event(user_id='10001', group_id=None))
+                path_b = message.get_today_file_path(event_b)
+        self.assertNotEqual(path_a1, path_b)
+        self.assertEqual(path_a1, path_a2)
+
+    def test_single_random_uses_full_detail_and_multi_uses_compact(self):
+        items = [{'id': index, 'item_type': 'Mod', 'name': f'M{index}'} for index in range(1, 4)]
+        event = object()
+        with (
+            mock.patch.object(
+                message.function,
+                'random_mods',
+                return_value={'ok': True, 'results': items[:1], 'error': ''},
+            ),
+            mock.patch.object(message, 'reply_detail') as detail_mock,
+            mock.patch.object(message.utils, 'reply_long_text') as long_mock,
+        ):
+            message.handle_random(event, '')
+        detail_mock.assert_called_once_with(event, items[0])
+        long_mock.assert_not_called()
+
+        with (
+            mock.patch.object(
+                message.function,
+                'random_mods',
+                return_value={'ok': True, 'results': items, 'error': ''},
+            ),
+            mock.patch.object(message, 'reply_detail') as detail_mock,
+            mock.patch.object(message.utils, 'reply_long_text') as long_mock,
+            mock.patch.object(message.function, 'format_detail', wraps=function.format_detail) as format_mock,
+        ):
+            message.handle_random(event, '3')
+        detail_mock.assert_not_called()
+        long_mock.assert_called_once()
+        self.assertEqual(format_mock.call_count, 3)
+        for call in format_mock.call_args_list:
+            self.assertIs(call.kwargs.get('compact'), True)
+
+    def test_update_subcommand_dispatches_refresh(self):
+        with mock.patch.object(message, 'handle_refresh') as refresh_mock:
+            message.dispatch_clst_command(object(), '更新')
+            message.dispatch_clst_command(object(), 'update')
+        self.assertEqual(refresh_mock.call_count, 2)
+
+    def test_refresh_command_is_master_only(self):
+        event = object()
+        with (
+            mock.patch.object(utils, 'is_sender_core_master', return_value=False),
+            mock.patch.object(utils, 'reply_message') as reply_mock,
+            mock.patch.object(message.function, 'refresh_community_data') as refresh_mock,
+        ):
+            message.handle_refresh(event)
+        refresh_mock.assert_not_called()
+        self.assertIn('骰主', reply_mock.call_args[0][1])
+
+        refresh_result = {
+            'ok': True,
+            'database_count': 1000,
+            'updater_count': 500,
+            'database_from_cache': False,
+            'updater_from_cache': True,
+            'error': '',
+        }
+        with (
+            mock.patch.object(utils, 'is_sender_core_master', return_value=True),
+            mock.patch.object(utils, 'reply_message') as reply_mock,
+            mock.patch.object(message.function, 'refresh_community_data', return_value=refresh_result),
+        ):
+            message.handle_refresh(event)
+        self.assertEqual(reply_mock.call_count, 2)
+        self.assertIn('1,000', reply_mock.call_args[0][1])
+        self.assertIn('已重新下载', reply_mock.call_args[0][1])
+
+    def test_refresh_community_data_forces_revalidation(self):
+        def load_cached_yaml(cache_name, _url, ttl_seconds):
+            self.assertEqual(ttl_seconds, 0)
+            if cache_name == 'mod_search_database':
+                return {'ok': True, 'data': [{'GameBananaId': 1}], 'error': '', 'from_cache': False}
+            return {'ok': True, 'data': {'Main': {'GameBananaId': 1}}, 'error': '', 'from_cache': True}
+
+        function.updater_memory_cache.pop('index', None)
+        function.updater_memory_cache.pop('index_source_identity', None)
+        with mock.patch.object(function, 'load_cached_yaml', side_effect=load_cached_yaml):
+            result = function.refresh_community_data()
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['database_count'], 1)
+        self.assertEqual(result['updater_count'], 1)
+        self.assertFalse(result['database_from_cache'])
+        self.assertTrue(result['updater_from_cache'])
+        self.assertEqual(function.updater_memory_cache['index'][('mod', 1)][0]['InternalName'], 'Main')
+
+
+
+    def test_prewarm_worker_refreshes_silently_and_logs_failure(self):
+        class FakeThread(object):
+            def __init__(self, target=None, name=None, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        message.prewarm_started = False
+        ok_result = {
+            'ok': True,
+            'database_count': 12000,
+            'updater_count': 4000,
+            'database_from_cache': True,
+            'updater_from_cache': True,
+            'error': '',
+        }
+        log_records = []
+        with (
+            mock.patch.object(message.threading, 'Thread', FakeThread),
+            mock.patch.object(message.function, 'load_mod_database', return_value={'ok': True, 'error': ''}),
+            mock.patch.object(message.function, 'load_updater_index', return_value={'ok': True, 'error': ''}),
+            mock.patch.object(message.function, 'refresh_community_data', return_value=ok_result) as refresh_mock,
+            mock.patch.object(message.utils, 'info_log', side_effect=lambda _p, t: log_records.append(('info', t))),
+            mock.patch.object(message.utils, 'error_log', side_effect=lambda _p, t: log_records.append(('error', t))),
+        ):
+            message.start_prewarm_thread(None)
+        refresh_mock.assert_called_once_with()
+        self.assertTrue(any('12,000' in text for _level, text in log_records))
+
+        message.prewarm_started = False
+        fail_result = {
+            'ok': False,
+            'database_count': 0,
+            'updater_count': 0,
+            'database_from_cache': True,
+            'updater_from_cache': True,
+            'error': 'Mod 数据库：网络连接失败',
+        }
+        with (
+            mock.patch.object(message.threading, 'Thread', FakeThread),
+            mock.patch.object(message.function, 'load_mod_database', return_value={'ok': True, 'error': ''}),
+            mock.patch.object(message.function, 'load_updater_index', return_value={'ok': True, 'error': ''}),
+            mock.patch.object(message.function, 'refresh_community_data', return_value=fail_result),
+            mock.patch.object(message.utils, 'info_log', side_effect=lambda _p, t: log_records.append(('info', t))),
+            mock.patch.object(message.utils, 'error_log', side_effect=lambda _p, t: log_records.append(('error', t))),
+        ):
+            message.start_prewarm_thread(None)
+        self.assertTrue(any(level == 'error' and '后台更新失败' in text for level, text in log_records))
+
+        message.prewarm_started = False
+
+
+
 if __name__ == '__main__':
     unittest.main()

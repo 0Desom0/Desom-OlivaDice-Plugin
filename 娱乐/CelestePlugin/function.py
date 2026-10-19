@@ -269,6 +269,33 @@ def _load_cached_yaml_unlocked(cache_name: str, url: str, ttl_seconds: int) -> d
     return {'ok': False, 'data': None, 'error': response.get('error', '社区数据库不可用'), 'from_cache': False}
 
 
+def refresh_community_data() -> dict[str, Any]:
+    """骰主手动更新：忽略本地 TTL，强制向数据源重新校验社区数据库与 Everest 更新库。"""
+    database_result = load_cached_yaml('mod_search_database', config.database_url, 0)
+    if database_result.get('ok') and not isinstance(database_result.get('data'), list):
+        database_result = {'ok': False, 'data': None, 'error': 'Mod 数据库格式异常', 'from_cache': True}
+    updater_result = load_cached_yaml('everest_update', config.updater_url, 0)
+    if updater_result.get('ok'):
+        with cache_lock:
+            updater_memory_cache['index'] = build_updater_index(updater_result.get('data'))
+            updater_memory_cache['index_source_identity'] = id(updater_result.get('data'))
+    database_count = len(database_result.get('data') or []) if database_result.get('ok') else 0
+    updater_count = len(updater_result.get('data') or {}) if updater_result.get('ok') else 0
+    error_parts = []
+    if not database_result.get('ok'):
+        error_parts.append(f'Mod 数据库：{database_result.get("error", "未知错误")}')
+    if not updater_result.get('ok'):
+        error_parts.append(f'Everest 更新库：{updater_result.get("error", "未知错误")}')
+    return {
+        'ok': not error_parts,
+        'database_count': database_count,
+        'updater_count': updater_count,
+        'database_from_cache': bool(database_result.get('from_cache', True)),
+        'updater_from_cache': bool(updater_result.get('from_cache', True)),
+        'error': '；'.join(error_parts),
+    }
+
+
 def load_mod_database() -> dict[str, Any]:
     ttl = int(utils.load_global_config().get('database_cache_seconds', 21600))
     result = load_cached_yaml('mod_search_database', config.database_url, max(600, ttl))
@@ -743,7 +770,9 @@ def get_item_by_id(
     if isinstance(cached_detail, dict) and cached_detail.get('id'):
         return {'ok': True, 'data': cached_detail, 'error': '', 'from_cache': True}
 
-    query = urllib.parse.urlencode({'itemtype': item_type, 'itemid': item_id})
+    # 上游已改契约：gamebanana-info 不再接受 itemtype/itemid，改为单个 id 参数，
+    # 取值形如 GameBanana/Mod/<数字>（旧写法现在返回 400）。
+    query = urllib.parse.urlencode({'id': f'GameBanana/{item_type}/{item_id}'})
     try:
         raw_item = decode_json_response(http_get(f'{config.info_api_url}?{query}'))
         base_item = normalize_item(raw_item)
@@ -983,7 +1012,7 @@ def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = 
     credit_limit = int(global_config.get('credit_max_length', 180))
     component_limit = 1 if compact else int(global_config.get('detail_download_component_limit', 6))
     description_source = detail.get('description') or detail.get('text') or '暂无简介'
-    description = truncate_text(description_source, 140 if compact else description_limit) or '暂无简介'
+    description = truncate_text(description_source, description_limit) or '暂无简介'
     category_text = ' / '.join(
         value for value in [detail.get('category', ''), detail.get('subcategory', '')] if value
     ) or '未分类'
@@ -1013,15 +1042,15 @@ def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = 
         lines.append('⚠ 内容警告：GameBanana 将该条目标记为需要内容分级或初始隐藏。')
     if credit_text:
         lines.append(f'完整署名：{credit_text}')
-    lines.extend(
-        [
-            f'分类：{category_text}',
-            f'标签：{tag_text}',
-            f'数据：下载 {detail.get("downloads", 0):,} / 浏览 {detail.get("views", 0):,} / 喜欢 {detail.get("likes", 0):,}',
-            f'简介：{description}',
-            f'Mod 页面：{detail.get("page_url", "")}',
-        ]
-    )
+    detail_lines = [
+        f'分类：{category_text}',
+        f'标签：{tag_text}',
+        f'数据：下载 {detail.get("downloads", 0):,} / 浏览 {detail.get("views", 0):,} / 喜欢 {detail.get("likes", 0):,}',
+    ]
+    if not compact:
+        detail_lines.append(f'简介：{description}')
+    detail_lines.append(f'Mod 页面：{detail.get("page_url", "")}')
+    lines.extend(detail_lines)
 
     download_groups = build_download_groups(detail)
     if download_groups:
