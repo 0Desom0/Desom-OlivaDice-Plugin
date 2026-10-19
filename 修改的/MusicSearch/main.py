@@ -10,7 +10,9 @@ import urllib.request
 
 from PIL import ImageFile
 
-from . import load
+import OlivOS
+
+from . import load, voice
 
 oliva_dice_core_available = False
 try:
@@ -252,7 +254,7 @@ class MusicSearchProcessor:
         return None
 
     @classmethod
-    def build_song_markdown(cls, song_data):
+    def build_song_markdown(cls, song_data, voice_action=None):
         """构造歌曲信息及所有人可用的链接按钮。"""
         title = cls.escape_markdown(song_data.get('name') or '未知歌曲')
         singers = '/'.join(
@@ -295,47 +297,51 @@ class MusicSearchProcessor:
         if not valid_url:
             song_id = str(song_data.get('id') or '')
             jump_url = f'https://music.163.com/song?id={song_id}' if song_id.isdecimal() else ''
-        keyboard = None
+        buttons = []
         if jump_url:
-            keyboard = {
-                'content': {
-                    'rows': [{
-                        'buttons': [{
-                            'id': 'music_open',
-                            'render_data': {
-                                'label': '打开网易云音乐',
-                                'visited_label': '打开网易云音乐',
-                                'style': 1,
-                            },
-                            'action': {
-                                'type': 0,
-                                'permission': {'type': 2},
-                                'data': jump_url,
-                                'unsupport_tips': '请更新 QQ 后打开歌曲链接',
-                            },
-                        }],
-                    }],
+            buttons.append({
+                'id': 'music_open',
+                'render_data': {
+                    'label': '打开链接',
+                    'visited_label': '打开链接',
+                    'style': 1,
                 },
+                'action': {
+                    'type': 0,
+                    'permission': {'type': 2},
+                    'data': jump_url,
+                    'unsupport_tips': '请更新 QQ 后打开歌曲链接',
+                },
+            })
+        song_id = str(song_data.get('id') or '')
+        if voice_action is not None and song_id.isdecimal() and int(song_id) > 0:
+            action = {
+                'type': voice_action,
+                'permission': {'type': 2},
+                'data': voice.callback_data(song_id) if voice_action == 1 else f'.点歌语音 {song_id}',
+                'unsupport_tips': f'请发送 .点歌语音 {song_id} 获取音乐',
             }
+            if voice_action == 2:
+                action.update(enter=True, reply=False)
+            buttons.append({
+                'id': voice.BUTTON_ID,
+                'render_data': {'label': '发送音乐', 'visited_label': '发送音乐', 'style': 1},
+                'action': action,
+            })
+        keyboard = {'content': {'rows': [{'buttons': buttons}]}} if buttons else None
         return {'content': content}, keyboard
 
     @classmethod
     def reply_song_markdown(cls, plugin_event, Proc, song_data, is_group):
         """按 QQ 群、C2C、频道或频道私信的真实事件字段选择发送目标。"""
         song = cls.complete_song_details(song_data, Proc)
-        markdown, keyboard = cls.build_song_markdown(song)
+        chat_type, chat_id = voice.chat_context(plugin_event, is_group)
+        inde_api = getattr(plugin_event, 'indeAPI', None)
+        voice_action = None
+        if chat_type in ('qq_group', 'qq_private') and inde_api and inde_api.hasAPI('send_message'):
+            voice_action = 1 if hasattr(OlivOS.API.Event, 'button_click') else 2
+        markdown, keyboard = cls.build_song_markdown(song, voice_action=voice_action)
         try:
-            extend = getattr(plugin_event.data, 'extend', {}) or {}
-            flag_direct = bool(extend.get('flag_from_direct', not is_group))
-            host_id = extend.get('host_group_id') or getattr(plugin_event.data, 'host_id', None)
-            flag_qq = bool(extend.get('flag_from_qq', not host_id))
-            if flag_qq:
-                chat_type = 'qq_private' if flag_direct else 'qq_group'
-                chat_id = plugin_event.data.user_id if flag_direct else plugin_event.data.group_id
-            else:
-                chat_type = 'guild_private' if flag_direct else 'guild_channel'
-                chat_id = (host_id or plugin_event.data.group_id) if flag_direct else plugin_event.data.group_id
-            inde_api = getattr(plugin_event, 'indeAPI', None)
             if inde_api is None or not inde_api.hasAPI('create_markdown_message'):
                 raise RuntimeError('当前 OlivOS 不支持 Markdown 接口')
             result = inde_api.create_markdown_message(
@@ -363,7 +369,11 @@ class MusicSearchProcessor:
                 f'歌曲 ID：{song.get("id") or "未知"}'
             )
             if keyboard:
-                text += '\n' + keyboard['content']['rows'][0]['buttons'][0]['action']['data']
+                for button in keyboard['content']['rows'][0]['buttons']:
+                    if button['action']['type'] == 0:
+                        text += '\n' + button['action']['data']
+            if voice_action is not None:
+                text += f'\n获取音乐语音：.点歌语音 {song.get("id", "")}'
             plugin_event.reply(text)
             return False
 
@@ -410,7 +420,10 @@ class MusicSearchProcessor:
             return True
 
         try:
-            flag_is_from_group = plugin_event.plugin_info['func_type'] == 'group_message'
+            flag_is_from_group = plugin_event.plugin_info['func_type'] == 'group_message' or (
+                plugin_event.plugin_info['func_type'] == 'button_click'
+                and cls.get_group_id(plugin_event) is not None
+            )
             flag_is_from_host = False
             if flag_is_from_group and getattr(plugin_event.data, 'host_id', None) is not None:
                 flag_is_from_host = True
@@ -672,6 +685,15 @@ class MusicSearchProcessor:
         # 若存在 OlivaDiceCore，则遵循其 bot on/off 开关
         if not cls.is_enabled_for_context(plugin_event):
             return
+
+        voice_command = re.fullmatch(r'[.。]点歌语音\s+([0-9]+)', message_content)
+        if voice_command:
+            if str(plugin_event.platform.get('sdk', '')).lower() == 'qqguildv2_link':
+                voice.send_song(cls, plugin_event, Proc, voice_command.group(1), is_group)
+            return
+        if message_content.startswith(('.点歌语音', '。点歌语音')):
+            plugin_event.reply('请发送 .点歌语音 歌曲ID，例如：.点歌语音 569870607')
+            return
         
         # 检查是否为点歌指令
         if not message_content.startswith('.点歌') and not message_content.startswith('。点歌'):
@@ -732,6 +754,44 @@ class Event(object):
     事件处理类，用于处理各种事件
     """
     
+    @staticmethod
+    def button_click(plugin_event, Proc):
+        if str(plugin_event.platform.get('sdk', '')).lower() != 'qqguildv2_link':
+            return
+        button_id = getattr(plugin_event.data, 'button_id', None)
+        if button_id not in (None, '', voice.BUTTON_ID):
+            return
+        payload = str(getattr(plugin_event.data, 'button_data', '') or '')
+        match = re.fullmatch(re.escape(voice.BUTTON_PREFIX) + r'([0-9]+)(?::([0-9a-f]{32}))?', payload)
+        if not match:
+            return
+        bot_hash = getattr(plugin_event.bot_info, 'hash', None)
+        MusicSearchProcessor.reload_config_for_bot(bot_hash)
+        if (
+            not MusicSearchProcessor.config.get('enabled', True)
+            or not MusicSearchProcessor.is_group_enabled(plugin_event, bot_hash)
+            or not MusicSearchProcessor.is_enabled_for_context(plugin_event)
+        ):
+            return
+        try:
+            button_key = voice.claim_button(plugin_event, payload, match.group(2))
+            if not button_key:
+                return
+        except Exception as error:
+            Proc.log(3, f'>>> 保存音乐按钮使用状态失败，未执行下载: {type(error).__name__}', [])
+            return
+        is_group = not (getattr(plugin_event.data, 'extend', {}) or {}).get('flag_from_direct', False)
+        success = False
+        try:
+            success = voice.send_song(MusicSearchProcessor, plugin_event, Proc, match.group(1), is_group) is True
+        except Exception as error:
+            Proc.log(3, f'>>> 音乐按钮处理异常: {type(error).__name__}', [])
+        finally:
+            try:
+                voice.finish_button(button_key, success)
+            except Exception as error:
+                Proc.log(3, f'>>> 保存音乐按钮成功状态失败: {type(error).__name__}', [])
+
     @staticmethod
     def init(plugin_event, Proc):
         """

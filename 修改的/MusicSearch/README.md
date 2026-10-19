@@ -34,7 +34,17 @@
 
 ### 返回结果
 
-qqGuildv2（QQ 官方机器人）返回原生 Markdown 消息：顶部显示 `picurl` 提供的封面，读取图片头中的真实宽高填入 Markdown，不固定正方形、不缩放或裁剪。读取尺寸失败时省略宽高声明，由客户端按自然尺寸显示；缺少有效封面地址时仅展示文字。下方显示歌名，信息区保留全部字段标签：歌手与时长同一行，专辑和歌曲 ID 各一行，字段间不加空段落。专辑名与歌名相同时仍保留，缺失字段显示“未知”。“打开网易云音乐”按钮跳转到歌曲页面，所有人均可点击。付费歌曲会附带播放权限提示。
+qqGuildv2（QQ 官方机器人）返回原生 Markdown 消息：顶部显示 `picurl` 提供的封面，读取图片头中的真实宽高填入 Markdown，不固定正方形、不缩放或裁剪。读取尺寸失败时省略宽高声明，由客户端按自然尺寸显示；缺少有效封面地址时仅展示文字。下方显示歌名，信息区保留全部字段标签：歌手与时长同一行，专辑和歌曲 ID 各一行，字段间不加空段落。专辑名与歌名相同时仍保留，缺失字段显示“未知”。“打开链接”按钮跳转到歌曲页面，所有人均可点击。付费歌曲会附带播放权限提示。
+
+### 发送音乐语音（QQ 群 / QQ 私聊）
+
+“发送音乐”按钮先按歌曲 ID 重新获取有效音频链接，将音乐下载到本机临时目录，再通过 OlivOS 的本地 `record` 消息上传语音（`file_type=3`），并以 `media.file_info` 发送。不会把远程音频链接直接交给 QQ 拉取。支持 MP3、OGG、WAV 和 SILK 原始音频，不额外转码；完成或失败后清理临时文件。
+
+当前青果源码支持 `Event.button_click`：按钮为回调类型，SDK 自动应答，插件使用此次互动的 `event_id` 被动回复。同一按钮同时只运行一次处理过程，期间所有用户的重复点击直接忽略。只有音乐语音成功发送后，按钮才永久失效；下载、上传或发送失败会释放占用，允许重新点击。成功状态保存在 `plugin/data/MusicSearch/voice_buttons.sqlite3`，重载或重启后仍生效。重新点歌生成的新按钮可独立使用。不支持该事件的旧宿主改为指令按钮，点击自动发送 `.点歌语音 歌曲ID`。指令按钮和手动指令不限制重复使用，例如 `.点歌语音 569870607`。
+
+语音和点歌共用全局、本群及 OlivaDiceCore 开关。歌曲无可下载链接（如无付费权限）会提示原因；下载上限 20 MiB，避免 QQ 将语音降级为文件，下载总等待上限约 60 秒。频道与频道私信暂不展示语音按钮，因为当前 OlivOS 对应发送链路未实现语音上传。
+
+官方依据：[消息按钮](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/msg-btn.html)、[按钮回调事件](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/interaction_create.html)、[富媒体消息](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/rich-media.html)、[群聊上传](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_files.post.html)。
 
 封面尺寸识别复用 OlivOS 已有的 Pillow 依赖，每次最多读取 256 KiB 图片头，请求超时为 5 秒。
 
@@ -132,6 +142,7 @@ MusicSearch/
 ├── __init__.py       # 插件入口
 ├── load.py           # 配置加载模块
 ├── main.py           # 核心功能模块
+├── voice.py          # 按钮回调/指令触发的音乐下载与语音发送
 └── README.md         # 说明文档
 ```
 
