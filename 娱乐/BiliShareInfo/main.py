@@ -63,6 +63,12 @@ gWbiMixinKey = None
 gWbiMixinKeyTime = 0.0
 gHttpThrottleLock = threading.Lock()
 gHttpLastRequestTime = 0.0
+# B站接口要求的设备指纹，进程内缓存，避免每个请求都去领一次。
+gBuvidCookie = ''
+gBuvidCookieTime = 0.0
+gBuvidLock = threading.Lock()
+gExtraCookieText = ''
+gExtraCookieMtime = -1.0
 gHttpBlockedContext = ContextVar('BiliShareInfo_http_blocked', default=None)
 gParseNoticeContext = ContextVar('BiliShareInfo_parse_notice', default=None)
 gApiCache = {}
@@ -92,6 +98,14 @@ HTTP_RETRY_STATUS_SET = frozenset({412, 429, 500, 502, 503, 504})
 HTTP_MAX_ATTEMPTS = 4
 HTTP_RETRY_BASE_DELAY_SECONDS = 0.45
 HTTP_MIN_REQUEST_INTERVAL_SECONDS = 0.15
+# B站自 2026-10 中旬起，对完全不带 Cookie 的接口请求一律返回 412（错误页），
+# 与请求频率无关。必须先向 finger/spi 领取 buvid3/buvid4 设备指纹，每个请求都要带上。
+BUVID_SPI_API = 'https://api.bilibili.com/x/frontend/finger/spi'
+BUVID_COOKIE_TTL_SECONDS = 6 * 3600
+BUVID_REFRESH_ON_412_LIMIT = 1
+# 可选：手工 Cookie（SESSDATA 等），写在数据目录的 cookie.json 里，
+# 用来进一步降低搜索/反查接口的风控概率，默认不需要。
+GLOBAL_COOKIE_FILE_NAME = 'cookie.json'
 # 命中一次就缓存一段时间，重复分享同一个视频不再重复触发风控。
 API_CACHE_TTL_SECONDS = 300
 API_CACHE_MAX_ENTRIES = 256
@@ -504,6 +518,14 @@ def send_parse_failure_notice(plugin_event) -> None:
     notice_list.clear()
 
 
+def describe_http_blocked() -> str:
+    """区分「真的被限流」和「接口风控拦截（412）」，别让提示语误导排查方向。"""
+    blocked_reason_list = gHttpBlockedContext.get() or []
+    if any('412' in safe_str(reason) for reason in blocked_reason_list):
+        return '被B站接口风控拦截（412）'
+    return '被B站限流'
+
+
 def build_card_failure_notice(title_hint: str) -> str:
     if is_pseudo_title(title_hint):
         card_title = ''
@@ -513,7 +535,7 @@ def build_card_failure_notice(title_hint: str) -> str:
     if has_http_blocked():
         return (
             f'B站解析失败：{title_part}没有携带BV号，'
-            f'反查时B站接口被限流，稍后再发一次即可。'
+            f'反查时{describe_http_blocked()}，稍后再发一次即可。'
         )
     return (
         f'B站解析失败：{title_part}没有携带BV号，'
@@ -531,7 +553,7 @@ def build_fetch_failure_notice(video_ref: dict[str, str]) -> str:
     else:
         target = '该链接'
     if has_http_blocked():
-        return f'B站解析失败：{target} 的信息获取被B站限流，稍后再发一次即可。'
+        return f'B站解析失败：{target} 的信息获取{describe_http_blocked()}，稍后再发一次即可。'
     return f'B站解析失败：没能获取到 {target} 的信息。'
 
 
@@ -4201,12 +4223,23 @@ def http_get_json_text(
 def open_http_with_retry(request_factory):
     """B 站风控会随机返回 412，重试可避免单次抖动让解析静默降级为错误结果。"""
     last_exception = None
+    buvid_refresh_count = 0
     for attempt in range(1, HTTP_MAX_ATTEMPTS + 1):
         throttle_http_request()
         try:
             return urllib.request.urlopen(request_factory(), timeout=HTTP_TIMEOUT)
         except Exception as exception_object:
             last_exception = exception_object
+            # 412 多半是设备指纹失效：换一条 buvid 再试，比盲目重试有效得多。
+            if (
+                is_buvid_refreshable_error(exception_object)
+                and buvid_refresh_count < BUVID_REFRESH_ON_412_LIMIT
+                and attempt < HTTP_MAX_ATTEMPTS
+            ):
+                buvid_refresh_count += 1
+                parse_log('请求返回412，重新领取buvid设备指纹后重试')
+                ensure_buvid_cookie(force_refresh=True)
+                continue
             if not is_transient_http_error(exception_object):
                 raise
             if attempt >= HTTP_MAX_ATTEMPTS:
@@ -4220,6 +4253,13 @@ def open_http_with_retry(request_factory):
             time.sleep(retry_delay)
     mark_http_blocked(describe_http_error(last_exception))
     raise last_exception
+
+
+def is_buvid_refreshable_error(exception_object: BaseException) -> bool:
+    return (
+        isinstance(exception_object, urllib.error.HTTPError)
+        and exception_object.code == 412
+    )
 
 
 def throttle_http_request() -> None:
@@ -4303,7 +4343,8 @@ def expire_api_cache() -> None:
             gApiCache.pop(cache_key, None)
 
 
-def get_http_headers() -> dict[str, str]:
+def get_base_http_headers() -> dict[str, str]:
+    """不带 Cookie 的基础请求头；领取 buvid 时必须用它，否则会递归调用自己。"""
     return {
         'User-Agent': (
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -4317,6 +4358,101 @@ def get_http_headers() -> dict[str, str]:
         'Origin': 'https://www.bilibili.com',
         'Referer': 'https://www.bilibili.com/',
     }
+
+
+def get_http_headers() -> dict[str, str]:
+    headers = get_base_http_headers()
+    cookie_text = build_request_cookie()
+    if cookie_text:
+        headers['Cookie'] = cookie_text
+    return headers
+
+
+def build_request_cookie() -> str:
+    cookie_part_list = []
+    buvid_cookie = ensure_buvid_cookie()
+    if buvid_cookie:
+        cookie_part_list.append(buvid_cookie)
+    extra_cookie = get_extra_cookie()
+    if extra_cookie:
+        cookie_part_list.append(extra_cookie)
+    return '; '.join(cookie_part_list)
+
+
+def ensure_buvid_cookie(force_refresh: bool = False) -> str:
+    """领取并缓存 buvid3/buvid4 设备指纹。
+
+    2026-10 起 B站对不带 Cookie 的接口请求直接返回 412，
+    这条指纹是普通解析能拿到数据的前提。
+    """
+    global gBuvidCookie, gBuvidCookieTime
+    with gBuvidLock:
+        if (
+            not force_refresh
+            and gBuvidCookie
+            and time.time() - gBuvidCookieTime < BUVID_COOKIE_TTL_SECONDS
+        ):
+            return gBuvidCookie
+        try:
+            request = urllib.request.Request(
+                BUVID_SPI_API,
+                headers=get_base_http_headers(),
+            )
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+                response_data = json.loads(
+                    response.read().decode('utf-8', errors='ignore')
+                )
+            buvid_data = response_data.get('data') if isinstance(response_data, dict) else None
+            if not isinstance(buvid_data, dict):
+                buvid_data = {}
+            buvid3 = safe_str(buvid_data.get('b_3', '')).strip()
+            buvid4 = safe_str(buvid_data.get('b_4', '')).strip()
+            if not buvid3:
+                parse_log(
+                    f'buvid接口未返回设备指纹 code={safe_str(response_data.get("code", ""))}'
+                )
+                return ''
+            cookie_text = f'buvid3={buvid3}'
+            if buvid4:
+                cookie_text += f'; buvid4={buvid4}'
+            gBuvidCookie = cookie_text
+            gBuvidCookieTime = time.time()
+            bili_log('已领取B站buvid设备指纹', 2)
+            return cookie_text
+        except Exception as exception_object:
+            parse_log(
+                f'buvid接口领取失败 error={type(exception_object).__name__}: '
+                f'{shorten_log_text(exception_object, 120)}'
+            )
+            return '' if force_refresh else gBuvidCookie
+
+
+def get_extra_cookie() -> str:
+    """读取数据目录下可选的 cookie.json，按修改时间缓存，避免每次请求都读盘。"""
+    global gExtraCookieText, gExtraCookieMtime
+    cookie_file = os.path.join(DATA_ROOT, GLOBAL_COOKIE_FILE_NAME)
+    try:
+        cookie_mtime = os.path.getmtime(cookie_file)
+    except OSError:
+        cookie_mtime = -1.0
+    with gBuvidLock:
+        if cookie_mtime == gExtraCookieMtime:
+            return gExtraCookieText
+    cookie_text = ''
+    if cookie_mtime >= 0:
+        try:
+            with open(cookie_file, encoding='utf-8') as cookie_handle:
+                cookie_data = json.load(cookie_handle)
+            if isinstance(cookie_data, dict):
+                cookie_text = safe_str(cookie_data.get('cookie', '')).strip()
+            elif isinstance(cookie_data, str):
+                cookie_text = cookie_data.strip()
+        except Exception:
+            cookie_text = ''
+    with gBuvidLock:
+        gExtraCookieText = cookie_text
+        gExtraCookieMtime = cookie_mtime
+    return cookie_text
 
 
 def format_video_reply(video_info: dict[str, Any]) -> str:
