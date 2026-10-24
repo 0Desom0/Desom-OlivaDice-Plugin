@@ -377,11 +377,248 @@ def test_core_markdown_success_and_plain_fallback_do_not_duplicate(runtime, succ
         runtime.core.onedice.RD('1d6').roll()
         runtime.core.msgReply.replyMsg(plugin_event, '[CQ:at,qq=1] result')
     runtime.proc.run(event, handler)
-    assert captures[0].startswith(f"『{runtime.sn.get('1', 'qq', '100')}』\n\n")
+    hud = runtime.sn.get('1', 'qq', '100')
     if success:
+        assert captures[0] == f'> {hud}\n\n<@1> result'
+        assert '『' not in captures[0]
         assert not event.sent
     else:
+        assert event.sent[0][2].startswith(f'『{hud}』\n\n')
         assert event.sent[0][2].count('Alice HP10/12') == 1
+        assert '<font' not in event.sent[0][2]
+
+
+def _markdown_event(runtime, command='.r 1d6', success=True, modern=False, raises=False,
+                    fallback=None):
+    runtime.card()
+    event = runtime.Event(command)
+    event.platform['sdk'] = 'qqGuildv2_link'
+    event.data.extend = {'flag_from_qq': True}
+    calls = []
+
+    class LegacyInde:
+        def hasAPI(self, name):
+            return name == 'create_markdown_message'
+
+        def create_markdown_message(self, chat_type, chat_id, markdown, msg_id=None,
+                                    quote_msg_id=None, force_active=False):
+            calls.append({
+                'chat_type': chat_type, 'chat_id': chat_id, 'content': markdown['content'],
+                'msg_id': msg_id, 'quote_msg_id': quote_msg_id, 'force_active': force_active,
+            })
+            if raises:
+                raise RuntimeError('send error')
+            return {'active': success, 'data': {}}
+
+    class ModernInde(LegacyInde):
+        def create_markdown_message(self, chat_type, chat_id, markdown, msg_id=None, event_id=None,
+                                    keyboard=None, quote_msg_id=None, local_images=None,
+                                    force_active=False):
+            calls.append({
+                'chat_type': chat_type, 'chat_id': chat_id, 'content': markdown['content'],
+                'msg_id': msg_id, 'quote_msg_id': quote_msg_id, 'force_active': force_active,
+                'local_images': local_images,
+            })
+            if raises:
+                raise RuntimeError('send error')
+            data = {} if fallback is None else {'markdown_fallback': fallback}
+            return {'active': success, 'data': data}
+
+    event.indeAPI = ModernInde() if modern else LegacyInde()
+    return event, calls
+
+
+def _modern_mixed_sdk(runtime):
+    def send_qq_msg(target_event, chat_id, message, reply_msg_id=None, quote_msg_id=None,
+                    event_id=None, force_active=False, allow_markdown=True):
+        return None
+    action = type('Action', (), {
+        'send_qq_msg': staticmethod(send_qq_msg),
+        'markdown_tag': type('Tags', (), {'at_para': staticmethod(lambda para, flag_qq=True: '')}),
+    })
+    runtime.olivos.qqGuildv2SDK = type('SDK', (), {'event_action': action})
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_reply_prefers_markdown_with_small_red_hud(runtime):
+    event, calls = _markdown_event(runtime)
+    runtime.proc.run(event)
+    hud = runtime.sn.get('1', 'qq', '100')
+    assert not event.sent
+    assert len(calls) == 1
+    content = calls[0]['content']
+    assert content.startswith(f'> {hud}\n\n')
+    assert '『' not in content
+    assert content.count('\n\n') == 1
+    assert calls[0]['chat_type'] == 'qq_group' and calls[0]['chat_id'] == '100'
+    assert calls[0]['force_active'] is False
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_hud_uses_block_quote_instead_of_unsupported_font_tag(runtime):
+    from StatusHud import markdown as hud_markdown
+    # 手机端 QQ 的 Markdown 只认标准语法，HTML 的 <font> 会原样显示；
+    # 状态栏因此改用块引用（QQ 文档「块引用」一节明确支持）。
+    assert hud_markdown.HUD_PREFIX == '> '
+    assert not hasattr(hud_markdown, 'HUD_OPEN')
+    assert hud_markdown._hud_block(['茶叶 HP10/10']) == '> 茶叶 HP10/10'
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_hud_content_escapes_angle_brackets_only(runtime):
+    from StatusHud import markdown as hud_markdown
+    # 尖括号要转义，避免被当成 HTML；& 保持原样，防止手机端显示 &amp;。
+    assert hud_markdown._hud_block(['A<B>&C']) == '> A&lt;B&gt;&C'
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_markdown_exception_falls_back_to_bracketed_plain_text(runtime):
+    event, calls = _markdown_event(runtime, raises=True)
+    runtime.proc.run(event)
+    hud = runtime.sn.get('1', 'qq', '100')
+    assert calls
+    assert event.sent and event.sent[0][2].startswith(f'『{hud}』\n\n')
+    assert event.sent[0][2].count('Alice HP10/12') == 1
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_markdown_passes_reply_quote(runtime):
+    event, calls = _markdown_event(runtime)
+    def handler(plugin_event, Proc):
+        runtime.core.onedice.RD('1d6').roll()
+        message = runtime.olivos.messageAPI.Message_templet('olivos_para', [
+            runtime.olivos.messageAPI.PARA.reply('m-1'),
+            runtime.olivos.messageAPI.PARA.text('结果'),
+        ])
+        plugin_event.reply(message)
+    runtime.proc.run(event, handler, namespace='Custom')
+    assert not event.sent
+    assert calls[0]['quote_msg_id'] == 'm-1'
+    assert calls[0]['content'].endswith('\n结果')
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_markdown_reply_lets_adapter_resolve_passive_id(runtime):
+    event, calls = _markdown_event(runtime)
+    event.data.extend['reply_msg_id'] = 'msg-1'
+    runtime.proc.run(event)
+    assert calls[0]['force_active'] is False
+    assert calls[0]['msg_id'] is None
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_markdown_failure_falls_back_to_bracketed_plain_text(runtime):
+    event, calls = _markdown_event(runtime, success=False)
+    runtime.proc.run(event)
+    hud = runtime.sn.get('1', 'qq', '100')
+    assert calls
+    assert event.sent and event.sent[0][2].startswith(f'『{hud}』\n\n')
+    assert event.sent[0][2].count('Alice HP10/12') == 1
+    assert '<font' not in event.sent[0][2]
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_old_olivos_without_markdown_api_keeps_plain_text(runtime):
+    runtime.card()
+    event = runtime.Event('.r 1d6')
+    event.platform['sdk'] = 'qqGuildv2_link'
+    event.data.extend = {'flag_from_qq': True}
+    event.indeAPI = None
+    runtime.proc.run(event)
+    assert event.sent and event.sent[0][2].startswith('『Alice HP10/12')
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_image_message_without_mixed_markdown_stays_plain(runtime):
+    event, calls = _markdown_event(runtime)
+    def handler(plugin_event, Proc):
+        runtime.core.onedice.RD('1d6').roll()
+        message = runtime.olivos.messageAPI.Message_templet('olivos_para', [
+            runtime.olivos.messageAPI.PARA.text('图片结果'),
+            runtime.olivos.messageAPI.PARA.image('a.png'),
+        ])
+        plugin_event.reply(message)
+    runtime.proc.run(event, handler, namespace='Custom')
+    assert calls == []
+    assert event.sent[0][2].startswith('『Alice HP10/12')
+    assert '[CQ:image,file=a.png' in event.sent[0][2]
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_image_message_uses_local_images_when_mixed_markdown_supported(runtime):
+    event, calls = _markdown_event(runtime, modern=True)
+    _modern_mixed_sdk(runtime)
+    def handler(plugin_event, Proc):
+        runtime.core.onedice.RD('1d6').roll()
+        message = runtime.olivos.messageAPI.Message_templet('olivos_para', [
+            runtime.olivos.messageAPI.PARA.text('图片结果'),
+            runtime.olivos.messageAPI.PARA.image('a.png'),
+        ])
+        plugin_event.reply(message)
+    runtime.proc.run(event, handler, namespace='Custom')
+    assert not event.sent
+    assert '{{hud_image_0}}' in calls[0]['content']
+    # local_images 的值必须是资源字符串：传消息段对象会被 OlivOS str() 成字典字面量，
+    # 随后当成不存在的本地文件读取，图片必然上传失败。
+    assert calls[0]['local_images'] == {'hud_image_0': 'a.png'}
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_image_markdown_reports_platform_fallback_without_resending(runtime):
+    reason = '图片下载失败: HTTP 404'
+    event, calls = _markdown_event(runtime, modern=True, fallback=reason)
+    _modern_mixed_sdk(runtime)
+    def handler(plugin_event, Proc):
+        runtime.core.onedice.RD('1d6').roll()
+        message = runtime.olivos.messageAPI.Message_templet('olivos_para', [
+            runtime.olivos.messageAPI.PARA.text('图片结果'),
+            runtime.olivos.messageAPI.PARA.image('a.png'),
+        ])
+        plugin_event.reply(message)
+    runtime.proc.run(event, handler, namespace='Custom')
+    # 平台已退回普通图文发出，这里不能再补发第二条。
+    assert not event.sent
+    messages = [entry[0][1] for entry in runtime.proc.logs if len(entry[0]) > 1]
+    assert any('退回普通图文' in str(item) and reason in str(item) for item in messages)
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_image_markdown_skips_when_segment_has_no_resource(runtime):
+    event, calls = _markdown_event(runtime, modern=True)
+    _modern_mixed_sdk(runtime)
+    def handler(plugin_event, Proc):
+        runtime.core.onedice.RD('1d6').roll()
+        image = runtime.olivos.messageAPI.PARA.image('a.png')
+        image.data['file'] = None
+        message = runtime.olivos.messageAPI.Message_templet('olivos_para', [
+            runtime.olivos.messageAPI.PARA.text('图片结果'),
+            image,
+        ])
+        plugin_event.reply(message)
+    runtime.proc.run(event, handler, namespace='Custom')
+    assert calls == []
+    assert event.sent[0][2].startswith('『Alice HP10/12')
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_guild_channel_keeps_plain_text(runtime):
+    event, calls = _markdown_event(runtime, modern=True)
+    event.data.extend = {'flag_from_qq': False}
+    runtime.proc.run(event)
+    assert calls == []
+    assert event.sent and event.sent[0][2].startswith('『Alice HP10/12')
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_active_send_uses_forced_markdown(runtime):
+    event, calls = _markdown_event(runtime)
+    def handler(plugin_event, Proc):
+        runtime.core.onedice.RD('1d6').roll()
+        plugin_event.send('group', '100', '结果')
+    runtime.proc.run(event, handler, namespace='Custom')
+    assert not event.sent
+    assert calls[0]['force_active'] is True
+    assert calls[0]['content'].startswith('> ')
 
 
 @pytest.mark.usefixtures('hud_enabled')

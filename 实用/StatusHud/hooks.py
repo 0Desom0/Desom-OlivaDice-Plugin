@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
 
+from . import markdown
 from .commands import is_command
 
 _MISSING = object()
@@ -60,6 +61,7 @@ class HookManager:
         self.current = ContextVar('StatusHud.invocation', default=None)
         self.roll_depth = ContextVar('StatusHud.roll_depth', default=0)
         self.suppress = ContextVar('StatusHud.suppress_notice', default=False)
+        self.markdown_blocked = ContextVar('StatusHud.markdown_blocked', default=False)
 
     def log(self, message, error=None):
         # 不记录原消息、sn、人物卡内容或异常中可能包含的私有数据。
@@ -352,11 +354,15 @@ class HookManager:
 
         self._patch(self.core.msgReply, 'replyMsg', reply)
 
-    def _prepare(self, event, message, route, string_channel=None):
-        invocation = self._context(event)
-        if invocation is None or self.suppress.get():
-            return message
-        state = invocation.state
+    def _censor(self, bot_hash, text):
+        try:
+            return self.core.censorAPI.doCensorReplaceOlivOSSafe(botHash=bot_hash, msg=str(text))
+        except Exception as error:
+            self.log('敏感词检测失败，保留原文本', error)
+            return str(text)
+
+    def _hud_lines(self, state, route):
+        """选出本接收位置尚未显示的 HUD，返回 (行列表, 目标列表)。"""
         with state.lock:
             targets = dict.fromkeys(target for _, target in state.rolls.values())
             sent = state.sent.setdefault(route, set())
@@ -373,11 +379,33 @@ class HookManager:
                         selected.append(target)
                 except Exception as error:
                     self.log('读取 HUD 失败，保留原结果', error)
-            if not lines:
+        return lines, selected
+
+    def _reserve(self, state, route, selected):
+        with state.lock:
+            sent = state.sent.setdefault(route, set())
+            if any(target in sent for target in selected):
+                return False
+            sent.update(selected)
+            return True
+
+    def _release(self, state, route, selected):
+        with state.lock:
+            state.sent.setdefault(route, set()).difference_update(selected)
+
+    def _prepare(self, event, message, route, string_channel=None):
+        invocation = self._context(event)
+        if invocation is None or self.suppress.get():
+            return message
+        state = invocation.state
+        lines, selected = self._hud_lines(state, route)
+        if not lines:
+            return message
+        with state.lock:
+            if any(target in state.sent.setdefault(route, set()) for target in selected):
                 return message
             try:
-                hud = '\n'.join(lines)
-                hud = self.core.censorAPI.doCensorReplaceOlivOSSafe(botHash=state.bot_hash, msg=hud)
+                hud = self._censor(state.bot_hash, '\n'.join(lines))
                 if not hud.strip():
                     return message
                 if isinstance(message, self.olivos.messageAPI.Message_templet):
@@ -395,11 +423,49 @@ class HookManager:
                 result = self.olivos.messageAPI.Message_templet(
                     'olivos_para', [self.olivos.messageAPI.PARA.text(hud), *original.data],
                 )
-                sent.update(selected)
+                state.sent.setdefault(route, set()).update(selected)
                 return result
             except Exception as error:
                 self.log('拼接 HUD 失败，保留原结果', error)
                 return message
+
+    def _try_markdown(self, event, message, route, context, active=False):
+        """优先用 Markdown 主动发送；返回发送结果，不适用或失败时返回 None。"""
+        if context is None or self.markdown_blocked.get() or not markdown.api_available(event):
+            return None
+        invocation = self._context(event)
+        if invocation is None or self.suppress.get():
+            return None
+        state = invocation.state
+        lines, selected = self._hud_lines(state, route)
+        if not lines:
+            return None
+        try:
+            content = markdown.build(self.olivos, event, lines, message)
+            content.text = self._censor(state.bot_hash, content.text)
+        except markdown.NotApplicable as error:
+            self.log(f'Markdown 不适用，保留原方案（{error}）')
+            return None
+        except Exception as error:
+            self.log('构造 Markdown 失败，保留原方案', error)
+            return None
+        if not content.text.strip():
+            return None
+        if not self._reserve(state, route, selected):
+            return None
+        try:
+            result = markdown.send(event, context, content, active=active)
+        except Exception as error:
+            self.log('Markdown 发送失败，回退原方案', error)
+            result = None
+        if result is None:
+            self._release(state, route, selected)
+            return None
+        reason = markdown.degraded(result)
+        if reason is not None:
+            # 消息已由平台退回普通图文发出，不能再补发一次，只留排查线索。
+            self.log(f'图文 Markdown 素材上传失败，OlivOS 已退回普通图文（{reason}）')
+        return result
 
     @staticmethod
     def _reply_route(event):
@@ -408,13 +474,21 @@ class HookManager:
             return 'group', str(event.data.group_id), str(host_id)
         return 'private', str(event.data.user_id), str(host_id)
 
-    def _deliver(self, original, event, message, route, args, kwargs):
+    def _deliver(self, dispatch, event, message, route, context=None, active=False):
+        if self.active and context is not None:
+            try:
+                result = self._try_markdown(event, message, route, context, active=active)
+            except Exception as error:
+                self.log('Markdown 通路接入失败，保留原方案', error)
+                result = None
+            if result is not None:
+                return result
         try:
             decorated = self._prepare(event, message, route) if self.active else message
         except Exception as error:
             self.log('HUD 发送接入失败，保留原结果', error)
             decorated = message
-        return original(event, decorated, *args, **kwargs)
+        return dispatch(decorated)
 
     def _install_outputs(self):
         event_class = self.olivos.API.Event
@@ -428,9 +502,13 @@ class HookManager:
                 return original_reply(event, message, *args, **kwargs)
             try:
                 route = self._reply_route(event)
+                context = markdown.chat_context(event)
             except (AttributeError, KeyError):
                 return original_reply(event, message, *args, **kwargs)
-            return self._deliver(original_reply, event, message, route, args, kwargs)
+            return self._deliver(
+                lambda decorated: original_reply(event, decorated, *args, **kwargs),
+                event, message, route, context,
+            )
 
         @wraps(original_send)
         def send(event, send_type, target_id, message, *args, **kwargs):
@@ -439,29 +517,92 @@ class HookManager:
                 return original_send(event, send_type, target_id, message, *args, **kwargs)
             host_id = args[0] if args else kwargs.get('host_id')
             route = send_type, str(target_id), str(host_id)
-            try:
-                decorated = self._prepare(event, message, route)
-            except Exception as error:
-                self.log('HUD 主动发送接入失败，保留原结果', error)
-                decorated = message
-            return original_send(event, send_type, target_id, decorated, *args, **kwargs)
+            context = markdown.send_context(event, send_type, target_id, host_id)
+            return self._deliver(
+                lambda decorated: original_send(event, send_type, target_id, decorated, *args, **kwargs),
+                event, message, route, context, active=True,
+            )
 
         self._patch(event_class, 'reply', reply)
         self._patch(event_class, 'send', send)
 
+    def _markdown_core(self, event, message):
+        """Core 的 qqGuildv2 Markdown 通路；返回 (状态, 载荷)。"""
+        invocation = self._context(event)
+        if invocation is None or self.suppress.get():
+            return 'skip', None
+        state = invocation.state
+        route = self._reply_route(event)
+        lines, selected = self._hud_lines(state, route)
+        if not lines:
+            return 'skip', None
+        context = markdown.chat_context(event)
+        if context is None or not markdown.api_available(event):
+            # 频道或旧版 OlivOS：沿用既有『』格式注入 Core 的 Markdown 内容。
+            return 'delegate', self._delegate_core(event, message, route)
+        try:
+            text = message if isinstance(message, str) else str(message)
+            content, media = markdown.build_core(
+                self.olivos, event, lines, self._censor(state.bot_hash, text),
+            )
+        except markdown.NotApplicable as error:
+            self.log(f'Markdown 不适用，沿用原格式（{error}）')
+            return 'delegate', self._delegate_core(event, message, route)
+        except Exception as error:
+            self.log('构造 Markdown 失败，沿用原格式', error)
+            return 'delegate', self._delegate_core(event, message, route)
+        if not self._reserve(state, route, selected):
+            return 'skip', None
+        try:
+            result = markdown.send(event, context, content)
+        except Exception as error:
+            self.log('Markdown 发送失败，回退现有方案', error)
+            result = None
+        if result is None:
+            self._release(state, route, selected)
+            return 'fallback', None
+        if media is not None:
+            try:
+                # 与 Core 原实现一致：Markdown 成功后，图片等媒体单独走普通消息。
+                media_message = media.get('old_string')
+                self.core.msgReply.pluginReply(event, media_message)
+            except Exception as error:
+                self.log('Markdown 媒体段补发失败', error)
+        return 'sent', result
+
+    def _delegate_core(self, event, message, route):
+        decorated = self._prepare(event, message, route, 'old_string')
+        if isinstance(decorated, self.olivos.messageAPI.Message_templet):
+            return decorated.get('old_string')
+        return None
+
     def _install_markdown(self):
-        # 此通路直接调用 indeAPI，必须在 Core 的 Markdown 入口补充。
+        # 此通路直接调用 indeAPI，必须在 Core 的 Markdown 入口接管。
         original = getattr(self.core.msgReply, '_replyMsgMarkdownQQGuildv2', None)
         if original is None:
             return
 
         @wraps(original)
-        def markdown(plugin_event, message):
-            decorated = message
-            if self.active:
-                decorated = self._prepare(plugin_event, message, self._reply_route(plugin_event), 'old_string')
-            if isinstance(decorated, self.olivos.messageAPI.Message_templet):
-                decorated = decorated.get('old_string')
-            return original(plugin_event, decorated)
+        def markdown_reply(plugin_event, message):
+            if not self.active:
+                return original(plugin_event, message)
+            try:
+                status, payload = self._markdown_core(plugin_event, message)
+            except Exception as error:
+                self.log('Core Markdown 通路处理失败，回退现有方案', error)
+                status, payload = 'fallback', None
+            if status == 'sent':
+                return payload
+            if status == 'delegate' and payload is not None:
+                return original(plugin_event, payload)
+            if status == 'fallback':
+                token = self.markdown_blocked.set(True)
+                try:
+                    # 普通文本回退：由 Event.reply 注入『』与双换行，不保留 Markdown 样式。
+                    text = message if isinstance(message, str) else str(message)
+                    return self.core.msgReply.pluginReply(plugin_event, text)
+                finally:
+                    self.markdown_blocked.reset(token)
+            return original(plugin_event, message)
 
-        self._patch(self.core.msgReply, '_replyMsgMarkdownQQGuildv2', markdown)
+        self._patch(self.core.msgReply, '_replyMsgMarkdownQQGuildv2', markdown_reply)

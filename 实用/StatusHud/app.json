@@ -2,10 +2,10 @@
     "name": "StatusHud",
     "author": "Desom-fu",
     "namespace": "StatusHud",
-    "info": "为调用 OneDice 的指令结果添加当前人物卡状态。",
+    "info": "为调用 OneDice 的指令结果添加当前人物卡状态；QQ 官方机器人优先使用 Markdown 引用样式显示。",
     "priority": 19000,
-    "svn": 1,
-    "version": "1.0.0",
+    "svn": 3,
+    "version": "1.1.0",
     "compatible_svn": 190,
     "message_mode": "olivos_string",
     "support": [
