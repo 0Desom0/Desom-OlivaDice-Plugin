@@ -71,6 +71,8 @@ gExtraCookieText = ''
 gExtraCookieMtime = -1.0
 gHttpBlockedContext = ContextVar('BiliShareInfo_http_blocked', default=None)
 gParseNoticeContext = ContextVar('BiliShareInfo_parse_notice', default=None)
+# 本消息内已解析过的卡片指纹 -> ref 列表，用来避免同一张卡片被两个来源各查一遍。
+gCardParseResultContext = ContextVar('BiliShareInfo_card_parse_result', default=None)
 gApiCache = {}
 gApiCacheLock = threading.RLock()
 
@@ -114,6 +116,15 @@ CARD_TITLE_MATCH_MIN_RATIO = 0.72
 CARD_TITLE_MATCH_MIN_ORDERED_COVERAGE = 0.8
 CARD_TITLE_MATCH_MIN_PREFIX_LENGTH = 6
 PARSE_FAILURE_NOTICE_LIMIT = 3
+# 同一条消息里，同一张分享卡片可能同时出现在「消息内 JSON 卡片」和
+# 「QQ 官方 ARK 卡片」两处。两次独立反查会因为 B 站接口抖动得出不同结论
+# （一次失败、一次成功），导致先回正确的视频、再补一条「解析失败」。
+# 因此按卡片指纹在同一条消息内只解析一次，并在成功后撤销失败提示。
+CARD_SEARCH_RETRY_LIMIT = 1
+CARD_SEARCH_RETRY_DELAY_SECONDS = 1.2
+# 同一张卡片的两个来源各给一次机会：第一条反查失败时允许第二条再试，
+# 但成功那条会撤销失败提示，所以用户只会收到一条回复。
+CARD_PARSE_ATTEMPT_LIMIT = 2
 TITLE_TRAILING_ELLIPSIS_PATTERN = re.compile(r'(?:\.{2,}|。{2,}|…+)\s*$')
 WBI_MIXIN_KEY_TABLE = (
     46, 47, 18, 2, 53, 8, 23, 32,
@@ -406,6 +417,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
     debug_token = None
     blocked_token = None
     notice_token = None
+    card_token = None
     try:
         message = safe_str(plugin_event.data.message)
         command_message = parse_command_message(plugin_event, message)
@@ -429,7 +441,8 @@ def handle_message(plugin_event, is_group: bool) -> None:
 
         debug_token = gParseDebugContext.set(is_parse_debug_enabled(plugin_event))
         blocked_token = gHttpBlockedContext.set([])
-        notice_token = gParseNoticeContext.set([])
+        notice_token = gParseNoticeContext.set({})
+        card_token = gCardParseResultContext.set({})
         parse_log(
             f'开始处理候选消息 group={is_group} '
             f'group_key={get_group_key(plugin_event)} '
@@ -462,7 +475,10 @@ def handle_message(plugin_event, is_group: bool) -> None:
                 video_info = fetch_video_info(video_ref)
             if not video_info:
                 parse_log(f'媒体信息获取失败 ref={format_video_ref(video_ref)}')
-                add_parse_notice(build_fetch_failure_notice(video_ref))
+                add_parse_notice(
+                    build_fetch_failure_notice(video_ref),
+                    build_ref_notice_key(video_ref),
+                )
                 continue
             video_info_list.append(video_info)
 
@@ -485,37 +501,64 @@ def handle_message(plugin_event, is_group: bool) -> None:
             gHttpBlockedContext.reset(blocked_token)
         if notice_token is not None:
             gParseNoticeContext.reset(notice_token)
+        if card_token is not None:
+            gCardParseResultContext.reset(card_token)
 
 
-def add_parse_notice(notice_text: str) -> None:
-    """登记一条待回复的解析失败提示，避免同一条消息重复提示。"""
+def add_parse_notice(notice_text: str, notice_key: str = '') -> None:
+    """登记一条待回复的解析失败提示。
+
+    用 key 而不是纯文本去重：同一张卡片先失败后成功时，可以按 key 把这条
+    提示撤销掉，避免「已经回了正确视频，又补一句解析失败」。
+    """
     notice_text = safe_str(notice_text).strip()
     if not notice_text:
         return
-    notice_list = gParseNoticeContext.get()
-    if notice_list is None:
+    notice_dict = gParseNoticeContext.get()
+    if notice_dict is None:
         return
-    if notice_text not in notice_list:
-        notice_list.append(notice_text)
+    notice_key = safe_str(notice_key).strip() or notice_text
+    notice_dict.setdefault(notice_key, notice_text)
+
+
+def discard_parse_notice(notice_key: str) -> None:
+    """卡片最终解析成功时，撤掉它自己之前登记的失败提示。"""
+    notice_dict = gParseNoticeContext.get()
+    if not notice_dict:
+        return
+    notice_key = safe_str(notice_key).strip()
+    if notice_dict.pop(notice_key, None) is not None:
+        parse_log(f'卡片已成功解析，撤销失败提示 key={notice_key}')
+
+
+def build_card_notice_key(card_key: str) -> str:
+    return f'card|{safe_str(card_key).strip()}'
+
+
+def build_ref_notice_key(video_ref: dict[str, str]) -> str:
+    return f'ref|{get_video_ref_key(video_ref)}'
 
 
 def send_parse_failure_notice(plugin_event) -> None:
     """把本次解析累积的失败原因回复给用户，而不是静默什么都不做。"""
-    notice_list = gParseNoticeContext.get()
-    if not notice_list:
+    notice_dict = gParseNoticeContext.get()
+    if not notice_dict:
         return
-    del notice_list[PARSE_FAILURE_NOTICE_LIMIT:]
+    notice_list = list(notice_dict.values())[:PARSE_FAILURE_NOTICE_LIMIT]
+    if not notice_list:
+        notice_dict.clear()
+        return
 
     dedupe_key = build_notice_dedupe_key(plugin_event, notice_list)
     if is_recent_duplicate(dedupe_key):
         parse_log(f'跳过近期重复的解析失败提示 count={len(notice_list)}')
-        notice_list.clear()
+        notice_dict.clear()
         return
 
     reply_message(plugin_event, '\n'.join(notice_list))
     mark_recent_key(dedupe_key)
     bili_log(f'已回复解析失败提示 count={len(notice_list)}', 2)
-    notice_list.clear()
+    notice_dict.clear()
 
 
 def describe_http_blocked() -> str:
@@ -1536,6 +1579,52 @@ def extract_video_refs_from_message(
     return video_ref_list
 
 
+def build_card_parse_key(card_data: dict[str, Any]) -> str:
+    """同一张分享卡片的指纹：优先用标题，其次预览图，最后整卡内容。
+
+    一张卡片在 QQ 侧会同时以「消息内 OP:json」和「官方 ARK 卡片」两种形态出现，
+    标题完全一致；用它做 key 就能认出这是同一张卡，只反查一次。
+    """
+    title_hint = get_title_hint(card_data)
+    normalized_title = normalize_search_match_text(clean_search_keyword(title_hint))
+    if normalized_title:
+        return f'title:{normalized_title}'
+    preview_url_list = extract_preview_image_urls(card_data)
+    if preview_url_list:
+        return 'preview:' + hashlib.md5(
+            safe_str(preview_url_list[0]).encode('utf-8')
+        ).hexdigest()[:16]
+    try:
+        raw_text = json.dumps(card_data, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        raw_text = str(card_data)
+    return 'raw:' + hashlib.md5(raw_text.encode('utf-8')).hexdigest()[:16]
+
+
+def get_card_parse_record(card_key: str) -> dict[str, Any] | None:
+    card_result_map = gCardParseResultContext.get()
+    if card_result_map is None:
+        return None
+    record = card_result_map.get(card_key)
+    return record if isinstance(record, dict) else None
+
+
+def store_card_parse_result(card_key: str, ref_list: list[dict[str, str]]) -> None:
+    """记住这张卡片的解析结论；一旦确认了视频，就撤销它自己的失败提示。"""
+    card_result_map = gCardParseResultContext.get()
+    if card_result_map is not None:
+        record = get_card_parse_record(card_key) or {}
+        attempts = record.get('attempts', 0)
+        if not isinstance(attempts, int):
+            attempts = 0
+        card_result_map[card_key] = {
+            'refs': list(ref_list),
+            'attempts': attempts + 1,
+        }
+    if ref_list:
+        discard_parse_notice(build_card_notice_key(card_key))
+
+
 def add_video_refs_from_card(
     card_data: dict[str, Any],
     video_ref_list: list[dict[str, str]],
@@ -1553,6 +1642,34 @@ def add_video_refs_from_card(
     if not is_bili_card:
         return
 
+    card_key = build_card_parse_key(card_data)
+    card_record = get_card_parse_record(card_key)
+    if card_record is not None:
+        cached_ref_list = card_record.get('refs')
+        if not isinstance(cached_ref_list, list):
+            cached_ref_list = []
+        cached_attempts = card_record.get('attempts', 0)
+        if not isinstance(cached_attempts, int):
+            cached_attempts = 0
+        if cached_ref_list:
+            parse_log(
+                f'{card_label} 同一张卡片本消息已确认视频，跳过重复反查 key={card_key} '
+                f'cached={format_video_ref_list(cached_ref_list)}'
+            )
+            for cached_ref in cached_ref_list:
+                add_video_ref(video_ref_list, seen_key_set, cached_ref)
+            return
+        if cached_attempts >= CARD_PARSE_ATTEMPT_LIMIT:
+            parse_log(
+                f'{card_label} 同一张卡片本消息已反查 {cached_attempts} 次仍未确认视频，'
+                f'不再重复请求 key={card_key}'
+            )
+            return
+        parse_log(
+            f'{card_label} 同一张卡片上次未确认视频，改由本次来源再试一次 '
+            f'attempt={cached_attempts + 1}/{CARD_PARSE_ATTEMPT_LIMIT} key={card_key}'
+        )
+
     card_url_list = extract_urls_from_card(card_data)
     parse_log(f'{card_label} URL count={len(card_url_list)} urls={format_log_list(card_url_list, 8)}')
 
@@ -1561,6 +1678,7 @@ def add_video_refs_from_card(
         parse_log(f'{card_label} 识别为直播卡片 refs={format_video_ref_list(live_ref_list)}')
         for live_ref in live_ref_list:
             add_video_ref(video_ref_list, seen_key_set, live_ref)
+        store_card_parse_result(card_key, live_ref_list)
         return
 
     card_video_ref_list = find_video_refs(card_data, url_ref_cache)
@@ -1571,10 +1689,12 @@ def add_video_refs_from_card(
     if card_video_ref_list or video_ref_list:
         if not card_video_ref_list:
             parse_log(f'{card_label} 消息中已有视频引用，跳过卡片标题搜索')
+        store_card_parse_result(card_key, card_video_ref_list)
         return
 
     if not allow_title_search:
         parse_log(f'{card_label} 未开启视频标题搜索')
+        store_card_parse_result(card_key, [])
         return
 
     title_hint = get_title_hint(card_data)
@@ -1582,6 +1702,7 @@ def add_video_refs_from_card(
     if bgm_ref:
         parse_log(f'{card_label} 命中剧集/番剧卡片 ref={format_video_ref(bgm_ref)}')
         add_video_ref(video_ref_list, seen_key_set, bgm_ref)
+        store_card_parse_result(card_key, [bgm_ref])
         return
 
     parse_log(
@@ -1598,13 +1719,19 @@ def add_video_refs_from_card(
         f'http_blocked={format_http_blocked_log()}'
     )
     if not video_ref:
-        add_parse_notice(build_card_failure_notice(title_hint))
+        add_parse_notice(
+            build_card_failure_notice(title_hint),
+            build_card_notice_key(card_key),
+        )
         bili_log(
             f'小程序卡片无法确认视频 blocked={has_http_blocked()} '
             f'title={shorten_text(clean_search_keyword(title_hint), 60)}',
             2,
         )
+        store_card_parse_result(card_key, [])
+        return
     add_video_ref(video_ref_list, seen_key_set, video_ref)
+    store_card_parse_result(card_key, [video_ref])
 
 
 def find_video_refs(
@@ -2094,6 +2221,7 @@ def search_video_by_card_comparison(
     card_data: dict[str, Any],
     title_hint: str,
     preview_ocr_enable: bool = True,
+    retry_count: int = 0,
 ) -> dict[str, str] | None:
     """并行获取 OCR 元数据与标题候选，再逐条交叉评分。"""
     is_pseudo = is_pseudo_title(title_hint)
@@ -2252,11 +2380,27 @@ def search_video_by_card_comparison(
             if ocr_candidate:
                 title_candidate_list.append(ocr_candidate)
 
-    return choose_card_search_result(
+    chosen_ref = choose_card_search_result(
         effective_title,
         preview_metadata,
         title_candidate_list,
     )
+    if chosen_ref is None and retry_count < CARD_SEARCH_RETRY_LIMIT:
+        # 标题反查全指望 B 站搜索接口，风控时它会返回 code=0 但结果为空，
+        # 属于典型抖动。退避后重来一次，比直接回「没找到」靠谱得多。
+        retry_delay = CARD_SEARCH_RETRY_DELAY_SECONDS + random.uniform(0, 0.5)
+        parse_log(
+            f'卡片反查未确认视频，{retry_delay:.2f}s 后重试一次 '
+            f'attempt={retry_count + 1}/{CARD_SEARCH_RETRY_LIMIT}'
+        )
+        time.sleep(retry_delay)
+        return search_video_by_card_comparison(
+            card_data,
+            title_hint,
+            preview_ocr_enable=preview_ocr_enable,
+            retry_count=retry_count + 1,
+        )
+    return chosen_ref
 
 
 def get_card_search_future_result(future, label: str):

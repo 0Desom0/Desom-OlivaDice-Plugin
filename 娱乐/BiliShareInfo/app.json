@@ -5,7 +5,7 @@
     "info" : "自动解析B站视频、小程序和直播间链接并回复详细信息",
     "priority" : 30000,
     "svn" : 17,
-    "version" : "1.1.7",
+    "version" : "1.1.8",
     "compatible_svn" : 190,
     "message_mode" : "olivos_string",
     "support" : [
