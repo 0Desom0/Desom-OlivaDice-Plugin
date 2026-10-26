@@ -125,6 +125,8 @@ CARD_SEARCH_RETRY_DELAY_SECONDS = 1.2
 # 同一张卡片的两个来源各给一次机会：第一条反查失败时允许第二条再试，
 # 但成功那条会撤销失败提示，所以用户只会收到一条回复。
 CARD_PARSE_ATTEMPT_LIMIT = 2
+# 标题归一化后不超过这个长度就算「短标题」：同名视频太多，只靠标题猜必然出错。
+CARD_AMBIGUOUS_TITLE_MAX_LENGTH = 4
 TITLE_TRAILING_ELLIPSIS_PATTERN = re.compile(r'(?:\.{2,}|。{2,}|…+)\s*$')
 WBI_MIXIN_KEY_TABLE = (
     46, 47, 18, 2, 53, 8, 23, 32,
@@ -2497,7 +2499,24 @@ def choose_card_search_result(
                 parse_log(
                     f'卡片同名候选OCR元数据严重冲突(best_score={best_metadata_score})，跳过盲选'
                 )
+                # 冲突到这个程度说明同名候选跟卡片不是同一条视频。短标题（如「艹」）
+                # 谁都能拿满分，退回纯标题打分必然选错，这里直接放弃。
+                if len(normalize_search_match_text(title_hint)) <= CARD_AMBIGUOUS_TITLE_MAX_LENGTH:
+                    parse_log(
+                        f'标题过短且OCR元数据冲突，放弃同名候选 '
+                        f'title={shorten_log_text(title_hint, 40)}'
+                    )
+                    return None
         else:
+            if (
+                len(exact_candidate_list) > 1
+                and len(normalize_search_match_text(title_hint)) <= CARD_AMBIGUOUS_TITLE_MAX_LENGTH
+            ):
+                parse_log(
+                    f'同名候选过多且标题过短，无法确认是哪一个 '
+                    f'count={len(exact_candidate_list)} title={shorten_log_text(title_hint, 40)}'
+                )
+                return None
             selected_ref, selected_candidate = random.choice(exact_candidate_list)
             parse_log(
                 f'卡片完整标题匹配随机选择 count={len(exact_candidate_list)} '
@@ -2997,6 +3016,51 @@ def format_preview_stat_log(metadata: dict[str, Any]) -> str:
     ) or 'none'
 
 
+def fetch_bili_user_search_candidates(
+    query_str: str,
+    search_params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """依次尝试多个接口查用户列表，任一个拿到结果就返回。
+
+    wbi 的 `/x/web-interface/wbi/search/type` 对 `bili_user` 经常返回 code=0 但结果为空
+    （视频搜索同一个毛病）。只认它会让预览图 OCR 读到的 UP 主永远查不到 mid，
+    短标题（如「艹」）就只能退化成同名盲选，回错视频。
+    """
+    api_url_list = []
+    wbi_url = build_wbi_signed_url('/x/web-interface/wbi/search/type', search_params)
+    if wbi_url:
+        api_url_list.append(wbi_url)
+    api_url_list.append(
+        'https://api.bilibili.com/x/web-interface/search/all/v2?'
+        + urllib.parse.urlencode({'keyword': query_str, 'page': 1, 'pagesize': 20})
+    )
+    api_url_list.append(
+        'https://api.bilibili.com/x/web-interface/search/type?'
+        + urllib.parse.urlencode(search_params)
+    )
+    for api_url in api_url_list:
+        try:
+            response_data = json.loads(
+                http_get_json_text(api_url, referer='https://search.bilibili.com/')
+            )
+        except Exception as exception_object:
+            parse_log(
+                f'UP主搜索接口失败 url={shorten_log_text(api_url, 120)} '
+                f'error={describe_http_error(exception_object)}'
+            )
+            continue
+        if response_data.get('code') != 0:
+            continue
+        candidate_list = extract_bili_user_search_results(response_data)
+        if candidate_list:
+            parse_log(
+                f'UP主搜索接口命中 query={shorten_log_text(query_str, 60)} '
+                f'count={len(candidate_list)}'
+            )
+            return candidate_list
+    return []
+
+
 def search_bili_user_info(
     owner_name: str,
     expected_fans: int | None = None,
@@ -3028,19 +3092,8 @@ def search_bili_user_info(
             'page': 1,
             'page_size': 20,
         }
-        api_url = build_wbi_signed_url('/x/web-interface/wbi/search/type', search_params)
-        if not api_url:
-            api_url = (
-                'https://api.bilibili.com/x/web-interface/search/all/v2?'
-                + urllib.parse.urlencode({'keyword': query_str, 'page': 1, 'pagesize': 20})
-            )
         try:
-            response_data = json.loads(
-                http_get_json_text(api_url, referer='https://search.bilibili.com/')
-            )
-            if response_data.get('code') != 0:
-                continue
-            candidates = extract_bili_user_search_results(response_data)
+            candidates = fetch_bili_user_search_candidates(query_str, search_params)
             if not candidates:
                 continue
 
