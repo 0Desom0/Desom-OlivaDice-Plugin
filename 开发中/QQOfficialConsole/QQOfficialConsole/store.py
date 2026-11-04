@@ -372,10 +372,17 @@ class Store:
                        (now, group_openid))
             return [group_openid]
 
-    def recover_group_info_jobs(self, bot_hash):
-        """加载时恢复上次进程异常中断的任务。"""
+    def recover_group_info_jobs(self, bot_hash, stale_after=None, now=None):
+        """恢复异常中断的任务：默认全部 running；给 stale_after 时只回收超出租约的。"""
+        now = int(time.time() if now is None else now)
         with self.meta(bot_hash) as db:
-            db.execute("UPDATE group_info_jobs SET status='pending' WHERE status='running'")
+            if stale_after is None:
+                db.execute("UPDATE group_info_jobs SET status='pending' WHERE status='running'")
+            else:
+                db.execute(
+                    "UPDATE group_info_jobs SET status='pending' WHERE status='running' AND updated_at<=?",
+                    (now - max(0, int(stale_after)),),
+                )
 
     def complete_group_info_job(self, bot_hash, group_openid, now=None):
         now = int(time.time() if now is None else now)
@@ -529,7 +536,8 @@ class Store:
                     db.execute(
                         """INSERT INTO members(member_openid,name,role,last_seen_at) VALUES(?,?,?,?)
                         ON CONFLICT(member_openid) DO UPDATE SET name=COALESCE(NULLIF(excluded.name,''),members.name),
-                        role=COALESCE(NULLIF(excluded.role,''),members.role),last_seen_at=MAX(members.last_seen_at,excluded.last_seen_at)""",
+                        role=COALESCE(NULLIF(excluded.role,''),members.role),
+                        last_seen_at=MAX(members.last_seen_at,excluded.last_seen_at)""",
                         (
                             member['member_openid'],
                             member.get('name'),

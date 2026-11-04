@@ -43,7 +43,24 @@ CODES = {
     50055001: '发送异常',
     50055002: '发送异常',
     11253: '无接口权限',
+    11255: '资源不存在',
+    11703: '机器人不是群管理员',
 }
+
+# QQ 同一错误会同时给短码 code 与长码 err_code（如 11253 + 40012010），OlivOS 的
+# _get_api_error_code 优先取 err_code，因此长码必须能落到同一个关键词。
+# 只登记有实证的对应，不按相邻号段推断：
+#   40012010 ↔ 11253：线上真实响应 code=11253、err_code=40012010；
+#   40011028 ↔ 11255：OlivOS 日志中两者成对出现，
+#                     message=请求的资源不存在(用户/群已注销)；
+#   40011030 ↔ 11703：非管理员机器人查询禁言时实测两码及对应文案。
+LONG_CODE_ALIASES = {
+    40012010: 11253,
+    40011028: 11255,
+    40011030: 11703,
+}
+
+CODES.update({long_code: CODES[short_code] for long_code, short_code in LONG_CODE_ALIASES.items()})
 
 LOCAL = {
     'chat_id is required': '未选目标',

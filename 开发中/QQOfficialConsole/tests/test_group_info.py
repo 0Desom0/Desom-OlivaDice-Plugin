@@ -119,12 +119,25 @@ def test_rate_limit_keeps_head_queued_after_many_retries(console):
     assert [path for _, path in c.calls[-2:]] == ['/v2/groups/g1/info', '/v2/groups/g2/info']
 
 
-def test_manual_refresh_rate_limit_queues_group_when_not_previously_queued(console):
+def add_bot(c):
+    """再挂一个 qqGuildv2 机器人，用于验证队列与限速按机器人隔离。"""
+    bot = OlivOS.API.bot_info_T(id=int(uuid.uuid4().int % 10**12), platform_sdk='qqGuildv2_link',
+                                platform_platform='qqGuild', platform_model='public')
+    c.proc.Proc_data['bot_info_dict'][bot.hash] = bot
+    return bot
+
+
+def test_manual_refresh_rate_limit_queues_group_without_calling_api(console, monkeypatch):
     c = console
+    monkeypatch.setattr(c.bridge, 'wake_group_info', lambda: None)  # 只验证入队，处理交给显式 pump
     c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1', display_name='已有名字')
     c.info_failure['/v2/groups/g1/info'] = (429, {'message': '频率限制'})
     result = call(c, 'RefreshGroupName', chat_id='g1')
-    assert not result['ok']
+    # 手动刷新只入队：不直接请求、不改变已有名字。
+    assert result['ok'] and result['queued'] is True
+    assert result['chat']['display_name'] == '已有名字'
+    assert c.calls == []
+    c.bridge.pump_group_info(limit=10)
     job = c.store.group_info_job(c.bot.hash, 'g1')
     assert job is not None and job['status'] == 'pending'
     assert job['next_at'] > c.clock[0]
@@ -147,7 +160,7 @@ def test_attempts_exhausted_marks_failed(console):
     c = console
     c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
     c.store.enqueue_group_info(c.bot.hash, 'g1')
-    c.info_failure['/v2/groups/g1/info'] = (500, {'code': 50055001})
+    c.info_failure['/v2/groups/g1/info'] = (400, {'code': 12345})
     for _ in range(5):
         c.ticks[0] += 600
         c.clock[0] += 600
@@ -155,13 +168,21 @@ def test_attempts_exhausted_marks_failed(console):
     assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'failed'
 
 
-def test_manual_refresh_updates_name_and_clears_queue(console):
+def test_manual_refresh_updates_name_and_clears_queue(console, monkeypatch):
     c = console
+    monkeypatch.setattr(c.bridge, 'wake_group_info', lambda: None)
     c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1', display_name='旧名字')
     c.store.enqueue_group_info(c.bot.hash, 'g1')
     c.group_name = '新名字'
     result = call(c, 'RefreshGroupName', chat_id='g1')
-    assert result['ok'] and result['chat']['display_name'] == '新名字'
+    # 手动刷新异步返回：立即拿到排队状态，名字由队列稍后写回。
+    assert result['ok'] and result['queued'] is True
+    assert result['group_info_status'] == 'queued'
+    assert result['chat']['display_name'] == '旧名字'
+    assert result['chat']['group_info_status'] in ('queued', 'running')
+    assert c.calls == []
+    c.bridge.pump_group_info(limit=10)
+    assert c.store.get_chat(c.bot.hash, 'qq_group', 'g1')['display_name'] == '新名字'
     assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'done'
     # 备注不受影响
     call(c, 'SetRemark', chat_id='g1', remark='备注名')
@@ -277,3 +298,169 @@ def test_add_chat_enqueues_group_name(console):
     assert result['ok']
     job = c.store.group_info_job(c.bot.hash, 'g-add')
     assert job and job['status'] in ('pending', 'running', 'done')
+
+
+def test_manual_refresh_appends_to_queue_tail(console, monkeypatch):
+    c = console
+    monkeypatch.setattr(c.bridge, 'wake_group_info', lambda: None)
+    for group, stamp in [('g1', 100), ('g2', 200)]:
+        c.store.upsert_chat(c.bot.hash, 'qq_group', group)
+        c.store.enqueue_group_info(c.bot.hash, group, enqueued_at=stamp)
+    result = call(c, 'RefreshGroupName', chat_id='g3')
+    assert result['ok'] and result['queued'] is True
+    c.bridge.pump_group_info(limit=10)
+    assert [path for _, path in c.calls] == [
+        '/v2/groups/g1/info', '/v2/groups/g2/info', '/v2/groups/g3/info',
+    ]
+
+
+def test_group_info_window_caps_requests_per_bot(console, monkeypatch):
+    c = console
+    monkeypatch.setattr(c.bridge, 'wake_group_info', lambda: None)
+    for index in range(31):
+        result = call(c, 'RefreshGroupName', chat_id='g%d' % index)
+        assert result['ok'] and result['queued'] is True
+    assert c.calls == []
+    c.bridge.pump_group_info(limit=100)
+    assert len(c.calls) == 30
+    # 同一 60 秒窗口内不再补发，避免频繁唤醒把队列打爆。
+    c.bridge.pump_group_info(limit=100)
+    assert len(c.calls) == 30
+    c.ticks[0] += 60
+    c.bridge.pump_group_info(limit=100)
+    assert len(c.calls) == 31
+    assert c.calls[-1][1] == '/v2/groups/g30/info'
+
+
+def test_rate_window_is_isolated_between_bots(console, monkeypatch):
+    c = console
+    monkeypatch.setattr(c.bridge, 'wake_group_info', lambda: None)
+    second = add_bot(c)
+    for index in range(30):
+        call(c, 'RefreshGroupName', chat_id='a%d' % index)
+    c.store.upsert_chat(second.hash, 'qq_group', 'b1')
+    c.store.enqueue_group_info(second.hash, 'b1')
+    c.bridge.pump_group_info(limit=100)
+    assert len(c.calls) == 31
+    assert c.calls[-1] == ('GET', '/v2/groups/b1/info')
+    # 第二个机器人不受第一个机器人窗口影响。
+    c.store.enqueue_group_info(second.hash, 'b2')
+    c.bridge.pump_group_info(limit=100)
+    assert c.calls[-1] == ('GET', '/v2/groups/b2/info')
+    assert len(c.calls) == 32
+
+
+def test_concurrent_pumps_do_not_reclaim_running_job(console):
+    c = console
+    c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
+    c.store.enqueue_group_info(c.bot.hash, 'g1')
+    started = threading.Event()
+    release = threading.Event()
+    seen = []
+
+    def fetch(bot_hash, group_id):
+        seen.append(group_id)
+        started.set()
+        release.wait(5)
+        return {'ok': True, 'keyword': '成功', 'http_status': 200, 'error_code': None}, {'group_name': '并发群'}
+
+    c.bridge.fetch_group_name = fetch
+    first = threading.Thread(target=c.bridge.pump_group_info, kwargs={'limit': 10})
+    second = threading.Thread(target=c.bridge.pump_group_info, kwargs={'limit': 10})
+    first.start()
+    assert started.wait(5), 'first pump did not start the request'
+    second.start()
+    time.sleep(0.05)
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert seen == ['g1']
+    assert c.store.get_chat(c.bot.hash, 'qq_group', 'g1')['display_name'] == '并发群'
+    assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'done'
+
+
+def test_close_cancels_remaining_group_info_requests(console):
+    c = console
+    for group in ('g1', 'g2'):
+        c.store.upsert_chat(c.bot.hash, 'qq_group', group)
+        c.store.enqueue_group_info(c.bot.hash, group)
+    started = threading.Event()
+    release = threading.Event()
+    seen = []
+
+    def fetch(bot_hash, group_id):
+        seen.append(group_id)
+        started.set()
+        release.wait(5)
+        return {'ok': True, 'keyword': '成功', 'http_status': 200, 'error_code': None}, {'group_name': '取消群'}
+
+    c.bridge.fetch_group_name = fetch
+    worker = threading.Thread(target=c.bridge.pump_group_info, kwargs={'limit': 10})
+    worker.start()
+    assert started.wait(5), 'pump did not start the request'
+    c.bridge.close()
+    release.set()
+    worker.join(5)
+    assert seen == ['g1']
+
+
+def test_restart_recovers_running_job(console):
+    c = console
+    c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
+    c.store.enqueue_group_info(c.bot.hash, 'g1')
+    with c.store.meta(c.bot.hash) as db:
+        db.execute("UPDATE group_info_jobs SET status='running' WHERE group_openid='g1'")
+    from QQOfficialConsole import webui as webui_module
+
+    restarted = webui_module.Bridge(c.store, c.bridge.pool, c.bridge.roster, c.bridge.media, c.proc)
+    try:
+        restarted.pump_group_info(limit=10)
+    finally:
+        restarted.close()
+    assert c.store.get_chat(c.bot.hash, 'qq_group', 'g1')['display_name'] == '测试群'
+    assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'done'
+
+
+def test_manual_refresh_retries_failed_job(console, monkeypatch):
+    c = console
+    monkeypatch.setattr(c.bridge, 'wake_group_info', lambda: None)
+    c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
+    c.store.enqueue_group_info(c.bot.hash, 'g1')
+    c.info_failure['/v2/groups/g1/info'] = (400, {'code': 11255, 'message': '资源不存在'})
+    c.bridge.pump_group_info(limit=10)
+    assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'failed'
+    c.info_failure.clear()
+    c.group_name = '重试成功'
+    result = call(c, 'RefreshGroupName', chat_id='g1')
+    assert result['ok'] and result['chat']['group_info_status'] == 'queued'
+    c.bridge.pump_group_info(limit=10)
+    assert c.store.get_chat(c.bot.hash, 'qq_group', 'g1')['display_name'] == '重试成功'
+    assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'done'
+
+
+def test_stale_running_job_is_recovered_only_after_lease(console):
+    """回收按租约判定：正在请求的新鲜任务不能被下一次 pump 抢走。"""
+    c = console
+    c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
+    c.store.enqueue_group_info(c.bot.hash, 'g1')
+    with c.store.meta(c.bot.hash) as db:
+        db.execute(
+            "UPDATE group_info_jobs SET status='running', updated_at=? WHERE group_openid='g1'",
+            (c.clock[0] - 10,),
+        )
+    c.store.recover_group_info_jobs(c.bot.hash, stale_after=300)
+    assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'running'
+    with c.store.meta(c.bot.hash) as db:
+        db.execute("UPDATE group_info_jobs SET updated_at=? WHERE group_openid='g1'", (c.clock[0] - 400,))
+    c.store.recover_group_info_jobs(c.bot.hash, stale_after=300)
+    assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'pending'
+
+
+def test_group_backoff_does_not_block_role_refresh(console):
+    c = console
+    c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
+    c.store.enqueue_group_info(c.bot.hash, 'g1')
+    c.info_failure['/v2/groups/g1/info'] = (429, {'message': 'rate limited'})
+    c.bridge.pump_group_info(limit=10)
+    result = call(c, 'RefreshRole')
+    assert result['ok'] and result['chat']['self_role'] == 'member'

@@ -23,6 +23,11 @@ _GROUP_INFO_RATE_LIMIT_CODES = {40034100, 50002, 50055002}
 _GROUP_INFO_PERMANENT_CODES = {11253, 11255, 40011028, 40012010}
 _GROUP_INFO_RATE_LIMIT_DELAY = 120
 _GROUP_INFO_RETRY_DELAY = 60
+# 群信息接口官方限额：每机器人 30 次/分钟。按滑动窗口放行，不假设固定间隔。
+_GROUP_INFO_WINDOW_LIMIT = 30
+_GROUP_INFO_WINDOW_SECONDS = 60.0
+# running 任务租约：超过这个时长仍未完成（进程卡死/异常）才允许回收，避免抢走进行中的请求。
+_GROUP_INFO_RUNNING_LEASE = 300
 # 入站图片只允许从 QQ 多媒体域名代下载，避免桥接接口被当成带鉴权的代理
 _ATTACHMENT_HOSTS = {'multimedia.nt.qq.com.cn'}
 
@@ -43,6 +48,10 @@ class Bridge:
                                               daemon=True)
         self._image_reaper.start()
         self._attachment_lock = threading.Lock()
+        self._group_info_lock = threading.Lock()
+        self._group_info_pump_locks = {}
+        self._group_info_recovered = set()
+        self._group_info_sent = {}
         self._group_info_wake = threading.Event()
         self._group_info_worker = threading.Thread(
             target=self._group_info_loop, name='QQOfficialConsole-group-info', daemon=True
@@ -59,7 +68,7 @@ class Bridge:
                 for bot_hash in self._bots():
                     if self._closed.is_set():
                         break
-                    self.pump_group_info(bot_hash=bot_hash)
+                    self.pump_group_info(limit=_GROUP_INFO_WINDOW_LIMIT, bot_hash=bot_hash)
             except Exception:
                 pass
 
@@ -140,7 +149,9 @@ class Bridge:
             sdk_bot = OlivOS.qqGuildv2SDK.get_SDK_bot_info_from_Event(event)
             token = sdkCommon.getTokenNow(sdk_bot)
             if not token:
-                return errors.failure('无接口权限'), {}
+                result = errors.failure('机器人令牌暂时不可用')
+                result['retryable'] = True
+                return result, {}
             host = str(OlivOS.qqGuildv2SDK.sdkAPIHost.get('default') or 'https://api.bot.qq.com')
             if '://' not in host:
                 host = 'https://' + host
@@ -172,39 +183,77 @@ class Bridge:
                 result['http_status'] = status
             return result, data
         except Exception:
-            return errors.failure('无接口权限'), {}
+            result = errors.failure('群信息暂时获取失败')
+            result['retryable'] = True
+            return result, {}
+
+    def _group_info_bot_lock(self, bot_hash):
+        """同一机器人同时只允许一个 pump，防止并发调用把 running 任务重新回收。"""
+        with self._group_info_lock:
+            return self._group_info_pump_locks.setdefault(bot_hash, threading.Lock())
+
+    def _group_info_window_ready(self, bot_hash, now):
+        """官方限额为每机器人 30 次/分钟，按滑动窗口判断而不是强制平滑间隔。"""
+        with self._group_info_lock:
+            history = [
+                stamp for stamp in self._group_info_sent.get(bot_hash, ())
+                if now - stamp < _GROUP_INFO_WINDOW_SECONDS
+            ]
+            self._group_info_sent[bot_hash] = history
+            return len(history) < _GROUP_INFO_WINDOW_LIMIT
+
+    def _group_info_note_request(self, bot_hash, now):
+        with self._group_info_lock:
+            self._group_info_sent.setdefault(bot_hash, []).append(now)
 
     def pump_group_info(self, limit=5, bot_hash=None):
-        """按入群时间 FIFO 处理群名队列；队首冷却时不越过它。"""
+        """按入群时间 FIFO 处理群名队列；队首冷却或窗口用尽时不越过、不补发。"""
         bots = [bot_hash] if bot_hash else list(self._bots())
         for key in bots:
             if self._closed.is_set():
                 return
-            self.store.recover_group_info_jobs(key)
-            processed = 0
-            while processed < max(1, int(limit)):
-                if self._closed.is_set():
-                    return
-                claimed = self.store.claim_group_info_jobs(key)
-                if not claimed:
-                    break
-                group_openid = claimed[0]
-                result, body = self.fetch_group_name(key, group_openid)
-                name = body.get('group_name')
-                if result['ok'] and isinstance(name, str) and name.strip():
-                    self.store.upsert_chat(key, 'qq_group', group_openid, display_name=name.strip()[:255])
-                    self.store.complete_group_info_job(key, group_openid)
+            with self._group_info_bot_lock(key):
+                if key not in self._group_info_recovered:
+                    # 仅进程启动后首次处理时恢复上次崩溃残留的 running 任务；之后不再回收，
+                    # 否则并发 pump 会把另一个线程正在请求的任务重新抢走。
+                    self.store.recover_group_info_jobs(key)
+                    self._group_info_recovered.add(key)
                 else:
-                    code = result.get('error_code')
-                    if code in _GROUP_INFO_PERMANENT_CODES:
-                        self.store.fail_group_info_job(key, group_openid, code)
-                    elif result.get('http_status') == 429 or code in _GROUP_INFO_RATE_LIMIT_CODES:
-                        self.store.requeue_group_info_job(
-                            key, group_openid, _GROUP_INFO_RATE_LIMIT_DELAY, max_attempts=None
-                        )
+                    # 后续只回收超出租约的 running 任务，让卡死任务自愈又不抢占在途请求。
+                    self.store.recover_group_info_jobs(key, stale_after=_GROUP_INFO_RUNNING_LEASE)
+                processed = 0
+                while processed < max(1, int(limit)):
+                    if self._closed.is_set():
+                        return
+                    now = time.monotonic()
+                    if not self._group_info_window_ready(key, now):
+                        break
+                    claimed = self.store.claim_group_info_jobs(key)
+                    if not claimed:
+                        break
+                    group_openid = claimed[0]
+                    self._group_info_note_request(key, now)
+                    result, body = self.fetch_group_name(key, group_openid)
+                    name = body.get('group_name')
+                    if result['ok'] and isinstance(name, str) and name.strip():
+                        self.store.upsert_chat(key, 'qq_group', group_openid, display_name=name.strip()[:255])
+                        self.store.complete_group_info_job(key, group_openid)
                     else:
-                        self.store.requeue_group_info_job(key, group_openid, _GROUP_INFO_RETRY_DELAY)
-                processed += 1
+                        code = result.get('error_code')
+                        status = result.get('http_status')
+                        if code in _GROUP_INFO_PERMANENT_CODES:
+                            self.store.fail_group_info_job(key, group_openid, code)
+                        elif status == 429 or code in _GROUP_INFO_RATE_LIMIT_CODES:
+                            self.store.requeue_group_info_job(
+                                key, group_openid, _GROUP_INFO_RATE_LIMIT_DELAY, max_attempts=None
+                            )
+                        elif result.get('retryable') or (isinstance(status, int) and 500 <= status < 600):
+                            self.store.requeue_group_info_job(
+                                key, group_openid, _GROUP_INFO_RETRY_DELAY, max_attempts=None
+                            )
+                        else:
+                            self.store.requeue_group_info_job(key, group_openid, _GROUP_INFO_RETRY_DELAY)
+                    processed += 1
 
     def backfill_group_names(self):
         """启动补齐：给已有会话但没有群名的群入队（机器人离线期间被拉进群时兜底）。"""
@@ -715,21 +764,13 @@ class Bridge:
         if action == 'RefreshGroupName':
             if chat_type != 'qq_group':
                 raise ValueError()
-            result, body = self.fetch_group_name(bot, chat_id)
-            name = body.get('group_name')
-            if result['ok'] and isinstance(name, str) and name.strip():
-                chat = self.store.upsert_chat(bot, chat_type, chat_id, display_name=name.strip()[:255])
-                self.store.complete_group_info_job(bot, chat_id)
-                return dict(result, chat=chat)
-            code = result.get('error_code')
+            # 手动刷新只入队，由唯一 worker 走同一条 FIFO 与限速，绝不越过队首冷却。
             self.store.enqueue_group_info(bot, chat_id)
-            if code in _GROUP_INFO_PERMANENT_CODES:
-                self.store.fail_group_info_job(bot, chat_id, code)
-            elif result.get('http_status') == 429 or code in _GROUP_INFO_RATE_LIMIT_CODES:
-                self.store.requeue_group_info_job(bot, chat_id, _GROUP_INFO_RATE_LIMIT_DELAY, max_attempts=None)
-            else:
-                self.store.requeue_group_info_job(bot, chat_id, _GROUP_INFO_RETRY_DELAY)
-            return result
+            self.wake_group_info()
+            chat = dict(self.store.get_chat(bot, chat_type, chat_id) or {})
+            status = self.store.group_info_status(bot).get(str(chat_id)) or 'queued'
+            chat['group_info_status'] = status
+            return dict(ok, queued=True, group_info_status=status, keyword='排队获取中', chat=chat)
         if action == 'Send':
             text = str(p.get('text') or '') + str(p.get('markdown') or '')
             at_all = bool(re.search(r'<qqbot-at-everyone\b', text, re.I)) or any(
