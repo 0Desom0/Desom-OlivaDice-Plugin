@@ -80,9 +80,11 @@ class MediaManager:
         self.temp = root / 'plugin' / 'data' / 'image' / 'temp' / 'QQOfficialConsole'
         self.emoji = root / 'plugin' / 'data' / 'image' / 'QQOfficialConsole' / 'emoji'
         self.sent = root / 'plugin' / 'data' / 'QQOfficialConsole' / 'sent-images'
+        self.inbound = root / 'plugin' / 'data' / 'QQOfficialConsole' / 'inbound-images'
         self.temp.mkdir(parents=True, exist_ok=True)
         self.emoji.mkdir(parents=True, exist_ok=True)
         self.sent.mkdir(parents=True, exist_ok=True)
+        self.inbound.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._uploads = {}
         self._claimed = set()
@@ -305,6 +307,74 @@ class MediaManager:
                 if (re.fullmatch(r'[0-9a-f]{32}\.(?:png|jpg|gif|webp)', path.name)
                         and not path.is_symlink() and path.is_file() and path.stat().st_mtime <= cutoff):
                     path.unlink(missing_ok=True)
+            for path in self.inbound.iterdir():
+                if (re.fullmatch(r'[0-9a-f]{64}\.(?:png|jpg|gif|webp)', path.name)
+                        and not path.is_symlink() and path.is_file() and path.stat().st_mtime <= cutoff):
+                    path.unlink(missing_ok=True)
+
+    @staticmethod
+    def inbound_key(bot_hash, url):
+        """入站图片缓存标识按 bot + url 派生；不落盘任何凭据。"""
+        if not isinstance(bot_hash, str) or not bot_hash or not isinstance(url, str) or not url:
+            return None
+        return hashlib.sha256((bot_hash + '|' + url).encode('utf-8')).hexdigest()
+
+    def inbound_path(self, key):
+        """找到已缓存的入站图片；未缓存返回 None。"""
+        if not isinstance(key, str) or not re.fullmatch(r'[0-9a-f]{64}', key):
+            return None
+        for suffix in _MIMES:
+            path = self.inbound / (key + '.' + suffix)
+            if not path.is_symlink() and path.is_file():
+                return path
+        return None
+
+    @_safe_io
+    def save_inbound(self, key, data):
+        """把服务端代下载到的入站图片落盘；校验魔数与大小，失败返回 None。"""
+        if not isinstance(data, bytes) or not data or len(data) > MAX_SIZE:
+            return None
+        ext = _image_type(data[:12])
+        if ext is None or not isinstance(key, str) or not re.fullmatch(r'[0-9a-f]{64}', key):
+            return None
+        path = self.inbound / (key + '.' + ext)
+        temporary = self.inbound / (uuid.uuid4().hex + '.part')
+        try:
+            with temporary.open('xb') as stream:
+                stream.write(data)
+            os.replace(temporary, path)
+            return path
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            return None
+
+    @_safe_io
+    def read_inbound_chunk(self, path, index, retention_days):
+        """按分片读取已落盘的入站图片；过期即删并返回 None。"""
+        if type(index) is not int or index < 0:
+            return None
+        with self._lock:
+            if path is None or path.is_symlink() or not path.is_file():
+                return None
+            stat = path.stat()
+            if stat.st_mtime <= time.time() - retention_days * 86400:
+                path.unlink(missing_ok=True)
+                return None
+            total = (stat.st_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+            if index >= total or not 0 < stat.st_size <= MAX_SIZE:
+                return None
+            with path.open('rb') as stream:
+                stream.seek(index * CHUNK_SIZE)
+                data = stream.read(CHUNK_SIZE)
+        ext = path.suffix.lstrip('.')
+        return {
+            'index': index,
+            'total_chunks': total,
+            'complete': index == total - 1,
+            'mime': _MIMES.get(ext),
+            'size': stat.st_size,
+            'data_b64': base64.b64encode(data).decode('ascii'),
+        }
 
     def _metadata(self, emoji_id, scope, bot_hash):
         _id(emoji_id)
