@@ -1,0 +1,673 @@
+"""WebUI request dispatch. Credentials and host paths never cross the bridge."""
+
+import base64
+import binascii
+import hashlib
+import json
+import os
+import re
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+
+import OlivOS
+
+from . import errors
+from .send import Sender
+
+
+class Bridge:
+    def __init__(self, store, pool, roster, media, Proc):
+        self.store, self.pool, self.roster, self.media, self.Proc = store, pool, roster, media, Proc
+        self._request_lock = threading.Lock()
+        self._last_request_page = 0.0
+        self._jobs_lock = threading.Lock()
+        self._jobs = {}
+        self._closed = threading.Event()
+        self._cache_lock = threading.Lock()
+        self._cache_dir = Path(store.root) / 'view-cache'
+        self._image_cleanup_lock = threading.RLock()
+        self._image_stop = threading.Event()
+        self._image_reaper = threading.Thread(target=self._reap_images, name='QQOfficialConsole-image-reaper',
+                                              daemon=True)
+        self._image_reaper.start()
+
+    def _reap_images(self):
+        while not self._image_stop.is_set():
+            try:
+                with self._image_cleanup_lock:
+                    self.media.cleanup_sent(self.store.get_settings()['image_retention_days'])
+            except Exception:
+                pass
+            if self._image_stop.wait(3600):
+                break
+
+    def close(self):
+        self._closed.set()
+        self._image_stop.set()
+        self._image_reaper.join()
+        with self._jobs_lock:
+            threads = [job['thread'] for job in self._jobs.values() if job.get('thread')]
+        deadline = time.monotonic() + 2
+        for thread in threads:
+            thread.join(max(0, deadline - time.monotonic()))
+
+    def _refresh_requests(self, key, job):
+        bot, chat_id = key
+        result = None
+        try:
+            event = self._event(bot)
+            result = self._admin(event, bot, 'qq_group', chat_id)
+            if result is None:
+                with self._jobs_lock:
+                    job['authorized'] = True
+                requests, cursor, seen = [], None, set()
+                truncated = False
+                for _ in range(40):
+                    with self._request_lock:
+                        delay = max(0, 2 - (time.monotonic() - self._last_request_page))
+                        if self._closed.wait(delay) or job['cancel'].is_set():
+                            return
+                        self._last_request_page = time.monotonic()
+                        raw = event.indeAPI.get_qq_group_join_request_list(chat_id, cursor=cursor, limit=50)
+                    if self._closed.is_set() or job['cancel'].is_set():
+                        return
+                    result = self._result(raw)
+                    if not result['ok']:
+                        break
+                    body = self._body(raw)
+                    entries = body.get('list')
+                    if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+                        result = errors.failure('申请列表无效')
+                        break
+                    for entry in entries:
+                        entry = dict(entry)
+                        stamp = entry.get('apply_at')
+                        if isinstance(stamp, str):
+                            try:
+                                entry['apply_at'] = int(
+                                    datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp()
+                                )
+                            except ValueError:
+                                entry['apply_at'] = None
+                        entry['verify_json'] = entry.get('verify_info')
+                        requests.append(entry)
+                    cursor = body.get('next_cursor')
+                    if not cursor:
+                        break
+                    if cursor in seen:
+                        truncated = True
+                        break
+                    seen.add(cursor)
+                else:
+                    truncated = bool(cursor)
+                if result and result['ok']:
+                    with self._jobs_lock:
+                        if self._closed.is_set() or job['cancel'].is_set():
+                            return
+                        self.roster.refresh_requests(bot, chat_id, requests, complete=not truncated)
+                    result = {'ok': True, 'keyword': '成功', 'truncated': truncated}
+        except Exception:
+            result = errors.failure('申请刷新失败')
+        finally:
+            with self._jobs_lock:
+                if self._jobs.get(key) is job:
+                    job['result'] = result or errors.failure('申请刷新已取消')
+                    job['finished'] = time.monotonic()
+
+    def _join_request_list(self, bot, chat_id, refresh):
+        key = (bot, chat_id)
+        with self._jobs_lock:
+            now = time.monotonic()
+            for old_key, old in list(self._jobs.items()):
+                if old.get('finished') is not None and now - old['finished'] >= 300:
+                    del self._jobs[old_key]
+            job = self._jobs.get(key)
+            if refresh and (job is None or job.get('finished') is not None):
+                if self._closed.is_set():
+                    return errors.failure('插件正在关闭')
+                if len(self._jobs) >= 16:
+                    return errors.failure('刷新任务过多')
+                job = {'cancel': threading.Event()}
+                thread = threading.Thread(target=self._refresh_requests, args=(key, job), daemon=True)
+                job['thread'] = thread
+                self._jobs[key] = job
+                thread.start()
+            refreshing = bool(job and job.get('finished') is None)
+            result = job.get('result') if job and not refreshing else None
+            if result is not None:
+                del self._jobs[key]
+        if result and not result['ok']:
+            return result
+        return {
+            'ok': True, 'keyword': '成功', 'refreshing': refreshing,
+            'truncated': bool(result and result.get('truncated')),
+            'requests': self.roster.list_requests(bot, chat_id, limit=2000)
+            if not refreshing or job.get('authorized') else [],
+        }
+
+    def _view_cache_chunk(self, bot, chat_type, chat_id, payload, put):
+        if not self.store.get_chat(bot, chat_type, chat_id):
+            return errors.failure('会话不存在')
+        index = payload.get('index')
+        if type(index) is not int or index < 0:
+            raise ValueError()
+        key = json.dumps([bot, chat_type, chat_id], ensure_ascii=False, separators=(',', ':'))
+        name = hashlib.sha256(key.encode('utf-8')).hexdigest()
+        chunk_size = 192 * 1024
+        with self._cache_lock:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            target = self._cache_dir / (name + '.json')
+            staging = self._cache_dir / (name + '.part')
+            now = time.time()
+            for path in self._cache_dir.iterdir():
+                if path.suffix not in ('.json', '.part') or path.is_symlink() or not path.is_file():
+                    continue
+                stat = path.stat()
+                if now - stat.st_mtime >= 1800:
+                    path.unlink(missing_ok=True)
+            if not put:
+                if target.is_symlink() or not target.is_file():
+                    return {'ok': True, 'keyword': '成功', 'found': False}
+                size = target.stat().st_size
+                if index * chunk_size >= size:
+                    return errors.failure('缓存无效')
+                with target.open('rb') as file:
+                    file.seek(index * chunk_size)
+                    data = file.read(chunk_size)
+                return {
+                    'ok': True,
+                    'keyword': '成功',
+                    'found': True,
+                    'data_b64': base64.b64encode(data).decode('ascii'),
+                    'complete': index * chunk_size + len(data) == size,
+                }
+            encoded = payload.get('data_b64')
+            complete = payload.get('complete')
+            if not isinstance(encoded, str) or len(encoded) > 4 * ((chunk_size + 2) // 3) or type(complete) is not bool:
+                raise ValueError()
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error):
+                raise ValueError() from None
+            if not data or len(data) > chunk_size or (not complete and len(data) != chunk_size):
+                raise ValueError()
+            if staging.is_symlink() or target.is_symlink():
+                return errors.failure('缓存无效')
+            if index and (not staging.is_file() or staging.stat().st_size != index * chunk_size):
+                return errors.failure('缓存分片无效')
+            try:
+                with staging.open('wb' if index == 0 else 'ab') as file:
+                    file.write(data)
+                if complete:
+                    os.replace(staging, target)
+            except OSError:
+                return errors.failure('缓存写入失败')
+            return {'ok': True, 'keyword': '成功'}
+
+    def _bots(self):
+        bots = self.Proc.Proc_data.get('bot_info_dict', {})
+        return {
+            str(key): bot for key, bot in bots.items() if getattr(bot, 'platform', {}).get('sdk') == 'qqGuildv2_link'
+        }
+
+    def _event(self, bot_hash):
+        bot = self._bots().get(bot_hash)
+        if bot is None:
+            raise ValueError('机器人无效')
+        return OlivOS.API.Event(
+            OlivOS.contentAPI.fake_sdk_event(bot_info=bot, fakename='QQOfficialConsole'), self.Proc.log
+        )
+
+    @staticmethod
+    def _body(raw):
+        data = raw.get('data') or {}
+        response = data.get('response') or {}
+        if isinstance(response, dict) and isinstance(response.get('data'), dict):
+            response = response['data']
+        return response if isinstance(response, dict) else {}
+
+    @staticmethod
+    def _result(raw):
+        if not isinstance(raw, dict):
+            return errors.failure('无接口权限')
+        result = errors.result(raw)
+        # SDK error strings can contain HTTP details or credentials.
+        result.pop('message', None)
+        return result
+
+    def _role(self, event, bot, chat_id):
+        try:
+            raw = OlivOS.qqGuildv2SDK.event_action.get_qq_group_bot_state(event, chat_id)
+        except Exception:
+            raw = None
+        result = self._result(raw)
+        body = self._body(raw) if isinstance(raw, dict) else {}
+        role = body.get('member_role') if result['ok'] else None
+        if role not in ('member', 'admin', 'owner'):
+            role = None
+        proactive = body.get('allow_proactive_msg') if role else None
+        if not isinstance(proactive, bool):
+            proactive = None
+        with self._jobs_lock:
+            if self._closed.is_set():
+                return errors.failure('插件正在关闭'), {'self_role': None}
+            chat = self.store.upsert_chat(
+                bot, 'qq_group', chat_id, self_role=role, allow_proactive=proactive, role_updated_at=int(time.time())
+            )
+        return result, chat
+
+    def _admin(self, event, bot, chat_type, chat_id):
+        if chat_type != 'qq_group':
+            return errors.failure('无管理员权限')
+        result, chat = self._role(event, bot, chat_id)
+        if not result['ok']:
+            return result
+        if chat['self_role'] not in ('admin', 'owner'):
+            return errors.failure('无管理员权限')
+        return None
+
+    def handle(self, event_name, payload):
+        try:
+            if (
+                not isinstance(event_name, str)
+                or not event_name.startswith('QQOfficialConsole_')
+                or not isinstance(payload, dict)
+            ):
+                return errors.failure('参数无效')
+            return self._handle(event_name[len('QQOfficialConsole_') :], payload)
+        except ValueError as exc:
+            keyword = '图片类型不支持' if str(exc) == '图片格式不支持' else str(exc)
+            allowed = {
+                '机器人无效',
+                '图片已失效',
+                '图片上传失败',
+                '图片过大',
+                '图片类型不支持',
+                '图片正在发送',
+                '图片清理失败',
+                '图片名称无效',
+                '表情已失效',
+                '表情范围无效',
+                '缩略图不可用',
+                '上传数量已达上限',
+                '待发送图片数量已达上限',
+            }
+            return errors.failure(keyword if keyword in allowed else '参数无效')
+        except Exception:
+            return errors.failure('操作失败')
+
+    def _handle(self, action, p):
+        ok = {'ok': True, 'keyword': '成功'}
+        if action == 'Bootstrap':
+            bots = [
+                {'hash': key, 'id': str(getattr(bot, 'id', '')), 'unread': self.store.unread_total(key),
+                 'mention_unread': self.store.mention_total(key)}
+                for key, bot in self._bots().items()
+            ]
+            return dict(ok, bots=bots, settings=self.store.get_settings())
+        if action == 'SaveSettings':
+            values = p.get('settings', {})
+            if not isinstance(values, dict):
+                raise ValueError()
+            global_values = {k: values[k] for k in
+                             ('send_key', 'last_bot_hash', 'poll_interval_ms', 'image_retention_days') if k in values}
+            if 'send_key' in global_values and global_values['send_key'] not in ('enter_send', 'ctrl_enter_send'):
+                raise ValueError()
+            if (
+                'last_bot_hash' in global_values
+                and global_values['last_bot_hash'] not in self._bots()
+                and global_values['last_bot_hash'] != ''
+            ):
+                raise ValueError()
+            if 'poll_interval_ms' in global_values:
+                global_values['poll_interval_ms'] = max(1000, min(60000, int(global_values['poll_interval_ms'])))
+            if 'image_retention_days' in global_values:
+                days = global_values['image_retention_days']
+                if type(days) is not int or not 1 <= days <= 3650:
+                    raise ValueError()
+            local = {
+                k: values[k]
+                for k in ('view_limit_enabled', 'view_limit_mode', 'view_limit_count', 'view_limit_days')
+                if k in values
+            }
+            if local:
+                bot = p.get('bot_hash')
+                if bot not in self._bots():
+                    raise ValueError('机器人无效')
+                if 'view_limit_mode' in local and local['view_limit_mode'] not in ('count', 'days'):
+                    raise ValueError()
+                if 'view_limit_enabled' in local and type(local['view_limit_enabled']) is not bool:
+                    raise ValueError()
+                for key in ('view_limit_count', 'view_limit_days'):
+                    if key in local:
+                        local[key] = max(1, min(100000, int(local[key])))
+                self.store.set_settings(local, bot)
+            with self._image_cleanup_lock:
+                self.store.set_settings(global_values)
+                if 'image_retention_days' in global_values:
+                    self.media.cleanup_sent(global_values['image_retention_days'])
+            return dict(ok, settings=self.store.get_settings())
+        bot = p.get('bot_hash')
+        if not isinstance(bot, str) or bot not in self._bots():
+            raise ValueError('机器人无效')
+        if action == 'GetSettings':
+            return dict(ok, settings=self.store.get_settings(bot))
+        if action == 'ListChats':
+            return dict(
+                ok,
+                chats=self.store.list_chats(bot, bool(p.get('include_hidden'))),
+                unread={key: self.store.unread_total(key) for key in self._bots()},
+                mention_unread={key: self.store.mention_total(key) for key in self._bots()},
+            )
+        if action == 'SearchGlobal':
+            return dict(
+                ok,
+                **self.store.search_global(
+                    bot, str(p.get('query') or p.get('keyword') or ''), bool(p.get('include_hidden'))
+                ),
+            )
+        if action == 'UploadBegin':
+            return dict(ok, **self.media.begin(p.get('name'), p.get('size'), p.get('mime') or '', bot))
+        if action == 'UploadChunk':
+            return dict(ok, **self.media.chunk(p.get('upload_id'), p.get('index'), p.get('data_b64'), bot))
+        if action == 'UploadAbort':
+            self.media.abort(p.get('upload_id'), bot)
+            return ok
+        if action.startswith('Sticker'):
+            scope, ident = p.get('scope'), p.get('id')
+            if action == 'StickerList':
+                return dict(ok, stickers=self.media.list_emojis(scope, bot))
+            if action == 'StickerSave':
+                sticker = self.media.save(p.get('upload_id'), p.get('name'), scope, bot)
+                self.media.abort(p.get('upload_id'), bot)
+                return dict(ok, sticker=sticker)
+            if action == 'StickerRename':
+                return dict(ok, sticker=self.media.rename_emoji(ident, p.get('name'), scope, bot))
+            if action == 'StickerDelete':
+                self.media.delete_emoji(ident, scope, bot)
+                return ok
+            if action == 'StickerSelect':
+                return dict(ok, **self.media.use_emoji(ident, scope, bot))
+            if action == 'StickerRead':
+                return dict(ok, **self.media.read_emoji_chunk(ident, scope, bot, p.get('index', 0)))
+            return errors.failure('未知操作')
+        chat_type, chat_id = p.get('chat_type'), p.get('chat_id')
+        if chat_type not in ('qq_group', 'qq_private') or not isinstance(chat_id, str) or not chat_id.strip():
+            return errors.failure('未选目标')
+        if action == 'MessageImageRead':
+            message_id, image_id = p.get('message_id'), p.get('image_id')
+            if type(message_id) is not int or message_id <= 0 or not isinstance(image_id, str):
+                raise ValueError('图片已失效')
+            rows = self.store.get_messages_by_ids(bot, chat_type, chat_id, [message_id])
+            if not rows or rows[0].get('direction') != 'out':
+                raise ValueError('图片已失效')
+            try:
+                content = json.loads(rows[0]['content_json'])
+                images = content.get('images', [])
+                image = next(item for item in images if isinstance(item, dict) and item.get('image_id') == image_id)
+            except (TypeError, ValueError, KeyError, AttributeError, StopIteration):
+                raise ValueError('图片已失效') from None
+            with self._image_cleanup_lock:
+                return dict(ok, **self.media.read_sent_chunk(image, p.get('index', 0),
+                                                            self.store.get_settings()['image_retention_days']))
+        if action == 'MentionTarget':
+            return dict(ok, **self.store.mention_target(bot, chat_type, chat_id))
+        if action in ('CachePut', 'CacheGet'):
+            if 'index' in p:
+                return self._view_cache_chunk(bot, chat_type, chat_id, p, action == 'CachePut')
+            return errors.failure('缓存分片无效')
+        if action == 'AddChat':
+            return dict(ok, chat=self.store.upsert_chat(bot, chat_type, chat_id, hidden=0))
+        if action == 'SetRemark':
+            remark = p.get('remark')
+            if not isinstance(remark, str) or len(remark) > 255:
+                raise ValueError()
+            return dict(ok, chat=self.store.upsert_chat(bot, chat_type, chat_id, remark=remark))
+        if action == 'ChatAction':
+            if p.get('action') == 'read':
+                ids = p.get('visible_ids')
+                if not isinstance(ids, list) or len(ids) > 500 or any(type(x) is not int or x <= 0 for x in ids):
+                    raise ValueError()
+                self.store.mark_read_visible(bot, chat_type, chat_id, ids)
+                return dict(ok, chat=self.store.get_chat(bot, chat_type, chat_id))
+            field = {'pin': 'pinned', 'hide': 'hidden'}.get(p.get('action'))
+            if field is None or type(p.get('value')) is not bool:
+                raise ValueError()
+            value = int(p['value'])
+            return dict(ok, chat=self.store.upsert_chat(bot, chat_type, chat_id, **{field: value}))
+        if action == 'PullMessages':
+            ids = p.get('snapshot_ids')
+            if ids is not None:
+                if not isinstance(ids, list) or len(ids) > 500 or any(type(x) is not int or x <= 0 for x in ids):
+                    raise ValueError()
+                return dict(ok, messages=self.store.get_messages_by_ids(bot, chat_type, chat_id, ids))
+            before, after, around = (
+                p.get('before_id', p.get('before')),
+                p.get('after_id', p.get('after')),
+                p.get('around_id'),
+            )
+            limit = max(1, min(100, int(p.get('limit', 50))))
+            if around is not None:
+                around = int(around)
+                older = self.store.list_messages(bot, chat_type, chat_id, before=around, limit=max(1, limit // 2))
+                newer = self.store.list_messages(bot, chat_type, chat_id, after=around - 1, limit=limit - len(older))
+                rows = (older + newer)[-limit:]
+            else:
+                rows = self.store.list_messages(
+                    bot,
+                    chat_type,
+                    chat_id,
+                    before=before,
+                    after=after,
+                    limit=limit,
+                    initial=before is None and after is None,
+                )
+            if chat_type == 'qq_group' and before is None and after is None and around is None:
+                chat = self.store.get_chat(bot, chat_type, chat_id)
+                if not chat or time.time() - (chat.get('role_updated_at') or 0) >= 600:
+                    self._role(self._event(bot), bot, chat_id)
+            response = dict(ok, messages=rows)
+            if 'change_cursor' in p:
+                cursor = p['change_cursor']
+                if cursor is not None and (type(cursor) is not int or cursor < 0):
+                    raise ValueError()
+                changes = self.store.message_changes(bot, chat_type, chat_id, after=cursor, limit=200)
+                response.update(
+                    changes=changes['changes'], change_cursor=changes['cursor'], change_reset=changes['reset']
+                )
+            return response
+        if action == 'SearchChat':
+            return dict(
+                ok,
+                messages=self.store.search_messages(
+                    bot,
+                    chat_type,
+                    chat_id,
+                    str(p.get('query') or p.get('keyword') or ''),
+                    start=p.get('start_at'),
+                    end=p.get('end_at'),
+                    only_self=bool(p.get('only_self')),
+                    include_failed=bool(p.get('include_failed', True)),
+                    include_recalled=bool(p.get('include_recalled', True)),
+                    limit=min(100, int(p.get('limit', 50))),
+                    before=p.get('before_id'),
+                ),
+            )
+        if action == 'PassiveStatus':
+            return dict(ok, token=self.pool.status(bot, chat_type, chat_id))
+        if action == 'ListMembers' and not p.get('refresh'):
+            return dict(ok, members=self.roster.list_members(bot, chat_type, chat_id, str(p.get('query') or '')))
+        event = self._event(bot)
+        if action == 'RefreshRole':
+            if chat_type != 'qq_group':
+                raise ValueError()
+            result, chat = self._role(event, bot, chat_id)
+            return dict(result, chat=chat)
+        if action == 'Send':
+            text = str(p.get('text') or '') + str(p.get('markdown') or '')
+            at_all = bool(re.search(r'<qqbot-at-everyone\b', text, re.I)) or any(
+                isinstance(x, dict) and x.get('id') == 'all' for x in (p.get('at') or [])
+            )
+            payload = dict(p)
+            sender = Sender(event, self.pool, self.media)
+            if at_all:
+                denied = (
+                    errors.failure('请确认@全体')
+                    if p.get('at_all_confirmed') is not True
+                    else self._admin(event, bot, chat_type, chat_id)
+                )
+                if denied:
+                    images = p.get('images')
+                    if isinstance(images, list):
+                        for image in images:
+                            if isinstance(image, dict) and isinstance(image.get('upload_id'), str):
+                                try:
+                                    self.media.abort(image['upload_id'], bot)
+                                except (ValueError, OSError):
+                                    pass
+                    result = denied
+                else:
+                    result = sender.send(payload)
+            else:
+                result = sender.send(payload)
+            kind = p.get('kind', 'text')
+            content = p.get('markdown') if kind == 'markdown' else p.get('text')
+            content = content if isinstance(content, str) else ''
+            card = p.get('card') if isinstance(p.get('card'), dict) else {}
+            result['local_id'] = self.store.add_message(
+                bot,
+                chat_type,
+                chat_id,
+                {
+                    'direction': 'out',
+                    'platform_message_id': result.get('message_id'),
+                    'ref_idx': result.get('ref_idx'),
+                    'reply_to': p.get('quote_id'),
+                    'sender_id': str(getattr(event.bot_info, 'id', '')),
+                    'sender_name': '机器人',
+                    'msg_kind': kind if kind in ('text', 'markdown', 'card') else 'unknown',
+                    'content_text': content
+                    if kind != 'card'
+                    else str((card.get('content') if isinstance(card.get('content'), dict) else {}).get('title') or ''),
+                    'content_json': {'text': content, 'card': card, 'has_image': bool(p.get('images')),
+                                     'images': sender.sent_images},
+                    'send_channel': result.get('channel'),
+                    'error_code': result.get('error_code'),
+                    'keyword': None if result.get('ok') and not result.get('pending_review') else result.get('keyword'),
+                },
+                unread=False,
+            )
+            result['images'] = sender.sent_images
+            return result
+        if action == 'Recall':
+            message_id = p.get('platform_message_id') or p.get('message_id')
+            if not isinstance(message_id, str) or not message_id:
+                raise ValueError()
+            with self.store.session(bot, chat_type, chat_id) as db:
+                row = db.execute(
+                    'SELECT * FROM messages WHERE platform_message_id=? ORDER BY id DESC LIMIT 1', (message_id,)
+                ).fetchone()
+                row = dict(row) if row else None
+            if not row or row['recalled']:
+                return errors.failure('消息不存在')
+            if time.time() - row['created_at'] > 120:
+                return errors.failure('撤回超时')
+            if row['direction'] != 'out':
+                denied = self._admin(event, bot, chat_type, chat_id)
+                if denied:
+                    return denied
+            result = Sender(event, self.pool, self.media).recall(dict(p, message_id=message_id))
+            if result['ok']:
+                self.store.recall_message(bot, chat_type, chat_id, message_id)
+            return result
+        if action == 'JoinRequestList':
+            if chat_type != 'qq_group':
+                return errors.failure('无管理员权限')
+            with self._jobs_lock:
+                job = self._jobs.get((bot, chat_id))
+            chat = self.store.get_chat(bot, chat_type, chat_id)
+            if not p.get('refresh') and job is None and (not chat or chat.get('self_role') not in ('admin', 'owner')):
+                return errors.failure('无管理员权限')
+            return self._join_request_list(bot, chat_id, bool(p.get('refresh')))
+        if action not in ('ListMembers', 'Admin', 'JoinRequestList', 'JoinRequestAct'):
+            return errors.failure('未知操作')
+        denied = self._admin(event, bot, chat_type, chat_id)
+        if denied:
+            return denied
+        if action == 'ListMembers':
+            cursor, seen = None, set()
+            for _ in range(40):
+                raw = OlivOS.qqGuildv2SDK.event_action.get_qq_group_member_list(event, chat_id, cursor)
+                result = self._result(raw)
+                if not result['ok']:
+                    return result
+                body = self._body(raw)
+                for member in body.get('members', body.get('list', [])):
+                    member_id = member.get('member_openid')
+                    if member_id:
+                        self.roster.upsert_member(
+                            bot,
+                            chat_type,
+                            chat_id,
+                            member_id,
+                            member.get('name') or member.get('username'),
+                            member.get('member_role'),
+                        )
+                cursor = body.get('next_cursor')
+                if not cursor or cursor in seen:
+                    break
+                seen.add(cursor)
+            return dict(ok, members=self.roster.list_members(bot, chat_type, chat_id))
+        if action == 'Admin':
+            operation = p.get('action')
+            if operation == 'restrict_query':
+                raw = event.indeAPI.get_qq_group_restrict_chat_setting(chat_id)
+            elif operation == 'restrict_set':
+                member = p.get('member_openid')
+                duration = int(p.get('duration', 0))
+                if not isinstance(member, str) or not member or duration < 0:
+                    raise ValueError()
+                raw = OlivOS.qqGuildv2SDK.event_action.set_qq_group_member_mute(event, chat_id, member, duration)
+            else:
+                raise ValueError()
+            result = self._result(raw)
+            if result['ok']:
+                result['data'] = self._body(raw)
+                if operation == 'restrict_query':
+                    result['message'] = str(result['data'])[:1000]
+            return result
+        if action == 'JoinRequestAct':
+            with self._jobs_lock:
+                active_job = self._jobs.get((bot, chat_id))
+                if active_job and active_job.get('finished') is None:
+                    active_job['cancel'].set()
+            op, request_id, member = p.get('op'), p.get('join_request_id'), p.get('member_openid')
+            if (
+                op not in ('approve', 'decline')
+                or not isinstance(request_id, str)
+                or not request_id
+                or not isinstance(member, str)
+                or not member
+            ):
+                raise ValueError()
+            with self.store.session(bot, chat_type, chat_id) as db:
+                found = db.execute(
+                    "SELECT 1 FROM join_requests WHERE join_request_id=? AND member_openid=? AND status='pending'",
+                    (request_id, member),
+                ).fetchone()
+            if not found:
+                return errors.failure('申请已失效')
+            raw = event.indeAPI.approve_qq_group_join_request(
+                chat_id,
+                member,
+                op,
+                join_request_id=request_id,
+                reject_reason=p.get('reject_reason') or None,
+                add_to_member_blacklist=bool(p.get('add_to_member_blacklist')),
+            )
+            result = self._result(raw)
+            if result['ok']:
+                self.roster.set_request_status(bot, chat_id, request_id, 'approved' if op == 'approve' else 'declined')
+            return result
