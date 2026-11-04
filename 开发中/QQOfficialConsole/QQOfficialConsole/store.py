@@ -25,13 +25,18 @@ def _json(value):
 _META = """
 CREATE TABLE IF NOT EXISTS chats (
  chat_type TEXT NOT NULL, chat_id TEXT NOT NULL, safe_id TEXT NOT NULL,
- remark TEXT, display_name TEXT, self_role TEXT, allow_proactive INTEGER,
+ remark TEXT, display_name TEXT, bot_openid TEXT, self_role TEXT, allow_proactive INTEGER,
  role_updated_at INTEGER, last_message_at INTEGER, last_preview TEXT,
  unread INTEGER NOT NULL DEFAULT 0, mention_unread INTEGER NOT NULL DEFAULT 0,
  mention_version INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0,
  pinned INTEGER NOT NULL DEFAULT 0, left_group INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
  PRIMARY KEY(chat_type, chat_id));
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS group_info_jobs (
+ group_openid TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
+ enqueued_at INTEGER NOT NULL, next_at INTEGER NOT NULL DEFAULT 0,
+ attempts INTEGER NOT NULL DEFAULT 0, error_code INTEGER, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS group_info_jobs_fifo ON group_info_jobs(status, enqueued_at);
 """
 _CHAT = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -87,6 +92,7 @@ _CHAT_FIELDS = frozenset(
     (
         'remark',
         'display_name',
+        'bot_openid',
         'self_role',
         'allow_proactive',
         'role_updated_at',
@@ -139,6 +145,9 @@ class Store:
             db = self._open(self._bot_path(key) / 'meta.sqlite3', _META)
             if 'left_group' not in {row['name'] for row in db.execute('PRAGMA table_info(chats)')}:
                 db.execute('ALTER TABLE chats ADD COLUMN left_group INTEGER NOT NULL DEFAULT 0')
+                db.commit()
+            if 'bot_openid' not in {row['name'] for row in db.execute('PRAGMA table_info(chats)')}:
+                db.execute('ALTER TABLE chats ADD COLUMN bot_openid TEXT')
                 db.commit()
             if 'mention_unread' not in {row['name'] for row in db.execute('PRAGMA table_info(chats)')}:
                 db.execute('ALTER TABLE chats ADD COLUMN mention_unread INTEGER NOT NULL DEFAULT 0')
@@ -328,6 +337,103 @@ class Store:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def enqueue_group_info(self, bot_hash, group_openid, enqueued_at=None):
+        """把群名获取任务按入群时间排队；重复入队保持原顺序。"""
+        enqueued_at = int(time.time() if enqueued_at is None else enqueued_at)
+        with self.meta(bot_hash) as db:
+            db.execute(
+                "INSERT INTO group_info_jobs(group_openid,status,enqueued_at,updated_at) "
+                "VALUES(?,'pending',?,?) "
+                "ON CONFLICT(group_openid) DO UPDATE SET "
+                "status=CASE WHEN group_info_jobs.status IN ('done','failed') THEN 'pending' "
+                "ELSE group_info_jobs.status END, "
+                "enqueued_at=CASE WHEN group_info_jobs.status IN ('done','failed') THEN excluded.enqueued_at "
+                "ELSE group_info_jobs.enqueued_at END, "
+                "next_at=CASE WHEN group_info_jobs.status IN ('done','failed') THEN 0 "
+                "ELSE group_info_jobs.next_at END, "
+                "attempts=CASE WHEN group_info_jobs.status IN ('done','failed') THEN 0 "
+                "ELSE group_info_jobs.attempts END, "
+                "updated_at=excluded.updated_at",
+                (str(group_openid), enqueued_at, enqueued_at),
+            )
+
+    def claim_group_info_jobs(self, bot_hash, limit=1, now=None):
+        """严格 FIFO：队首仍在冷却时不越过它；一次只领取一条。"""
+        now = int(time.time() if now is None else now)
+        with self.meta(bot_hash) as db:
+            row = db.execute(
+                "SELECT group_openid,next_at FROM group_info_jobs "
+                "WHERE status='pending' ORDER BY enqueued_at, rowid LIMIT 1"
+            ).fetchone()
+            if not row or row['next_at'] > now:
+                return []
+            group_openid = row['group_openid']
+            db.execute("UPDATE group_info_jobs SET status='running',updated_at=? WHERE group_openid=?",
+                       (now, group_openid))
+            return [group_openid]
+
+    def recover_group_info_jobs(self, bot_hash):
+        """加载时恢复上次进程异常中断的任务。"""
+        with self.meta(bot_hash) as db:
+            db.execute("UPDATE group_info_jobs SET status='pending' WHERE status='running'")
+
+    def complete_group_info_job(self, bot_hash, group_openid, now=None):
+        now = int(time.time() if now is None else now)
+        with self.meta(bot_hash) as db:
+            db.execute(
+                "UPDATE group_info_jobs SET status='done', error_code=NULL, updated_at=? WHERE group_openid=?",
+                (now, str(group_openid)),
+            )
+
+    def requeue_group_info_job(self, bot_hash, group_openid, delay_seconds, now=None, max_attempts=5):
+        """失败重试：冷却后重新排队；超过次数上限标记为 failed。"""
+        now = int(time.time() if now is None else now)
+        with self.meta(bot_hash) as db:
+            row = db.execute(
+                'SELECT attempts FROM group_info_jobs WHERE group_openid=?', (str(group_openid),)
+            ).fetchone()
+            attempts = int(row['attempts']) + 1 if row else 1
+            status = 'failed' if attempts >= max_attempts else 'pending'
+            db.execute(
+                'UPDATE group_info_jobs SET status=?, attempts=?, next_at=?, updated_at=? WHERE group_openid=?',
+                (status, attempts, now + max(0, int(delay_seconds)) if status == 'pending' else now, now,
+                 str(group_openid)),
+            )
+
+    def fail_group_info_job(self, bot_hash, group_openid, error_code=None, now=None):
+        """永久性失败（群已注销、无权限等）：直接标记 failed，不再重试。"""
+        now = int(time.time() if now is None else now)
+        with self.meta(bot_hash) as db:
+            db.execute(
+                'UPDATE group_info_jobs SET status=\'failed\', error_code=?, updated_at=? WHERE group_openid=?',
+                (error_code, now, str(group_openid)),
+            )
+
+    def group_info_job(self, bot_hash, group_openid):
+        with self.meta(bot_hash) as db:
+            row = db.execute(
+                'SELECT * FROM group_info_jobs WHERE group_openid=?', (str(group_openid),)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def group_info_status(self, bot_hash):
+        """未完成的任务映射 {group_openid: 'queued'|'running'|'failed'}。"""
+        with self.meta(bot_hash) as db:
+            return {
+                row['group_openid']: ('queued' if row['status'] == 'pending' else row['status'])
+                for row in db.execute("SELECT group_openid,status FROM group_info_jobs WHERE status<>'done'")
+            }
+
+    def list_group_info_targets(self, bot_hash):
+        """回填候选：有会话记录、未离群、还没有群名的群。"""
+        with self.meta(bot_hash) as db:
+            return [
+                row['chat_id'] for row in db.execute(
+                    "SELECT chat_id FROM chats WHERE chat_type='qq_group' AND left_group=0 "
+                    "AND (display_name IS NULL OR display_name='') ORDER BY updated_at"
+                )
+            ]
+
     def unread_total(self, bot_hash):
         with self.meta(bot_hash) as db:
             return db.execute('SELECT COALESCE(SUM(unread),0) FROM chats').fetchone()[0]
@@ -361,6 +467,10 @@ class Store:
 
     def mark_read(self, bot_hash, chat_type, chat_id, through_id):
         return self._mark_read(bot_hash, chat_type, chat_id, 'id<=?', (int(through_id),))
+
+    def mark_read_all(self, bot_hash, chat_type, chat_id):
+        """点进会话时清掉全部未读和 @ 提示。"""
+        return self._mark_read(bot_hash, chat_type, chat_id, '1', ())
 
     def mark_read_visible(self, bot_hash, chat_type, chat_id, ids):
         ids = list(dict.fromkeys(int(value) for value in ids))
