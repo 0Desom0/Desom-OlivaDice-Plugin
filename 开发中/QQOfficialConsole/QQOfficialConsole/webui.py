@@ -10,11 +10,21 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import OlivOS
+from OlivOS.adapter.qqGuild import qqGuildv2SDKCommon as sdkCommon
 
-from . import errors
+from . import errors, media as media_module
 from .send import Sender
+
+# 群名接口的频控/永久失败错误码（code 与 err_code 两种形态都列上）
+_GROUP_INFO_RATE_LIMIT_CODES = {40034100, 50002, 50055002}
+_GROUP_INFO_PERMANENT_CODES = {11253, 11255, 40011028, 40012010}
+_GROUP_INFO_RATE_LIMIT_DELAY = 120
+_GROUP_INFO_RETRY_DELAY = 60
+# 入站图片只允许从 QQ 多媒体域名代下载，避免桥接接口被当成带鉴权的代理
+_ATTACHMENT_HOSTS = {'multimedia.nt.qq.com.cn'}
 
 
 class Bridge:
@@ -32,6 +42,174 @@ class Bridge:
         self._image_reaper = threading.Thread(target=self._reap_images, name='QQOfficialConsole-image-reaper',
                                               daemon=True)
         self._image_reaper.start()
+        self._attachment_lock = threading.Lock()
+        self._group_info_wake = threading.Event()
+        self._group_info_worker = threading.Thread(
+            target=self._group_info_loop, name='QQOfficialConsole-group-info', daemon=True
+        )
+        self._group_info_worker.start()
+
+    def _group_info_loop(self):
+        while not self._closed.is_set():
+            self._group_info_wake.wait(30)
+            self._group_info_wake.clear()
+            if self._closed.is_set():
+                break
+            try:
+                for bot_hash in self._bots():
+                    if self._closed.is_set():
+                        break
+                    self.pump_group_info(bot_hash=bot_hash)
+            except Exception:
+                pass
+
+    def wake_group_info(self):
+        self._group_info_wake.set()
+
+    def _incoming_image(self, bot, chat_type, chat_id, message_id, attachment, index):
+        """仅代理本会话入站消息中的 QQ CDN 图片，绝不接受前端传入的 URL。"""
+        if (type(message_id) is not int or message_id <= 0 or type(attachment) is not int
+                or attachment < 0 or type(index) is not int or index < 0):
+            return errors.failure('图片已过期或无法加载')
+        rows = self.store.get_messages_by_ids(bot, chat_type, chat_id, [message_id])
+        if not rows or rows[0].get('direction') != 'in':
+            return errors.failure('图片已过期或无法加载')
+        try:
+            payload = json.loads(rows[0].get('content_json') or '{}')
+            item = payload['attachments'][attachment]
+            if not isinstance(item, dict) or not str(item.get('content_type', '')).lower().startswith('image/'):
+                return errors.failure('图片已过期或无法加载')
+            url = item['url']
+            if not isinstance(url, str) or len(url) > 8192:
+                return errors.failure('图片已过期或无法加载')
+            if url.startswith('//'):
+                url = 'https:' + url
+            elif url.startswith('multimedia.nt.qq.com.cn/'):
+                url = 'https://' + url
+            parsed = urlsplit(url)
+            if (parsed.scheme != 'https' or parsed.hostname not in _ATTACHMENT_HOSTS
+                    or parsed.username is not None or parsed.password is not None or parsed.port not in (None, 443)):
+                return errors.failure('图片已过期或无法加载')
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            return errors.failure('图片已过期或无法加载')
+        key = self.media.inbound_key(bot, url)
+        retention = self.store.get_settings()['image_retention_days']
+        # 同一张图只下载一次，避免滚动/并发请求放大到 CDN。
+        with self._attachment_lock:
+            path = self.media.inbound_path(key)
+            chunk = self.media.read_inbound_chunk(path, index, retention) if path else None
+            if chunk:
+                return {'ok': True, 'keyword': '成功', **chunk}
+            if path and index:
+                return errors.failure('图片已过期或无法加载')
+            try:
+                event = self._event(bot)
+                sdk_bot = OlivOS.qqGuildv2SDK.get_SDK_bot_info_from_Event(event)
+                token = sdkCommon.getTokenNow(sdk_bot)
+                if not token:
+                    return errors.failure('图片已过期或无法加载')
+                response = sdkCommon.req.request(
+                    'GET', url, headers={'Authorization': 'QQBot ' + token},
+                    timeout=(5, 20), allow_redirects=False, stream=True,
+                )
+                try:
+                    if response.status_code != 200:
+                        return errors.failure('图片已过期或无法加载')
+                    parts, size = [], 0
+                    for part in response.iter_content(chunk_size=65536):
+                        if part:
+                            size += len(part)
+                            if size > media_module.MAX_SIZE:
+                                return errors.failure('图片已过期或无法加载')
+                            parts.append(part)
+                    path = self.media.save_inbound(key, b''.join(parts))
+                finally:
+                    response.close()
+                chunk = self.media.read_inbound_chunk(path, index, retention) if path else None
+                return {'ok': True, 'keyword': '成功', **chunk} if chunk else errors.failure('图片已过期或无法加载')
+            except Exception:
+                return errors.failure('图片已过期或无法加载')
+
+    def fetch_group_name(self, bot_hash, group_openid):
+        """调用官方群信息接口；返回 (result, body)。"""
+        bot = self._bots().get(bot_hash)
+        if bot is None:
+            return errors.failure('机器人无效'), {}
+        try:
+            event = self._event(bot_hash)
+            sdk_bot = OlivOS.qqGuildv2SDK.get_SDK_bot_info_from_Event(event)
+            token = sdkCommon.getTokenNow(sdk_bot)
+            if not token:
+                return errors.failure('无接口权限'), {}
+            host = str(OlivOS.qqGuildv2SDK.sdkAPIHost.get('default') or 'https://api.bot.qq.com')
+            if '://' not in host:
+                host = 'https://' + host
+            url = host.rstrip('/') + '/v2/groups/%s/info' % group_openid
+            response = sdkCommon.req.request(
+                'GET', url, headers={'Authorization': 'QQBot ' + token}, timeout=(5, 20),
+            )
+            status = getattr(response, 'status_code', 0)
+            try:
+                payload = json.loads(getattr(response, 'text', None) or '{}')
+            except (ValueError, TypeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            data = payload.get('data') if isinstance(payload.get('data'), dict) else payload
+            if not isinstance(data, dict):
+                data = {}
+            code = payload.get('code', payload.get('err_code'))
+            try:
+                code = int(code) if code is not None else None
+            except (TypeError, ValueError):
+                code = None
+            ok = status == 200 and code in (None, 0)
+            if ok:
+                result = {'ok': True, 'keyword': '成功', 'http_status': status, 'error_code': None}
+            else:
+                result = errors.failure(errors.CODES.get(code, '无接口权限') if code else '无接口权限')
+                result['error_code'] = code
+                result['http_status'] = status
+            return result, data
+        except Exception:
+            return errors.failure('无接口权限'), {}
+
+    def pump_group_info(self, limit=5, bot_hash=None):
+        """按入群时间 FIFO 处理群名队列；队首冷却时不越过它。"""
+        bots = [bot_hash] if bot_hash else list(self._bots())
+        for key in bots:
+            if self._closed.is_set():
+                return
+            self.store.recover_group_info_jobs(key)
+            processed = 0
+            while processed < max(1, int(limit)):
+                if self._closed.is_set():
+                    return
+                claimed = self.store.claim_group_info_jobs(key)
+                if not claimed:
+                    break
+                group_openid = claimed[0]
+                result, body = self.fetch_group_name(key, group_openid)
+                name = body.get('group_name')
+                if result['ok'] and isinstance(name, str) and name.strip():
+                    self.store.upsert_chat(key, 'qq_group', group_openid, display_name=name.strip()[:255])
+                    self.store.complete_group_info_job(key, group_openid)
+                else:
+                    code = result.get('error_code')
+                    if code in _GROUP_INFO_PERMANENT_CODES:
+                        self.store.fail_group_info_job(key, group_openid, code)
+                    elif result.get('http_status') == 429 or code in _GROUP_INFO_RATE_LIMIT_CODES:
+                        self.store.requeue_group_info_job(key, group_openid, _GROUP_INFO_RATE_LIMIT_DELAY)
+                    else:
+                        self.store.requeue_group_info_job(key, group_openid, _GROUP_INFO_RETRY_DELAY)
+                processed += 1
+
+    def backfill_group_names(self):
+        """启动补齐：给已有会话但没有群名的群入队（机器人离线期间被拉进群时兜底）。"""
+        for bot_hash in self._bots():
+            for group_openid in self.store.list_group_info_targets(bot_hash):
+                self.store.enqueue_group_info(bot_hash, group_openid)
+        self.wake_group_info()
 
     def _reap_images(self):
         while not self._image_stop.is_set():
@@ -45,8 +223,10 @@ class Bridge:
 
     def close(self):
         self._closed.set()
+        self._group_info_wake.set()
         self._image_stop.set()
         self._image_reaper.join()
+        self._group_info_worker.join(timeout=2)
         with self._jobs_lock:
             threads = [job['thread'] for job in self._jobs.values() if job.get('thread')]
         deadline = time.monotonic() + 2
@@ -244,18 +424,22 @@ class Bridge:
             raw = None
         result = self._result(raw)
         body = self._body(raw) if isinstance(raw, dict) else {}
-        role = body.get('member_role') if result['ok'] else None
-        if role not in ('member', 'admin', 'owner'):
-            role = None
-        proactive = body.get('allow_proactive_msg') if role else None
-        if not isinstance(proactive, bool):
-            proactive = None
+        fields = {}
+        if result['ok']:
+            role = body.get('member_role')
+            if role in ('member', 'admin', 'owner'):
+                fields['self_role'] = role
+            proactive = body.get('allow_proactive_msg')
+            if isinstance(proactive, bool):
+                fields['allow_proactive'] = proactive
+            openid = body.get('member_openid')
+            if isinstance(openid, str) and openid.strip():
+                fields['bot_openid'] = openid.strip()[:255]
+            fields['role_updated_at'] = int(time.time())
         with self._jobs_lock:
             if self._closed.is_set():
-                return errors.failure('插件正在关闭'), {'self_role': None}
-            chat = self.store.upsert_chat(
-                bot, 'qq_group', chat_id, self_role=role, allow_proactive=proactive, role_updated_at=int(time.time())
-            )
+                return errors.failure('插件正在关闭'), self.store.get_chat(bot, 'qq_group', chat_id) or {'self_role': None}
+            chat = self.store.upsert_chat(bot, 'qq_group', chat_id, **fields)
         return result, chat
 
     def _admin(self, event, bot, chat_type, chat_id):
@@ -355,9 +539,15 @@ class Bridge:
         if action == 'GetSettings':
             return dict(ok, settings=self.store.get_settings(bot))
         if action == 'ListChats':
+            chats = self.store.list_chats(bot, bool(p.get('include_hidden')))
+            status = self.store.group_info_status(bot)
+            for chat in chats:
+                flag = status.get(chat['chat_id']) if chat.get('chat_type') == 'qq_group' else None
+                if flag:
+                    chat['group_info_status'] = flag
             return dict(
                 ok,
-                chats=self.store.list_chats(bot, bool(p.get('include_hidden'))),
+                chats=chats,
                 unread={key: self.store.unread_total(key) for key in self._bots()},
                 mention_unread={key: self.store.mention_total(key) for key in self._bots()},
             )
@@ -396,6 +586,9 @@ class Bridge:
         chat_type, chat_id = p.get('chat_type'), p.get('chat_id')
         if chat_type not in ('qq_group', 'qq_private') or not isinstance(chat_id, str) or not chat_id.strip():
             return errors.failure('未选目标')
+        if action == 'AttachmentRead':
+            return self._incoming_image(bot, chat_type, chat_id, p.get('message_id'),
+                                        p.get('attachment'), p.get('index', 0))
         if action == 'MessageImageRead':
             message_id, image_id = p.get('message_id'), p.get('image_id')
             if type(message_id) is not int or message_id <= 0 or not isinstance(image_id, str):
@@ -410,8 +603,12 @@ class Bridge:
             except (TypeError, ValueError, KeyError, AttributeError, StopIteration):
                 raise ValueError('图片已失效') from None
             with self._image_cleanup_lock:
-                return dict(ok, **self.media.read_sent_chunk(image, p.get('index', 0),
-                                                            self.store.get_settings()['image_retention_days']))
+                return dict(
+                    ok,
+                    **self.media.read_sent_chunk(
+                        image, p.get('index', 0), self.store.get_settings()['image_retention_days'],
+                    ),
+                )
         if action == 'MentionTarget':
             return dict(ok, **self.store.mention_target(bot, chat_type, chat_id))
         if action in ('CachePut', 'CacheGet'):
@@ -419,7 +616,11 @@ class Bridge:
                 return self._view_cache_chunk(bot, chat_type, chat_id, p, action == 'CachePut')
             return errors.failure('缓存分片无效')
         if action == 'AddChat':
-            return dict(ok, chat=self.store.upsert_chat(bot, chat_type, chat_id, hidden=0))
+            chat = self.store.upsert_chat(bot, chat_type, chat_id, hidden=0)
+            if chat_type == 'qq_group':
+                self.store.enqueue_group_info(bot, chat_id)
+                self.wake_group_info()
+            return dict(ok, chat=chat)
         if action == 'SetRemark':
             remark = p.get('remark')
             if not isinstance(remark, str) or len(remark) > 255:
@@ -427,6 +628,9 @@ class Bridge:
             return dict(ok, chat=self.store.upsert_chat(bot, chat_type, chat_id, remark=remark))
         if action == 'ChatAction':
             if p.get('action') == 'read':
+                if p.get('all') is True:
+                    self.store.mark_read_all(bot, chat_type, chat_id)
+                    return dict(ok, chat=self.store.get_chat(bot, chat_type, chat_id))
                 ids = p.get('visible_ids')
                 if not isinstance(ids, list) or len(ids) > 500 or any(type(x) is not int or x <= 0 for x in ids):
                     raise ValueError()
@@ -505,6 +709,23 @@ class Bridge:
                 raise ValueError()
             result, chat = self._role(event, bot, chat_id)
             return dict(result, chat=chat)
+        if action == 'RefreshGroupName':
+            if chat_type != 'qq_group':
+                raise ValueError()
+            result, body = self.fetch_group_name(bot, chat_id)
+            name = body.get('group_name')
+            if result['ok'] and isinstance(name, str) and name.strip():
+                chat = self.store.upsert_chat(bot, chat_type, chat_id, display_name=name.strip()[:255])
+                self.store.complete_group_info_job(bot, chat_id)
+                return dict(result, chat=chat)
+            code = result.get('error_code')
+            if code in _GROUP_INFO_PERMANENT_CODES:
+                self.store.fail_group_info_job(bot, chat_id, code)
+            elif result.get('http_status') == 429 or code in _GROUP_INFO_RATE_LIMIT_CODES:
+                self.store.requeue_group_info_job(bot, chat_id, _GROUP_INFO_RATE_LIMIT_DELAY)
+            else:
+                self.store.requeue_group_info_job(bot, chat_id, _GROUP_INFO_RETRY_DELAY)
+            return result
         if action == 'Send':
             text = str(p.get('text') or '') + str(p.get('markdown') or '')
             at_all = bool(re.search(r'<qqbot-at-everyone\b', text, re.I)) or any(
