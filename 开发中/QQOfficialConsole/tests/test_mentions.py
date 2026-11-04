@@ -93,6 +93,18 @@ def test_mention_target_counts_rows_not_id_gaps(plugin):
     assert db.mention_target('a', 'qq_group', 'g') == {'message_id': None, 'newer_count': 0}
 
 
+def test_opening_chat_clears_all_unread(plugin):
+    main, db = plugin
+    incoming(main, 'a', 'g', 'one', 'GROUP_MESSAGE_CREATE')
+    incoming(main, 'a', 'g', 'two', 'GROUP_AT_MESSAGE_CREATE', True)
+    chat = db.get_chat('a', 'qq_group', 'g')
+    assert chat['unread'] == 2 and chat['mention_unread'] == 1
+    db.mark_read_all('a', 'qq_group', 'g')
+    chat = db.get_chat('a', 'qq_group', 'g')
+    assert chat['unread'] == 0 and chat['mention_unread'] == 0
+    assert db.mention_target('a', 'qq_group', 'g') == {'message_id': None, 'newer_count': 0}
+
+
 def test_legacy_session_migrates_mention_index(plugin):
     main, db = plugin
     path = db.root / 'legacy' / 'msg' / 'qq_group' / 'g.sqlite3'
