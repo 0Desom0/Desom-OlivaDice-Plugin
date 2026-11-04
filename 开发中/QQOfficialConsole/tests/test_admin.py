@@ -119,6 +119,15 @@ def test_non_admin_management_is_denied_before_privileged_http(console, action, 
     assert not result['ok'] and result['keyword'] == '无管理员权限'
     assert [(method, path) for method, path, _, _ in console.calls] == [('GET', '/v2/groups/group/bot_state')]
 
+def test_missing_live_role_does_not_authorize_cached_admin(console):
+    console.store.upsert_chat(console.bot.hash, 'qq_group', 'group', self_role='admin')
+    console.role = None
+    result = call(console, 'Admin', action='restrict_query')
+    assert not result['ok']
+    assert [(method, path) for method, path, _, _ in console.calls] == [('GET', '/v2/groups/group/bot_state')]
+    assert console.store.get_chat(console.bot.hash, 'qq_group', 'group')['self_role'] == 'admin'
+
+
 def test_non_admin_can_read_cached_members(console):
     console.role = 'member'
     console.roster.upsert_member(console.bot.hash, 'qq_group', 'group', 'u1', 'Alice')

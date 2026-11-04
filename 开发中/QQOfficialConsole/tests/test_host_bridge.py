@@ -185,6 +185,8 @@ def test_browser_multibyte_cache_survives_switch(console):
     worker = threading.Thread(target=bus, daemon=True)
     worker.start()
     options = webdriver.ChromeOptions()
+    if os.environ.get('OLIVOS_CHROME_BINARY'):
+        options.binary_location = os.environ['OLIVOS_CHROME_BINARY']
     for option in ('--headless=new', '--no-first-run', '--disable-background-networking', '--window-size=1440,1000'):
         options.add_argument(option)
     driver = None
@@ -252,8 +254,6 @@ def test_browser_mention_near_far_and_other_bot(console, monkeypatch):
     from selenium import webdriver
     from selenium.common.exceptions import StaleElementReferenceException
     from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.common.action_chains import ActionChains
-    from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import Select, WebDriverWait
 
@@ -303,6 +303,8 @@ def test_browser_mention_near_far_and_other_bot(console, monkeypatch):
     worker = threading.Thread(target=bus, daemon=True)
     worker.start()
     options = webdriver.ChromeOptions()
+    if os.environ.get('OLIVOS_CHROME_BINARY'):
+        options.binary_location = os.environ['OLIVOS_CHROME_BINARY']
     for option in ('--headless=new', '--no-first-run', '--disable-background-networking', '--window-size=1440,1000'):
         options.add_argument(option)
     driver = None
@@ -339,39 +341,26 @@ def test_browser_mention_near_far_and_other_bot(console, monkeypatch):
         def shown():
             return driver.execute_script("return [...document.querySelectorAll('#messages .message .bubble')].map(e=>e.textContent)")
 
+        database = console.module.main._state[0]
         for chat, count in (('near', 70), ('far', 380)):
+            assert database.get_chat(console.bot.hash, 'qq_group', chat)['mention_unread'] == 1
             click_chat(chat)
             wait.until(lambda d: len(shown()) == 30)
             assert shown() == [f'{chat} message {n:03d}' for n in range(count - 30, count)]
-            wait.until(lambda d: d.execute_script('return chatReady && !switching && !olderLoading && !state.pulling && !state.sending'))
-            if chat == 'near':
-                block_poll.set()
-                driver.execute_script('poll()')
-                assert poll_arrived.wait(5)
-                assert driver.execute_script('return state.pulling')
-            wait.until(lambda d: d.find_element(By.ID, 'jumpMention').is_displayed())
-            driver.find_element(By.ID, 'jumpMention').click()
-            if chat == 'near':
-                block_poll.clear()
-                release_poll.set()
-            target = 10 if chat == 'near' else 3
-            wait.until(lambda d: f'{chat} message {target:03d}' in shown())
-            if chat == 'near':
-                messages = shown()
-                numbers = [int(text.rsplit(' ', 1)[1]) for text in messages]
-                assert numbers == list(range(numbers[0], count))
-                assert target in numbers
-            else:
-                messages = shown()
-                numbers = [int(text.rsplit(' ', 1)[1]) for text in messages]
-                assert len(numbers) <= 100 and numbers[-1] < count - 1
-                before = numbers[-1]
-                box = driver.find_element(By.ID, 'messages')
-                ActionChains(driver).scroll_from_origin(ScrollOrigin.from_element(box), 0, 100000).perform()
-                wait.until(lambda d: int(shown()[-1].rsplit(' ', 1)[1]) > before)
-            wait.until(lambda d: not d.find_element(By.ID, 'jumpMention').is_displayed())
+            wait.until(lambda d: database.get_chat(console.bot.hash, 'qq_group', chat)['unread'] == 0)
+            assert database.get_chat(console.bot.hash, 'qq_group', chat)['mention_unread'] == 0
+            assert database.mention_target(console.bot.hash, 'qq_group', chat)['message_id'] is None
+            assert not driver.find_element(By.ID, 'jumpMention').is_displayed()
+            assert database.get_chat(other.hash, 'qq_group', 'other')['mention_unread'] == 1
             wait.until(lambda d: '@我 1' in d.execute_script(
-                "return [...document.querySelectorAll('#bots option')].find(o=>o.value===arguments[0])?.textContent || ''", other.hash))
+                "return [...document.querySelectorAll('#bots option')]"
+                ".find(o=>o.value===arguments[0])?.textContent || ''", other.hash))
+        # 缓存恢复时依旧定位最新消息，不恢复旧的滚动位置。
+        click_chat('near')
+        wait.until(lambda d: shown() == [f'near message {n:03d}' for n in range(40, 70)])
+        assert driver.execute_script(
+            "const b=document.getElementById('messages');return b.scrollHeight-b.scrollTop-b.clientHeight<3")
+        assert all(e.text == '群' for e in driver.find_elements(By.CSS_SELECTOR, '#chats .avatar'))
     finally:
         release_poll.set()
         if driver is not None:

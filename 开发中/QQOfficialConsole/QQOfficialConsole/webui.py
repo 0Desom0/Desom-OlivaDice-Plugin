@@ -199,7 +199,9 @@ class Bridge:
                     if code in _GROUP_INFO_PERMANENT_CODES:
                         self.store.fail_group_info_job(key, group_openid, code)
                     elif result.get('http_status') == 429 or code in _GROUP_INFO_RATE_LIMIT_CODES:
-                        self.store.requeue_group_info_job(key, group_openid, _GROUP_INFO_RATE_LIMIT_DELAY)
+                        self.store.requeue_group_info_job(
+                            key, group_openid, _GROUP_INFO_RATE_LIMIT_DELAY, max_attempts=None
+                        )
                     else:
                         self.store.requeue_group_info_job(key, group_openid, _GROUP_INFO_RETRY_DELAY)
                 processed += 1
@@ -425,10 +427,11 @@ class Bridge:
         result = self._result(raw)
         body = self._body(raw) if isinstance(raw, dict) else {}
         fields = {}
+        if result['ok'] and body.get('member_role') not in ('member', 'admin', 'owner'):
+            # 响应成功但角色缺失不能沿用旧管理员权限执行写操作。
+            result = errors.failure('无法确认机器人身份')
         if result['ok']:
-            role = body.get('member_role')
-            if role in ('member', 'admin', 'owner'):
-                fields['self_role'] = role
+            fields['self_role'] = body['member_role']
             proactive = body.get('allow_proactive_msg')
             if isinstance(proactive, bool):
                 fields['allow_proactive'] = proactive
@@ -719,10 +722,11 @@ class Bridge:
                 self.store.complete_group_info_job(bot, chat_id)
                 return dict(result, chat=chat)
             code = result.get('error_code')
+            self.store.enqueue_group_info(bot, chat_id)
             if code in _GROUP_INFO_PERMANENT_CODES:
                 self.store.fail_group_info_job(bot, chat_id, code)
             elif result.get('http_status') == 429 or code in _GROUP_INFO_RATE_LIMIT_CODES:
-                self.store.requeue_group_info_job(bot, chat_id, _GROUP_INFO_RATE_LIMIT_DELAY)
+                self.store.requeue_group_info_job(bot, chat_id, _GROUP_INFO_RATE_LIMIT_DELAY, max_attempts=None)
             else:
                 self.store.requeue_group_info_job(bot, chat_id, _GROUP_INFO_RETRY_DELAY)
             return result

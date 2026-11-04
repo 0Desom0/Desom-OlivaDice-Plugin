@@ -103,6 +103,34 @@ def test_rate_limited_info_retries_later_and_keeps_queue(console):
     assert c.store.get_chat(c.bot.hash, 'qq_group', 'g1')['display_name'] == '测试群'
 
 
+def test_rate_limit_keeps_head_queued_after_many_retries(console):
+    c = console
+    for group, stamp in [('g1', 100), ('g2', 200)]:
+        c.store.upsert_chat(c.bot.hash, 'qq_group', group)
+        c.store.enqueue_group_info(c.bot.hash, group, enqueued_at=stamp)
+    c.info_failure['/v2/groups/g1/info'] = (429, {'message': '频率限制'})
+    for _ in range(7):
+        c.bridge.pump_group_info(limit=10)
+        assert c.store.group_info_job(c.bot.hash, 'g1')['status'] == 'pending'
+        assert not any(path == '/v2/groups/g2/info' for _, path in c.calls)
+        c.clock[0] += 120
+    c.info_failure.clear()
+    c.bridge.pump_group_info(limit=10)
+    assert [path for _, path in c.calls[-2:]] == ['/v2/groups/g1/info', '/v2/groups/g2/info']
+
+
+def test_manual_refresh_rate_limit_queues_group_when_not_previously_queued(console):
+    c = console
+    c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1', display_name='已有名字')
+    c.info_failure['/v2/groups/g1/info'] = (429, {'message': '频率限制'})
+    result = call(c, 'RefreshGroupName', chat_id='g1')
+    assert not result['ok']
+    job = c.store.group_info_job(c.bot.hash, 'g1')
+    assert job is not None and job['status'] == 'pending'
+    assert job['next_at'] > c.clock[0]
+    assert c.store.get_chat(c.bot.hash, 'qq_group', 'g1')['display_name'] == '已有名字'
+
+
 def test_permanent_failure_marks_job_failed(console):
     c = console
     c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
@@ -249,4 +277,3 @@ def test_add_chat_enqueues_group_name(console):
     assert result['ok']
     job = c.store.group_info_job(c.bot.hash, 'g-add')
     assert job and job['status'] in ('pending', 'running', 'done')
-
