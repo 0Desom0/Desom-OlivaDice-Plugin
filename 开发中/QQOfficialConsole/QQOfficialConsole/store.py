@@ -393,7 +393,7 @@ class Store:
                 'SELECT attempts FROM group_info_jobs WHERE group_openid=?', (str(group_openid),)
             ).fetchone()
             attempts = int(row['attempts']) + 1 if row else 1
-            status = 'failed' if attempts >= max_attempts else 'pending'
+            status = 'failed' if max_attempts is not None and attempts >= max_attempts else 'pending'
             db.execute(
                 'UPDATE group_info_jobs SET status=?, attempts=?, next_at=?, updated_at=? WHERE group_openid=?',
                 (status, attempts, now + max(0, int(delay_seconds)) if status == 'pending' else now, now,
