@@ -2,6 +2,7 @@
 
 import datetime
 import logging
+import re
 import threading
 import time
 
@@ -10,6 +11,37 @@ from . import media, passive, roster, store, webui
 _log = logging.getLogger('QQOfficialConsole')
 _guard = threading.RLock()
 _state = None
+_FACE_RE = re.compile(r'<faceType\s*=\s*[^,>]+(?:,[^>]*)?\s*/?>')
+
+
+def _strip_face_tags(text):
+    """剥离 QQ 原始表情标签；SDK 的正则优先，宿主缺失时本地兜底。"""
+    try:
+        from OlivOS.adapter.qqGuild.qqGuildv2SDKCommon import _strip_qq_face_tags
+        stripped, _ = _strip_qq_face_tags(text)
+        return stripped
+    except Exception:
+        return _FACE_RE.sub('', text)
+
+
+def _render_text(text, raw):
+    """@ 占位符替换成 mentions 里的昵称；表情标签替换为 [表情]。"""
+    mentions = raw.get('mentions')
+    if isinstance(mentions, list):
+        names = {}
+        for item in mentions:
+            if isinstance(item, dict):
+                ident = str(item.get('id') or item.get('member_openid') or '')
+                name = item.get('username') or item.get('nick')
+                if ident and isinstance(name, str) and name:
+                    names[ident] = name
+        # QQ 正文里的 @ 占位符是 <@member_openid>；已知的换成昵称，未知的退化成「@成员」，
+        # 绝不把原始 <@...> 标记漏给用户。
+        text = re.sub(r'<@([^<>]+)>', lambda m: '@' + names.get(m.group(1).strip(), '成员'), text)
+    stripped = _strip_face_tags(text)
+    if stripped != text and _FACE_RE.search(text):
+        text = _FACE_RE.sub('[表情]', text)
+    return text.strip()
 
 
 def _initialise(proc):
@@ -77,7 +109,7 @@ def _incoming(event, proc, group):
     name = sender.get('nickname') or sender.get('name') or sender_id
     created = _timestamp(raw.get('timestamp'))
     msg_id = raw.get('id') or getattr(data, 'message_id', None)
-    text = str(raw.get('content') or '')
+    text = _render_text(str(raw.get('content') or ''), raw)
     attachments = raw.get('attachments') or []
     msg_kind = 'media' if attachments else 'text'
     message = {
@@ -115,7 +147,7 @@ def _incoming(event, proc, group):
 def _member_event(event, proc, increase):
     if not _valid(event) or not (getattr(event.data, 'extend', {}) or {}).get('flag_from_qq'):
         return
-    database, pool, members, _, _ = _initialise(proc)
+    database, pool, members, _, bridge = _initialise(proc)
     bot = event.bot_info.hash
     group = str(getattr(event.data, 'group_id', '') or '')
     if not group:
@@ -124,6 +156,9 @@ def _member_event(event, proc, increase):
     fields = {'left_group': int(typ == 'GROUP_DEL_ROBOT')} if typ in ('GROUP_ADD_ROBOT', 'GROUP_DEL_ROBOT') else {}
     database.upsert_chat(bot, 'qq_group', group, **fields)
     raw = _raw(event)
+    if typ == 'GROUP_ADD_ROBOT':
+        database.enqueue_group_info(bot, group, enqueued_at=_timestamp(raw.get('timestamp')))
+        bridge.wake_group_info()
     event_id = (getattr(event.data, 'extend', {}) or {}).get('event_id')
     if typ in ('GROUP_ADD_ROBOT', 'GROUP_MEMBER_ADD') and event_id:
         pool.add(bot, 'qq_group', group, 'event_id', str(event_id), typ, _timestamp(raw.get('timestamp')))
@@ -171,6 +206,10 @@ class Event:
 
     def init_after(plugin_event, Proc):
         _safe(_initialise, Proc)
+        try:
+            _initialise(Proc)[4].backfill_group_names()
+        except Exception:
+            _log.exception('控制台群名回填失败')
 
     def group_message(plugin_event, Proc):
         _safe(_incoming, plugin_event, Proc, True)
