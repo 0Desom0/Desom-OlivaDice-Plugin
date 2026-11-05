@@ -569,6 +569,32 @@
         object-fit: contain;
         border-radius: 6px;
         margin-top: 6px;
+        cursor: zoom-in;
+      }
+      /* 点消息里的图看大图：铺满视口，再点一下或 Esc 关掉。 */
+      #lightbox {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        background: #000d;
+        cursor: zoom-out;
+      }
+      #lightbox[hidden] {
+        display: none;
+      }
+      #lightbox img {
+        max-width: 100%;
+        max-height: 100%;
+        width: auto;
+        height: auto;
+        object-fit: contain;
+        border-radius: 6px;
+        box-shadow: 0 10px 40px #000b;
+        cursor: zoom-out;
       }
       .attachment img,
       .edit-image img {
@@ -895,9 +921,15 @@
         <div id="dialogBody" class="scroll"></div>
       </div>
     </div>
+    <!-- 图片放大层：点消息里的图片打开，点一下或 Esc 关闭（必须放在脚本之前） -->
+    <div id="lightbox" hidden><img id="lightboxImage" alt=""></div>
     <script>
       "use strict";
       const $ = (id) => document.getElementById(id);
+      // 消息排序：先按平台时间，同一秒再按 id。别的插件可能先发回复、入向行后落库，
+      // 只按 id 会把「回复」排到「触发它的那条消息」前面。
+      const byTime = (a, b) =>
+        (Number(a.created_at) || 0) - (Number(b.created_at) || 0) || (a.id - b.id);
       const state = {
         bot: "",
         chat: null,
@@ -1296,6 +1328,8 @@
             const url = URL.createObjectURL(blob),
               img = el("img", null, "message-image");
             img.alt = "图片加载失败";
+            // 留着原始 Blob：点击放大时要重新造一个 objectURL（渲染用的这个已经 revoke 了）。
+            img._blob = blob;
             // 分片图片是异步插进来的，渲染时的统一贴底钩子覆盖不到，这里单独补一次。
             img.onload = () => {
               stickToBottom();
@@ -1709,7 +1743,7 @@
           if (!sameChat(current)) return;
           state.members = m.members || [];
           if (!cached) {
-            state.messages = (r.messages || []).sort((a, b) => a.id - b.id);
+            state.messages = (r.messages || []).sort(byTime);
             state.cursor = Math.max(0, ...state.messages.map((x) => Number(x.id) || 0));
             state.changeCursor = r.change_cursor ?? null;
             historyEnded = state.messages.length < 30;
@@ -1900,7 +1934,7 @@
           const known = new Set(state.messages.map((x) => x.id)),
             older = (r.messages || []).filter((x) => !known.has(x.id));
           if (older.length < 30) historyEnded = true;
-          state.messages = [...older, ...state.messages].sort((a, b) => a.id - b.id).slice(0, MESSAGE_LIMIT);
+          state.messages = [...older, ...state.messages].sort(byTime).slice(0, MESSAGE_LIMIT);
           renderMessages(false);
           const next = box.querySelector(`[data-id="${CSS.escape(String(first.id))}"]`);
           if (next) box.scrollTop = next.offsetTop - offset;
@@ -1925,7 +1959,7 @@
           const known = new Set(state.messages.map((x) => x.id)),
             newer = (r.messages || []).filter((x) => !known.has(x.id));
           if (!newer.length) return;
-          state.messages = [...state.messages, ...newer].sort((a, b) => a.id - b.id);
+          state.messages = [...state.messages, ...newer].sort(byTime);
           if (state.messages.length > MESSAGE_LIMIT) {
             state.messages = state.messages.slice(-MESSAGE_LIMIT);
             historyEnded = false;
@@ -1949,7 +1983,7 @@
           if (!sameChat(current)) return;
           const result = await api("PullMessages", { ...current, limit: 30, change_cursor: null });
           if (!sameChat(current)) return;
-          state.messages = (result.messages || []).sort((a, b) => a.id - b.id);
+          state.messages = (result.messages || []).sort(byTime);
           state.cursor = Math.max(0, ...state.messages.map((message) => Number(message.id) || 0));
           state.changeCursor = result.change_cursor ?? null;
           historyEnded = state.messages.length < 30;
@@ -2090,7 +2124,7 @@
           try {
             const r = await api("PullMessages", { ...current, around_id: id, limit: 50 });
             if (!sameChat(current)) return;
-            state.messages = (r.messages || []).sort((a, b) => a.id - b.id).slice(0, 300);
+            state.messages = (r.messages || []).sort(byTime).slice(0, 300);
             renderMessages(false);
             node = $("messages").querySelector(`[data-id="${CSS.escape(String(id))}"]`);
           } catch (e) {
@@ -2128,7 +2162,7 @@
               };
               const r = await api("PullMessages", request);
               if (!sameChat(current)) return;
-              const page = (r.messages || []).sort((a, b) => a.id - b.id);
+              const page = (r.messages || []).sort(byTime);
               messages = [...page, ...messages];
               if (page.length < request.limit) ended = true;
               if (messages.some((m) => Number(m.id) === id) || ended) break;
@@ -2137,7 +2171,7 @@
           } else {
             const r = await api("PullMessages", { ...current, around_id: id, limit: 50 });
             if (!sameChat(current)) return;
-            messages = (r.messages || []).sort((a, b) => a.id - b.id);
+            messages = (r.messages || []).sort(byTime);
           }
           if (!messages.some((m) => Number(m.id) === id)) {
             notice("本地记录中未找到该消息");
@@ -3481,6 +3515,45 @@
       jumpMention.title = "跳转到最早未读的 @ 消息";
       jumpMention.hidden = true;
       $("showInfo").before(jumpMention);
+      // —— 图片放大：点消息里的图看大图，再点一下或 Esc 关闭 ——
+      const lightbox = $("lightbox"),
+        lightboxImage = $("lightboxImage");
+      let lightboxUrl = "";
+      function closeLightbox() {
+        if (lightbox.hidden) return;
+        lightbox.hidden = true;
+        lightboxImage.removeAttribute("src");
+        if (lightboxUrl) {
+          URL.revokeObjectURL(lightboxUrl);
+          lightboxUrl = "";
+        }
+      }
+      function openLightbox(source) {
+        if (!source) return;
+        if (lightboxUrl) {
+          URL.revokeObjectURL(lightboxUrl);
+          lightboxUrl = "";
+        }
+        if (source._blob) {
+          // 分片图片：渲染用的 objectURL 在 onload 时已经 revoke，这里用 Blob 重新造。
+          lightboxUrl = URL.createObjectURL(source._blob);
+          lightboxImage.src = lightboxUrl;
+        } else {
+          lightboxImage.src = source.currentSrc || source.src;
+        }
+        lightbox.hidden = false;
+      }
+      lightbox.onclick = closeLightbox;
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeLightbox();
+      });
+      $("messages").addEventListener("click", (e) => {
+        const img = e.target && e.target.closest ? e.target.closest("img.message-image") : null;
+        if (img) {
+          e.preventDefault();
+          openLightbox(img);
+        }
+      });
       bootstrap();
     </script>
   </body>

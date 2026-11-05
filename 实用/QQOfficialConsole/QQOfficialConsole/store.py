@@ -711,8 +711,9 @@ class Store:
         sql = (
             'SELECT * FROM messages'
             + (' WHERE ' + ' AND '.join(clauses) if clauses else '')
-            + ' ORDER BY id '
-            + order
+            # 按平台时间排，id 只当同一秒的次序：别的插件可能先发回复、我们的入向行后落库，
+            # 只按 id 排会把「回复」显示在「触发它的那条消息」前面。
+            + ' ORDER BY created_at ' + order + ', id ' + order
             + ' LIMIT ?'
         )
         with self.session(bot_hash, chat_type, chat_id) as db:
