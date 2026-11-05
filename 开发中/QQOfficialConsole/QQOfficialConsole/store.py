@@ -449,6 +449,26 @@ class Store:
         with self.meta(bot_hash) as db:
             return db.execute('SELECT COALESCE(SUM(mention_unread),0) FROM chats').fetchone()[0]
 
+    def unread_target(self, bot_hash, chat_type, chat_id):
+        """进会话前的未读快照：条数 + 最早未读 / 最早 @ 的 message id。
+
+        打开会话会把整会话标已读，所以前端必须在这之前取一次，否则位置就丢了。
+        """
+        with self.session(bot_hash, chat_type, chat_id) as db:
+            row = db.execute(
+                'SELECT COALESCE(SUM(is_unread),0) AS unread, '
+                'COALESCE(SUM(mention_unread),0) AS mentions, '
+                'MIN(CASE WHEN is_unread=1 THEN id END) AS first_unread, '
+                'MIN(CASE WHEN mention_unread=1 THEN id END) AS first_mention '
+                'FROM messages'
+            ).fetchone()
+        return {
+            'unread': int(row['unread'] or 0),
+            'mention_unread': int(row['mentions'] or 0),
+            'first_unread': row['first_unread'],
+            'first_mention': row['first_mention'],
+        }
+
     def mention_target(self, bot_hash, chat_type, chat_id):
         with self.session(bot_hash, chat_type, chat_id) as db:
             row = db.execute('SELECT id FROM messages WHERE mention_unread=1 ORDER BY id LIMIT 1').fetchone()

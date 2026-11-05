@@ -4,14 +4,22 @@
   "namespace": "QQOfficialConsole",
   "info": "QQ 官方机器人多账号收发与会话管理控制台",
   "priority": 30000,
-  "svn": 4,
-  "version": "1.0.3",
+  "svn": 12,
+  "version": "1.0.11",
   "compatible_svn": 190,
   "message_mode": "olivos_para",
   "support": [
-    {"sdk": "qqGuildv2_link", "platform": "qqGuild", "model": "all"}
+    {
+      "sdk": "qqGuildv2_link",
+      "platform": "qqGuild",
+      "model": "all"
+    }
   ],
   "webui_config": [
-    {"title": "QQ 官方机器人控制台", "type": "iframe", "path": "webui/index.html"}
+    {
+      "title": "QQ 官方机器人控制台",
+      "type": "iframe",
+      "path": "webui/index.html"
+    }
   ]
 }

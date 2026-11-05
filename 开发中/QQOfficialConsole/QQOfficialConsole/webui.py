@@ -663,6 +663,9 @@ class Bridge:
                 )
         if action == 'MentionTarget':
             return dict(ok, **self.store.mention_target(bot, chat_type, chat_id))
+        if action == 'UnreadState':
+            # 打开会话时会话内全部会标为已读，所以前端必须在这之前取一次快照。
+            return dict(ok, **self.store.unread_target(bot, chat_type, chat_id))
         if action in ('CachePut', 'CacheGet'):
             if 'index' in p:
                 return self._view_cache_chunk(bot, chat_type, chat_id, p, action == 'CachePut')

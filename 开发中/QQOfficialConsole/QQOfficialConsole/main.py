@@ -6,7 +6,7 @@ import re
 import threading
 import time
 
-from . import media, passive, roster, store, webui
+from . import media, outgoing, passive, roster, store, webui
 
 _log = logging.getLogger('QQOfficialConsole')
 _guard = threading.RLock()
@@ -54,6 +54,8 @@ def _initialise(proc):
             images = media.MediaManager()
             images.cleanup()
             _state = (database, pool, members, images, webui.Bridge(database, pool, members, images, proc))
+            # 挂「其他插件发出的消息」记录钩子：qqGuildv2 所有发送的最终出口。
+            outgoing.install(_state)
         return _state
 
 
@@ -78,6 +80,25 @@ def _raw(event):
 def _event_type(event):
     packet = getattr(getattr(getattr(event, 'sdk_event', None), 'payload', None), 'data', None)
     return getattr(packet, 't', None)
+
+
+def _at_bot(extend, event, raw):
+    """这条群消息是不是 @ 了机器人。
+
+    OliviaDice 这套官方适配器不一定给 `qq_at_bot`：有的群把「@机器人」当成普通
+    GROUP_MESSAGE_CREATE 下发，只在 mentions 里带 `is_you: true`。
+    两条路都要认，否则那些群的「@我」永远统计不到、跳转也找不到目标。
+    """
+    if extend.get('qq_at_bot') is True:
+        return True
+    if _event_type(event) == 'GROUP_AT_MESSAGE_CREATE':
+        return True
+    mentions = (raw or {}).get('mentions')
+    if isinstance(mentions, list):
+        for item in mentions:
+            if isinstance(item, dict) and item.get('is_you') is True:
+                return True
+    return False
 
 
 def _timestamp(value):
@@ -123,9 +144,7 @@ def _incoming(event, proc, group):
         'content_text': text,
         'content_json': {'text': text, 'attachments': attachments},
         'created_at': created,
-        'is_mention': group and (
-            extend.get('qq_at_bot') is True or _event_type(event) == 'GROUP_AT_MESSAGE_CREATE'
-        ),
+        'is_mention': group and _at_bot(extend, event, raw),
         'raw_event_json': raw,
     }
     member = (
@@ -255,6 +274,7 @@ class Event:
         with _guard:
             if _state is not None:
                 try:
+                    outgoing.detach()
                     _state[4].close()
                     _state[0].save()
                     _state[0].close()
