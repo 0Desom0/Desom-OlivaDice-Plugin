@@ -211,20 +211,24 @@ def test_browser_multibyte_cache_survives_switch(console):
                          if element.find_element(By.TAG_NAME, 'strong').text == name), None)
 
         def click_chat(name):
-            def click(_):
-                button = chat_button(name)
-                if not button:
+            # 页面在 switching 期间会拒绝切换（真实用户会看到提示后再点一次），
+            # 所以测试也必须重复点击直到标题变化，单次点击会随机输给轮询重绘的竞态。
+            def attempt(d):
+                if d.find_element(By.ID, 'chatTitle').text == name:
+                    return True
+                if d.execute_script('return switching'):
                     return False
-                button.click()
-                return True
-            wait.until(click)
+                button = chat_button(name)
+                if button:
+                    button.click()
+                return False
+            wait.until(attempt)
 
         click_chat('alice')
         wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '#messages .message .bubble')) == 30)
         original = driver.execute_script("return [...document.querySelectorAll('#messages .message .bubble')].map(x=>x.textContent)")
         assert original == expected
         click_chat('bob')
-        wait.until(lambda d: d.find_element(By.ID, 'chatTitle').text == 'bob')
         cache_dir = host.root / 'plugin/data/QQOfficialConsole/view-cache'
         files = list(cache_dir.glob('*.json'))
         assert len(files) == 1
@@ -322,21 +326,31 @@ def test_browser_mention_near_far_and_other_bot(console, monkeypatch):
         driver.switch_to.frame(frame)
         wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '#bots option')) == 2)
         wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, '#chats .chat-item'))
-        if Select(driver.find_element(By.ID, 'bots')).first_selected_option.get_attribute('value') != console.bot.hash:
-            Select(driver.find_element(By.ID, 'bots')).select_by_value(console.bot.hash)
+        def select_expected_bot(d):
+            element = d.find_element(By.ID, 'bots')
+            if element.get_attribute('value') != console.bot.hash:
+                Select(element).select_by_value(console.bot.hash)
+            return element.get_attribute('value') == console.bot.hash
+
+        wait.until(select_expected_bot)
 
         def click_chat(name):
             menu = driver.find_element(By.ID, 'showChats')
             if menu.is_displayed():
                 menu.click()
+
             def attempt(d):
+                if d.find_element(By.ID, 'chatTitle').text == name:
+                    return True
+                if d.execute_script('return switching'):
+                    return False
                 for row in d.find_elements(By.CSS_SELECTOR, '#chats .chat-item'):
                     if row.find_element(By.TAG_NAME, 'strong').get_attribute('textContent') == name:
                         row.click()
-                        return True
+                        return False
                 return False
+
             wait.until(attempt)
-            wait.until(lambda d: d.find_element(By.ID, 'chatTitle').text == name)
 
         def shown():
             return driver.execute_script("return [...document.querySelectorAll('#messages .message .bubble')].map(e=>e.textContent)")
