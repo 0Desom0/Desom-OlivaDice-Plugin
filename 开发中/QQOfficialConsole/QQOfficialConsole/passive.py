@@ -1,4 +1,4 @@
-"""Persistent passive reply credentials with per-conversation send serialization."""
+"""被动回复凭据的持久化，以及按会话串行的发送锁。"""
 
 import threading
 import time
@@ -10,8 +10,8 @@ class PassivePool:
         self.store = store
         self._guard = threading.Lock()
         self._locks = {}
-        # SDK sequence state is process-local. Never reuse a credential already
-        # consumed before this pool was created, even if its database count is low.
+        # SDK 的 sequence 状态只在进程内有效。即便库里的计数很低，也绝不复用
+        # 本凭据池创建之前就已经被消费过的凭据。
         self._used_here = {}
 
     def _prune_used(self):
@@ -32,7 +32,7 @@ class PassivePool:
             if entry is None:
                 entry = [threading.RLock(), 0]
                 self._locks[key] = entry
-            entry[1] += 1  # Includes waiters, so the entry cannot be replaced under them.
+            entry[1] += 1  # 把等待者也算进去，避免还有人在等锁时把条目替换掉。
         try:
             with entry[0]:
                 yield

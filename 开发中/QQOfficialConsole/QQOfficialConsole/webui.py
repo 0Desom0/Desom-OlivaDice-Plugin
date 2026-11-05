@@ -1,4 +1,4 @@
-"""WebUI request dispatch. Credentials and host paths never cross the bridge."""
+"""WebUI 请求分发；凭据与宿主路径绝不经过消息桥。"""
 
 import base64
 import binascii
@@ -464,7 +464,7 @@ class Bridge:
         if not isinstance(raw, dict):
             return errors.failure('无接口权限')
         result = errors.result(raw)
-        # SDK error strings can contain HTTP details or credentials.
+        # SDK 的错误文本可能夹带 HTTP 细节或凭据，不能整包回给页面。
         result.pop('message', None)
         return result
 

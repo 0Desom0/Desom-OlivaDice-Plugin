@@ -1,4 +1,4 @@
-"""SQLite persistence for the console. All database access is serialized per Store."""
+"""控制台的 SQLite 持久化；同一个 Store 内的数据库访问统一串行化。"""
 
 import hashlib
 import json
@@ -219,7 +219,7 @@ class Store:
 
     @contextmanager
     def session(self, bot_hash, chat_type, chat_id):
-        """Hold the store lock and a transaction for a session database."""
+        """在持锁与事务的上下文中打开某个会话数据库。"""
         with self.lock:
             db = self._get_session(bot_hash, chat_type, chat_id)
             with db:
@@ -488,7 +488,7 @@ class Store:
         return self._mark_read(bot_hash, chat_type, chat_id, 'id IN (' + ','.join('?' for _ in ids) + ')', ids)
 
     def add_message(self, bot_hash, chat_type, chat_id, message, member=None, token=None, unread=True):
-        """Insert a message, upgrading duplicate inbound messages when an explicit mention arrives."""
+        """插入消息；显式 @ 事件重复到达时，把已存在的入站消息升级。"""
         data = dict(message)
         data.setdefault('created_at', int(time.time()))
         data.setdefault('msg_kind', 'unknown')

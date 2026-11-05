@@ -6,7 +6,7 @@ from test_host_bridge import console as nav_console  # noqa: F401
 from test_host_bridge import incoming
 from test_mobile_readability import mobile_browser
 
-pytestmark = pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='Browser verification is opt-in')
+pytestmark = pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='浏览器回归验证需手动开启')
 
 
 def open_mobile_chat(driver, wait, name):

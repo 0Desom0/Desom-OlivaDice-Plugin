@@ -1,4 +1,4 @@
-"""Background join-request refresh behavior without QQ network access."""
+"""后台刷新入群申请的行为回归；不访问 QQ 网络。"""
 import sys
 import threading
 from pathlib import Path

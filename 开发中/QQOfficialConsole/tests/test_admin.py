@@ -93,7 +93,7 @@ def refresh_requests(c):
     with c.bridge._jobs_lock:
         thread = c.bridge._jobs[(c.bot.hash, 'group')]['thread']
     thread.join(timeout=5)
-    assert not thread.is_alive(), 'join-request refresh did not finish'
+    assert not thread.is_alive(), '入群申请刷新没有在预期时间内结束'
     return call(c, 'JoinRequestList')
 
 
@@ -148,7 +148,7 @@ def test_refresh_returns_while_authorization_is_in_flight(console, monkeypatch):
         if urlsplit(url).path.endswith('/bot_state'):
             entered.set()
             if not release.wait(5):
-                raise AssertionError('authorization gate timed out')
+                raise AssertionError('等待授权门超时')
         return original(method, url, **kwargs)
 
     monkeypatch.setattr(sdk.req, 'request', gated_request)

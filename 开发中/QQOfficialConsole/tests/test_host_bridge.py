@@ -152,7 +152,7 @@ def test_send_3000_and_3001(console):
     assert any(row['direction'] == 'out' and row['content_text'] == 'x' * 3000 for row in messages)
 
 
-@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='Browser verification is opt-in')
+@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='浏览器回归验证需手动开启')
 def test_browser_multibyte_cache_survives_switch(console):
     """通过真实宿主、可见页面操作和磁盘缓存验证 UTF-8 分片往返。"""
     from selenium import webdriver
@@ -252,7 +252,7 @@ def test_browser_multibyte_cache_survives_switch(console):
         assert not service.is_alive()
 
 
-@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='Browser verification is opt-in')
+@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='浏览器回归验证需手动开启')
 def test_browser_mention_near_far_and_other_bot(console, monkeypatch):
     """群消息由宿主入口入库，通过页面点击及滚轮验证 @ 定位和跨账号隔离。"""
     from selenium import webdriver

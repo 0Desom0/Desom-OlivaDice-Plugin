@@ -9,7 +9,7 @@ from test_mobile_readability import mobile_browser
 pytest_plugins = ['test_host_bridge']
 
 
-@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='Browser verification is opt-in')
+@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='浏览器回归验证需手动开启')
 def test_group_info_view_tracks_asynchronous_refresh(console, monkeypatch):
     from selenium.webdriver.common.by import By
     from OlivOS import qqGuildv2SDK

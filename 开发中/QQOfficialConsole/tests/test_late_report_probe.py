@@ -1,4 +1,4 @@
-"""Isolated diagnostic for late QQ API findings; never contacts QQ."""
+"""QQ 接口延迟上报问题的独立诊断；全程不连 QQ。"""
 
 from test_group_info import call
 from test_group_info import console as group_console  # noqa: F401

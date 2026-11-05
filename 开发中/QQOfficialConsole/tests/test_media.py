@@ -259,7 +259,7 @@ def test_sent_read_expires_and_rejects_symlink(manager, tmp_path):
     try:
         path.symlink_to(outside)
     except OSError:
-        pytest.skip('symlink creation unavailable')
+        pytest.skip('当前环境无法创建符号链接')
     with pytest.raises(ValueError, match='失效'):
         manager.read_sent_chunk(image, 0, 30)
     manager.cleanup_sent(30)

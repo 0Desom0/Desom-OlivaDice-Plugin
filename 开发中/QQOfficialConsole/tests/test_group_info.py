@@ -247,7 +247,7 @@ def test_worker_wakes_on_enqueue(console):
     c.bridge.fetch_group_name = fetch
     c.store.enqueue_group_info(c.bot.hash, 'g1')
     c.bridge.wake_group_info()
-    assert done.wait(5), 'group info worker did not process the queued job'
+    assert done.wait(5), '群名任务线程没有处理排队的任务'
     assert c.store.get_chat(c.bot.hash, 'qq_group', 'g1')['display_name'] == '测试群'
 
 
@@ -368,7 +368,7 @@ def test_concurrent_pumps_do_not_reclaim_running_job(console):
     first = threading.Thread(target=c.bridge.pump_group_info, kwargs={'limit': 10})
     second = threading.Thread(target=c.bridge.pump_group_info, kwargs={'limit': 10})
     first.start()
-    assert started.wait(5), 'first pump did not start the request'
+    assert started.wait(5), '第一次 pump 没有发起请求'
     second.start()
     time.sleep(0.05)
     release.set()
@@ -397,7 +397,7 @@ def test_close_cancels_remaining_group_info_requests(console):
     c.bridge.fetch_group_name = fetch
     worker = threading.Thread(target=c.bridge.pump_group_info, kwargs={'limit': 10})
     worker.start()
-    assert started.wait(5), 'pump did not start the request'
+    assert started.wait(5), 'pump 没有发起请求'
     c.bridge.close()
     release.set()
     worker.join(5)

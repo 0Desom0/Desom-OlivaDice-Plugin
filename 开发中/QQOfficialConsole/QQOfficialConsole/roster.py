@@ -1,4 +1,4 @@
-"""Event-learned members and group join request cache."""
+"""从事件中学到的成员表，以及入群申请缓存。"""
 
 import json
 import time
@@ -36,7 +36,7 @@ class Roster:
         ]
 
     def refresh_requests(self, bot_hash, chat_id, requests, fetched_at=None, complete=True):
-        """Store fetched requests; mark unseen pending rows gone only on a complete refresh."""
+        """保存本次抓到的申请；只有完整刷新后，才把没再见到的待处理记录标记为已失效。"""
         fetched_at = int(time.time() if fetched_at is None else fetched_at)
         with self.store.session(bot_hash, 'qq_group', chat_id) as db:
             ids = set()
@@ -70,7 +70,7 @@ class Roster:
                     ),
                 )
             if complete:
-                # Do not compare timestamps: two refreshes can occur in the same second.
+                # 不能靠时间戳比较：两次刷新可能落在同一秒内。
                 for row in db.execute("SELECT join_request_id FROM join_requests WHERE status='pending'").fetchall():
                     if row['join_request_id'] not in ids:
                         db.execute(

@@ -1,4 +1,4 @@
-"""Chunked image uploads and persistent, bot-scoped emoji storage."""
+"""图片分片上传，以及按机器人隔离的永久表情存储。"""
 
 import base64
 import binascii
@@ -26,7 +26,7 @@ _MIMES = {'png': 'image/png', 'jpg': 'image/jpeg', 'gif': 'image/gif', 'webp': '
 
 
 def _safe_io(function):
-    """Never expose host filesystem paths to bridge clients."""
+    """不把宿主的磁盘路径暴露给消息桥的另一侧。"""
 
     @wraps(function)
     def wrapped(*args, **kwargs):
@@ -69,10 +69,10 @@ def _name(value):
 
 
 class MediaManager:
-    """All identifiers are generated locally; no API accepts filesystem paths or URLs.
+    """所有标识符都在本地生成，任何接口都不接收磁盘路径或网址。
 
-    root is the OlivOS working directory. Uploads belong to a bot until consumed;
-    emoji files are never consumed when a temporary copy is selected.
+    root 是 OlivOS 的工作目录。上传文件在被消费前归属于某个机器人；
+    选用表情包时只消费临时副本，原文件会一直保留。
     """
 
     def __init__(self, root=None):

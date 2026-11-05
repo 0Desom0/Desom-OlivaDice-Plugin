@@ -72,7 +72,7 @@ def mobile_browser(console, width=390, height=844):
         assert not service.is_alive()
 
 
-@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='Browser verification is opt-in')
+@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='浏览器回归验证需手动开启')
 def test_mobile_message_text_is_readable_and_frame_fills_screen(console):
     from selenium.webdriver.common.by import By
 
@@ -98,7 +98,7 @@ def test_mobile_message_text_is_readable_and_frame_fills_screen(console):
         assert not layout['hasHorizontalOverflow'], layout
 
 
-@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='Browser verification is opt-in')
+@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='浏览器回归验证需手动开启')
 def test_narrow_view_keeps_long_names_and_controls_in_bounds(console):
     from selenium.webdriver.common.by import By
 
@@ -133,7 +133,7 @@ def test_narrow_view_keeps_long_names_and_controls_in_bounds(console):
             )
 
 
-@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='Browser verification is opt-in')
+@pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='浏览器回归验证需手动开启')
 def test_mobile_click_older_pages_and_return_latest(console):
     from selenium.webdriver.common.by import By
 
