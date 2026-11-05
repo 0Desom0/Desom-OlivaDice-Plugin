@@ -12,6 +12,11 @@ _log = logging.getLogger('QQOfficialConsole')
 _guard = threading.RLock()
 _state = None
 _FACE_RE = re.compile(r'<faceType\s*=\s*[^,>]+(?:,[^>]*)?\s*/?>')
+# 群聊 @全体成员：平台下发的是 <qqbot-at-everyone /> 标签，旧占位 <@all>/<@everyone> 与
+# mentions 里的 all/everyone 条目也都认。
+_AT_EVERYONE_RE = re.compile(r'<qqbot-at-everyone\s*/?>|<@!?\s*(?:all|everyone)\s*>', re.IGNORECASE)
+_EVERYONE_IDS = ('all', 'everyone')
+_EVERYONE_TEXT = 'at全体成员'
 
 
 def _strip_face_tags(text):
@@ -25,7 +30,8 @@ def _strip_face_tags(text):
 
 
 def _render_text(text, raw):
-    """@ 占位符替换成 mentions 里的昵称；表情标签替换为 [表情]。"""
+    """@ 占位符替换成 mentions 里的昵称；@全体成员显示成固定文案；表情标签替换为 [表情]。"""
+    text = _AT_EVERYONE_RE.sub(_EVERYONE_TEXT, text)
     mentions = raw.get('mentions')
     if isinstance(mentions, list):
         names = {}
@@ -36,12 +42,32 @@ def _render_text(text, raw):
                 if ident and isinstance(name, str) and name:
                     names[ident] = name
         # QQ 正文里的 @ 占位符是 <@member_openid>；已知的换成昵称，未知的退化成「@成员」，
-        # 绝不把原始 <@...> 标记漏给用户。
-        text = re.sub(r'<@([^<>]+)>', lambda m: '@' + names.get(m.group(1).strip(), '成员'), text)
+        # @全体成员占位（all/everyone）换成固定文案，绝不把原始 <@...> 标记漏给用户。
+        text = re.sub(
+            r'<@([^<>]+)>',
+            lambda m: _EVERYONE_TEXT
+            if m.group(1).strip().lower() in _EVERYONE_IDS
+            else '@' + names.get(m.group(1).strip(), '成员'),
+            text,
+        )
     stripped = _strip_face_tags(text)
     if stripped != text and _FACE_RE.search(text):
         text = _FACE_RE.sub('[表情]', text)
     return text.strip()
+
+
+def _at_everyone(raw):
+    """这条消息是不是 @ 了全体成员：看正文标签，也看 mentions 里的全体占位。"""
+    if _AT_EVERYONE_RE.search(str(raw.get('content') or '')):
+        return True
+    mentions = raw.get('mentions')
+    if isinstance(mentions, list):
+        for item in mentions:
+            if isinstance(item, dict) and (
+                str(item.get('id') or item.get('member_openid') or '').strip().lower() in _EVERYONE_IDS
+            ):
+                return True
+    return False
 
 
 def _initialise(proc):
@@ -145,6 +171,7 @@ def _incoming(event, proc, group):
         'content_json': {'text': text, 'attachments': attachments},
         'created_at': created,
         'is_mention': group and _at_bot(extend, event, raw),
+        'is_everyone': group and _at_everyone(raw),
         'raw_event_json': raw,
     }
     member = (

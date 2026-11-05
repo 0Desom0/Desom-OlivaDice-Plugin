@@ -287,7 +287,8 @@ class MediaManager:
             if path.is_symlink() or not path.is_file():
                 raise ValueError('图片已失效')
             stat = path.stat()
-            if stat.st_mtime <= time.time() - retention_days * 86400:
+            # 0 天 = 永久保留，读的时候也不能顺手删掉。
+            if retention_days > 0 and stat.st_mtime <= time.time() - retention_days * 86400:
                 path.unlink(missing_ok=True)
                 raise ValueError('图片已失效')
             total = (stat.st_size + CHUNK_SIZE - 1) // CHUNK_SIZE
@@ -301,6 +302,9 @@ class MediaManager:
 
     @_safe_io
     def cleanup_sent(self, retention_days):
+        # 0 = 永久保留：直接跳过，别把整个目录清空。
+        if type(retention_days) is not int or retention_days <= 0:
+            return
         cutoff = time.time() - retention_days * 86400
         with self._lock:
             for path in self.sent.iterdir():
@@ -357,7 +361,7 @@ class MediaManager:
             if path is None or path.is_symlink() or not path.is_file():
                 return None
             stat = path.stat()
-            if stat.st_mtime <= time.time() - retention_days * 86400:
+            if retention_days > 0 and stat.st_mtime <= time.time() - retention_days * 86400:
                 path.unlink(missing_ok=True)
                 return None
             total = (stat.st_size + CHUNK_SIZE - 1) // CHUNK_SIZE

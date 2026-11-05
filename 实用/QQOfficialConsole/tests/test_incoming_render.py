@@ -79,3 +79,24 @@ def test_plain_text_unchanged(plugin):
     group_message(main, 'a', 'g', 'one', '普通消息 <notatag>')
     row = db.list_messages('a', 'qq_group', 'g')[0]
     assert row['content_text'] == '普通消息 <notatag>'
+
+
+def test_at_everyone_tag_renders_text_and_flag(plugin):
+    main, db = plugin
+    group_message(main, 'a', 'g', 'one', '<qqbot-at-everyone /> 大家注意')
+    row = db.list_messages('a', 'qq_group', 'g')[0]
+    # @全体成员显示成固定文案，原始标签不能漏给用户；未 @ 机器人时不算 @我。
+    assert row['content_text'] == 'at全体成员 大家注意'
+    assert 'qqbot-at-everyone' not in row['content_text']
+    assert row['is_everyone'] == 1 and row['is_mention'] == 0
+
+
+def test_at_everyone_placeholder_and_mentions_entry(plugin):
+    main, db = plugin
+    # 两种来源都要认：<@all> 占位符、mentions 里的 all/everyone 条目。
+    group_message(main, 'a', 'g', 'one', '<@all> 点名', mentions=[])
+    group_message(main, 'a', 'g', 'two', '集合', mentions=[mention('everyone', '全体成员')])
+    rows = db.list_messages('a', 'qq_group', 'g')
+    assert rows[0]['content_text'] == 'at全体成员 点名'
+    assert rows[1]['content_text'] == '集合'
+    assert [row['is_everyone'] for row in rows] == [1, 1]

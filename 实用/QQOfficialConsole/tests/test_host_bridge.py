@@ -7,6 +7,7 @@ import queue
 import shutil
 import sys
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -73,7 +74,9 @@ def console(request, tmp_path, monkeypatch):
     host.on_terminate()
 
 
-def bridge(console, action, **values):
+def bridge(console, *args, **values):
+    # 动作用第一个位置参数；payload 里可能带同名的 action/value 等键，所以收 **values。
+    action = args[0]
     session = console.host.new_session()
     request_id = uuid.uuid4().hex
     payload = {'bot_hash': console.bot.hash, **values}
@@ -92,14 +95,18 @@ def bridge(console, action, **values):
     return replies[0]['payload']
 
 
-def incoming(console, chat, number, content=None):
-    raw = {'id': f'{chat}-{number}', 'content': content if content is not None else f'{chat} message {number}',
-           'timestamp': 1700000000 + number}
+def incoming_at(console, chat, number, content, stamp):
+    raw = {'id': f'{chat}-{number}', 'content': content, 'timestamp': stamp}
     event = SimpleNamespace(platform={'sdk': 'qqGuildv2_link'}, bot_info=console.bot,
         data=SimpleNamespace(user_id=chat, sender={'nickname': chat},
                              extend={'flag_from_qq': True, 'qq_event_data': raw}),
         sdk_event=SimpleNamespace(payload=SimpleNamespace(data=SimpleNamespace(t='C2C_MESSAGE_CREATE'))))
     console.module.main.Event.private_message(event, console.loader)
+
+
+def incoming(console, chat, number, content=None):
+    incoming_at(console, chat, number, content if content is not None else f'{chat} message {number}',
+                1700000000 + number)
 
 
 def test_sidebar_resources_and_bootstrap(console):
@@ -421,12 +428,83 @@ def test_sent_image_bridge_is_scoped_and_survives_send(console, monkeypatch, upl
 
 def test_image_retention_setting_and_immediate_cleanup(console):
     assert bridge(console, 'Bootstrap')['settings']['image_retention_days'] == 30
-    for value in (0, 3651, True, '30'):
+    for value in (-1, 3651, True, '30'):
         assert not bridge(console, 'SaveSettings', settings={'image_retention_days': value})['ok']
     image_dir = Path('plugin/data/QQOfficialConsole/sent-images')
     stale = image_dir / ('a' * 32 + '.png')
     stale.write_bytes(b'\x89PNG\r\n\x1a\n')
     os.utime(stale, (1, 1))
+    # 0 = 永久保留：既不报错，也不许顺手把旧图删掉。
+    zero = bridge(console, 'SaveSettings', settings={'image_retention_days': 0})
+    assert zero['ok'] and zero['settings']['image_retention_days'] == 0
+    assert stale.exists()
     result = bridge(console, 'SaveSettings', settings={'image_retention_days': 7})
     assert result['ok'] and result['settings']['image_retention_days'] == 7
     assert not stale.exists()
+
+
+def test_message_retention_setting_and_prune(console):
+    assert bridge(console, 'Bootstrap')['settings']['message_retention_days'] == 30
+    for value in (-1, 3651, True, '30'):
+        assert not bridge(console, 'SaveSettings', settings={'message_retention_days': value})['ok']
+    now = int(time.time())
+    incoming_at(console, 'alice', 1, '今天收到的', now)
+    incoming_at(console, 'alice', 2, '三十一天前收到的', now - 31 * 86400)
+    store = console.module.main._state[0]
+    bot = console.bot.hash
+    assert len(store.list_messages(bot, 'qq_private', 'alice', limit=10)) == 2
+    assert store.get_chat(bot, 'qq_private', 'alice')['unread'] == 2
+    result = bridge(console, 'SaveSettings', settings={'message_retention_days': 30})
+    assert result['ok'] and result['settings']['message_retention_days'] == 30
+    remaining = store.list_messages(bot, 'qq_private', 'alice', limit=10)
+    assert [message['content_text'] for message in remaining] == ['今天收到的']
+    chat = store.get_chat(bot, 'qq_private', 'alice')
+    # 被删掉的旧消息是未读的，会话上的未读数必须跟着重算，否则红点永远清不掉。
+    assert chat['unread'] == 1 and chat['last_preview'] == '今天收到的'
+
+
+def test_message_retention_zero_keeps_history(console):
+    incoming_at(console, 'alice', 1, '很久以前', int(time.time()) - 400 * 86400)
+    result = bridge(console, 'SaveSettings', settings={'message_retention_days': 0})
+    assert result['ok'] and result['settings']['message_retention_days'] == 0
+    store = console.module.main._state[0]
+    assert len(store.list_messages(console.bot.hash, 'qq_private', 'alice', limit=10)) == 1
+
+
+def test_notification_toggles_default_on_and_validate(console):
+    settings = bridge(console, 'Bootstrap')['settings']
+    assert settings['notify_mention'] is True and settings['notify_everyone'] is True
+    for value in (1, 'yes', None):
+        assert not bridge(console, 'SaveSettings', settings={'notify_mention': value})['ok']
+    result = bridge(console, 'SaveSettings', settings={'notify_mention': False, 'notify_everyone': False})
+    assert result['ok'] and not result['settings']['notify_mention']
+    assert bridge(console, 'SaveSettings', settings={'notify_mention': True})['ok']
+
+
+def test_chat_action_mutes_group_and_silences_counts(console):
+    def group_in(number, content, mention=False):
+        raw = {'id': f'mute-{number}', 'content': content, 'timestamp': 1700000000 + number}
+        event = SimpleNamespace(platform={'sdk': 'qqGuildv2_link'}, bot_info=console.bot,
+            data=SimpleNamespace(group_id='alice', user_id='sender', sender={'nickname': 'sender'},
+                extend={'flag_from_qq': True, 'qq_event_data': raw}),
+            sdk_event=SimpleNamespace(payload=SimpleNamespace(data=SimpleNamespace(
+                t='GROUP_AT_MESSAGE_CREATE' if mention else 'GROUP_MESSAGE_CREATE'))))
+        console.module.main.Event.group_message(event, console.loader)
+
+    group_in(1, '屏蔽前')
+    store = console.module.main._state[0]
+    bot = console.bot.hash
+    target = {'bot_hash': bot, 'chat_type': 'qq_group', 'chat_id': 'alice'}
+    assert not bridge(console, 'ChatAction', **dict(target, action='mute', value='yes'))['ok']
+    assert bridge(console, 'ChatAction', **dict(target, action='mute', value=True))['ok']
+    assert store.get_chat(bot, 'qq_group', 'alice')['muted'] == 1
+    # 屏蔽前的旧未读先清掉，后面的断言只看屏蔽后的新消息。
+    assert bridge(console, 'ChatAction', **dict(target, action='read', all=True))['ok']
+    group_in(2, '屏蔽后的普通消息')
+    group_in(3, '屏蔽后的@消息', mention=True)
+    chat = store.get_chat(bot, 'qq_group', 'alice')
+    # 屏蔽后新消息照收，但不计未读、不计提及、不 bump 提醒版本。
+    assert chat['unread'] == 0 and chat['mention_unread'] == 0 and chat['mention_version'] == 0
+    assert len(store.list_messages(bot, 'qq_group', 'alice', limit=10)) == 3
+    assert bridge(console, 'ChatAction', **dict(target, action='mute', value=False))['ok']
+    assert store.get_chat(bot, 'qq_group', 'alice')['muted'] == 0

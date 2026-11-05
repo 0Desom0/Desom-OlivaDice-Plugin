@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS chats (
  role_updated_at INTEGER, last_message_at INTEGER, last_preview TEXT,
  unread INTEGER NOT NULL DEFAULT 0, mention_unread INTEGER NOT NULL DEFAULT 0,
  mention_version INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0,
- pinned INTEGER NOT NULL DEFAULT 0, left_group INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+ pinned INTEGER NOT NULL DEFAULT 0, left_group INTEGER NOT NULL DEFAULT 0,
+ muted INTEGER NOT NULL DEFAULT 0, mention_kind TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
  PRIMARY KEY(chat_type, chat_id));
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS group_info_jobs (
@@ -45,7 +46,8 @@ CREATE TABLE IF NOT EXISTS messages (
  sender_name TEXT, msg_kind TEXT NOT NULL, content_text TEXT, content_json TEXT,
  created_at INTEGER NOT NULL, send_channel TEXT, error_code INTEGER, keyword TEXT,
  recalled INTEGER NOT NULL DEFAULT 0, raw_event_json TEXT, is_unread INTEGER NOT NULL DEFAULT 0,
- is_mention INTEGER NOT NULL DEFAULT 0, mention_unread INTEGER NOT NULL DEFAULT 0);
+ is_mention INTEGER NOT NULL DEFAULT 0, mention_unread INTEGER NOT NULL DEFAULT 0,
+ is_everyone INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS messages_created ON messages(created_at);
 CREATE INDEX IF NOT EXISTS messages_platform ON messages(platform_message_id);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_incoming_unique ON messages(platform_message_id)
@@ -87,6 +89,7 @@ _MESSAGE_FIELDS = (
     'is_unread',
     'is_mention',
     'mention_unread',
+    'is_everyone',
 )
 _CHAT_FIELDS = frozenset(
     (
@@ -101,6 +104,8 @@ _CHAT_FIELDS = frozenset(
         'unread',
         'hidden',
         'pinned',
+        'muted',
+        'mention_kind',
         'left_group',
     )
 )
@@ -155,6 +160,12 @@ class Store:
             if 'mention_version' not in {row['name'] for row in db.execute('PRAGMA table_info(chats)')}:
                 db.execute('ALTER TABLE chats ADD COLUMN mention_version INTEGER NOT NULL DEFAULT 0')
                 db.commit()
+            if 'muted' not in {row['name'] for row in db.execute('PRAGMA table_info(chats)')}:
+                db.execute('ALTER TABLE chats ADD COLUMN muted INTEGER NOT NULL DEFAULT 0')
+                db.commit()
+            if 'mention_kind' not in {row['name'] for row in db.execute('PRAGMA table_info(chats)')}:
+                db.execute("ALTER TABLE chats ADD COLUMN mention_kind TEXT NOT NULL DEFAULT ''")
+                db.commit()
         self._meta[key] = (db, now)
         while len(self._meta) > self.max_open:
             _, (old, _) = self._meta.popitem(last=False)
@@ -196,6 +207,8 @@ class Store:
                 db.execute('ALTER TABLE messages ADD COLUMN is_mention INTEGER NOT NULL DEFAULT 0')
             if 'mention_unread' not in columns:
                 db.execute('ALTER TABLE messages ADD COLUMN mention_unread INTEGER NOT NULL DEFAULT 0')
+            if 'is_everyone' not in columns:
+                db.execute('ALTER TABLE messages ADD COLUMN is_everyone INTEGER NOT NULL DEFAULT 0')
             db.execute('CREATE INDEX IF NOT EXISTS messages_mention_unread ON messages(mention_unread, id)')
             db.execute('DROP TRIGGER IF EXISTS messages_record_change')
             db.executescript('''CREATE TRIGGER messages_record_change AFTER UPDATE OF
@@ -276,7 +289,15 @@ class Store:
 
     def get_settings(self, bot_hash=None):
         defaults = (
-            {'send_key': 'enter_send', 'last_bot_hash': '', 'poll_interval_ms': 1000, 'image_retention_days': 30}
+            {
+                'send_key': 'enter_send',
+                'last_bot_hash': '',
+                'poll_interval_ms': 1000,
+                'image_retention_days': 30,
+                'message_retention_days': 30,
+                'notify_mention': True,
+                'notify_everyone': True,
+            }
             if bot_hash is None
             else {
                 'view_limit_enabled': False,
@@ -507,6 +528,71 @@ class Store:
             return self._mark_read(bot_hash, chat_type, chat_id, '0', ())
         return self._mark_read(bot_hash, chat_type, chat_id, 'id IN (' + ','.join('?' for _ in ids) + ')', ids)
 
+    def prune_messages(self, bot_hash, retention_days, now=None):
+        """按天清理聊天记录；retention_days 为 0 表示永久保留。
+
+        只删 messages 行，聊天会话本身保留（备注、置顶、群信息都不动）。
+        删完要重算未读计数与最后一条预览，否则红点会一直挂着清不掉。
+        """
+        if type(retention_days) is not int or retention_days <= 0:
+            return {'deleted': 0, 'chats': 0, 'failed': 0}
+        cutoff = int(time.time() if now is None else now) - retention_days * 86400
+        deleted = touched = failed = 0
+        with self.meta(bot_hash) as meta:
+            chats = [dict(row) for row in meta.execute('SELECT chat_type,chat_id FROM chats')]
+        for chat in chats:
+            try:
+                removed = self._prune_chat(bot_hash, chat['chat_type'], chat['chat_id'], cutoff)
+            except Exception:
+                # 某个会话库坏了不该拖累其它会话，更不能让「保存设置」整体失败。
+                failed += 1
+                continue
+            if removed:
+                deleted += removed
+                touched += 1
+        return {'deleted': deleted, 'chats': touched, 'failed': failed}
+
+    def _prune_chat(self, bot_hash, chat_type, chat_id, cutoff):
+        """删掉单个会话里的过期消息，并把会话上的未读/预览重算一遍。"""
+        with self.lock:
+            with self.session(bot_hash, chat_type, chat_id) as db:
+                removed = db.execute('DELETE FROM messages WHERE created_at < ?', (cutoff,)).rowcount
+                if not removed:
+                    return 0
+                unread = db.execute('SELECT COUNT(*) FROM messages WHERE is_unread=1').fetchone()[0]
+                mention = db.execute('SELECT COUNT(*) FROM messages WHERE mention_unread=1').fetchone()[0]
+                last = db.execute(
+                    'SELECT created_at,content_text,msg_kind FROM messages '
+                    'ORDER BY created_at DESC,id DESC LIMIT 1'
+                ).fetchone()
+                preview = None
+                if last:
+                    preview = str(
+                        last['content_text']
+                        or (
+                            '[图片]'
+                            if last['msg_kind'] == 'media'
+                            else '[卡片]'
+                            if last['msg_kind'] == 'card'
+                            else ''
+                        )
+                    )[:200]
+            with self.meta(bot_hash) as meta:
+                meta.execute(
+                    'UPDATE chats SET unread=?,mention_unread=?,last_message_at=?,last_preview=?,'
+                    'updated_at=? WHERE chat_type=? AND chat_id=?',
+                    (
+                        int(unread),
+                        int(mention),
+                        last['created_at'] if last else None,
+                        preview,
+                        int(time.time()),
+                        chat_type,
+                        chat_id,
+                    ),
+                )
+        return removed
+
     def add_message(self, bot_hash, chat_type, chat_id, message, member=None, token=None, unread=True):
         """插入消息；显式 @ 事件重复到达时，把已存在的入站消息升级。"""
         data = dict(message)
@@ -519,9 +605,22 @@ class Store:
             data['raw_event_json'] = data['raw_event_json'][:16384]
         data['is_unread'] = int(bool(unread and data['direction'] == 'in'))
         data['is_mention'] = int(bool(data.get('is_mention') and data['direction'] == 'in'))
-        data['mention_unread'] = data['is_mention'] * data['is_unread']
+        # @全体成员也算一条「提及」；屏蔽群不入未读，提及自然清零。
+        mention = data['direction'] == 'in' and bool(data.get('is_mention') or data.get('is_everyone'))
+        data['mention_unread'] = int(mention and data['is_unread'])
+        if data.get('is_mention') and data.get('is_everyone'):
+            mention_kind = 'both'
+        elif data.get('is_everyone'):
+            mention_kind = 'everyone'
+        else:
+            mention_kind = 'me'
         fields = [k for k in _MESSAGE_FIELDS if k in data]
         with self.lock:
+            muted = bool((self.get_chat(bot_hash, chat_type, chat_id) or {}).get('muted'))
+            if muted:
+                # 屏蔽群：新消息不计未读、不计提及、不弹提醒。
+                data['is_unread'] = 0
+                data['mention_unread'] = 0
             with self.session(bot_hash, chat_type, chat_id) as db:
                 sql = (
                     'INSERT OR IGNORE INTO messages('
@@ -543,7 +642,8 @@ class Store:
                                 "WHERE direction='in' AND platform_message_id=? AND is_mention=0",
                                 (data['platform_message_id'],),
                             )
-                            if previous['is_unread']:
+                            # 屏蔽群不补计提及，也别 bump mention_version（前端靠它弹提醒）。
+                            if previous['is_unread'] and not muted:
                                 with self.meta(bot_hash) as meta:
                                     meta.execute(
                                         'UPDATE chats SET mention_unread=mention_unread+1, '
@@ -583,16 +683,20 @@ class Store:
                     """UPDATE chats SET last_preview=CASE WHEN last_message_at IS NULL OR last_message_at<=?
                     THEN ? ELSE last_preview END, last_message_at=MAX(COALESCE(last_message_at,0),?),
                     unread=unread+?, mention_unread=mention_unread+?, mention_version=mention_version+?,
+                    mention_kind=CASE WHEN ?<>0 THEN ? ELSE mention_kind END,
                     hidden=CASE WHEN ? THEN 0 ELSE hidden END, updated_at=?
                     WHERE chat_type=? AND chat_id=?""",
                     (
                         data['created_at'],
                         preview,
                         data['created_at'],
-                        int(bool(unread and data['direction'] == 'in')),
+                        data['is_unread'],
                         data['mention_unread'],
                         data['mention_unread'],
-                        int(data['direction'] == 'in'),
+                        data['mention_unread'],
+                        mention_kind,
+                        # 屏蔽群收到新消息时不再把隐藏的会话顶回列表。
+                        data['is_unread'],
                         int(time.time()),
                         chat_type,
                         str(chat_id),

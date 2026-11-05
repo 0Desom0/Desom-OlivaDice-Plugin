@@ -122,6 +122,13 @@
       .chat-item.active {
         background: #b6dfff80;
       }
+      /* 屏蔽的群：整行置灰、头像去色；消息照收但不计未读、不提醒。 */
+      .chat-item.muted {
+        opacity: 0.62;
+      }
+      .chat-item.muted .avatar {
+        filter: grayscale(1);
+      }
       .avatar {
         flex: none;
         width: 40px;
@@ -199,6 +206,11 @@
       }
       .out .bubble {
         background: var(--out);
+      }
+      /* 屏蔽群会话里的消息整体变灰。 */
+      .message.muted-chat .bubble {
+        opacity: 0.55;
+        filter: grayscale(0.9);
       }
       .bubble img {
         max-width: 100%;
@@ -388,7 +400,14 @@
         display: none;
       }
       #rightBody {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
         padding: 12px;
+      }
+      /* 右栏是滚动容器：卡片必须是「不收缩」的，否则内容会被 overflow:hidden 裁掉。 */
+      #rightBody > * {
+        flex: none;
       }
       .field {
         padding: 9px 0;
@@ -426,11 +445,94 @@
         padding: 7px;
         border-bottom: 1px solid var(--line);
       }
+      /* —— 会话资料：顶部身份卡 + 分组资料卡 —— */
+      .info-hero {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #1685ee10;
+      }
+      .info-hero .avatar {
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        font-size: 17px;
+      }
+      .info-hero-text {
+        min-width: 0;
+      }
+      .info-hero h3 {
+        margin: 0;
+        font-size: 17px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .info-hero p {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .kv {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 9px 13px;
+        border-top: 1px solid var(--line);
+      }
+      .kv:first-of-type {
+        border-top: 0;
+      }
+      .kv .k {
+        flex: none;
+        width: 96px;
+        padding-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .kv .v {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .row-actions.pad {
+        padding: 10px 13px;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 10px 13px;
+        border-top: 1px solid var(--line);
+      }
+      .chip {
+        max-width: 100%;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: #8881;
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       #overlay {
         position: fixed;
         inset: 0;
         z-index: 10;
-        background: #0008;
+        background: #0009;
+        backdrop-filter: blur(3px);
         display: grid;
         place-items: center;
         padding: 15px;
@@ -440,15 +542,292 @@
       }
       #dialog {
         background: var(--panel);
-        border-radius: 12px;
-        width: min(680px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 24px 64px #0006;
+        width: min(560px, 100%);
         max-height: min(85dvh, 850px);
         display: flex;
         flex-direction: column;
         overflow: hidden;
       }
+      #dialog > header {
+        flex: none;
+        max-height: none;
+        min-height: 0;
+        padding: 13px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      #dialogTitle {
+        font-size: 17px;
+      }
+      #dialogClose {
+        flex: none;
+        width: 32px;
+        min-width: 32px;
+        height: 32px;
+        min-height: 32px;
+        padding: 0;
+        border-radius: 50%;
+        font-size: 20px;
+        line-height: 1;
+        color: var(--muted);
+      }
       #dialogBody {
-        padding: 15px;
+        padding: 16px;
+      }
+      /* 短列表弹窗（消息操作、发送快捷键）用窄版：几行文字不该撑出一整屏。 */
+      #dialog.compact {
+        width: min(360px, 100%);
+      }
+      #dialog.compact > header {
+        padding: 10px 14px;
+      }
+      #dialog.compact #dialogTitle {
+        font-size: 15px;
+      }
+      #dialog.compact #dialogClose {
+        width: 28px;
+        min-width: 28px;
+        height: 28px;
+        min-height: 28px;
+        font-size: 18px;
+      }
+      #dialog.compact #dialogBody {
+        padding: 8px;
+      }
+      /* 只给设置页的分组卡片加间距；其它弹窗保持原来的紧凑排布。 */
+      .settings-section + .settings-section {
+        margin-top: 14px;
+      }
+      .settings-section + .dialog-actions {
+        margin-top: 16px;
+      }
+      /* —— 弹窗通用组件：分组卡片 / 开关 / 分段选择 / 操作列表 —— */
+      .settings-section,
+      .info-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        overflow: hidden;
+      }
+      .settings-section > h3,
+      .info-card > h4 {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 0;
+        padding: 9px 13px;
+        background: #8881;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .setting-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 11px 13px;
+        border-top: 1px solid var(--line);
+      }
+      .setting-row:first-of-type {
+        border-top: 0;
+      }
+      .setting-row[hidden] {
+        display: none;
+      }
+      .setting-main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .setting-main b {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .setting-main small {
+        line-height: 1.45;
+      }
+      .setting-control {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .setting-control input[type="number"] {
+        width: 84px;
+        padding: 6px 8px;
+        text-align: right;
+      }
+      .setting-control .unit {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .setting-note {
+        padding: 9px 13px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .setting-note[hidden] {
+        display: none;
+      }
+      .setting-note.warn {
+        color: #b26a00;
+        background: #f5a62314;
+      }
+      .switch {
+        position: relative;
+        flex: none;
+        display: inline-flex;
+        width: 44px;
+        height: 26px;
+      }
+      .switch input {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        opacity: 0;
+        cursor: pointer;
+      }
+      .switch span {
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+        background: #9aa7b6;
+        transition: background 0.18s ease;
+        pointer-events: none;
+      }
+      .switch span::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 3px #0003;
+        transition: transform 0.18s ease;
+      }
+      .switch input:checked + span {
+        background: var(--accent);
+      }
+      .switch input:checked + span::after {
+        transform: translateX(18px);
+      }
+      .switch input:focus-visible + span {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .segmented {
+        display: inline-flex;
+        gap: 2px;
+        padding: 2px;
+        border-radius: 9px;
+        background: #8881;
+      }
+      .segmented button {
+        min-height: 30px;
+        padding: 4px 12px;
+        border-radius: 7px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .segmented button.active {
+        background: var(--panel);
+        color: var(--text);
+        font-weight: 600;
+        box-shadow: 0 1px 3px #0002;
+      }
+      .dialog-actions {
+        position: sticky;
+        bottom: -16px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin: 0 -16px -16px;
+        padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+        border-top: 1px solid var(--line);
+        background: var(--panel);
+      }
+      .primary {
+        padding: 8px 20px;
+        border-radius: 10px;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      .primary:hover {
+        background: #0f73d0;
+      }
+      .mini {
+        min-height: 30px;
+        padding: 4px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+        font-size: 12px;
+      }
+      .action-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .action-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        min-height: 42px;
+        padding: 6px 8px;
+        border-radius: 9px;
+        text-align: left;
+      }
+      .action-item:hover {
+        background: #8881;
+      }
+      .action-icon {
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        background: #8881;
+        font-size: 14px;
+      }
+      .action-text {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+        line-height: 1.35;
+      }
+      .action-text b {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .action-text small {
+        font-size: 12px;
+      }
+      .action-item.danger .action-icon {
+        background: #f14d5820;
+        color: #e84550;
+      }
+      .action-item.danger .action-text b {
+        color: #e84550;
       }
       .sticker-grid {
         display: grid;
@@ -506,14 +885,54 @@
         #composer {
           padding-bottom: max(8px, env(safe-area-inset-bottom));
         }
+        .messages {
+          padding: 12px;
+        }
+        .message {
+          margin: 12px 0;
+        }
         .bubble {
-          max-width: 88%;
+          max-width: 90%;
+        }
+        #editor {
+          min-height: 48px;
+        }
+        .tools button {
+          font-size: 20px;
         }
         #dialog {
           max-height: 90dvh;
         }
-        .tools button {
-          font-size: 19px;
+        /* 窄屏下设置行竖排：说明文字不再被右侧控件挤成三行。 */
+        .setting-row {
+          flex-wrap: wrap;
+          padding: 9px 12px;
+          gap: 6px;
+        }
+        .setting-row:not(.inline) > .setting-main {
+          flex: 1 1 100%;
+        }
+        .setting-row:not(.inline) > .setting-control {
+          flex: 1 1 100%;
+          justify-content: flex-end;
+        }
+        .segmented {
+          display: flex;
+          width: 100%;
+        }
+        .segmented button {
+          flex: 1;
+          text-align: center;
+        }
+        #dialogBody {
+          padding: 12px;
+        }
+        .setting-note {
+          padding: 8px 12px;
+        }
+        .dialog-actions {
+          margin: 0 -12px -12px;
+          padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
         }
       }
       @media (prefers-color-scheme: dark) {
@@ -523,12 +942,19 @@
           --side: #20242b;
           --line: #3b414a;
           --text: #e8ecf2;
-          --muted: #a3aebb;
+          --muted: #b9c6d5;
           --bubble: #333943;
           --out: #24537b;
         }
         .chat-item.active {
           background: #27567980;
+        }
+        .setting-note.warn {
+          color: #e8b45c;
+          background: #f5a6231a;
+        }
+        .info-hero {
+          background: #1685ee1f;
         }
       }
       .chat-item .line {
@@ -756,51 +1182,78 @@
       .field label {
         font-size: 13px;
       }
-      @media (max-width: 900px) {
-        .messages {
-          padding: 12px;
-        }
-        .message {
-          margin: 12px 0;
-        }
-        .bubble {
-          max-width: 90%;
-        }
-        #editor {
-          min-height: 48px;
-        }
-        .tools button {
-          font-size: 20px;
-        }
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --muted: #b9c6d5;
-        }
-      }
       /* ===== 10. 左栏「使用说明」折叠面板 ===== */
+      /* 面板最多占侧栏一半多一点，剩下的高度留给会话列表；超高时整块滚动。 */
       .help-box {
-        flex: 0 0 auto;
-        max-height: 75vh;
+        flex: 0 1 auto;
+        min-height: 0;
+        max-height: min(52vh, max(180px, calc(100% - 230px)));
         overflow: auto;
+        overscroll-behavior: contain;
         margin: 0 12px 8px;
-        padding: 6px 9px;
         border: 1px solid var(--line);
-        border-radius: 7px;
+        border-radius: 10px;
         background: var(--panel);
         font-size: 13px;
-        line-height: 1.6;
+        line-height: 1.55;
       }
+      /* 标题吸顶：正文怎么滚，「收起」都点得到（details 内容在 Chrome 里是独立包裹层，
+         所以不能用 flex 固定标题，只能靠 sticky）。 */
       .help-box summary {
-        cursor: pointer;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 10px;
+        background: var(--panel);
         color: var(--accent);
+        font-weight: 600;
+        cursor: pointer;
+        list-style: none;
       }
-      .help-box ul {
-        margin: 6px 0 2px;
-        padding-left: 18px;
+      .help-box summary::-webkit-details-marker {
+        display: none;
       }
-      .help-box li {
-        margin: 3px 0;
+      .help-box summary::before {
+        content: "▸";
+        flex: none;
+        font-size: 11px;
+      }
+      .help-box[open] summary::before {
+        content: "▾";
+      }
+      .help-box summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+      /* 收起 / 展开时换一句提示，省得开了以后还写着「点开看」。 */
+      .help-box .when-open {
+        display: none;
+      }
+      .help-box[open] .when-open {
+        display: inline;
+      }
+      .help-box[open] .when-closed {
+        display: none;
+      }
+      .help-body {
+        padding: 0 10px 8px;
+      }
+      .help-body dl {
+        margin: 0;
+      }
+      .help-body dt {
+        margin-top: 7px;
+        font-weight: 600;
+      }
+      .help-body dt:first-child {
+        margin-top: 0;
+      }
+      .help-body dd {
+        margin: 1px 0 0;
+        color: var(--muted);
       }
     </style>
   </head>
@@ -809,24 +1262,37 @@
     <main id="app" class="view-chat">
       <aside id="sidebar" class="pane">
         <header>
-          <strong>消息</strong><button id="viewSettings" title="展示窗口设置">⚙</button
+          <strong>消息</strong><button id="viewSettings" title="控制台设置">⚙</button
           ><button id="addChat" title="添加会话">＋</button>
         </header>
         <select id="bots" aria-label="切换机器人"></select
         ><button id="globalOpen" class="search-entry">⌕ 搜索会话与消息</button>
         <!-- 帮助面板默认收起；第一次用的人点开就能看懂每个按钮 -->
-        <details id="helpBox" class="help-box"><summary>第一次用？点开看按钮说明</summary>
-          <ul>
-            <li><b>选会话</b>：左边点一下群或好友，中间就能看消息、发消息。</li>
-            <li><b>⚙ 设置</b>：默认显示多少历史消息、发送快捷键、图片保留天数。</li>
-            <li><b>＋ / ⌕</b>：官方没有好友/群列表，冷启动要手填 openid；⌕ 可跨会话搜消息。</li>
-            <li><b>消息类型</b>：Markdown（插图 / @人）、文本、卡片（配图要填 https 网址）。</li>
-            <li><b>工具栏</b>：＠ 提及成员、▧ 上传图片、☺ 表情包、◷ 本会话消息记录。</li>
-            <li><b>↑ / ↓</b>：↑ 翻更早消息（先到已加载区顶部，再按一次才加载）；↓ 回到最新。右上角「N 条新消息」点了跳到最早那条未读。</li>
-            <li><b>ⓘ 资料</b>：群名、备注、成员、管理员操作；手机用 ☰ 回会话列表。</li>
-            <li><b>更多操作</b>：会话或消息上右键（手机长按）可置顶、改备注、复制、引用、撤回。</li>
-            <li><b>发送与字数</b>：电脑默认 Enter 发送（可在 ⚙ 改），手机点「发送」；正文含引用最多 3000 字。</li>
-          </ul>
+        <details id="helpBox" class="help-box">
+          <summary>
+            <span class="when-closed">第一次用？点开看按钮说明</span>
+            <span class="when-open">使用说明 · 点这里收起</span>
+          </summary>
+          <div class="help-body">
+            <dl>
+              <dt>选会话</dt>
+              <dd>左边点一个群或好友，中间就能看消息、发消息。官方接口没有会话列表，冷启动要自己填 openid。</dd>
+              <dt>⚙ ＋ ⌕</dt>
+              <dd>⚙ 打开设置（展示条数、@ 提醒开关、聊天记录与图片保留天数）；＋ 手动添加会话；⌕ 搜会话名，也能在所有会话里搜聊天内容。</dd>
+              <dt>＠ ▧ ☺ ◷</dt>
+              <dd>＠ 提及成员；▧ 上传图片；☺ 表情包；◷ 本会话的消息记录。</dd>
+              <dt>三种消息</dt>
+              <dd>Markdown 可插图、@人；文本最干净；卡片要填 HTTPS 链接和配图地址。</dd>
+              <dt>↑ ↓</dt>
+              <dd>↑ 翻更早消息：先回到已加载区的顶部，再按一次才加载上一页。↓ 回到最新。右上角「N 条新消息」直接跳到最早一条未读。</dd>
+              <dt>ⓘ 资料</dt>
+              <dd>群名、备注、成员和管理员操作都在右栏；手机上点 ☰ 回会话列表。</dd>
+              <dt>右键 / 长按</dt>
+              <dd>会话上可置顶、改备注、屏蔽、隐藏；消息上可复制、引用、定位、撤回。屏蔽的群消息变灰，不计未读、不提醒 @。</dd>
+              <dt>字数与图片</dt>
+              <dd>电脑默认 Enter 发送（可在 ⚙ 改），手机点「发送」；正文连同引用最多 3000 字。普通图片只能上传，卡片配图才填网址。</dd>
+            </dl>
+          </div>
         </details>
         <div id="chats" class="scroll"></div>
       </aside>
@@ -1127,6 +1593,64 @@
         x.value = value;
         return x;
       }
+      // —— 弹窗组件：分组卡片、设置行、开关、分段选择、操作项 ——
+      function settingsSection(name) {
+        const section = el("section", null, "settings-section");
+        section.append(el("h3", name));
+        return section;
+      }
+      function settingRow(label, note, control) {
+        const row = el("div", null, "setting-row"),
+          main = el("div", null, "setting-main");
+        main.append(el("b", label));
+        if (note) main.append(el("small", note, "muted"));
+        row.append(main);
+        if (control) {
+          const box = el("div", null, "setting-control");
+          if (control instanceof Node) box.append(control);
+          else box.textContent = control;
+          row.append(box);
+        }
+        return row;
+      }
+      function toggle(checked) {
+        const label = el("label", null, "switch"),
+          box = input("checkbox", "");
+        box.checked = !!checked;
+        label.append(box, el("span"));
+        return { label, box };
+      }
+      function segmented(options, value, onChange) {
+        const box = el("div", null, "segmented");
+        const mark = (next) => {
+          box.dataset.value = next;
+          for (const item of box.children) item.classList.toggle("active", item.dataset.value === next);
+        };
+        for (const [key, text] of options) {
+          const item = button(text, () => {
+            mark(key);
+            onChange(key);
+          });
+          item.dataset.value = key;
+          box.append(item);
+        }
+        mark(value);
+        return box;
+      }
+      function withUnit(field, unit) {
+        const box = el("span", null, "unit");
+        box.append(field, el("span", unit));
+        return box;
+      }
+      function actionItem(icon, label, note, fn, danger) {
+        const item = el("button", null, "action-item" + (danger ? " danger" : ""));
+        item.type = "button";
+        const text = el("span", null, "action-text");
+        text.append(el("b", label), el("small", note, "muted"));
+        item.append(el("span", icon, "action-icon"), text);
+        item.addEventListener("click", fn);
+        return item;
+      }
       function error(e) {
         notice(e?.message || String(e));
       }
@@ -1147,9 +1671,11 @@
         a.style.background = group ? "hsl(210 52% 52%)" : "hsl(152 46% 42%)";
         return a;
       }
-      function dialog(name) {
+      // 打开弹窗：name 是标题，compact 传 true 用窄版（短列表用，别占满屏）。
+      function dialog(name, compact) {
         for (const url of $("dialogBody")._urls || []) URL.revokeObjectURL(url);
         $("dialogBody")._urls = [];
+        $("dialog").classList.toggle("compact", !!compact);
         $("dialogTitle").textContent = name;
         $("dialogBody").replaceChildren();
         $("overlay").hidden = false;
@@ -1509,6 +2035,14 @@
         }
         if (state.bot) select.value = state.bot;
       }
+      // 最后一次提及是 @全体成员（含「@全体成员并同时 @ 到我」）时返回真。
+      function isEveryoneMention(c) {
+        return c.mention_kind === "everyone" || c.mention_kind === "both";
+      }
+      // 会话列表角标文案：按最后一次提及的类型显示「@我」或「at全体成员」。
+      function mentionBadge(c) {
+        return (isEveryoneMention(c) ? "at全体成员 " : "@我 ") + c.mention_unread;
+      }
       function renderChats() {
         const jump = $("jumpMention");
         if (jump) {
@@ -1524,17 +2058,18 @@
           return;
         }
         for (const c of state.chats) {
-          const row = el(
-            "button",
-            null,
-            "chat-item" +
-              (state.chat?.chat_id === c.chat_id && state.chat?.chat_type === c.chat_type ? " active" : ""),
-          );
+          // 当前列高亮；屏蔽的群整行降为灰色。
+          const isActive =
+            state.chat?.chat_id === c.chat_id && state.chat?.chat_type === c.chat_type;
+          const classes = ["chat-item"];
+          if (isActive) classes.push("active");
+          if (c.muted) classes.push("muted");
+          const row = el("button", null, classes.join(" "));
           row.append(avatar(c));
           const meta = el("div", null, "chat-meta"),
             line = el("div", null, "line");
           line.append(el("strong", title(c)), el("small", date(c.last_message_at)));
-          if (c.mention_unread) line.append(el("span", "@我 " + c.mention_unread, "badge"));
+          if (c.mention_unread) line.append(el("span", mentionBadge(c), "badge"));
           if (c.unread) line.append(el("span", c.unread, "badge"));
           meta.append(
             line,
@@ -1551,19 +2086,27 @@
           box.append(row);
         }
       }
+      // 对比这次轮询与会话的 mention_version 快照，找出「本轮新收到 @ 提及」的会话。
+      // 返回该会话（没有则为 null），同时把最新版本写进 current 供下一轮比较。
+      function trackMentions(chats, previous, current) {
+        let mentioned = null;
+        for (const c of chats) {
+          const key = JSON.stringify([c.chat_type, c.chat_id]);
+          const version = Number(c.mention_version);
+          // 版本号异常的会话不参与比较，避免脏数据误报提醒。
+          if (!Number.isSafeInteger(version) || version < 0) continue;
+          const seen = previous?.get(key) ?? 0;
+          // 版本号上涨且仍有未读提及 → 这轮轮询新收到的 @。
+          if (previous && version > seen && c.mention_unread) mentioned = c;
+          current.set(key, Math.max(seen, version));
+        }
+        return mentioned;
+      }
       function applyChats(r, bot) {
         const chats = r.chats || [],
           previous = mentionSnapshots.get(bot),
           current = new Map();
-        let mentioned = null;
-        for (const c of chats) {
-          const key = JSON.stringify([c.chat_type, c.chat_id]),
-            version = Number(c.mention_version);
-          if (!Number.isSafeInteger(version) || version < 0) continue;
-          const old = previous?.get(key);
-          if (previous && version > (old ?? 0) && c.mention_unread) mentioned = c;
-          current.set(key, Math.max(old ?? 0, version));
-        }
+        const mentioned = trackMentions(chats, previous, current);
         mentionSnapshots.clear();
         mentionSnapshots.set(bot, current);
         state.chats = chats;
@@ -1587,7 +2130,15 @@
         }
         renderChats();
         renderHeader();
-        if (mentioned && state.visible && !document.hidden) notice(title(mentioned) + " 有人 @了我");
+        if (mentioned && state.visible && !document.hidden) {
+          // @全体成员（含同时 @ 到我）统一说「有人at全体成员」；
+          // 两类提醒可在设置里分别关掉，屏蔽的群在入库时就不算提及、走不到这里。
+          const everyone = isEveryoneMention(mentioned);
+          const allowed = everyone
+            ? state.settings.notify_everyone !== false
+            : state.settings.notify_mention !== false;
+          if (allowed) notice(title(mentioned) + (everyone ? " 有人at全体成员" : " 有人@了我"));
+        }
       }
       async function loadChats() {
         if (!state.bot) return;
@@ -1596,43 +2147,62 @@
         if (bot !== state.bot) return;
         applyChats(r, bot);
       }
+      // 对会话执行一个 ChatAction（置顶 / 屏蔽 / 隐藏…），成功后关弹窗、刷新列表，
+      // 再执行可选的 after（屏蔽切换后需要重画消息区和资料卡）。
+      async function runChatAction(c, action, value, after) {
+        try {
+          await api("ChatAction", {
+            bot_hash: state.bot,
+            chat_type: c.chat_type,
+            chat_id: c.chat_id,
+            action,
+            value,
+          });
+          closeDialog();
+          await loadChats();
+          if (after) after();
+        } catch (e) {
+          error(e);
+        }
+      }
       async function chatMenu(c) {
-        const box = dialog(title(c));
-        box.append(
-          button(c.pinned ? "取消置顶" : "置顶", async () => {
-            try {
-              await api("ChatAction", {
-                bot_hash: state.bot,
-                chat_type: c.chat_type,
-                chat_id: c.chat_id,
-                action: "pin",
-                value: !c.pinned,
-              });
-              closeDialog();
-              await loadChats();
-            } catch (e) {
-              error(e);
-            }
-          }),
-          button("修改备注", () => remark(c)),
-          button("从列表隐藏", async () => {
-            try {
-              await api("ChatAction", {
-                bot_hash: state.bot,
-                chat_type: c.chat_type,
-                chat_id: c.chat_id,
-                action: "hide",
-                value: true,
-              });
-              closeDialog();
-              if (state.chat === c) state.chat = null;
-              await loadChats();
-            } catch (e) {
-              error(e);
-            }
-          }),
-          button("复制 ID", () => copy(c.chat_id)),
+        // 与「消息操作」同款窄版操作列表：图标 + 标题 + 说明。
+        const box = dialog(title(c), true),
+          list = el("div", null, "action-list");
+        list.append(
+          actionItem(
+            c.pinned ? "✕" : "📌",
+            c.pinned ? "取消置顶" : "置顶",
+            "让这个会话固定在列表最上面",
+            () => runChatAction(c, "pin", !c.pinned),
+          ),
+          actionItem("✎", "修改备注", "只在本控制台里显示，不影响 QQ", () => remark(c)),
         );
+        // 只有群聊能屏蔽；屏蔽后消息变灰、不计未读、不弹 @ 提醒。
+        if (c.chat_type === "qq_group") {
+          const muted = !!c.muted;
+          list.append(
+            actionItem(
+              muted ? "🔔" : "🔕",
+              muted ? "取消屏蔽本群" : "屏蔽本群",
+              muted ? "恢复未读计数和 @ 提醒" : "消息变灰，不计未读、不提醒 @我和@全体成员",
+              () => runChatAction(c, "mute", !muted, () => {
+                renderMessages(false);
+                renderInfo();
+              }),
+            ),
+          );
+        }
+        list.append(
+          actionItem("👁", "从列表隐藏", "收到新消息会重新出现", () =>
+            // 隐藏的是当前打开的会话时，顺手把它关掉。
+            runChatAction(c, "hide", true, () => {
+              if (state.chat === c) state.chat = null;
+            }),
+          ),
+          actionItem("#", "复制 ID", "排查问题时给开发者看", () => copy(c.chat_id)),
+        );
+        box.append(list);
       }
       async function remark(c = state.chat) {
         const v = prompt("设置备注（留空清除）", c.remark || "");
@@ -1769,11 +2339,13 @@
         const c = state.chat,
           group = c?.chat_type === "qq_group";
         $("chatTitle").textContent = c ? title(c) : "选择一个会话";
-        $("chatMeta").textContent = group
-          ? `（缓存 ${state.members.length} 人）` +
-            (["admin", "owner"].includes(c.self_role) ? " · 管理员" : "")
-          : "";
-        $("chatSubtitle").textContent = c ? (group ? "群  " : "好友  ") + c.chat_id : "";
+        // 群聊：标题旁显示成员缓存数，机器人是管理员/群主时再加一节。
+        const role = ["admin", "owner"].includes(c?.self_role) ? " · 管理员" : "";
+        $("chatMeta").textContent = group ? `（缓存 ${state.members.length} 人）${role}` : "";
+        // 副标题 = 会话类型 + ID；屏蔽的群在末尾标注，让「消息为什么是灰的」一眼可查。
+        const kind = group ? "群  " : "好友  ",
+          mutedMark = c?.muted ? "（已屏蔽）" : "";
+        $("chatSubtitle").textContent = c ? kind + c.chat_id + mutedMark : "";
       }
       function content(m) {
         let data = {};
@@ -1800,7 +2372,10 @@
         );
       }
       function renderMessage(m) {
-        const wrap = el("div", null, "message " + (m.direction === "out" ? "out" : "in"));
+        // 屏蔽的群：消息照常显示，但整行降为灰色（muted-chat）。
+        const classes = ["message", m.direction === "out" ? "out" : "in"];
+        if (state.chat?.muted) classes.push("muted-chat");
+        const wrap = el("div", null, classes.join(" "));
         wrap.dataset.id = m.id;
         wrap.append(
           el(
@@ -2208,19 +2783,22 @@
           node.addEventListener(event, () => clearTimeout(timer), { passive: true });
       }
       function messageMenu(m) {
-        const box = dialog("消息操作");
-        box.append(
-          button("复制", () => copy(m.content_text || summary(m))),
-          button("引用", () => {
+        const box = dialog("消息操作", true),
+          list = el("div", null, "action-list");
+        list.append(
+          actionItem("⧉", "复制文本", "把这条消息的正文放进剪贴板", () => copy(m.content_text || summary(m))),
+          actionItem("↩", "引用回复", "把这条消息带进输入框再回复", () => {
             state.quote = m;
             renderQuote();
             closeDialog();
           }),
-          button("按时间定位", () => {
+          actionItem("⌖", "按时间定位", "在聊天记录里滚到这条消息", () => {
             closeDialog();
             locate(m.id);
           }),
-          button("查看 message_id", () => copy(m.platform_message_id || m.ref_idx || "")),
+          actionItem("#", "复制消息 ID", "排查问题时给开发者看", () =>
+            copy(m.platform_message_id || m.ref_idx || ""),
+          ),
         );
         const role = state.chat?.self_role,
           admin = role === "admin" || role === "owner";
@@ -2230,8 +2808,8 @@
           (m.direction === "out" || admin) &&
           Date.now() / 1000 - Number(m.created_at) <= 120
         )
-          box.append(
-            button("撤回", async () => {
+          list.append(
+            actionItem("⌫", "撤回消息", "仅发送后 2 分钟内可撤回", async () => {
               if (!confirm("确认撤回这条消息？")) return;
               try {
                 await api("Recall", {
@@ -2245,11 +2823,11 @@
               } catch (e) {
                 error(e);
               }
-            }),
+            }, true),
           );
         if (admin && state.chat?.chat_type === "qq_group" && m.direction === "in" && m.sender_id)
-          box.append(
-            button("禁言此人", async () => {
+          list.append(
+            actionItem("⊘", "禁言发送者", "给这个群成员设置禁言时长", async () => {
               const sec = prompt("禁言秒数（0 为解除）", "60");
               if (sec === null) return;
               try {
@@ -2263,8 +2841,9 @@
               } catch (e) {
                 error(e);
               }
-            }),
+            }, true),
           );
+        box.append(list);
       }
       function renderQuote() {
         const q = $("quote");
@@ -2641,102 +3220,188 @@
         }
       });
       $("sendKey").onclick = () => {
-        const box = dialog("发送快捷键");
-        for (const [value, label] of [
-          ["enter_send", "Enter 发送，Ctrl / ⌘ + Enter 换行"],
-          ["ctrl_enter_send", "Ctrl / ⌘ + Enter 发送，Enter 换行"],
-        ])
-          box.append(
-            button(
-              (state.settings.send_key === value ? "✓ " : "") + label,
-              async () => {
-                try {
-                  await api("SaveSettings", { settings: { send_key: value }, send_key: value });
-                  state.settings.send_key = value;
-                  closeDialog();
-                } catch (e) {
-                  error(e);
-                }
-              },
-              "result",
-            ),
+        const box = dialog("发送快捷键", true),
+          list = el("div", null, "action-list");
+        for (const [value, label, note] of [
+          ["enter_send", "Enter 发送", "Ctrl / ⌘ + Enter 换行"],
+          ["ctrl_enter_send", "Ctrl / ⌘ + Enter 发送", "Enter 换行"],
+        ]) {
+          const active = (state.settings.send_key || "enter_send") === value;
+          list.append(
+            actionItem(active ? "✓" : "⏎", label, note, async () => {
+              try {
+                await api("SaveSettings", { settings: { send_key: value }, send_key: value });
+                state.settings.send_key = value;
+                closeDialog();
+              } catch (e) {
+                error(e);
+              }
+            }),
           );
-        box.append(el("p", "手机始终使用按钮发送，回车换行。", "muted"));
+        }
+        box.append(list, el("p", "手机始终使用按钮发送，回车换行。", "muted"));
       };
       $("viewSettings").onclick = async () => {
         if (!state.bot) return notice("请先选择机器人");
         const bot = state.bot,
-          box = dialog("展示窗口设置");
+          box = dialog("控制台设置");
         box.append(el("div", "正在加载…", "muted"));
         try {
           const r = await api("GetSettings", { bot_hash: bot }),
             settings = r.settings || {};
           if (bot !== state.bot || $("overlay").hidden) return;
           box.replaceChildren();
-          const enabled = input("checkbox", ""),
-            mode = el("select"),
+          // 两个保留天数都是全局设置（所有机器人共用），存在 state.settings 里。
+          const current = {
+              image: Number(state.settings.image_retention_days ?? 30),
+              message: Number(state.settings.message_retention_days ?? 30),
+            },
+            viewEnabled = toggle(settings.view_limit_enabled),
+            mode = settings.view_limit_mode === "days" ? "days" : "count",
             count = input("number", "条数", settings.view_limit_count ?? 100),
             days = input("number", "天数", settings.view_limit_days ?? 30),
-            retention = input("number", "图片保留天数", state.settings.image_retention_days ?? 30);
-          retention.min = "1";
-          retention.max = "3650";
-          retention.setAttribute("aria-label", "发送图片本地保留天数");
-          enabled.checked = !!settings.view_limit_enabled;
+            imageDays = input("number", "图片保留天数", current.image),
+            messageDays = input("number", "聊天记录保留天数", current.message);
           count.min = days.min = "1";
-          for (const [value, label] of [
-            ["count", "最近条数"],
-            ["days", "最近天数"],
-          ]) {
-            const option = el("option", label);
-            option.value = value;
-            mode.append(option);
-          }
-          mode.value = settings.view_limit_mode || "count";
-          const label = el("label", "启用展示窗口");
-          label.prepend(enabled);
-          box.append(
-            label,
+          count.max = days.max = "100000";
+          imageDays.min = messageDays.min = "0";
+          imageDays.max = messageDays.max = "3650";
+          imageDays.step = messageDays.step = "1";
+          imageDays.setAttribute("aria-label", "发送图片本地保留天数");
+          messageDays.setAttribute("aria-label", "聊天记录保留天数");
+          viewEnabled.box.setAttribute("aria-label", "启用默认展示窗口");
+
+          let countRow, daysRow;
+          const modeControl = segmented(
+            [
+              ["count", "最近条数"],
+              ["days", "最近天数"],
+            ],
             mode,
-            count,
-            days,
-            el("p", "仅影响首次打开的默认展示，不删除记录；每次首次最多加载 30 条。", "muted"),
-            el("p", "发送图片本地保留天数（全部机器人；到期自动清理图片副本，不删除消息）", "muted"),
-            retention,
-            button("保存", async () => {
+            (value) => {
+              if (countRow) countRow.hidden = value !== "count";
+              if (daysRow) daysRow.hidden = value !== "days";
+            },
+          );
+          countRow = settingRow("最近条数", "每次首次最多加载 30 条", withUnit(count, "条"));
+          daysRow = settingRow("最近天数", "更早的消息点「加载更早消息」再取", withUnit(days, "天"));
+          countRow.hidden = mode !== "count";
+          daysRow.hidden = mode !== "days";
+
+          const view = settingsSection("展示窗口"),
+            enableRow = settingRow(
+              "启用默认展示窗口",
+              "关闭后按默认的最近 30 条显示",
+              viewEnabled.label,
+            );
+          enableRow.classList.add("inline");
+          view.append(
+            enableRow,
+            settingRow("显示范围", "只影响打开会话时先显示多少", modeControl),
+            countRow,
+            daysRow,
+            el("div", "只影响默认展示，不会删除任何记录。", "setting-note"),
+          );
+
+          const warn = el("div", "0 表示永久保留：不会自动删除，长期运行会持续占用磁盘空间。", "setting-note warn");
+          // 两个提醒开关也是全局设置，关掉后收到 @ 也不再弹提示。
+          const notifyMe = toggle(state.settings.notify_mention !== false),
+            notifyEveryone = toggle(state.settings.notify_everyone !== false);
+          notifyMe.box.setAttribute("aria-label", "有人@我时弹提示");
+          notifyEveryone.box.setAttribute("aria-label", "有人@全体成员时弹提示");
+          const notify = settingsSection("@ 提醒（全部机器人）");
+          notify.append(
+            settingRow("有人 @ 我", "群里有人 @ 机器人时弹提示", notifyMe.label),
+            settingRow("有人 @ 全体成员", "含「@全体并同时 @ 到我」的情况", notifyEveryone.label),
+            el("div", "屏蔽的群永远不提醒，与这里的开关无关。", "setting-note"),
+          );
+          const syncWarn = () => {
+            warn.hidden = !(Number(imageDays.value) === 0 || Number(messageDays.value) === 0);
+          };
+          imageDays.addEventListener("input", syncWarn);
+          messageDays.addEventListener("input", syncWarn);
+          syncWarn();
+
+          const storage = settingsSection("存储与清理（全部机器人）");
+          storage.append(
+            settingRow("聊天记录保留", "超过这个天数的消息每小时自动清理一次；0 = 永久保留", withUnit(messageDays, "天")),
+            settingRow("图片本地保留", "只删本地图片副本，不删消息；0 = 永久保留", withUnit(imageDays, "天")),
+            warn,
+          );
+
+          const save = button(
+            "保存设置",
+            async () => {
               try {
                 const n = Number(count.value),
                   d = Number(days.value),
-                  ret = Number(retention.value);
-                if (!Number.isInteger(ret) || ret < 1 || ret > 3650)
-                  return notice("图片保留天数应为 1–3650 天");
+                  imageRetention = Number(imageDays.value),
+                  messageRetention = Number(messageDays.value);
+                if (!Number.isInteger(imageRetention) || imageRetention < 0 || imageRetention > 3650)
+                  return notice("图片保留天数应为 0–3650 天（0 = 永久）");
+                if (!Number.isInteger(messageRetention) || messageRetention < 0 || messageRetention > 3650)
+                  return notice("聊天记录保留天数应为 0–3650 天（0 = 永久）");
                 if (!Number.isInteger(n) || n < 1 || !Number.isInteger(d) || d < 1)
                   return notice("条数和天数须为正整数");
                 if (
-                  ret < Number(state.settings.image_retention_days ?? 30) &&
+                  messageRetention > 0 &&
+                  messageRetention < current.message &&
                   !confirm(
-                    "缩短保留期限会立即删除已超期的发送图片本地副本，消息记录保留；删除后无法恢复。确认保存？",
+                    `保存后会立即删除 ${messageRetention} 天以前的聊天记录，删除后无法恢复。确认保存？`,
+                  )
+                )
+                  return;
+                if (
+                  imageRetention > 0 &&
+                  imageRetention < current.image &&
+                  !confirm(
+                    "缩短图片保留期限会立即删除已超期的本地图片副本，消息记录保留；删除后无法恢复。确认保存？",
+                  )
+                )
+                  return;
+                if (
+                  (messageRetention === 0 || imageRetention === 0) &&
+                  !confirm(
+                    "设为 0 表示永久保留：聊天记录或图片不会自动删除，会一直占用磁盘空间，需要你手动清理。确认保存？",
                   )
                 )
                   return;
                 await api("SaveSettings", {
                   bot_hash: bot,
                   settings: {
-                    view_limit_enabled: enabled.checked,
-                    view_limit_mode: mode.value,
+                    view_limit_enabled: viewEnabled.box.checked,
+                    view_limit_mode: modeControl.dataset.value || mode,
                     view_limit_count: n,
                     view_limit_days: d,
-                    image_retention_days: ret,
+                    image_retention_days: imageRetention,
+                    message_retention_days: messageRetention,
+                    notify_mention: notifyMe.box.checked,
+                    notify_everyone: notifyEveryone.box.checked,
                   },
                 });
-                state.settings.image_retention_days = ret;
+                state.settings.image_retention_days = imageRetention;
+                state.settings.message_retention_days = messageRetention;
+                state.settings.notify_mention = notifyMe.box.checked;
+                state.settings.notify_everyone = notifyEveryone.box.checked;
                 messageImageCache.clear();
                 closeDialog();
                 notice("设置已保存");
+                // 缩短了记录期限：当前打开的消息里可能有已被清掉的，重新拉最新一页。
+                if (messageRetention > 0 && messageRetention < current.message) {
+                  try {
+                    await loadChats();
+                    if (state.chat) navigateLatest();
+                  } catch {}
+                }
               } catch (e) {
                 error(e);
               }
-            }),
+            },
+            "primary",
           );
+          const actions = el("div", null, "dialog-actions");
+          actions.append(save);
+          box.append(view, notify, storage, actions);
         } catch (e) {
           box.replaceChildren(el("div", e.message, "error"));
         }
@@ -2746,6 +3411,21 @@
         d.append(el("label", label), el("div", value ?? "未知"));
         box.append(d);
         return d;
+      }
+      function kv(label, value) {
+        const row = el("div", null, "kv"),
+          cell = el("div", null, "v");
+        row.append(el("span", label, "k"), cell);
+        if (value !== undefined) {
+          if (value instanceof Node) cell.append(value);
+          else cell.textContent = value ?? "未知";
+        }
+        return row;
+      }
+      function actionRow(...items) {
+        const row = el("div", null, "row-actions");
+        row.append(...items);
+        return row;
       }
       function renderInfo() {
         renderHeader();
@@ -2759,68 +3439,115 @@
           box.append(el("div", "请选择会话", "empty"));
           return;
         }
-        const name = field(box, "显示名", c.display_name || title(c));
+        // 顶部身份卡：头像 + 显示名 + 会话 ID。
+        const hero = el("div", null, "info-hero"),
+          who = el("div", null, "info-hero-text");
+        who.append(
+          el("h3", title(c)),
+          el("p", (c.chat_type === "qq_group" ? "群聊" : "私聊") + "：" + c.chat_id),
+        );
+        hero.append(avatar(c), who);
+        box.append(hero);
+
+        const base = el("section", null, "info-card");
+        base.append(el("h4", "基本信息"));
+        const nameRow = kv(c.chat_type === "qq_group" ? "群名" : "昵称", c.display_name || "未知");
+        base.append(nameRow);
         if (c.chat_type === "qq_group") {
-          name.append(
-            button("刷新群名", async () => {
-              try {
-                const r = await api("RefreshGroupName", ctx());
-                if (r.chat) Object.assign(c, r.chat);
-                if (r.queued) notice("群名刷新已排队");
-                await loadChats();
-                renderInfo();
-              } catch (e) {
-                error(e);
-              }
-            }),
+          const status = { queued: "排队获取中", running: "正在获取", failed: "获取失败" }[c.group_info_status];
+          if (status) nameRow.lastElementChild.append(el("small", status, "muted"));
+          nameRow.lastElementChild.append(
+            actionRow(
+              button(
+                "刷新群名",
+                async () => {
+                  try {
+                    const r = await api("RefreshGroupName", ctx());
+                    if (r.chat) Object.assign(c, r.chat);
+                    if (r.queued) notice("群名刷新已排队");
+                    await loadChats();
+                    renderInfo();
+                  } catch (e) {
+                    error(e);
+                  }
+                },
+                "mini",
+              ),
+            ),
           );
-          const st = { queued: "排队获取中", running: "正在获取", failed: "获取失败" }[c.group_info_status];
-          if (st) name.append(el("span", st, "muted"));
         }
-        const r = field(box, "备注", c.remark || "未设置");
-        r.append(button("修改备注", () => remark()));
-        const id = field(box, c.chat_type === "qq_group" ? "group_id" : "user_id", c.chat_id);
-        id.append(button("复制", () => copy(c.chat_id)));
+        const remarkRow = kv("备注", c.remark || "未设置");
+        remarkRow.lastElementChild.append(actionRow(button("修改备注", () => remark(), "mini")));
+        base.append(remarkRow);
+        const idRow = kv(c.chat_type === "qq_group" ? "group_id" : "user_id", c.chat_id);
+        idRow.lastElementChild.append(actionRow(button("复制 ID", () => copy(c.chat_id), "mini")));
+        base.append(idRow);
         if (c.chat_type === "qq_group") {
           if (c.bot_openid) {
-            const bid = field(box, "机器人 open_id", c.bot_openid);
-            bid.append(button("复制", () => copy(c.bot_openid)));
+            const openidRow = kv("机器人 open_id", c.bot_openid);
+            openidRow.lastElementChild.append(
+              actionRow(button("复制 ID", () => copy(c.bot_openid), "mini")),
+            );
+            base.append(openidRow);
           }
           const roles = { member: "普通成员", admin: "管理员", owner: "群主" };
-          field(box, "机器人身份", roles[c.self_role] || "未知");
-          box.append(
-            button("刷新身份", async () => {
-              try {
-                await api("RefreshRole", ctx());
-                await loadChats();
-                renderInfo();
-              } catch (e) {
-                error(e);
-              }
-            }),
+          const roleRow = kv("机器人身份", roles[c.self_role] || "未知");
+          roleRow.lastElementChild.append(
+            actionRow(
+              button(
+                "刷新身份",
+                async () => {
+                  try {
+                    await api("RefreshRole", ctx());
+                    await loadChats();
+                    renderInfo();
+                  } catch (e) {
+                    error(e);
+                  }
+                },
+                "mini",
+              ),
+            ),
           );
-          field(box, "成员缓存", state.members.length + " 人");
-          for (const m of state.members) box.append(el("div", m.name || m.member_openid, "member"));
+          base.append(roleRow);
+        }
+        box.append(base);
+
+        if (c.chat_type === "qq_group") {
+          const members = el("section", null, "info-card");
+          members.append(el("h4", "成员缓存：" + state.members.length + " 人"));
+          if (state.members.length) {
+            const chips = el("div", null, "chips");
+            for (const m of state.members) chips.append(el("span", m.name || m.member_openid, "chip"));
+            members.append(chips);
+          } else {
+            members.append(el("div", "还没有成员缓存，可用下面的「刷新官方成员」拉一次。", "setting-note"));
+          }
+          box.append(members);
           if (c.self_role === "admin" || c.self_role === "owner") {
-            const admin = el("div", null, "stack");
+            const admin = el("section", null, "info-card");
+            admin.append(el("h4", "管理员操作"));
             admin.append(
-              el("h3", "管理员操作"),
-              button("入群申请", showRequests),
-              button("刷新官方成员", async () => {
-                try {
-                  const r = await api("ListMembers", { ...ctx(), refresh: true });
-                  state.members = r.members || [];
-                  renderInfo();
-                } catch (e) {
-                  error(e);
-                }
-              }),
-              button("禁言查询 / 设置", showRestrict),
+              actionRow(
+                button("入群申请", showRequests, "mini"),
+                button(
+                  "刷新官方成员",
+                  async () => {
+                    try {
+                      const r = await api("ListMembers", { ...ctx(), refresh: true });
+                      state.members = r.members || [];
+                      renderInfo();
+                    } catch (e) {
+                      error(e);
+                    }
+                  },
+                  "mini",
+                ),
+                button("禁言查询 / 设置", showRestrict, "mini"),
+              ),
             );
-            field(
-              admin,
-              "主动发言",
-              c.allow_proactive == null ? "未知" : c.allow_proactive ? "允许" : "不允许",
+            admin.append(
+              kv("主动发言", c.allow_proactive == null ? "未知" : c.allow_proactive ? "允许" : "不允许"),
             );
             box.append(admin);
           }

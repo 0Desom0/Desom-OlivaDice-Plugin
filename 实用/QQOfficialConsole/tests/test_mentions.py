@@ -21,12 +21,12 @@ def plugin(tmp_path, monkeypatch):
     database.close()
 
 
-def incoming(main, bot, group, msg_id, event_type, at=None):
+def incoming(main, bot, group, msg_id, event_type, at=None, content='hello'):
     event = SimpleNamespace(
         platform={'sdk': 'qqGuildv2_link'}, bot_info=SimpleNamespace(hash=bot),
         data=SimpleNamespace(group_id=group, user_id='member', sender={}, extend={
             'flag_from_qq': True, 'qq_at_bot': at,
-            'qq_event_data': {'id': msg_id, 'content': 'hello', 'timestamp': 1700000000},
+            'qq_event_data': {'id': msg_id, 'content': content, 'timestamp': 1700000000},
         }),
         sdk_event=SimpleNamespace(payload=SimpleNamespace(data=SimpleNamespace(t=event_type))),
     )
@@ -119,3 +119,40 @@ def test_legacy_session_migrates_mention_index(plugin):
     with db.session('legacy', 'qq_group', 'g') as session:
         indexes = {row['name'] for row in session.execute('PRAGMA index_list(messages)')}
         assert 'messages_mention_unread' in indexes
+
+
+def test_everyone_mention_counts_and_sets_kind(plugin):
+    main, db = plugin
+    incoming(main, 'a', 'g', 'one', 'GROUP_AT_MESSAGE_CREATE', True)
+    assert db.get_chat('a', 'qq_group', 'g')['mention_kind'] == 'me'
+    # 只 @全体、没 @ 机器人：也计入提及，但类型是 everyone。
+    incoming(main, 'a', 'g', 'two', 'GROUP_MESSAGE_CREATE', content='<qqbot-at-everyone /> 大家好')
+    chat = db.get_chat('a', 'qq_group', 'g')
+    assert chat['unread'] == 2 and chat['mention_unread'] == 2
+    assert chat['mention_kind'] == 'everyone' and chat['mention_version'] == 2
+    # @全体并同时 @ 到我 → both（前端据此弹「有人at全体成员」）。
+    incoming(main, 'a', 'g', 'three', 'GROUP_AT_MESSAGE_CREATE', True, content='<qqbot-at-everyone /> 都在吗')
+    assert db.get_chat('a', 'qq_group', 'g')['mention_kind'] == 'both'
+    assert db.mention_total('a') == 3
+
+
+def test_muted_chat_stores_messages_without_unread_or_mentions(plugin):
+    main, db = plugin
+    incoming(main, 'a', 'g', 'one', 'GROUP_AT_MESSAGE_CREATE', True)
+    chat = db.get_chat('a', 'qq_group', 'g')
+    assert chat['unread'] == 1 and chat['mention_unread'] == 1 and chat['mention_version'] == 1
+    # 屏蔽本群：新消息照收，但不计未读、不计提及、不 bump 提醒版本。
+    db.upsert_chat('a', 'qq_group', 'g', muted=1)
+    db.mark_read_all('a', 'qq_group', 'g')
+    incoming(main, 'a', 'g', 'two', 'GROUP_MESSAGE_CREATE')
+    incoming(main, 'a', 'g', 'three', 'GROUP_AT_MESSAGE_CREATE', True)
+    chat = db.get_chat('a', 'qq_group', 'g')
+    assert chat['unread'] == 0 and chat['mention_unread'] == 0
+    # 屏蔽前的 @ 已把版本顶到 1；屏蔽后的新消息不再 bump。
+    assert chat['mention_version'] == 1 and chat['hidden'] == 0
+    assert len(db.list_messages('a', 'qq_group', 'g')) == 3
+    # 已读消息重复升级成 @ 事件时同样不补计。
+    cursor = db.message_changes('a', 'qq_group', 'g', after=None, limit=200)['cursor']
+    incoming(main, 'a', 'g', 'one', 'GROUP_AT_MESSAGE_CREATE', True)
+    chat = db.get_chat('a', 'qq_group', 'g')
+    assert chat['mention_unread'] == 0 and chat['mention_version'] == 1

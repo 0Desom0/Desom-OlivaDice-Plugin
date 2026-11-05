@@ -42,11 +42,13 @@ class Bridge:
         self._closed = threading.Event()
         self._cache_lock = threading.Lock()
         self._cache_dir = Path(store.root) / 'view-cache'
-        self._image_cleanup_lock = threading.RLock()
-        self._image_stop = threading.Event()
-        self._image_reaper = threading.Thread(target=self._reap_images, name='QQOfficialConsole-image-reaper',
-                                              daemon=True)
-        self._image_reaper.start()
+        # 图片与聊天记录的定期清理共用一把锁：改设置时立即清一次，不能和后台线程撞车。
+        self._retention_lock = threading.RLock()
+        self._retention_stop = threading.Event()
+        self._retention_worker = threading.Thread(
+            target=self._retention_loop, name='QQOfficialConsole-retention', daemon=True
+        )
+        self._retention_worker.start()
         self._attachment_lock = threading.Lock()
         self._group_info_lock = threading.Lock()
         self._group_info_pump_locks = {}
@@ -262,21 +264,56 @@ class Bridge:
                 self.store.enqueue_group_info(bot_hash, group_openid)
         self.wake_group_info()
 
-    def _reap_images(self):
-        while not self._image_stop.is_set():
+    def _retention_loop(self):
+        """启动时先清一次过期图片；之后每小时按保留策略清图片和聊天记录。
+
+        聊天记录故意不在启动时清：插件刚起来先别动历史数据，改设置时
+        SaveSettings 会立即按新期限清一次，后台每小时再跑一轮。
+        """
+        try:
+            with self._retention_lock:
+                self.media.cleanup_sent(self.store.get_settings()['image_retention_days'])
+        except Exception:
+            pass
+        while not self._retention_stop.wait(3600):
             try:
-                with self._image_cleanup_lock:
-                    self.media.cleanup_sent(self.store.get_settings()['image_retention_days'])
+                self.run_retention()
             except Exception:
                 pass
-            if self._image_stop.wait(3600):
-                break
+
+    def _clear_view_cache(self):
+        """清掉会话页缓存：消息被清理后，缓存里可能还留着已经不存在的记录。"""
+        with self._cache_lock:
+            if not self._cache_dir.is_dir():
+                return
+            for path in self._cache_dir.iterdir():
+                if path.suffix in ('.json', '.part') and not path.is_symlink() and path.is_file():
+                    path.unlink(missing_ok=True)
+
+    def run_retention(self):
+        """按当前设置执行一次保留策略：后台线程和保存设置共用同一套逻辑。"""
+        with self._retention_lock:
+            settings = self.store.get_settings()
+            self.media.cleanup_sent(settings['image_retention_days'])
+            result = {'deleted': 0, 'chats': 0, 'failed': 0}
+            for bot_hash in self._bots():
+                try:
+                    pruned = self.store.prune_messages(bot_hash, settings['message_retention_days'])
+                except Exception:
+                    result['failed'] += 1
+                    continue
+                result['deleted'] += pruned['deleted']
+                result['chats'] += pruned['chats']
+                result['failed'] += pruned.get('failed', 0)
+            if result['deleted']:
+                self._clear_view_cache()
+            return result
 
     def close(self):
         self._closed.set()
         self._group_info_wake.set()
-        self._image_stop.set()
-        self._image_reaper.join()
+        self._retention_stop.set()
+        self._retention_worker.join(timeout=5)
         self._group_info_worker.join(timeout=2)
         with self._jobs_lock:
             threads = [job['thread'] for job in self._jobs.values() if job.get('thread')]
@@ -547,10 +584,24 @@ class Bridge:
             values = p.get('settings', {})
             if not isinstance(values, dict):
                 raise ValueError()
-            global_values = {k: values[k] for k in
-                             ('send_key', 'last_bot_hash', 'poll_interval_ms', 'image_retention_days') if k in values}
+            global_values = {
+                k: values[k]
+                for k in (
+                    'send_key',
+                    'last_bot_hash',
+                    'poll_interval_ms',
+                    'image_retention_days',
+                    'message_retention_days',
+                    'notify_mention',
+                    'notify_everyone',
+                )
+                if k in values
+            }
             if 'send_key' in global_values and global_values['send_key'] not in ('enter_send', 'ctrl_enter_send'):
                 raise ValueError()
+            for key in ('notify_mention', 'notify_everyone'):
+                if key in global_values and type(global_values[key]) is not bool:
+                    raise ValueError()
             if (
                 'last_bot_hash' in global_values
                 and global_values['last_bot_hash'] not in self._bots()
@@ -559,10 +610,12 @@ class Bridge:
                 raise ValueError()
             if 'poll_interval_ms' in global_values:
                 global_values['poll_interval_ms'] = max(1000, min(60000, int(global_values['poll_interval_ms'])))
-            if 'image_retention_days' in global_values:
-                days = global_values['image_retention_days']
-                if type(days) is not int or not 1 <= days <= 3650:
-                    raise ValueError()
+            for key in ('image_retention_days', 'message_retention_days'):
+                if key in global_values:
+                    days = global_values[key]
+                    # 0 = 永久保留，不自动删除；上限 10 年，避免前端传进离谱数字。
+                    if type(days) is not int or not 0 <= days <= 3650:
+                        raise ValueError()
             local = {
                 k: values[k]
                 for k in ('view_limit_enabled', 'view_limit_mode', 'view_limit_count', 'view_limit_days')
@@ -580,10 +633,19 @@ class Bridge:
                     if key in local:
                         local[key] = max(1, min(100000, int(local[key])))
                 self.store.set_settings(local, bot)
-            with self._image_cleanup_lock:
+            with self._retention_lock:
                 self.store.set_settings(global_values)
                 if 'image_retention_days' in global_values:
                     self.media.cleanup_sent(global_values['image_retention_days'])
+                if 'message_retention_days' in global_values:
+                    # 立刻按新期限清一次，别让用户等下一个整点。
+                    removed = 0
+                    for bot_hash in self._bots():
+                        removed += self.store.prune_messages(
+                            bot_hash, global_values['message_retention_days']
+                        )['deleted']
+                    if removed:
+                        self._clear_view_cache()
             return dict(ok, settings=self.store.get_settings())
         bot = p.get('bot_hash')
         if not isinstance(bot, str) or bot not in self._bots():
@@ -654,7 +716,7 @@ class Bridge:
                 image = next(item for item in images if isinstance(item, dict) and item.get('image_id') == image_id)
             except (TypeError, ValueError, KeyError, AttributeError, StopIteration):
                 raise ValueError('图片已失效') from None
-            with self._image_cleanup_lock:
+            with self._retention_lock:
                 return dict(
                     ok,
                     **self.media.read_sent_chunk(
@@ -691,7 +753,8 @@ class Bridge:
                     raise ValueError()
                 self.store.mark_read_visible(bot, chat_type, chat_id, ids)
                 return dict(ok, chat=self.store.get_chat(bot, chat_type, chat_id))
-            field = {'pin': 'pinned', 'hide': 'hidden'}.get(p.get('action'))
+            # mute = 屏蔽本群：消息照收，但不计未读、不提醒 @（见 store.add_message）。
+            field = {'pin': 'pinned', 'hide': 'hidden', 'mute': 'muted'}.get(p.get('action'))
             if field is None or type(p.get('value')) is not bool:
                 raise ValueError()
             value = int(p['value'])
