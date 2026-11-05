@@ -21,6 +21,17 @@ def reply_with_dice(reply, plugin_event, message, results):
     else:
         reply(plugin_event, message)
 
+def reply_dice_error(plugin_event, rd, expression, values, strings, hidden):
+    values['tResult'] = str(rd.resError)
+    values['tRollPara'] = str(expression)
+    message = OlivaDiceCore.msgReplyModel.get_SkillCheckError(rd.resError, strings, values)
+    message += OlivaDiceCore.msgCustomManager.formatReplySTR(strings['strRollErrorHelp'], values)
+    if hidden:
+        OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, message)
+    else:
+        OlivaDiceCore.msgReply.replyMsg(plugin_event, message)
+    plugin_event.set_block()
+
 
 def unity_init(plugin_event, Proc):
     # 这里是插件初始化，通常用于加载配置等
@@ -226,11 +237,13 @@ def unity_reply(plugin_event, Proc):
                 tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['rad','rcd'])
             else:
                 return
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
             flag_hide_roll = False
             if len(tmp_reast_str) > 0:
                 if isMatchWordStart(tmp_reast_str, 'h'):
                     flag_hide_roll = True
                     tmp_reast_str = getMatchWordStartRight(tmp_reast_str, 'h')
+                    tmp_reast_str = skipSpaceStart(tmp_reast_str)
             if len(tmp_reast_str) > 2:
                 tmp_reast_str_list_1 = tmp_reast_str.split('#')
                 if len(tmp_reast_str_list_1) > 1:
@@ -239,6 +252,7 @@ def unity_reply(plugin_event, Proc):
                         if roll_times_count > 10:
                             roll_times_count = 10
                         tmp_reast_str = tmp_reast_str_list_1[1]
+            tmp_reast_str = skipSpaceStart(tmp_reast_str)
             # 处理奖励/惩罚骰（b/p）
             flag_bp_type = 0  # 0无 1奖励 2惩罚
             flag_bp_count = None
@@ -249,10 +263,8 @@ def unity_reply(plugin_event, Proc):
                 elif isMatchWordStart(tmp_reast_str, ['p','P']):
                     flag_bp_type = 2
                     tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['p','P'])
-                if flag_bp_type != 0 and len(tmp_reast_str) > 1:
-                    if tmp_reast_str[0].isdecimal():
-                        flag_bp_count = tmp_reast_str[0]
-                        tmp_reast_str = tmp_reast_str[1:]
+                if flag_bp_type != 0 and tmp_reast_str and tmp_reast_str[0].isdecimal():
+                    flag_bp_count, tmp_reast_str = OlivaDiceCore.msgReply.getNumberPara(tmp_reast_str)
             tmp_reast_str = skipSpaceStart(tmp_reast_str)
             # 检查是否裸rad(无参数),允许通过,会使用随机值
             # if tmp_reast_str == '' or tmp_reast_str == None:
@@ -310,10 +322,13 @@ def unity_reply(plugin_event, Proc):
                     }
                     
                     # 只有强制指定了base_value才在这里计算
-                    if flag_force_value:
+                    if flag_force_value and roll_times_count == 1:
                         full_expr = f"{base_value}{expr_str}"
                         rd_para = OlivaDiceCore.onedice.RD(full_expr)
                         rd_para.roll()
+                        if rd_para.resError is not None:
+                            reply_dice_error(plugin_event, rd_para, full_expr, dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                            return
                         if rd_para.resError is None:
                             tmp_skill_value = rd_para.resInt
                             if has_dice:
@@ -327,8 +342,6 @@ def unity_reply(plugin_event, Proc):
                         if char in op_list or char.isdigit():
                             skill_end_pos = i
                             break
-                    tmp_skill_name = tmp_reast_str[:skill_end_pos].strip().upper() or None
-                    tmp_reast_str = tmp_reast_str[skill_end_pos:].strip()
                     tmp_skill_name = tmp_reast_str[:skill_end_pos].strip().upper() or None
                     tmp_reast_str = tmp_reast_str[skill_end_pos:].strip()
                     
@@ -377,10 +390,13 @@ def unity_reply(plugin_event, Proc):
                                     'force_value': flag_force_value
                                 }
                                 # 只有强制指定了base_value才在这里计算
-                                if flag_force_value:
+                                if flag_force_value and roll_times_count == 1:
                                     full_expr = f"{base_value}{expr_str}"
                                     rd_para = OlivaDiceCore.onedice.RD(full_expr)
                                     rd_para.roll()
+                                    if rd_para.resError is not None:
+                                        reply_dice_error(plugin_event, rd_para, full_expr, dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                                        return
                                     if rd_para.resError is None:
                                         tmp_skill_value = rd_para.resInt
                                         if has_dice:
@@ -398,6 +414,28 @@ def unity_reply(plugin_event, Proc):
                                 tmp_skill_value = int(tmp_skill_value)
                                 tmp_skill_value_str = str(tmp_skill_value)
                                 flag_force_value = True  # 强制指定了技能值
+                                tmp_reast_str = tmp_reast_str.strip()
+                                if tmp_reast_str and tmp_reast_str[0] in op_list:
+                                    expr_str = tmp_reast_str.split()[0]
+                                    base_value = tmp_skill_value
+                                    tmp_expr_info = {
+                                        'base_value': base_value,
+                                        'expr_str': expr_str,
+                                        'has_dice': 'D' in expr_str.upper(),
+                                        'force_value': True,
+                                    }
+                                    if roll_times_count == 1:
+                                        full_expr = f'{base_value}{expr_str}'
+                                        rd_para = OlivaDiceCore.onedice.RD(full_expr)
+                                        rd_para.roll()
+                                        if rd_para.resError is not None:
+                                            reply_dice_error(plugin_event, rd_para, full_expr, dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                                            return
+                                        tmp_skill_value = rd_para.resInt
+                                        if tmp_expr_info['has_dice']:
+                                            tmp_skill_value_str = f'{full_expr}={rd_para.resDetail}={tmp_skill_value}'
+                                        else:
+                                            tmp_skill_value_str = f'{full_expr}={tmp_skill_value}'
             # 删除从技能卡读取的逻辑，除非强制指定了值，否则都使用随机值
             # if tmp_skill_name and tmp_skill_value is None:
             #     tmp_skill_value = OlivaDiceCore.pcCard.pcCardDataGetBySkillName(...)
@@ -412,6 +450,8 @@ def unity_reply(plugin_event, Proc):
             if True:  # 总是执行掷骰逻辑
                 tmp_Template = None
                 tmp_TemplateRuleName = 'default'
+                tmp_template_name = None
+                tmp_template_rule_name = None
                 if tmp_pc_name_1 != None:
                     tmp_template_name = OlivaDiceCore.pcCard.pcCardDataGetTemplateKey(
                         OlivaDiceCore.pcCard.getPcHash(
@@ -420,10 +460,6 @@ def unity_reply(plugin_event, Proc):
                         ),
                         tmp_pc_name_1
                     )
-                    if flag_groupTemplate != None:
-                        tmp_template_name = flag_groupTemplate
-                    if tmp_template_name != None:
-                        tmp_Template = OlivaDiceCore.pcCard.pcCardDataGetTemplateByKey(tmp_template_name)
                     tmp_template_rule_name = OlivaDiceCore.pcCard.pcCardDataGetTemplateRuleKey(
                         OlivaDiceCore.pcCard.getPcHash(
                             tmp_pc_id,
@@ -431,10 +467,14 @@ def unity_reply(plugin_event, Proc):
                         ),
                         tmp_pc_name_1
                     )
-                    if flag_groupTemplateRule != None:
-                        tmp_template_rule_name = flag_groupTemplateRule
-                    if tmp_template_rule_name != None:
-                        tmp_TemplateRuleName = tmp_template_rule_name
+                if flag_groupTemplate is not None:
+                    tmp_template_name = flag_groupTemplate
+                if tmp_template_name is not None:
+                    tmp_Template = OlivaDiceCore.pcCard.pcCardDataGetTemplateByKey(tmp_template_name)
+                if flag_groupTemplateRule is not None:
+                    tmp_template_rule_name = flag_groupTemplateRule
+                if tmp_template_rule_name is not None:
+                    tmp_TemplateRuleName = tmp_template_rule_name
                 rd_para_str = '1D100'
                 tmp_customDefault = None
                 if tmp_Template != None:
@@ -461,11 +501,17 @@ def unity_reply(plugin_event, Proc):
                         # 没有强制指定值，使用随机值
                         rd_para_base = OlivaDiceCore.onedice.RD('1D100')
                         rd_para_base.roll()
+                        if rd_para_base.resError is not None:
+                            reply_dice_error(plugin_event, rd_para_base, '1D100', dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                            return
                         if rd_para_base.resError is None:
                             base_value = rd_para_base.resInt
                             full_expr = f"{base_value}{tmp_expr_info['expr_str']}"
                             rd_para_expr = OlivaDiceCore.onedice.RD(full_expr)
                             rd_para_expr.roll()
+                            if rd_para_expr.resError is not None:
+                                reply_dice_error(plugin_event, rd_para_expr, full_expr, dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                                return
                             if rd_para_expr.resError is None:
                                 current_skill_value = rd_para_expr.resInt
                                 # 显示为 1D100+表达式=结果，不显示中间过程
@@ -475,12 +521,18 @@ def unity_reply(plugin_event, Proc):
                         flag_pure_random = True
                         rd_para_base = OlivaDiceCore.onedice.RD('1D100')
                         rd_para_base.roll()
+                        if rd_para_base.resError is not None:
+                            reply_dice_error(plugin_event, rd_para_base, '1D100', dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                            return
                         if rd_para_base.resError is None:
                             current_skill_value = rd_para_base.resInt
                             tmp_skill_value_str = '1D100'  # 显示为1D100而不是具体数字
                     
                     rd_para = OlivaDiceCore.onedice.RD(rd_para_str, tmp_customDefault)
                     rd_para.roll()
+                    if rd_para.resError is not None:
+                        reply_dice_error(plugin_event, rd_para, rd_para_str, dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                        return
                     if rd_para.resError == None:
                         if rd_para.resDetail == None or rd_para.resDetail == '':
                             dictTValue['tRollResult'] = '%s=%d' % (rd_para_str, rd_para.resInt)
@@ -510,7 +562,7 @@ def unity_reply(plugin_event, Proc):
                             skill_display = tmp_skill_value_str
                         elif tmp_expr_info is not None:
                             # 如果有表达式且强制指定了值
-                            skill_display = f"{tmp_expr_info['base_value']}{tmp_expr_info['expr_str']}={tmp_skill_value}"
+                            skill_display = tmp_skill_value_str
                         else:
                             # 纯随机或强制指定值
                             if flag_pure_random:
@@ -530,7 +582,7 @@ def unity_reply(plugin_event, Proc):
                             if tmp_expr_info is not None and not tmp_expr_info['force_value']:
                                 skill_display = tmp_skill_value_str
                             elif tmp_expr_info is not None:
-                                skill_display = f"{tmp_expr_info['base_value']}{tmp_expr_info['expr_str']}={tmp_skill_value}"
+                                skill_display = tmp_skill_value_str
                             else:
                                 skill_display = '1D100' if flag_pure_random else tmp_skill_value_str
                             
@@ -599,6 +651,9 @@ def unity_reply(plugin_event, Proc):
                                 full_expr = f"{tmp_expr_info['base_value']}{tmp_expr_info['expr_str']}"
                                 rd_para_expr = OlivaDiceCore.onedice.RD(full_expr)
                                 rd_para_expr.roll()
+                                if rd_para_expr.resError is not None:
+                                    reply_dice_error(plugin_event, rd_para_expr, full_expr, dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                                    return
                                 if rd_para_expr.resError is None:
                                     current_skill_value = rd_para_expr.resInt
                                     current_skill_display = f"{tmp_expr_info['base_value']}{tmp_expr_info['expr_str']}"
@@ -606,11 +661,17 @@ def unity_reply(plugin_event, Proc):
                                 # 没有强制指定，每次随机基础值
                                 rd_para_base = OlivaDiceCore.onedice.RD('1D100')
                                 rd_para_base.roll()
+                                if rd_para_base.resError is not None:
+                                    reply_dice_error(plugin_event, rd_para_base, '1D100', dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                                    return
                                 if rd_para_base.resError is None:
                                     base_value = rd_para_base.resInt
                                     full_expr = f"{base_value}{tmp_expr_info['expr_str']}"
                                     rd_para_expr = OlivaDiceCore.onedice.RD(full_expr)
                                     rd_para_expr.roll()
+                                    if rd_para_expr.resError is not None:
+                                        reply_dice_error(plugin_event, rd_para_expr, full_expr, dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                                        return
                                     if rd_para_expr.resError is None:
                                         current_skill_value = rd_para_expr.resInt
                                         current_skill_display = full_expr
@@ -618,15 +679,21 @@ def unity_reply(plugin_event, Proc):
                             # 没有指定值也没有表达式，每次随机
                             rd_para_base = OlivaDiceCore.onedice.RD('1D100')
                             rd_para_base.roll()
+                            if rd_para_base.resError is not None:
+                                reply_dice_error(plugin_event, rd_para_base, '1D100', dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                                return
                             if rd_para_base.resError is None:
                                 current_skill_value = rd_para_base.resInt
                                 current_skill_display = None  # 纯随机不显示计算过程
                         else:
                             # 强制指定了固定值
-                            current_skill_display = str(current_skill_value)
+                            current_skill_display = None
                         
-                        rd_para = OlivaDiceCore.onedice.RD(rd_para_str)
+                        rd_para = OlivaDiceCore.onedice.RD(rd_para_str, tmp_customDefault)
                         rd_para.roll()
+                        if rd_para.resError is not None:
+                            reply_dice_error(plugin_event, rd_para, rd_para_str, dictTValue, dictStrCustom, flag_hide_roll and flag_is_from_group)
+                            return
                         if rd_para.resError == None:
                             result_start = len(tmp_tSkillCheckReasult)
                             # 构建掷骰结果显示
