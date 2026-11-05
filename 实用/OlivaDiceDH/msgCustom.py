@@ -186,6 +186,7 @@ dictHelpDocTemp = {
 • .help dhst - 查看本插件使用说明''',
 
     'dd': '''【二元骰检定】
+支持新版本Core时，Markdown回复中的骰点结果会按代码保护。
 .dd [n/m] [修饰符...] [原因]
 
 参数说明：
@@ -233,6 +234,7 @@ dictHelpDocTemp = {
 - GM恐惧点存储在GM人物卡的技能中''',
 
     'cook': '''【烹饪游戏】
+支持新版本Core时，Markdown回复中的骰点结果会按代码保护。
 .cook [ndm]+[ndm]+...  - 开始新游戏
 .cook rm [骰面]         - 移除骰子
 

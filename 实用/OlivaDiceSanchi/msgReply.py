@@ -22,12 +22,28 @@ import OlivaDiceCore
 from . import hexagramData
 
 import hashlib
+import inspect
 import time
 import traceback
 from functools import wraps
 import copy
 import re
 import random
+
+
+def _reply_dice(send, plugin_event, message, result):
+    try:
+        parameters = inspect.signature(send).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    param = parameters.get('markdown_code')
+    if (param is not None and param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)) or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    ):
+        send(plugin_event, message, markdown_code=result)
+    else:
+        send(plugin_event, message)
+
 
 SANCHI_ONEDICE_EXPR_CHARS = set('0123456789dD+-*/().^')
 
@@ -941,7 +957,12 @@ def unity_reply(plugin_event, Proc):
             )
             
             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAVResult'], dictTValue)
-            replyMsg(plugin_event, tmp_reply_str)
+            _reply_dice(replyMsg, plugin_event, tmp_reply_str, tuple(
+                value for value in (my_expr_show if '=' in my_expr_show else '',
+                                    dictTValue['tMyCoinsResult'],
+                                    other_expr_show if '=' in other_expr_show else '',
+                                    dictTValue['tOtherCoinsResult']) if value
+            ))
             return
             
         elif isMatchWordStart(tmp_reast_str, 'tqa', isCommand = True):
@@ -1139,25 +1160,30 @@ def unity_reply(plugin_event, Proc):
                 platform=tmp_pc_platform,
             )
             
+            dice_results = tuple(value for value in (
+                attr_expr_show if '=' in attr_expr_show else '',
+                difficulty_expr_show if '=' in difficulty_expr_show else '',
+                coins_display,
+            ) if value)
             # 根据是否暗骰和代骰选择回复方式
             if is_at:
                 if flag_hide and flag_is_from_group:
                     dictTValue['tGroupId'] = str(plugin_event.data.group_id)
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAHideAtOther'], dictTValue)
                     replyMsg(plugin_event, OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAHideShowAtOther'], dictTValue))
-                    OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str)
+                    _reply_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str, dice_results)
                 else:
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAAtOther'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str)
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str, dice_results)
             else:
                 if flag_hide and flag_is_from_group:
                     dictTValue['tGroupId'] = str(plugin_event.data.group_id)
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAHide'], dictTValue)
                     replyMsg(plugin_event, OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAHideShow'], dictTValue))
-                    OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str)
+                    _reply_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str, dice_results)
                 else:
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strTQAResult'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str)
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str, dice_results)
             return
             
         elif isMatchWordStart(tmp_reast_str, '摇卦', isCommand = True):
@@ -1301,7 +1327,10 @@ def unity_reply(plugin_event, Proc):
                 dictStrCustom['strHexagramResult'], 
                 dictTValue
             )
-            replyMsg(plugin_event, tmp_reply_str)
+            _reply_dice(replyMsg, plugin_event, tmp_reply_str, (
+                dictTValue['tAttributes'],
+                dictTValue['tFluctuationResults'] if fluctuation_results else '',
+            ))
             return
             
         elif isMatchWordStart(tmp_reast_str, '投签', isCommand = True):
@@ -1403,7 +1432,10 @@ def unity_reply(plugin_event, Proc):
                     dictStrCustom['strDivinationResult'], 
                     dictTValue
                 )
-                replyMsg(plugin_event, tmp_reply_str)
+                dice_results = tuple(dictTValue[key] for key in (
+                    'tPastIdentity', 'tPastTragedy', 'tCurrentGoal',
+                    'tOfficialPosition', 'tLuckyPoints',
+                ))
 
             except Exception as e:
                 dictTValue['tError'] = str(e)
@@ -1412,6 +1444,8 @@ def unity_reply(plugin_event, Proc):
                     dictTValue
                 )
                 replyMsg(plugin_event, tmp_reply_str)
+            else:
+                _reply_dice(replyMsg, plugin_event, tmp_reply_str, dice_results)
             return
         elif isMatchWordStart(tmp_reast_str, 'tq', isCommand = True):
             is_at, at_user_id, tmp_reast_str = parse_at_user(plugin_event, tmp_reast_str, valDict, flag_is_from_group_admin)
@@ -1690,13 +1724,13 @@ def unity_reply(plugin_event, Proc):
                             dictStrCustom['strTQHideShowAtOther'], 
                             dictTValue
                         ))
-                        OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str)
+                        _reply_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str, (dictTValue['tResult'], dictTValue['tExprShow'] if '=' in dictTValue['tExprShow'] else ''))
                     else:
                         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(
                             dictStrCustom['strTQAtOther'], 
                             dictTValue
                         )
-                        replyMsg(plugin_event, tmp_reply_str)
+                        _reply_dice(replyMsg, plugin_event, tmp_reply_str, (dictTValue['tResult'], dictTValue['tExprShow'] if '=' in dictTValue['tExprShow'] else ''))
                 else:
                     if flag_hide and flag_is_from_group:
                         dictTValue['tGroupId'] = str(plugin_event.data.group_id)
@@ -1708,13 +1742,13 @@ def unity_reply(plugin_event, Proc):
                             dictStrCustom['strTQHideShow'], 
                             dictTValue
                         ))
-                        OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str)
+                        _reply_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str, (dictTValue['tResult'], dictTValue['tExprShow'] if '=' in dictTValue['tExprShow'] else ''))
                     else:
                         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(
                             dictStrCustom['strTQResult'], 
                             dictTValue
                         )
-                        replyMsg(plugin_event, tmp_reply_str)
+                        _reply_dice(replyMsg, plugin_event, tmp_reply_str, (dictTValue['tResult'], dictTValue['tExprShow'] if '=' in dictTValue['tExprShow'] else ''))
                 return
             else:
                 result_list = []
@@ -1810,13 +1844,13 @@ def unity_reply(plugin_event, Proc):
                             dictStrCustom['strTQHideShowAtOtherMore'], 
                             dictTValue
                         ))
-                        OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str)
+                        _reply_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str, (dictTValue['tResult'], dictTValue['tExprShow'] if '=' in dictTValue['tExprShow'] else ''))
                     else:
                         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(
                             dictStrCustom['strTQAtOtherMore'], 
                             dictTValue
                         )
-                        replyMsg(plugin_event, tmp_reply_str)
+                        _reply_dice(replyMsg, plugin_event, tmp_reply_str, (dictTValue['tResult'], dictTValue['tExprShow'] if '=' in dictTValue['tExprShow'] else ''))
                 else:
                     if flag_hide and flag_is_from_group:
                         dictTValue['tGroupId'] = str(plugin_event.data.group_id)
@@ -1828,11 +1862,11 @@ def unity_reply(plugin_event, Proc):
                             dictStrCustom['strTQHideShowMore'], 
                             dictTValue
                         ))
-                        OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str)
+                        _reply_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str, (dictTValue['tResult'], dictTValue['tExprShow'] if '=' in dictTValue['tExprShow'] else ''))
                     else:
                         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(
                             dictStrCustom['strTQResultMore'], 
                             dictTValue
                         )
-                        replyMsg(plugin_event, tmp_reply_str)
+                        _reply_dice(replyMsg, plugin_event, tmp_reply_str, (dictTValue['tResult'], dictTValue['tExprShow'] if '=' in dictTValue['tExprShow'] else ''))
                 return

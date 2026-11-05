@@ -8,11 +8,23 @@ import OlivaDiceTA
 import OlivaDiceCore
 
 import copy
+import inspect
 import re
 import random
 import os
 import json
 
+
+def _reply_dice(send, plugin_event, message, result):
+    try:
+        parameter = inspect.signature(send).parameters.get('markdown_code')
+    except (TypeError, ValueError):
+        parameter = None
+    if parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY
+    ):
+        return send(plugin_event, message, markdown_code=result)
+    return send(plugin_event, message)
 
 _RD_RECORD_CONTEXT = None
 
@@ -1164,11 +1176,12 @@ def unity_reply(plugin_event, Proc):
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAResultAtOther'], dictTValue)
                     else:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAResult'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str)
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str, dictTValue['tDiceExpr'])
                 
                 else:
                     # 多次投掷
                     results = []
+                    dice_results = []
                     total_chaos_generation = 0
                     # 跟踪已归零的技能（避免重复归零）
                     zeroed_skills = set()
@@ -1271,6 +1284,7 @@ def unity_reply(plugin_event, Proc):
                         else:
                             dice_display = f"1D20={d20_result}"
                         results.append(f"第{i+1}次: {dice_display} {result_text}{chaos_text}{skill_zero_text}")
+                        dice_results.append(f"第{i+1}次: {dice_display}")
                     
                     # 设置多次检定回复变量
                     dictTValue['tRollTimes'] = str(roll_times)
@@ -1300,8 +1314,10 @@ def unity_reply(plugin_event, Proc):
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAResultMultiAtOther'], dictTValue)
                     else:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAResultMulti'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str)
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str, tuple(dice_results))
                 
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTRAError'], dictTValue)
@@ -1586,9 +1602,10 @@ def unity_reply(plugin_event, Proc):
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResultAtOther'], dictTValue)
                     else:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResult'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str)
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str, dictTValue['tDiceResult'])
                 else:
                     results = []
+                    dice_results = []
                     total_trace_gain = 0
                     old_trace = int(group_data.get('trace', 0))
 
@@ -1606,6 +1623,7 @@ def unity_reply(plugin_event, Proc):
                         results.append(
                             f"第{i+1}次: {res_one['dice_display']}{extra_part} {res_one['result_text']}"
                         )
+                        dice_results.append(f"第{i+1}次: {res_one['dice_display']}{extra_part}")
 
                     new_trace = load_group_data(bot_hash, group_hash).get('trace', old_trace)
 
@@ -1632,8 +1650,10 @@ def unity_reply(plugin_event, Proc):
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResultMultiAtOther'], dictTValue)
                     else:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRResultMulti'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str)
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str, tuple(dice_results))
 
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFRError'], dictTValue)
@@ -1926,7 +1946,7 @@ def unity_reply(plugin_event, Proc):
                             tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResultAtOther'], dictTValue)
                         else:
                             tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResult'], dictTValue)
-                        replyMsg(plugin_event, tmp_reply_str.strip())
+                        _reply_dice(replyMsg, plugin_event, tmp_reply_str.strip(), dictTValue['tDiceResult'])
                         return
                     
                     # 普通模式
@@ -2123,11 +2143,12 @@ def unity_reply(plugin_event, Proc):
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResultAtOther'], dictTValue)
                     else:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResult'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str)
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str, dictTValue['tDiceResult'])
                 
                 else:
                     # 多次检定
                     results = []
+                    dice_results = []
                     total_chaos_generation = 0
                     total_fail_generation = 0
                     
@@ -2310,6 +2331,7 @@ def unity_reply(plugin_event, Proc):
                         display_burnout = total_burnout + penalty_dice  # 将p参数也算入过载显示
                         burnout_text = f"过载{display_burnout}" if display_burnout > 0 else ""
                         results.append(f"第{i+1}次: {dice_display} {three_count_text} {result_text}{chaos_text}")
+                        dice_results.append(f"第{i+1}次: {dice_display}")
                     
                     # 设置多次检定回复变量
                     dictTValue['tRollTimes'] = str(roll_times)
@@ -2347,8 +2369,10 @@ def unity_reply(plugin_event, Proc):
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResultMultiAtOther'], dictTValue)
                     else:
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAResultMulti'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str.strip())
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str.strip(), tuple(dice_results))
                 
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
@@ -2526,7 +2550,10 @@ def unity_reply(plugin_event, Proc):
                     dictTValue['tExprDetail'] = ""
 
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom[change_template_key], dictTValue)
-                replyMsg(plugin_event, tmp_reply_str)
+                if local_rest.lstrip('+-').isdigit():
+                    replyMsg(plugin_event, tmp_reply_str)
+                else:
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str, dictTValue['tExprDetail'])
 
             except ValueError as ve:
                 dictTValue['tResult'] = str(ve)
@@ -2547,6 +2574,8 @@ def unity_reply(plugin_event, Proc):
                     clamp_min_zero=True,
                     allow_negative_set=False
                 )
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
@@ -2568,6 +2597,8 @@ def unity_reply(plugin_event, Proc):
                     clamp_min_zero=True,
                     allow_negative_set=False
                 )
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
@@ -2589,6 +2620,8 @@ def unity_reply(plugin_event, Proc):
                     clamp_min_zero=False,
                     allow_negative_set=True
                 )
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
@@ -2766,13 +2799,18 @@ def unity_reply(plugin_event, Proc):
                         else:
                             dictTValue['tExprDetail'] = ""
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strFSChange'], dictTValue)
-                        replyMsg(plugin_event, tmp_reply_str)
+                        if tmp_reast_str.lstrip('+-').isdigit():
+                            replyMsg(plugin_event, tmp_reply_str)
+                        else:
+                            _reply_dice(replyMsg, plugin_event, tmp_reply_str, dictTValue['tExprDetail'])
                         
                     except ValueError:
                         dictTValue['tResult'] = f"无效的数值: {tmp_reast_str}"
                         tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)
                         replyMsg(plugin_event, tmp_reply_str)
                         
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceTA.msgCustomManager.formatReplySTR(dictStrCustom['strTAError'], dictTValue)

@@ -354,6 +354,17 @@ class HookManager:
 
         self._patch(self.core.msgReply, 'replyMsg', reply)
 
+    def _core_roll_result(self):
+        """读取 Core 当前 replyMsg 的 tRollResult；旧版 Core 没有此接口时不改正文。"""
+        try:
+            context = getattr(self.core.msgReply, '_markdown_roll_result', None)
+            getter = getattr(context, 'get', None)
+            result = getter() if callable(getter) else None
+            return result if isinstance(result, (str, tuple, list)) and result else None
+        except Exception as error:
+            self.log('读取 Core tRollResult 失败，保留原 Markdown', error)
+            return None
+
     def _censor(self, bot_hash, text):
         try:
             return self.core.censorAPI.doCensorReplaceOlivOSSafe(botHash=bot_hash, msg=str(text))
@@ -389,11 +400,7 @@ class HookManager:
             sent.update(selected)
             return True
 
-    def _release(self, state, route, selected):
-        with state.lock:
-            state.sent.setdefault(route, set()).difference_update(selected)
-
-    def _prepare(self, event, message, route, string_channel=None):
+    def _prepare(self, event, message, route, string_channel=None, markdown_prefix=None):
         invocation = self._context(event)
         if invocation is None or self.suppress.get():
             return message
@@ -416,6 +423,8 @@ class HookManager:
                     )
                 if not original.active:
                     return message
+                if markdown_prefix is not None:
+                    markdown_hud = markdown._hud_block(hud.splitlines()) + '\n\n'
                 channel = string_channel or event.plugin_info.get('message_mode_rx')
                 if channel in ('old_string', 'olivos_string'):
                     hud = hud.replace('&', '&amp;').replace('[', '&#91;').replace(']', '&#93;')
@@ -423,6 +432,8 @@ class HookManager:
                 result = self.olivos.messageAPI.Message_templet(
                     'olivos_para', [self.olivos.messageAPI.PARA.text(hud), *original.data],
                 )
+                if markdown_prefix is not None:
+                    markdown_prefix.append((markdown_hud, hud))
                 state.sent.setdefault(route, set()).update(selected)
                 return result
             except Exception as error:
@@ -443,6 +454,11 @@ class HookManager:
         try:
             content = markdown.build(self.olivos, event, lines, message)
             content.text = self._censor(state.bot_hash, content.text)
+            # OlivOS 素材上传失败时会以普通图文发送 Markdown 文本；
+            # 此时不能把保护用的反引号泄漏到普通消息。
+            if content.local_images and self._core_roll_result():
+                raise markdown.NotApplicable('含骰点结果的图文由普通消息通道处理')
+            content.text = markdown.protect_roll_result(content.text, self._core_roll_result())
         except markdown.NotApplicable as error:
             self.log(f'Markdown 不适用，保留原方案（{error}）')
             return None
@@ -456,11 +472,12 @@ class HookManager:
         try:
             result = markdown.send(event, context, content, active=active)
         except Exception as error:
-            self.log('Markdown 发送失败，回退原方案', error)
-            result = None
+            # 调用已发起，异常不代表平台没有收到；不可再次发送。
+            self.log('Markdown 发送结果不确定，不再重发', error)
+            return {'active': False}
         if result is None:
-            self._release(state, route, selected)
-            return None
+            self.log('Markdown 发送结果不确定，不再重发')
+            return {'active': False}
         reason = markdown.degraded(result)
         if reason is not None:
             # 消息已由平台退回普通图文发出，不能再补发一次，只留排查线索。
@@ -527,54 +544,16 @@ class HookManager:
         self._patch(event_class, 'send', send)
 
     def _markdown_core(self, event, message):
-        """Core 的 qqGuildv2 Markdown 通路；返回 (状态, 载荷)。"""
+        """注入普通 HUD，并为支持该接口的 Core 提供 Markdown 等价前缀。"""
         invocation = self._context(event)
         if invocation is None or self.suppress.get():
-            return 'skip', None
-        state = invocation.state
+            return None, None
         route = self._reply_route(event)
-        lines, selected = self._hud_lines(state, route)
-        if not lines:
-            return 'skip', None
-        context = markdown.chat_context(event)
-        if context is None or not markdown.api_available(event):
-            # 频道或旧版 OlivOS：沿用既有『』格式注入 Core 的 Markdown 内容。
-            return 'delegate', self._delegate_core(event, message, route)
-        try:
-            text = message if isinstance(message, str) else str(message)
-            content, media = markdown.build_core(
-                self.olivos, event, lines, self._censor(state.bot_hash, text),
-            )
-        except markdown.NotApplicable as error:
-            self.log(f'Markdown 不适用，沿用原格式（{error}）')
-            return 'delegate', self._delegate_core(event, message, route)
-        except Exception as error:
-            self.log('构造 Markdown 失败，沿用原格式', error)
-            return 'delegate', self._delegate_core(event, message, route)
-        if not self._reserve(state, route, selected):
-            return 'skip', None
-        try:
-            result = markdown.send(event, context, content)
-        except Exception as error:
-            self.log('Markdown 发送失败，回退现有方案', error)
-            result = None
-        if result is None:
-            self._release(state, route, selected)
-            return 'fallback', None
-        if media is not None:
-            try:
-                # 与 Core 原实现一致：Markdown 成功后，图片等媒体单独走普通消息。
-                media_message = media.get('old_string')
-                self.core.msgReply.pluginReply(event, media_message)
-            except Exception as error:
-                self.log('Markdown 媒体段补发失败', error)
-        return 'sent', result
-
-    def _delegate_core(self, event, message, route):
-        decorated = self._prepare(event, message, route, 'old_string')
-        if isinstance(decorated, self.olivos.messageAPI.Message_templet):
-            return decorated.get('old_string')
-        return None
+        prefixes = []
+        decorated = self._prepare(event, message, route, 'old_string', prefixes)
+        if prefixes:
+            return decorated.get('old_string'), prefixes[0]
+        return None, None
 
     def _install_markdown(self):
         # 此通路直接调用 indeAPI，必须在 Core 的 Markdown 入口接管。
@@ -587,22 +566,17 @@ class HookManager:
             if not self.active:
                 return original(plugin_event, message)
             try:
-                status, payload = self._markdown_core(plugin_event, message)
+                decorated, prefixes = self._markdown_core(plugin_event, message)
             except Exception as error:
-                self.log('Core Markdown 通路处理失败，回退现有方案', error)
-                status, payload = 'fallback', None
-            if status == 'sent':
-                return payload
-            if status == 'delegate' and payload is not None:
-                return original(plugin_event, payload)
-            if status == 'fallback':
-                token = self.markdown_blocked.set(True)
-                try:
-                    # 普通文本回退：由 Event.reply 注入『』与双换行，不保留 Markdown 样式。
-                    text = message if isinstance(message, str) else str(message)
-                    return self.core.msgReply.pluginReply(plugin_event, text)
-                finally:
-                    self.markdown_blocked.reset(token)
-            return original(plugin_event, message)
+                self.log('Core Markdown 通路处理失败，保留原消息', error)
+                decorated, prefixes = None, None
+            context = getattr(self.core.msgReply, '_markdown_hud_prefix', None)
+            if prefixes is None or context is None:
+                return original(plugin_event, decorated if decorated is not None else message)
+            token = context.set(prefixes)
+            try:
+                return original(plugin_event, decorated)
+            finally:
+                context.reset(token)
 
         self._patch(self.core.msgReply, '_replyMsgMarkdownQQGuildv2', markdown_reply)

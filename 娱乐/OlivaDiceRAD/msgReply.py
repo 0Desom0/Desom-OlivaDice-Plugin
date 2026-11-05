@@ -8,6 +8,18 @@ import OlivaDiceRAD
 import OlivaDiceCore
 
 import copy
+import inspect
+
+
+def reply_with_dice(reply, plugin_event, message, results):
+    try:
+        parameters = inspect.signature(reply).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if 'markdown_code' in parameters:
+        reply(plugin_event, message, markdown_code=tuple(results))
+    else:
+        reply(plugin_event, message)
 
 
 def unity_init(plugin_event, Proc):
@@ -437,6 +449,7 @@ def unity_reply(plugin_event, Proc):
                 if flag_bp_count != None:
                     rd_para_str += flag_bp_count
                 flag_need_reply = False
+                dice_results = []
                 if roll_times_count == 1:
                     # 单次掷骰
                     # 如果有表达式且没有强制指定值，先随机基础值
@@ -532,6 +545,9 @@ def unity_reply(plugin_event, Proc):
                             dictTValue['tRollResult'] = '%s/%s' % (dictTValue['tRollResult'], tmpSkillThreshold)
                         else:
                             dictTValue['tRollResult'] = '%s/%s' % (dictTValue['tRollResult'], tmpSkillThreshold)
+                        dice_results.append(dictTValue['tRollResult'])
+                        if skill_display and '=' in skill_display and 'D' in skill_display.upper():
+                            dice_results.append(skill_display)
                         dictTValue['tSkillCheckReasult'] = OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
                             tmpSkillCheckType, dictStrCustom, dictTValue,
                             pcHash=OlivaDiceCore.pcCard.getPcHash(tmp_pc_id, tmp_pc_platform),
@@ -612,6 +628,7 @@ def unity_reply(plugin_event, Proc):
                         rd_para = OlivaDiceCore.onedice.RD(rd_para_str)
                         rd_para.roll()
                         if rd_para.resError == None:
+                            result_start = len(tmp_tSkillCheckReasult)
                             # 构建掷骰结果显示
                             if flag_bp_type == 0:
                                 tmp_tSkillCheckReasult += '%s=%d' % (rd_para_str, rd_para.resInt)
@@ -636,6 +653,7 @@ def unity_reply(plugin_event, Proc):
                                 tmp_tSkillCheckReasult += '/%s=%d ' % (current_skill_display, tmpSkillThreshold)
                             else:
                                 tmp_tSkillCheckReasult += '/%s ' % tmpSkillThreshold
+                            dice_results.append(tmp_tSkillCheckReasult[result_start:].rstrip())
                             tmp_tSkillCheckReasult += OlivaDiceCore.msgReplyModel.get_SkillCheckResult(
                                 tmpSkillCheckType, dictStrCustom, dictTValue,
                                 pcHash = OlivaDiceCore.pcCard.getPcHash(tmp_pc_id, tmp_pc_platform),
@@ -696,46 +714,51 @@ def unity_reply(plugin_event, Proc):
                             tmp_enhanceList
                         )
                 if flag_need_reply:
+                    show_values = dictTValue.copy()
+                    if flag_hide_roll and flag_is_from_group:
+                        show_values.update(tRollResult='', tSkillCheckReasult='', tSkillValue='')
                     if is_at:
                         if tmp_skill_name:
                             dictTValue['tSkillName'] = tmp_skill_name if not difficulty else f'{tmp_skill_name}({difficulty})'
                             if tmpSkillThreshold == None: dictTValue['tSkillName'] = tmp_skill_name
+                            show_values['tSkillName'] = dictTValue['tSkillName']
                             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckWithSkillNameAtOther'], dictTValue)
-                            tmp_reply_str_show = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideShowWithSkillNameAtOther'], dictTValue)
+                            tmp_reply_str_show = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideShowWithSkillNameAtOther'], show_values)
                             if flag_hide_roll and flag_is_from_group:
                                 dictTValue['tGroupId'] = str(plugin_event.data.group_id)
                                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideWithSkillNameAtOther'], dictTValue)
                         else:
                             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckAtOther'], dictTValue)
-                            tmp_reply_str_show = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideShowAtOther'], dictTValue)
+                            tmp_reply_str_show = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideShowAtOther'], show_values)
                             if flag_hide_roll and flag_is_from_group:
                                 dictTValue['tGroupId'] = str(plugin_event.data.group_id)
                                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideAtOther'], dictTValue)
                         if flag_hide_roll and flag_is_from_group:
                             replyMsg(plugin_event, tmp_reply_str_show)
-                            OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str)
+                            reply_with_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str, dice_results)
                         else:
-                            replyMsg(plugin_event, tmp_reply_str)
+                            reply_with_dice(replyMsg, plugin_event, tmp_reply_str, dice_results)
                     else:
                         if tmp_skill_name:
                             dictTValue['tSkillName'] = tmp_skill_name if not difficulty else f'{tmp_skill_name}({difficulty})'
                             if tmpSkillThreshold == None: dictTValue['tSkillName'] = tmp_skill_name
+                            show_values['tSkillName'] = dictTValue['tSkillName']
                             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckWithSkillName'], dictTValue)
-                            tmp_reply_str_show = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideShowWithSkillName'], dictTValue)
+                            tmp_reply_str_show = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideShowWithSkillName'], show_values)
                             if flag_hide_roll and flag_is_from_group:
                                 dictTValue['tGroupId'] = str(plugin_event.data.group_id)
                                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideWithSkillName'], dictTValue)
                         else:
                             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheck'], dictTValue)
-                            tmp_reply_str_show = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideShow'], dictTValue)
+                            tmp_reply_str_show = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHideShow'], show_values)
                             if flag_hide_roll and flag_is_from_group:
                                 dictTValue['tGroupId'] = str(plugin_event.data.group_id)
                                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strPcSkillCheckHide'], dictTValue)
                         if flag_hide_roll and flag_is_from_group:
                             replyMsg(plugin_event, tmp_reply_str_show)
-                            OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str)
+                            reply_with_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str, dice_results)
                         else:
-                            replyMsg(plugin_event, tmp_reply_str)
+                            reply_with_dice(replyMsg, plugin_event, tmp_reply_str, dice_results)
             # 阻止后续插件处理,避免与原有的 .ra 命令冲突
             plugin_event.set_block()
 

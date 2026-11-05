@@ -8,8 +8,33 @@ import OlivaDiceCats
 import OlivaDiceCore
 
 import copy
+import inspect
 import re
 import random
+
+
+def _reply_roll(plugin_event, message, results):
+    reply = OlivaDiceCore.msgReply.replyMsg
+    try:
+        params = inspect.signature(reply).parameters.values()
+        supports_code = any(
+            (p.name == 'markdown_code' and p.kind != inspect.Parameter.POSITIONAL_ONLY)
+            or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+        )
+    except (TypeError, ValueError):
+        supports_code = False
+    if supports_code:
+        return reply(plugin_event, message, markdown_code=results)
+    return reply(plugin_event, message)
+
+
+def _cats_roll_results(values):
+    return (
+        values['tLuckDiceList'],
+        f"{values['tFrontResult']}+{values['tLuckDiceResult']}={values['tTotalResult']}",
+        values['tBackResult'],
+        values['tSuccessLevelProcess'],
+    )
 
 _RD_RECORD_CONTEXT = None
 
@@ -1116,8 +1141,11 @@ def unity_reply(plugin_event, Proc):
                     value=0,
                 )
                 
-                replyMsg(plugin_event, tmp_reply_str)
+                results = ((dictTValue['tLuckDiceList'],) if critical_type else _cats_roll_results(dictTValue))
+                _reply_roll(plugin_event, tmp_reply_str, results)
                 
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCatsaError'], dictTValue)
@@ -1400,7 +1428,7 @@ def unity_reply(plugin_event, Proc):
                     else:
                         # 显示幸运骰并等待选择
                         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCatsLuckDice'], dictTValue)
-                        replyMsg(plugin_event, tmp_reply_str)
+                        _reply_roll(plugin_event, tmp_reply_str, (dictTValue['tLuckDiceList'],))
                         
                         # 等待用户选择
                         tmp_select = OlivaDiceCore.msgReplyModel.replyCONTEXT_regWait(
@@ -1534,8 +1562,12 @@ def unity_reply(plugin_event, Proc):
                     value=0,
                 )
                 
-                replyMsg(plugin_event, tmp_reply_str)
+                results = ((dictTValue['tLuckDiceList'],) if not need_manual_selection and critical_type
+                           else _cats_roll_results(dictTValue)[1:])
+                _reply_roll(plugin_event, tmp_reply_str, results)
                 
+            except TypeError:
+                raise
             except Exception as e:
                 dictTValue['tResult'] = str(e)
                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCatsError'], dictTValue)

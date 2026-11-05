@@ -378,14 +378,15 @@ def test_core_markdown_success_and_plain_fallback_do_not_duplicate(runtime, succ
         runtime.core.msgReply.replyMsg(plugin_event, '[CQ:at,qq=1] result')
     runtime.proc.run(event, handler)
     hud = runtime.sn.get('1', 'qq', '100')
+    assert len(captures) == 1
+    assert captures[0].startswith(f'> {hud}\n\n')
+    assert captures[0].count('Alice HP10/12') == 1
     if success:
-        assert captures[0] == f'> {hud}\n\n<@1> result'
-        assert '『' not in captures[0]
         assert not event.sent
     else:
+        assert len(event.sent) == 1
         assert event.sent[0][2].startswith(f'『{hud}』\n\n')
         assert event.sent[0][2].count('Alice HP10/12') == 1
-        assert '<font' not in event.sent[0][2]
 
 
 def _markdown_event(runtime, command='.r 1d6', success=True, modern=False, raises=False,
@@ -472,13 +473,34 @@ def test_hud_content_escapes_angle_brackets_only(runtime):
 
 
 @pytest.mark.usefixtures('hud_enabled')
-def test_markdown_exception_falls_back_to_bracketed_plain_text(runtime):
+def test_core_roll_result_is_fenced_in_plain_markdown_reply(runtime):
+    event, calls = _markdown_event(runtime, command='.r 1*2')
+    runtime.core.msgCustom.dictStrCustomDict['bot']['strRoll'] = '**结果** {tRollResult}'
+    runtime.proc.run(event)
+    assert not event.sent
+    result = calls[0]['content'].split('**结果** ', 1)[1]
+    assert result.startswith('`1*2=') and result.endswith('=2`')
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_core_roll_result_is_fenced_in_at_markdown_reply(runtime):
+    event, calls = _markdown_event(runtime, command='.r 1*2')
+    runtime.core.msgCustom.dictStrCustomDict['bot']['strRoll'] = '[CQ:at,qq=1] **结果** {tRollResult}'
+    runtime.olivos.qqGuildv2SDK = type('SDK', (), {
+        'markdown_tag': type('Tags', (), {'at_para': staticmethod(lambda para: '<@' + para.data['id'] + '>')}),
+    })
+    runtime.proc.run(event)
+    assert not event.sent
+    result = calls[0]['content'].split('<@1> **结果** ', 1)[1]
+    assert result.startswith('`1*2=') and result.endswith('=2`')
+
+
+@pytest.mark.usefixtures('hud_enabled')
+def test_markdown_exception_does_not_retry(runtime):
     event, calls = _markdown_event(runtime, raises=True)
     runtime.proc.run(event)
-    hud = runtime.sn.get('1', 'qq', '100')
-    assert calls
-    assert event.sent and event.sent[0][2].startswith(f'『{hud}』\n\n')
-    assert event.sent[0][2].count('Alice HP10/12') == 1
+    assert len(calls) == 1
+    assert not event.sent
 
 
 @pytest.mark.usefixtures('hud_enabled')
@@ -507,14 +529,11 @@ def test_markdown_reply_lets_adapter_resolve_passive_id(runtime):
 
 
 @pytest.mark.usefixtures('hud_enabled')
-def test_markdown_failure_falls_back_to_bracketed_plain_text(runtime):
+def test_markdown_inactive_result_does_not_retry(runtime):
     event, calls = _markdown_event(runtime, success=False)
     runtime.proc.run(event)
-    hud = runtime.sn.get('1', 'qq', '100')
-    assert calls
-    assert event.sent and event.sent[0][2].startswith(f'『{hud}』\n\n')
-    assert event.sent[0][2].count('Alice HP10/12') == 1
-    assert '<font' not in event.sent[0][2]
+    assert len(calls) == 1
+    assert not event.sent
 
 
 @pytest.mark.usefixtures('hud_enabled')

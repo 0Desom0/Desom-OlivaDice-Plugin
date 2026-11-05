@@ -7,6 +7,10 @@
 
 ---
 
+## 1.0.4 更新
+
+- 适配新 Core 的 Markdown 骰点结果保护，旧 Core 保持原有回复方式。
+
 ## 简介
 
 本插件为 OlivOS 提供 **母舰 TRPG（Mothership）** 规则支持：

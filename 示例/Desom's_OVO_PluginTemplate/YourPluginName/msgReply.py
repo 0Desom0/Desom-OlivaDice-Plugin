@@ -8,6 +8,22 @@ import YourPluginName
 import OlivaDiceCore
 
 import copy
+import inspect
+
+
+def reply_dice_compatible(send, plugin_event, message, results):
+    """仅向支持的 Core 标记明确的骰点结果；旧版仍发送原文。"""
+    try:
+        parameters = inspect.signature(send).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    param = parameters.get('markdown_code')
+    if param is not None and param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+        return send(plugin_event, message, markdown_code=results)
+    return send(plugin_event, message)
+
+# 骰点回复示例：reply_dice_compatible(replyMsg, plugin_event, tmp_reply_str, (dice_result,))
+# 私发使用 replyMsgPrivateByEvent；群暗骰提示不可包含骰点或结果。
 
 def unity_init(plugin_event, Proc):
     # 这里是插件初始化，通常用于加载配置等

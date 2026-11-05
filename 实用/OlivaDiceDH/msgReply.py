@@ -8,9 +8,25 @@ import OlivaDiceDH
 import OlivaDiceCore
 
 import copy
+import inspect
 import re
 import os
 import json
+
+
+def _reply_roll(plugin_event, message, results):
+    reply = OlivaDiceCore.msgReply.replyMsg
+    try:
+        params = inspect.signature(reply).parameters.values()
+        supports_code = any(
+            (p.name == 'markdown_code' and p.kind != inspect.Parameter.POSITIONAL_ONLY)
+            or p.kind == inspect.Parameter.VAR_KEYWORD for p in params
+        )
+    except (TypeError, ValueError):
+        supports_code = False
+    if supports_code and results:
+        return reply(plugin_event, message, markdown_code=tuple(results))
+    return reply(plugin_event, message)
 
 
 _RD_RECORD_CONTEXT = None
@@ -282,12 +298,13 @@ def unity_reply(plugin_event, Proc):
                 tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['r'])
                 tmp_reast_str = skipSpaceStart(tmp_reast_str)
                 is_reaction = True
+            roll_results = []
             tmp_reply_str = processDDCommand(
                 plugin_event, Proc, tmp_reast_str, dictTValue, dictStrCustom,
-                tmp_hagID, flag_is_from_group, is_reaction=is_reaction
+                tmp_hagID, flag_is_from_group, is_reaction=is_reaction, roll_results=roll_results
             )
             if tmp_reply_str != None:
-                replyMsg(plugin_event, tmp_reply_str)
+                _reply_roll(plugin_event, tmp_reply_str, roll_results)
             return
         
         # .gm 命令 - GM管理
@@ -306,12 +323,13 @@ def unity_reply(plugin_event, Proc):
         if isMatchWordStart(tmp_reast_str, ['cook'], isCommand = True):
             tmp_reast_str = getMatchWordStartRight(tmp_reast_str, ['cook'])
             tmp_reast_str = skipSpaceStart(tmp_reast_str)
+            roll_results = []
             tmp_reply_str = processCookCommand(
                 plugin_event, Proc, tmp_reast_str, dictTValue, dictStrCustom,
-                tmp_hagID, flag_is_from_group
+                tmp_hagID, flag_is_from_group, roll_results=roll_results
             )
             if tmp_reply_str != None:
-                replyMsg(plugin_event, tmp_reply_str)
+                _reply_roll(plugin_event, tmp_reply_str, roll_results)
             return
 
 
@@ -521,7 +539,7 @@ def setSkillValue(tmp_pc_id, skill_name, skill_value, tmp_pc_name=None, tmp_hagI
 
 # ==================== .dd / .ddr 命令处理 ====================
 
-def processDDCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom, tmp_hagID, flag_is_from_group, is_reaction=False):
+def processDDCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom, tmp_hagID, flag_is_from_group, is_reaction=False, roll_results=None):
     """处理二元骰检定命令"""
     try:
         # 获取用户ID和平台信息
@@ -916,6 +934,14 @@ def processDDCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom,
             platform=None,
         )
         
+        if roll_results is not None:
+            roll_results.extend((
+                f"希望骰: {dictTValue['tHopeDice']} 恐惧骰: {dictTValue['tFearDice']}",
+                ''.join(adv_disadv_detail),
+                *(mod['detail'] for mod in other_modifiers if mod['type'] == 'dice' and mod['detail'] in modifiers_detail),
+                dictTValue['tTotalDisplay'],
+            ))
+
         # 返回结果
         return tmp_reply_str
     
@@ -1442,7 +1468,7 @@ def processGMCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom,
 
 # ==================== .cook 命令处理 ====================
 
-def processCookCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom, tmp_hagID, flag_is_from_group):
+def processCookCommand(plugin_event, Proc, command_str, dictTValue, dictStrCustom, tmp_hagID, flag_is_from_group, roll_results=None):
     """处理烹饪游戏命令"""
     if not flag_is_from_group:
         return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strForGroupOnly'], dictTValue)
@@ -1586,6 +1612,12 @@ def processCookCommand(plugin_event, Proc, command_str, dictTValue, dictStrCusto
                     del cook_data[tmp_hagID]
                 saveData(cook_file, {})
                 
+                if roll_results is not None:
+                    roll_results.extend((
+                        dictTValue['tRemovedDice'],
+                        f"剩余{dictTValue['tRemainingCount']}颗骰子重新投掷：\n{dictTValue['tDiceList']}",
+                        dictTValue['tPairResult'],
+                    ))
                 return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCookEnd'], dictTValue)
             
             # 游戏继续
@@ -1634,6 +1666,12 @@ def processCookCommand(plugin_event, Proc, command_str, dictTValue, dictStrCusto
             )
             
             saveData(cook_file, cook_data)
+            if roll_results is not None:
+                roll_results.extend((
+                    dictTValue['tRemovedDice'],
+                    f"剩余{dictTValue['tRemainingCount']}颗骰子重新投掷：\n{dictTValue['tDiceList']}",
+                    dictTValue['tPairResult'],
+                ))
             return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCookContinue'], dictTValue)
         
         # .cook [ndm]+[ndm]+... - 开始新游戏
@@ -1716,6 +1754,8 @@ def processCookCommand(plugin_event, Proc, command_str, dictTValue, dictStrCusto
                 dictStrCustom['strCookNextStep'], dictTValue
             )
             
+            if roll_results is not None:
+                roll_results.extend((f"出目：\n{dictTValue['tDiceList']}", dictTValue['tPairResult']))
             return OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strCookStart'], dictTValue)
     
     except Exception as e:

@@ -13,6 +13,7 @@ import OlivaDiceShouHun
 import OlivaDiceCore
 
 import hashlib
+import inspect
 import time
 import traceback
 import re
@@ -23,6 +24,17 @@ import copy
 
 SHOUHUN_DEFAULT_CHALLENGE = 10
 SHOUHUN_ONEDICE_EXPR_CHARS = set('0123456789dD+-*/().^kKhHlL')
+
+def _reply_dice(send, plugin_event, message, result):
+    try:
+        parameter = inspect.signature(send).parameters.get('markdown_code')
+    except (TypeError, ValueError):
+        parameter = None
+    if parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY
+    ):
+        return send(plugin_event, message, markdown_code=result)
+    return send(plugin_event, message)
 
 
 _RD_RECORD_CONTEXT = None
@@ -1395,25 +1407,26 @@ def unity_reply(plugin_event, Proc):
                 platform=tmp_pc_platform,
             )
             
+            dice_results = (dictTValue['tFrontResult'], dictTValue['tBackResult'])
             # 根据是否暗骰选择回复方式
             if is_at:
                 if flag_hide and flag_is_from_group:
                     dictTValue['tGroupId'] = str(plugin_event.data.group_id)
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShHideAtOther'], dictTValue)
                     replyMsg(plugin_event, OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShHideShowAtOther'], dictTValue))
-                    OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str.strip())
+                    _reply_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str.strip(), dice_results)
                 else:
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShResultAtOther'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str.strip())
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str.strip(), dice_results)
             else:
                 if flag_hide and flag_is_from_group:
                     dictTValue['tGroupId'] = str(plugin_event.data.group_id)
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShHide'], dictTValue)
                     replyMsg(plugin_event, OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShHideShow'], dictTValue))
-                    OlivaDiceCore.msgReply.replyMsgPrivateByEvent(plugin_event, tmp_reply_str.strip())
+                    _reply_dice(OlivaDiceCore.msgReply.replyMsgPrivateByEvent, plugin_event, tmp_reply_str.strip(), dice_results)
                 else:
                     tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strShResult'], dictTValue)
-                    replyMsg(plugin_event, tmp_reply_str.strip())
+                    _reply_dice(replyMsg, plugin_event, tmp_reply_str.strip(), dice_results)
 
 def format_long_dice_rolls(detail_string):
     """

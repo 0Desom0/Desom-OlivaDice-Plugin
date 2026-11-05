@@ -5,9 +5,24 @@ import OlivaDiceMS
 
 import copy
 import json
+import inspect
 import os
 import random
 import re
+
+
+def _reply_dice(send, plugin_event, message, result):
+    try:
+        parameters = inspect.signature(send).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    param = parameters.get('markdown_code')
+    if (param is not None and param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)) or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    ):
+        send(plugin_event, message, markdown_code=result)
+    else:
+        send(plugin_event, message)
 
 _RD_RECORD_CONTEXT = None
 
@@ -707,7 +722,7 @@ def unity_reply(plugin_event, Proc):
             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strMSGenerateAtOther'], dictTValue)
         else:
             tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strMSGenerate'], dictTValue)
-        replyMsg(plugin_event, tmp_reply_str)
+        _reply_dice(replyMsg, plugin_event, tmp_reply_str, dictTValue['tMSResult'])
         plugin_event.set_block()
         return
 
@@ -843,7 +858,7 @@ def unity_reply(plugin_event, Proc):
                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strRMDeathResultAtOther'], dictTValue)
             else:
                 tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['strRMDeathResult'], dictTValue)
-            replyMsg(plugin_event, tmp_reply_str)
+            _reply_dice(replyMsg, plugin_event, tmp_reply_str, (dictTValue['tDiceProcess'], dictTValue['tDeathText']))
             plugin_event.set_block()
             return
 
@@ -1069,7 +1084,9 @@ def unity_reply(plugin_event, Proc):
             value=0,
         )
 
-        replyMsg(plugin_event, tmp_reply_str)
+        _reply_dice(replyMsg, plugin_event, tmp_reply_str, tuple(value for value in (
+            parsed_expr_value_text, dictTValue['tDiceProcess'],
+        ) if value))
         plugin_event.set_block()
         return
 
@@ -1144,7 +1161,7 @@ def unity_reply(plugin_event, Proc):
             detail=tmp_reply_str.strip() + '\n\n（无视后面的"="和数值）',
             value=0,
         )
-        replyMsg(plugin_event, tmp_reply_str)
+        _reply_dice(replyMsg, plugin_event, tmp_reply_str, (dictTValue['tDiceProcess'], dictTValue['tPanicEffect']))
         return
 
     return

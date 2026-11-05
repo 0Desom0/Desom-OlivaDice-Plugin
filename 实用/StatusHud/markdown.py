@@ -175,6 +175,38 @@ def _compose(lines, body):
     return f'{block}\n\n{body}' if body else block
 
 
+def protect_roll_result(text, roll_result):
+    """仅保护明确标注且不重叠的结果，保留模板其余 Markdown。"""
+    if not isinstance(text, str):
+        return text
+    if isinstance(roll_result, str):
+        roll_result = (roll_result,)
+    if not isinstance(roll_result, (tuple, list)):
+        return text
+    spans = []
+    for value in set(item for item in roll_result if isinstance(item, str) and item):
+        if text.count(value) == 1:
+            start = text.index(value)
+            spans.append((start, start + len(value), value))
+    spans.sort()
+    for i in range(len(spans) - 1, -1, -1):
+        start, end, value = spans[i]
+        if (i and spans[i - 1][1] > start) or (i + 1 < len(spans) and spans[i + 1][0] < end):
+            continue
+        protected = []
+        for line in value.split('\n'):
+            if not line:
+                protected.append(line)
+                continue
+            fence = '`'
+            while fence in line:
+                fence += '`'
+            padding = ' ' if line.startswith(('`', ' ')) or line.endswith(('`', ' ')) else ''
+            protected.append(f'{fence}{padding}{line}{padding}{fence}')
+        text = text[:start] + '\n'.join(protected) + text[end:]
+    return text
+
+
 def _as_templet(olivos, event, message, mode=None):
     if isinstance(message, olivos.messageAPI.Message_templet):
         return message
@@ -225,38 +257,8 @@ def build(olivos, event, lines, message):
     return Content(_compose(lines, body), quote_id, local_images)
 
 
-def build_core(olivos, event, lines, message):
-    """按 Core 的 markdown 通路拆分文本与媒体，返回 (Content, 媒体消息或 None)。"""
-    templet = _as_templet(olivos, event, message, 'old_string')
-    if not templet.active:
-        raise NotApplicable('消息无法解析')
-    parts = []
-    plain_parts = []
-    quote_id = None
-    for para in templet.data:
-        if isinstance(para, olivos.messageAPI.PARA.at):
-            parts.append(_at_tag(olivos, para))
-        elif isinstance(para, olivos.messageAPI.PARA.text):
-            parts.append(str(para.data.get('text', '')))
-        elif isinstance(para, olivos.messageAPI.PARA.reply):
-            if quote_id is None:
-                value = para.data.get('id')
-                if value is not None and str(value) != '':
-                    quote_id = str(value)
-        else:
-            # 图片、表情等媒体继续走普通消息通道，与 Core 原实现一致。
-            plain_parts.append(para)
-    body = ''.join(parts)
-    if body.strip() == '' and quote_id is not None:
-        plain_parts.insert(0, olivos.messageAPI.PARA.reply(id=quote_id))
-    media = None
-    if plain_parts:
-        media = olivos.messageAPI.Message_templet('olivos_para', plain_parts)
-    return Content(_compose(lines, body), quote_id, {}), media
-
-
 def send(event, context, content, active=False):
-    """发送 Markdown；失败或接口不识别参数时返回 None，由调用方回退。"""
+    """发送 Markdown；调用后的未知结果由调用方视为不可重试。"""
     kwargs = {
         'chat_type': context[0],
         'chat_id': context[1],
