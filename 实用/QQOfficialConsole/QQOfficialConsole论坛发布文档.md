@@ -27,7 +27,6 @@
 - 单聊发送：<https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html>
 - 单聊流式：<https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_stream_messages.post.html>
 - 群聊撤回：<https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages_message_id.delete.html>
-- 群成员批量移除（内邀）：<https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_batch_remove_members.post.html>
 
 ---
 
@@ -131,8 +130,6 @@ QQ 官方机器人不是 QQ 客户端：开放平台没有群列表 / 好友列�
 - 移出成员：管理员操作区「移出成员」、点击成员缓存里的成员胶囊、或右键入站消息「移出发送者」三个入口；弹窗可勾选「同时拉黑」，二次确认后调用官方批量移除接口，成功后同步清掉本地成员缓存。**该接口目前是内邀白名单能力**，没开通的机器人会回「无接口权限」（11253），弹窗里也有同样提示；不是插件故障。
 - 入群申请：独立面板，自动翻页拉全部申请（守 30 QPM、最多 2000 条），显示昵称、申请时间、来源、验证消息和风险提示，可同意 / 拒绝、拒绝可填理由并拉黑；拉下来的申请进本地库，之后翻看不再打平台
 - 官方成员列表刷新
-
-> **群名手动刷新不需要管理员 / 群主身份**：它在「基本信息」卡里，所有群聊都能点，只把群放回官方群信息接口的排队队列；需要的只是该接口的白名单（无权限会回 11253），与机器人在群里的角色无关。
 
 ### ⚙ 设置
 
