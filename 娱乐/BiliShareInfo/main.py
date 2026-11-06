@@ -73,6 +73,11 @@ gHttpBlockedContext = ContextVar('BiliShareInfo_http_blocked', default=None)
 gParseNoticeContext = ContextVar('BiliShareInfo_parse_notice', default=None)
 # 本消息内已解析过的卡片指纹 -> ref 列表，用来避免同一张卡片被两个来源各查一遍。
 gCardParseResultContext = ContextVar('BiliShareInfo_card_parse_result', default=None)
+# 本消息内已确认是专栏/动态等非视频页面的 URL（按「域名+路径」归一化），
+# 用来跳过卡片标题反查与「解析失败」提示：这种分享本来就没有视频。
+gNonVideoUrlContext: ContextVar[set[str] | None] = ContextVar(
+    'BiliShareInfo_non_video_url', default=None
+)
 gApiCache = {}
 gApiCacheLock = threading.RLock()
 
@@ -175,6 +180,16 @@ LIVE_ROOM_HINT_PATTERN = re.compile(
 LIVE_ROOM_PATH_PATTERN = re.compile(
     r'^/(?:h5/|blanc/|live/)?(?P<room_id>\d+)(?:/|$)'
 )
+# 专栏、动态、个人空间这类非视频分享页的正文和推荐位里夹着别人的 BV 号，
+# 扫正文会把无关视频当成本次分享，所以必须先按页面类型判定再决定要不要扫。
+BILI_ARTICLE_PATH_PATTERN = re.compile(r'(?i)^/read/(?:cv\d+|mobile|native)')
+BILI_ARTICLE_ID_PATTERN = re.compile(r'(?i)/read/cv(?P<article_id>\d+)')
+BILI_OPUS_ID_PATTERN = re.compile(r'(?i)/(?:opus|opusdetail|dynamic)/(?P<opus_id>\d+)')
+BILI_NON_VIDEO_PATH_PATTERN = re.compile(
+    r'(?i)^/(?:space/|medialist/|favlist|search|account|message)'
+)
+# 动态详情接口：只有「投稿」类动态才对应一个视频，纯图文/转发动态没有视频可解析。
+BILI_DYNAMIC_DETAIL_API = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/detail'
 
 
 def _safe_text(value):
@@ -420,6 +435,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
     blocked_token = None
     notice_token = None
     card_token = None
+    non_video_token = None
     try:
         message = safe_str(plugin_event.data.message)
         command_message = parse_command_message(plugin_event, message)
@@ -445,6 +461,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
         blocked_token = gHttpBlockedContext.set([])
         notice_token = gParseNoticeContext.set({})
         card_token = gCardParseResultContext.set({})
+        non_video_token = gNonVideoUrlContext.set(set())
         parse_log(
             f'开始处理候选消息 group={is_group} '
             f'group_key={get_group_key(plugin_event)} '
@@ -505,6 +522,8 @@ def handle_message(plugin_event, is_group: bool) -> None:
             gParseNoticeContext.reset(notice_token)
         if card_token is not None:
             gCardParseResultContext.reset(card_token)
+        if non_video_token is not None:
+            gNonVideoUrlContext.reset(non_video_token)
 
 
 def add_parse_notice(notice_text: str, notice_key: str = '') -> None:
@@ -1694,6 +1713,12 @@ def add_video_refs_from_card(
         store_card_parse_result(card_key, card_video_ref_list)
         return
 
+    # 卡片本身指向专栏/动态等非视频页面：没有视频可反查，也不该回「解析失败」。
+    if card_has_non_video_share_url(card_data):
+        parse_log(f'{card_label} 卡片指向专栏/动态等非视频页面，跳过标题反查与失败提示')
+        store_card_parse_result(card_key, [])
+        return
+
     if not allow_title_search:
         parse_log(f'{card_label} 未开启视频标题搜索')
         store_card_parse_result(card_key, [])
@@ -1981,11 +2006,13 @@ def extract_urls(text: str) -> list[str]:
     clean_text = urllib.parse.unquote(html.unescape(safe_str(text))).replace('\\/', '/')
     url_pattern = (
         r'https?://live\.bilibili\.com/[^\s"\'<>]+|'
+        r'https?://t\.bilibili\.com/[^\s"\'<>]+|'
         r'https?://(?:www\.|m\.)?bilibili\.com/[^\s"\'<>]+|'
         r'https?://b23\.tv/[^\s"\'<>]+|'
         r'https?://bili2233\.cn/[^\s"\'<>]+|'
         r'https?://m\.q\.qq\.com/[^\s"\'<>]+|'
         r'live\.bilibili\.com/[^\s"\'<>]+|'
+        r't\.bilibili\.com/[^\s"\'<>]+|'
         r'(?:www\.|m\.)?bilibili\.com/[^\s"\'<>]+|'
         r'b23\.tv/[^\s"\'<>]+|'
         r'bili2233\.cn/[^\s"\'<>]+|'
@@ -2002,6 +2029,138 @@ def extract_urls(text: str) -> list[str]:
     return result
 
 
+def normalize_share_url_key(url: str) -> str:
+    """把分享链接归一化成「域名+路径」，用来跨短链/带参形态识别同一个页面。"""
+    raw_url = safe_str(url).strip()
+    if not raw_url:
+        return ''
+    if not re.match(r'^[A-Za-z][A-Za-z0-9+.-]*://', raw_url):
+        raw_url = f'https://{raw_url}'
+    try:
+        parsed_url = urllib.parse.urlsplit(raw_url)
+    except Exception:
+        return ''
+    host = (parsed_url.hostname or '').casefold().rstrip('.')
+    if not host:
+        return ''
+    path = (parsed_url.path or '').rstrip('/')
+    return f'{host}{path}'
+
+
+def mark_non_video_share_url(*url_list: str) -> None:
+    url_key_set = gNonVideoUrlContext.get()
+    if url_key_set is None:
+        return
+    for url in url_list:
+        url_key = normalize_share_url_key(url)
+        if url_key:
+            url_key_set.add(url_key)
+
+
+def is_non_video_share_url(url: str) -> bool:
+    url_key_set = gNonVideoUrlContext.get()
+    if not url_key_set:
+        return False
+    return normalize_share_url_key(url) in url_key_set
+
+
+def card_has_non_video_share_url(card_data: dict[str, Any]) -> bool:
+    return any(is_non_video_share_url(url) for url in extract_urls_from_card(card_data))
+
+
+def classify_bilibili_share_url(url: str) -> tuple[str, dict[str, Any]] | None:
+    """判断 B 站链接指向的页面类型，避免把专栏/动态当成视频解析。
+
+    返回 None 表示不是 B 站域名；其余返回 (kind, payload)：
+    video/live 带可直接用的 ref，opus 带 opus_id，article/non_video 是没有视频的页面。
+    """
+    raw_url = safe_str(url).strip()
+    if not raw_url:
+        return None
+    if not re.match(r'^[A-Za-z][A-Za-z0-9+.-]*://', raw_url):
+        raw_url = f'https://{raw_url}'
+    try:
+        parsed_url = urllib.parse.urlsplit(raw_url)
+    except Exception:
+        return None
+    host = (parsed_url.hostname or '').casefold().rstrip('.')
+    if host != 'bilibili.com' and not host.endswith('.bilibili.com'):
+        return None
+    path = parsed_url.path or '/'
+
+    video_ref = extract_video_ref_from_text(f'{path}?{parsed_url.query}')
+    if video_ref:
+        return 'video', video_ref
+    live_ref = extract_live_ref_from_url(raw_url)
+    if live_ref:
+        return 'live', live_ref
+    if host == 'live.bilibili.com':
+        return 'live', {}
+
+    opus_match = BILI_OPUS_ID_PATTERN.search(path)
+    if opus_match:
+        return 'opus', {'opus_id': opus_match.group('opus_id')}
+    if host == 't.bilibili.com':
+        short_match = re.match(r'^/(?P<opus_id>\d+)', path)
+        if short_match:
+            return 'opus', {'opus_id': short_match.group('opus_id')}
+        return 'non_video', {'page': 'dynamic'}
+    if BILI_ARTICLE_PATH_PATTERN.match(path):
+        article_match = BILI_ARTICLE_ID_PATTERN.search(path)
+        return 'article', {
+            'article_id': article_match.group('article_id') if article_match else '',
+        }
+    if BILI_NON_VIDEO_PATH_PATTERN.match(path):
+        return 'non_video', {'page': 'space'}
+    # 其余 B 站页面（首页、活动页等）同样不扫正文，页面里的 BV 都不是本次分享的。
+    return 'non_video', {'page': 'other'}
+
+
+def resolve_dynamic_page_media(opus_id: str) -> tuple[str, dict[str, str]]:
+    """按动态详情接口判断这条动态有没有对应视频。
+
+    纯图文/转发动态（DYNAMIC_TYPE_DRAW/WORD/OPUS 等）确认没有视频；
+    只有投稿类动态（DYNAMIC_TYPE_AV）才返回 BV/av 号。
+    """
+    opus_id = safe_str(opus_id).strip()
+    if not opus_id.isdigit():
+        return 'unknown', {}
+    cache_key = f'dynamic_detail:{opus_id}'
+    payload = get_api_cache(cache_key)
+    if payload is None:
+        api_url = f'{BILI_DYNAMIC_DETAIL_API}?features=itemOpusStyle&id={opus_id}'
+        try:
+            payload = json.loads(http_get_json_text(api_url))
+        except Exception as exception_object:
+            parse_log(
+                f'动态详情接口失败 opus_id={opus_id} '
+                f'error={type(exception_object).__name__}: '
+                f'{shorten_log_text(exception_object, 120)}'
+            )
+            return 'unknown', {}
+        set_api_cache(cache_key, payload)
+    if not isinstance(payload, dict) or payload.get('code') != 0:
+        parse_log(
+            f'动态详情接口返回异常 opus_id={opus_id} '
+            f'payload={shorten_log_text(payload, 160)}'
+        )
+        return 'unknown', {}
+    item = ((payload.get('data') or {}).get('item') or {})
+    dynamic_type = safe_str(item.get('type'))
+    if dynamic_type != 'DYNAMIC_TYPE_AV':
+        parse_log(f'动态类型不是投稿 dynamic_type={dynamic_type} opus_id={opus_id}')
+        return 'non_video', {}
+    major = ((item.get('modules') or {}).get('module_dynamic') or {}).get('major') or {}
+    archive = major.get('archive') or {}
+    bvid = safe_str(archive.get('bvid')).strip()
+    if bvid:
+        return 'video', {'bvid': bvid}
+    aid = safe_str(archive.get('aid')).strip()
+    if aid.isdigit():
+        return 'video', {'aid': aid}
+    return 'unknown', {}
+
+
 def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
     direct_ref = extract_media_ref_from_url_text(url)
     if direct_ref:
@@ -2009,6 +2168,31 @@ def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
         return direct_ref
     if is_live_bilibili_url(url):
         parse_log(f'识别为直播间URL但未解析到房间号 url={shorten_log_text(url, 180)}')
+        return None
+
+    page_kind, page_payload = classify_bilibili_share_url(url) or ('', {})
+    if page_kind == 'opus':
+        dynamic_kind, dynamic_ref = resolve_dynamic_page_media(page_payload.get('opus_id', ''))
+        if dynamic_kind == 'video':
+            parse_log(
+                f'动态页解析为视频 ref={format_video_ref(dynamic_ref)} '
+                f'url={shorten_log_text(url, 180)}'
+            )
+            return dynamic_ref
+        if dynamic_kind == 'non_video':
+            parse_log(f'动态页不是视频，跳过 url={shorten_log_text(url, 180)}')
+            mark_non_video_share_url(url)
+            return None
+    elif page_kind == 'article':
+        parse_log(f'专栏页不是视频，跳过 url={shorten_log_text(url, 180)}')
+        mark_non_video_share_url(url)
+        return None
+    elif page_kind == 'non_video':
+        parse_log(
+            f'非视频页面，跳过 url={shorten_log_text(url, 180)} '
+            f'page={page_payload.get("page")}'
+        )
+        mark_non_video_share_url(url)
         return None
 
     parse_log(f'开始解析URL url={shorten_log_text(url, 180)}')
@@ -2052,6 +2236,33 @@ def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
                 f'短链解析为直播间页面但未得到房间号 url={shorten_log_text(request_url, 180)} '
                 f'final={shorten_log_text(response_url, 180)}'
             )
+            return None
+
+        # 短链落到专栏/动态页时不能扫正文找 BV，页面里的 BV 是别人的视频。
+        final_kind, final_payload = classify_bilibili_share_url(response_url) or ('', {})
+        if final_kind == 'opus':
+            dynamic_kind, dynamic_ref = resolve_dynamic_page_media(
+                final_payload.get('opus_id', '')
+            )
+            if dynamic_kind == 'video':
+                parse_log(
+                    f'短链解析为动态投稿 original={shorten_log_text(url, 180)} '
+                    f'ref={format_video_ref(dynamic_ref)}'
+                )
+                return dynamic_ref
+            if dynamic_kind == 'non_video':
+                parse_log(
+                    f'短链解析为动态页但不是视频 original={shorten_log_text(url, 180)} '
+                    f'final={shorten_log_text(response_url, 180)}'
+                )
+                mark_non_video_share_url(url, response_url)
+                return None
+        elif final_kind in ('article', 'non_video'):
+            parse_log(
+                f'短链解析为专栏/非视频页面 original={shorten_log_text(url, 180)} '
+                f'final={shorten_log_text(response_url, 180)} kind={final_kind}'
+            )
+            mark_non_video_share_url(url, response_url)
             return None
 
         video_ref = extract_video_ref_from_text(response_text)
