@@ -130,7 +130,7 @@ def test_everyone_mention_counts_and_sets_kind(plugin):
     chat = db.get_chat('a', 'qq_group', 'g')
     assert chat['unread'] == 2 and chat['mention_unread'] == 2
     assert chat['mention_kind'] == 'everyone' and chat['mention_version'] == 2
-    # @全体并同时 @ 到我 → both（前端据此弹「有人at全体成员」）。
+    # @全体并同时 @ 到我 → both（前端据此弹「有人@全体成员」）。
     incoming(main, 'a', 'g', 'three', 'GROUP_AT_MESSAGE_CREATE', True, content='<qqbot-at-everyone /> 都在吗')
     assert db.get_chat('a', 'qq_group', 'g')['mention_kind'] == 'both'
     assert db.mention_total('a') == 3

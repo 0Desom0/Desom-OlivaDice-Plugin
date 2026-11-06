@@ -16,7 +16,7 @@ _FACE_RE = re.compile(r'<faceType\s*=\s*[^,>]+(?:,[^>]*)?\s*/?>')
 # mentions 里的 all/everyone 条目也都认。
 _AT_EVERYONE_RE = re.compile(r'<qqbot-at-everyone\s*/?>|<@!?\s*(?:all|everyone)\s*>', re.IGNORECASE)
 _EVERYONE_IDS = ('all', 'everyone')
-_EVERYONE_TEXT = 'at全体成员'
+_EVERYONE_TEXT = '@全体成员'
 
 
 def _strip_face_tags(text):
@@ -29,9 +29,19 @@ def _strip_face_tags(text):
         return _FACE_RE.sub('', text)
 
 
-def _render_text(text, raw):
-    """@ 占位符替换成 mentions 里的昵称；@全体成员显示成固定文案；表情标签替换为 [表情]。"""
-    text = _AT_EVERYONE_RE.sub(_EVERYONE_TEXT, text)
+def _render_text(text, raw, at_spans=None):
+    """@ 占位符替换成 mentions 里的昵称；@全体成员显示成固定文案；表情标签替换为 [表情]。
+
+    at_spans 可选：收集这条消息里由 at 占位符生成的显示文案，随 content_json 交给前端。
+    前端据此精确高亮，不必靠「@ 后面一路吃到空白」猜范围——中文消息里
+    「@某人，今晚开团」没有空格，猜范围会把后半句也一起染上颜色。
+    """
+    def everyone(_match):
+        if at_spans is not None:
+            at_spans.append(_EVERYONE_TEXT)
+        return _EVERYONE_TEXT
+
+    text = _AT_EVERYONE_RE.sub(everyone, text)
     mentions = raw.get('mentions')
     if isinstance(mentions, list):
         names = {}
@@ -41,15 +51,21 @@ def _render_text(text, raw):
                 name = item.get('username') or item.get('nick')
                 if ident and isinstance(name, str) and name:
                     names[ident] = name
+
+        def replace(match):
+            ident = match.group(1).strip()
+            label = (
+                _EVERYONE_TEXT if ident.lower() in _EVERYONE_IDS
+                else '@' + names.get(ident, '成员')
+            )
+            if at_spans is not None:
+                at_spans.append(label)
+            return label
+
         # QQ 正文里的 @ 占位符是 <@member_openid>；已知的换成昵称，未知的退化成「@成员」，
         # @全体成员占位（all/everyone）换成固定文案，绝不把原始 <@...> 标记漏给用户。
-        text = re.sub(
-            r'<@([^<>]+)>',
-            lambda m: _EVERYONE_TEXT
-            if m.group(1).strip().lower() in _EVERYONE_IDS
-            else '@' + names.get(m.group(1).strip(), '成员'),
-            text,
-        )
+        # 占位符里不含斜杠/反斜杠/空白：别人发的 <@//xxx/> 这类路径是假 at，原样保留。
+        text = re.sub(r'<@!?\s*([^<>\s/\\]+)>', replace, text)
     stripped = _strip_face_tags(text)
     if stripped != text and _FACE_RE.search(text):
         text = _FACE_RE.sub('[表情]', text)
@@ -156,9 +172,14 @@ def _incoming(event, proc, group):
     name = sender.get('nickname') or sender.get('name') or sender_id
     created = _timestamp(raw.get('timestamp'))
     msg_id = raw.get('id') or getattr(data, 'message_id', None)
-    text = _render_text(str(raw.get('content') or ''), raw)
+    at_spans = []
+    text = _render_text(str(raw.get('content') or ''), raw, at_spans)
     attachments = raw.get('attachments') or []
     msg_kind = 'media' if attachments else 'text'
+    # 只记录真正由 at 占位符生成的文案；没有 at 的消息保持原来的 content_json 结构。
+    content_data = {'text': text, 'attachments': attachments}
+    if at_spans:
+        content_data['at'] = at_spans
     message = {
         'direction': 'in',
         'platform_message_id': str(msg_id) if msg_id else None,
@@ -168,7 +189,7 @@ def _incoming(event, proc, group):
         'sender_name': name,
         'msg_kind': msg_kind,
         'content_text': text,
-        'content_json': {'text': text, 'attachments': attachments},
+        'content_json': content_data,
         'created_at': created,
         'is_mention': group and _at_bot(extend, event, raw),
         'is_everyone': group and _at_everyone(raw),

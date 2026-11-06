@@ -86,7 +86,7 @@ def test_at_everyone_tag_renders_text_and_flag(plugin):
     group_message(main, 'a', 'g', 'one', '<qqbot-at-everyone /> 大家注意')
     row = db.list_messages('a', 'qq_group', 'g')[0]
     # @全体成员显示成固定文案，原始标签不能漏给用户；未 @ 机器人时不算 @我。
-    assert row['content_text'] == 'at全体成员 大家注意'
+    assert row['content_text'] == '@全体成员 大家注意'
     assert 'qqbot-at-everyone' not in row['content_text']
     assert row['is_everyone'] == 1 and row['is_mention'] == 0
 
@@ -97,6 +97,54 @@ def test_at_everyone_placeholder_and_mentions_entry(plugin):
     group_message(main, 'a', 'g', 'one', '<@all> 点名', mentions=[])
     group_message(main, 'a', 'g', 'two', '集合', mentions=[mention('everyone', '全体成员')])
     rows = db.list_messages('a', 'qq_group', 'g')
-    assert rows[0]['content_text'] == 'at全体成员 点名'
+    assert rows[0]['content_text'] == '@全体成员 点名'
     assert rows[1]['content_text'] == '集合'
     assert [row['is_everyone'] for row in rows] == [1, 1]
+
+
+def payload(row):
+    """content_json 可能因读取路径不同是字符串或字典，两种都兼容。"""
+    import json
+
+    value = row['content_json']
+    return json.loads(value) if isinstance(value, str) else (value or {})
+
+
+def test_at_spans_record_exact_labels(plugin):
+    main, db = plugin
+    # 中文逗号后紧跟正文：前端只能靠这里的精确文案判断该给哪几个字上色。
+    group_message(main, 'a', 'g', 'one', '<@AAAA>，今晚八点开团 <@BBBB>你看一下',
+                  mentions=[mention('AAAA', '爱丽丝'), mention('BBBB', '波波')])
+    row = db.list_messages('a', 'qq_group', 'g')[0]
+    assert row['content_text'] == '@爱丽丝，今晚八点开团 @波波你看一下'
+    assert payload(row)['at'] == ['@爱丽丝', '@波波']
+
+
+def test_at_spans_cover_everyone_and_plain_message_has_no_spans(plugin):
+    main, db = plugin
+    group_message(main, 'a', 'g', 'one', '<qqbot-at-everyone /> 大家注意')
+    group_message(main, 'a', 'g', 'two', '<@all> 点名', mentions=[])
+    group_message(main, 'a', 'g', 'three', '普通消息 a@b.com')
+    rows = db.list_messages('a', 'qq_group', 'g')
+    assert payload(rows[0])['at'] == ['@全体成员']
+    assert payload(rows[1])['at'] == ['@全体成员']
+    assert 'at' not in payload(rows[2])
+
+
+def test_fake_at_paths_are_not_treated_as_mentions(plugin):
+    main, db = plugin
+    # 纯文本 @//xxx/ 与别人手打的 <@//xxx/> 都是假 at，正文原样保留、不记 at 文案。
+    group_message(main, 'a', 'g', 'one', '路径 @//xxx/ 和 <@//xxx/> 都不算 at', mentions=[])
+    row = db.list_messages('a', 'qq_group', 'g')[0]
+    assert row['content_text'] == '路径 @//xxx/ 和 <@//xxx/> 都不算 at'
+    assert 'at' not in payload(row)
+    assert row['is_everyone'] == 0 and row['is_mention'] == 0
+
+
+def test_at_placeholder_with_bang_prefix_still_replaced(plugin):
+    main, db = plugin
+    group_message(main, 'a', 'g', 'one', '<@!AAAA> 你好',
+                  mentions=[mention('AAAA', '爱丽丝')])
+    row = db.list_messages('a', 'qq_group', 'g')[0]
+    assert row['content_text'] == '@爱丽丝 你好'
+    assert payload(row)['at'] == ['@爱丽丝']

@@ -4,8 +4,8 @@
   "namespace": "QQOfficialConsole",
   "info": "QQ 官方机器人多账号收发与会话管理控制台",
   "priority": 30000,
-  "svn": 12,
-  "version": "1.0.11",
+  "svn": 13,
+  "version": "1.0.12",
   "compatible_svn": 190,
   "message_mode": "olivos_para",
   "support": [

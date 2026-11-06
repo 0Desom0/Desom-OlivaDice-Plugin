@@ -16,6 +16,8 @@
         --accent: #1685ee;
         --bubble: #fff;
         --out: #c8e6ff;
+        --at-bg: #1685ee18;
+        --at-text: #0c63ad;
       }
       * {
         box-sizing: border-box;
@@ -251,6 +253,13 @@
       }
       .out .bubble {
         background: var(--out);
+      }
+      /* 真正 at 出来的片段：像 QQ 一样给几个字加一层很浅的底色。 */
+      .at-mention {
+        background: var(--at-bg);
+        color: var(--at-text);
+        border-radius: 4px;
+        padding: 0 3px;
       }
       /* 撤回行：「已撤回」灰标签 + 蓝色「重新编辑」内联按钮。 */
       .recall-line {
@@ -527,6 +536,36 @@
       }
       .search-chat small {
         color: var(--muted);
+      }
+      /* 搜索请求在途时给一个小转圈，免得点了「搜索」没反馈。 */
+      .search-loading {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .search-loading[hidden] {
+        display: none;
+      }
+      .search-spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--line);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: search-spin 0.8s linear infinite;
+      }
+      @keyframes search-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .search-spinner {
+          animation: none;
+        }
       }
       .search-msg-head {
         display: flex;
@@ -1065,6 +1104,8 @@
           --muted: #b9c6d5;
           --bubble: #333943;
           --out: #24537b;
+          --at-bg: #4aa3ff2b;
+          --at-text: #a9d1ff;
         }
         .chat-item.active {
           background: #27567980;
@@ -2026,7 +2067,8 @@
         const data = content(m),
           stored = Array.isArray(data.images) ? data.images : [],
           context = ctx(),
-          used = new Set();
+          used = new Set(),
+          atCtx = atContext(memberNames(), data.at, m.direction === "out");
         let text = m.content_text || data.text || "";
         if (m.msg_kind === "markdown" && stored.length) {
           let last = 0,
@@ -2035,14 +2077,14 @@
           while ((match = re.exec(text))) {
             const image = stored.find((x) => x.marker === match[1]);
             if (!image) continue;
-            markdown(bubble, text.slice(last, match.index));
+            markdown(bubble, text.slice(last, match.index), atCtx);
             appendStoredImage(bubble, m, image, context);
             used.add(image);
             last = re.lastIndex;
           }
-          markdown(bubble, text.slice(last));
-        } else if (m.msg_kind === "markdown") markdown(bubble, text);
-        else if (text && !(text === "[图片]" && stored.length)) bubble.append(el("span", text));
+          markdown(bubble, text.slice(last), atCtx);
+        } else if (m.msg_kind === "markdown") markdown(bubble, text, atCtx);
+        else if (text && !(text === "[图片]" && stored.length)) appendAtText(bubble, text, atCtx);
         for (const image of stored) if (!used.has(image)) appendStoredImage(bubble, m, image, context);
         const incoming = Array.isArray(data.attachments) ? data.attachments : [];
         let count = 0;
@@ -2055,11 +2097,86 @@
         if (!text && !stored.length && !count)
           bubble.append(el("span", m.msg_kind === "media" || data.has_image ? "[图片]" : "[消息]"));
       }
-      function addText(parent, text) {
-        parent.append(document.createTextNode(text));
+      // —— 真正 at 出来的片段高亮 ——
+      // 后端把 <@openid> 换成 @昵称时，会把生成的文案记进 content_json.at；
+      // 自己发的消息则把编辑器插入的 <qqbot-at-... /> 标签原样存了下来；
+      // 老版本入库的是「at全体成员」，没有 at 列表。
+      // 只给「明确是 at」的片段上底色：后端标注的文案、平台占位、固定全体文案，
+      // 以及历史消息兜底用的成员缓存昵称。绝不用「@ 后面一路吃到空白」的宽松规则，
+      // 否则中文消息「@某人，今晚开团」会把后半句也一起染上颜色。
+      function memberNames() {
+        return new Map(
+          (Array.isArray(state.members) ? state.members : [])
+            .filter((member) => member && member.member_openid && member.name)
+            .map((member) => [String(member.member_openid), member.name]),
+        );
+      }
+      // 成员缓存常比消息晚到，只更新这些标签的文字，不重建整屏消息节点。
+      function refreshAtNames() {
+        const names = memberNames();
+        for (const node of $("messages").querySelectorAll(".at-mention[data-at-openid]"))
+          node.textContent = "@" + (names.get(node.dataset.atOpenid) || "成员");
+      }
+      function escapeRegExp(value) {
+        return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }
+      // 一条消息只编译一次正则：普通文本、markdown 分段共用同一个上下文。
+      function atContext(names, spans, outgoing) {
+        // 成员名只作历史消息的兜底；含斜杠的昵称不当名字，免得 @//xxx/ 被误认。
+        const memberLiterals = [...names.values()]
+          .filter((name) => typeof name === "string" && name.trim() && !/[\/\\]/.test(name))
+          .map((name) => "@" + name);
+        const literal = [
+          ...new Set([
+            ...(Array.isArray(spans) ? spans : []),
+            "@全体成员",
+            "at全体成员",
+            ...memberLiterals,
+          ]),
+        ]
+          .filter((item) => typeof item === "string" && item.trim())
+          .sort((a, b) => b.length - a.length)
+          .slice(0, 200)
+          .map(escapeRegExp);
+        // 编辑器插入的 <qqbot-at-... /> 只会出现在自己发的消息里；
+        // 别人手打同款标签是假 at，不认。
+        const parts = outgoing
+          ? ["<qqbot-at-everyone\\s*\\/?>", "<qqbot-at-user\\b[^>]*>"]
+          : [];
+        // 平台 <@openid> 占位不含斜杠/反斜杠/空白，@//xxx/ 这类路径文本不会被当成 at。
+        parts.push("<@!?\\s*[^<>\\s/\\\\]+>");
+        // 字面量按长度降序，长昵称优先；左边界避免把邮箱里的 @xxx 染上色。
+        if (literal.length) parts.push("(?<![\\w@])(?:" + literal.join("|") + ")");
+        return { names, re: new RegExp(parts.join("|"), "gi") };
+      }
+      function atDisplayName(raw, atCtx) {
+        if (/^<qqbot-at-everyone\b|^@全体成员$|^at全体成员$/i.test(raw)) return "@全体成员";
+        if (/^<@!?\s*(?:all|everyone)\s*>$/i.test(raw)) return "@全体成员";
+        const user = raw.match(/^<qqbot-at-user\b[^>]*\bid="([^"]+)"/i);
+        if (user) return "@" + (atCtx.names.get(user[1]) || "成员");
+        const openid = raw.match(/^<@!?\s*([^<>\s/\\]+)>$/);
+        if (openid) return "@" + (atCtx.names.get(openid[1].trim()) || "成员");
+        return raw;
+      }
+      function appendAtText(parent, text, atCtx) {
+        const value = String(text == null ? "" : text);
+        if (!value) return;
+        let last = 0,
+          match;
+        atCtx.re.lastIndex = 0;
+        while ((match = atCtx.re.exec(value))) {
+          if (match.index > last)
+            parent.append(document.createTextNode(value.slice(last, match.index)));
+          const label = el("span", atDisplayName(match[0], atCtx), "at-mention");
+          const userTag = match[0].match(/^<qqbot-at-user\b[^>]*\bid="([^"]+)"/i);
+          if (userTag) label.dataset.atOpenid = userTag[1];
+          parent.append(label);
+          last = atCtx.re.lastIndex;
+        }
+        if (last < value.length) parent.append(document.createTextNode(value.slice(last)));
       }
       // 行内 markdown：粗体 / 斜体 / 行内代码 / 链接。全部用节点构造，不解析 HTML。
-      function inlineMarkdown(parent, text) {
+      function inlineMarkdown(parent, text, atCtx) {
         // 星号必须成对且边界干净才当粗体/斜体：`1D100*50` 这类算式里的星号不能误伤。
         // 开标记前不能紧挨字母数字或另一个星号，闭标记后同理。
         const re =
@@ -2067,7 +2184,7 @@
         let last = 0,
           m;
         while ((m = re.exec(text))) {
-          addText(parent, text.slice(last, m.index));
+          appendAtText(parent, text.slice(last, m.index), atCtx);
           if (m[1] != null) parent.append(el("strong", m[1]));
           else if (m[2] != null) parent.append(el("em", m[2]));
           else if (m[3] != null) parent.append(el("code", m[3]));
@@ -2080,11 +2197,11 @@
           }
           last = re.lastIndex;
         }
-        addText(parent, text.slice(last));
+        appendAtText(parent, text.slice(last), atCtx);
       }
       // 块级 markdown：代码块、标题、列表、引用、分隔线、段落。
       // 只有 msg_kind === "markdown" 的消息走这里，普通文本消息保持原样输出。
-      function markdown(parent, text) {
+      function markdown(parent, text, atCtx) {
         const lines = String(text == null ? "" : text)
           .replace(/\r\n?/g, "\n")
           .split("\n");
@@ -2095,7 +2212,7 @@
           const box = el(ordered ? "ol" : "ul");
           for (const item of items) {
             const li = el("li");
-            inlineMarkdown(li, item);
+            inlineMarkdown(li, item, atCtx);
             box.append(li);
           }
           parent.append(box);
@@ -2115,7 +2232,7 @@
           const heading = line.match(/^(#{1,3})\s+(.*)$/);
           if (heading) {
             const node = el("h" + heading[1].length);
-            inlineMarkdown(node, heading[2]);
+            inlineMarkdown(node, heading[2], atCtx);
             parent.append(node);
             i += 1;
             continue;
@@ -2144,7 +2261,7 @@
             while (i < lines.length && /^\s*>\s?/.test(lines[i]))
               quoted.push(lines[i++].replace(/^\s*>\s?/, ""));
             const box = el("blockquote");
-            inlineMarkdown(box, quoted.join("\n"));
+            inlineMarkdown(box, quoted.join("\n"), atCtx);
             parent.append(box);
             continue;
           }
@@ -2158,7 +2275,7 @@
           const p = el("p");
           para.forEach((piece, index) => {
             if (index) p.append(el("br"));
-            inlineMarkdown(p, piece);
+            inlineMarkdown(p, piece, atCtx);
           });
           parent.append(p);
         }
@@ -2239,17 +2356,17 @@
       function isEveryoneMention(c) {
         return c.mention_kind === "everyone" || c.mention_kind === "both";
       }
-      // 会话列表角标文案：按最后一次提及的类型显示「@我」或「at全体成员」。
+      // 会话列表角标文案：按最后一次提及的类型显示「@我」或「@全体成员」。
       function mentionBadge(c) {
-        return (isEveryoneMention(c) ? "at全体成员 " : "@我 ") + c.mention_unread;
+        return (isEveryoneMention(c) ? "@全体成员 " : "@我 ") + c.mention_unread;
       }
       // 弹窗提醒文案，返回 null 表示这条不提醒。两个开关互相独立：
-      // @全体 开着就按「有人at全体成员」；它关掉后，同时也 @ 到我的消息仍按 @我 提示。
+      // @全体 开着就按「有人@全体成员」；它关掉后，同时也 @ 到我的消息仍按 @我 提示。
       function mentionNotice(c) {
         const everyone = isEveryoneMention(c),
           onEveryone = state.settings.notify_everyone !== false,
           onMe = state.settings.notify_mention !== false;
-        if (everyone && onEveryone) return "有人at全体成员";
+        if (everyone && onEveryone) return "有人@全体成员";
         if ((!everyone || c.mention_kind === "both") && onMe) return "有人@了我";
         return null;
       }
@@ -2739,6 +2856,7 @@
             if (!isCurrent() || !m) return;
             state.members = m.members || [];
             renderInfo();
+            refreshAtNames();
           });
           roleRequest.then((role) => {
             if (!isCurrent() || !role?.chat) return;
@@ -3942,7 +4060,7 @@
             settingRow("有人 @ 全体成员", "群消息里出现 @全体成员 时弹提示", notifyEveryone.label),
             el(
               "div",
-              "两个开关互相独立。同一条消息既 @全体 又 @ 到我时只弹一条：@全体 提醒开着按「有人at全体成员」，关掉后按「有人@了我」。屏蔽的群永远不提醒。",
+              "两个开关互相独立。同一条消息既 @全体 又 @ 到我时只弹一条：@全体 提醒开着按「有人@全体成员」，关掉后按「有人@了我」。屏蔽的群永远不提醒。",
               "setting-note",
             ),
           );
@@ -4419,7 +4537,10 @@
           recalled = input("checkbox", ""),
           hidden = input("checkbox", ""),
           form = el("div", null, "stack"),
-          results = el("div");
+          results = el("div"),
+          loading = el("div", null, "search-loading");
+        loading.append(el("span", null, "search-spinner"), el("span", "正在搜索…"));
+        loading.hidden = true;
         form.append(q);
         if (global) {
           q.placeholder = "搜会话名、备注、ID 或消息内容";
@@ -4500,7 +4621,7 @@
               row.append(
                 avatar(c),
                 el("div", title(c), "search-chat-name"),
-                el("small", (c.chat_type === "qq_group" ? "群聊" : "单聊") + " · " + c.chat_id),
+                el("small", c.chat_type === "qq_group" ? "群聊" : "单聊"),
               );
               results.append(row);
             }
@@ -4508,7 +4629,8 @@
           if (messages.length) {
             results.append(el("h3", "消息 " + messages.length));
             for (const m of messages) {
-              const name = m.chat_name || m.remark || m.display_name || m.chat_id || "";
+              const name = String(m.chat_name || m.remark || m.display_name || "").trim(),
+                kind = m.chat_type === "qq_group" ? "群聊" : "单聊";
               const row = button(
                 null,
                 () => locateChat(chatForMessage(m, lastRaw?.chats), m.id),
@@ -4516,7 +4638,7 @@
               );
               const head = el("div", null, "search-msg-head");
               head.append(
-                el("strong", (m.chat_type === "qq_group" ? "群" : "单") + " · " + name),
+                el("strong", name ? kind + " · " + name : kind),
                 el("small", date(m.created_at)),
               );
               row.append(head, el("div", author(m) + "：" + summary(m)));
@@ -4527,6 +4649,7 @@
         async function loadPage() {
           if (busy || !params || (!global && !sameChat(current))) return;
           busy = true;
+          loading.hidden = false;
           const token = generation;
           moreButton.disabled = true;
           try {
@@ -4582,6 +4705,7 @@
             if (token === generation) {
               busy = false;
               moreButton.disabled = false;
+              loading.hidden = true;
             }
           }
         }
@@ -4615,7 +4739,7 @@
         });
         for (const control of [q, start, end, own, failed, recalled, hidden])
           control.addEventListener("change", reset);
-        box.replaceChildren(form, results);
+        box.replaceChildren(form, loading, results);
         box.onscroll = global
           ? null
           : () => {

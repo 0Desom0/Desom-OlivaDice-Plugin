@@ -1042,5 +1042,10 @@ class Store:
                     )
                 finally:
                     db.close()
-            messages.extend(dict(row, chat_type=chat['chat_type'], chat_id=chat['chat_id']) for row in rows)
+            # 结果行带上会话显示名，前端就不必拿一长串 openid 当标题了。
+            label = str(chat.get('remark') or chat.get('display_name') or '').strip()
+            messages.extend(
+                dict(row, chat_type=chat['chat_type'], chat_id=chat['chat_id'], chat_name=label)
+                for row in rows
+            )
         return {'chats': matching, 'messages': messages}
