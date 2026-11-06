@@ -709,6 +709,13 @@
       #dialog.compact #dialogBody {
         padding: 8px;
       }
+      /* 窄版的 padding 是 8px，按钮栏的负边距和 sticky 偏移要跟着缩，
+         否则底部会多出一条横向滚动条（普通弹窗是 16px）。 */
+      #dialog.compact .dialog-actions {
+        bottom: -8px;
+        margin: 0 -8px -8px;
+        padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
+      }
       /* 只给设置页的分组卡片加间距；其它弹窗保持原来的紧凑排布。 */
       .settings-section + .settings-section {
         margin-top: 14px;
@@ -1676,7 +1683,8 @@
                 pending.delete(id);
                 reject(Error("请求超时，请核对操作结果"));
               },
-              action === "JoinRequestList" ? 120000 : 30000,
+              // 回收要逐个重写全部数据库，比普通请求慢得多，单独放宽超时。
+              action === "JoinRequestList" || action === "Vacuum" ? 120000 : 30000,
             );
           pending.set(id, { resolve, reject, timer });
           parent.postMessage(
@@ -3808,6 +3816,58 @@
         }
         box.append(list, el("p", "手机始终使用按钮发送，回车换行。", "muted"));
       };
+      // —— 手动回收磁盘空间 ——
+      // SQLite 的 DELETE 只把页挂进 freelist，文件不会变小；VACUUM 才整库重写。
+      // 代价是独占文件 + 峰值约两倍空间，所以只在用户主动点一次时执行。
+      function humanSize(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+        return (bytes / 1024 ** index).toFixed(index ? 1 : 0) + " " + units[index];
+      }
+      function showVacuumDialog() {
+        const box = dialog("回收磁盘空间", true),
+          card = settingsSection("执行前请确认"),
+          actions = el("div", null, "dialog-actions"),
+          status = el("div", "", "setting-note");
+        status.hidden = true;
+        card.append(
+          el("div", "只整理已删除消息留下的空洞，不会删除任何聊天记录、会话或设置。", "setting-note"),
+          el("div", "执行时逐个重写 .sqlite3：机器人收发消息和页面可能短暂停顿，建议在空闲时段操作。", "setting-note"),
+          el("div", "需要约等于数据目录大小的空闲磁盘空间；空间不足或被其它程序占用的库会被跳过，原数据不受影响。", "setting-note warn"),
+          el("div", "刚缩短保留天数的话，请先点「保存设置」让它删掉超期消息，再回来回收，否则压不出空间。", "setting-note warn"),
+          el("div", "平时空页会被新消息复用，通常回收不到多少空间；缩短保留天数、停用机器人后才值得做。", "setting-note"),
+        );
+        const showResult = (text) => {
+          const done = settingsSection("执行结果"),
+            bar = el("div", null, "dialog-actions");
+          done.append(el("div", text, "setting-note"));
+          bar.append(button("完成", closeDialog, "primary"));
+          box.replaceChildren(done, bar);
+        };
+        const start = button("开始回收", async () => {
+          start.disabled = true;
+          start.textContent = "正在回收…";
+          status.hidden = false;
+          status.textContent = "正在逐个重写数据库，请勿关闭页面。";
+          try {
+            const r = await api("Vacuum"),
+              v = r.vacuum || {},
+              text =
+                `已处理 ${v.vacuumed ?? 0} 个数据库，回收 ${humanSize(v.reclaimed || 0)}` +
+                (v.failed ? `，跳过 ${v.failed} 个` : "") +
+                `，耗时 ${v.seconds ?? 0} 秒。` +
+                (v.reclaimed ? "" : " 当前没有可回收的空洞，属于正常情况。");
+            showResult(text);
+          } catch (e) {
+            status.textContent = e?.message || String(e);
+            start.disabled = false;
+            start.textContent = "重试";
+          }
+        }, "primary");
+        actions.append(button("取消", closeDialog), start);
+        box.append(card, status, actions);
+      }
       $("viewSettings").onclick = async () => {
         if (!state.bot) return notice("请先选择机器人");
         const bot = state.bot,
@@ -3893,11 +3953,25 @@
           messageDays.addEventListener("input", syncWarn);
           syncWarn();
 
-          const storage = settingsSection("存储与清理（全部机器人）");
+          // 保存请求在途时不允许开回收弹窗：清理还没跑完，压出来也是旧文件。
+          let saving = false;
+          const storage = settingsSection("存储与清理（全部机器人）"),
+            vacuumList = el("div", null, "action-list");
+          vacuumList.append(
+            actionItem("▤", "立即回收磁盘空间", "整理已删除消息留下的空洞，需要空闲磁盘空间", () => {
+              // 确认弹窗会替换设置弹窗，没保存的改动会丢；先拦住，也保证先清理再回收。
+              if (saving) return notice("正在保存设置，请稍候");
+              if (Number(messageDays.value) !== current.message || Number(imageDays.value) !== current.image)
+                return notice("请先保存设置，再执行回收");
+              showVacuumDialog();
+            }),
+          );
           storage.append(
             settingRow("聊天记录保留", "超过这个天数的消息每小时自动清理一次；0 = 永久保留", withUnit(messageDays, "天")),
             settingRow("图片本地保留", "只删本地图片副本，不删消息；0 = 永久保留", withUnit(imageDays, "天")),
             warn,
+            el("div", "到期清理只删消息行，SQLite 文件不会自动变小；空页会被新消息复用。要缩小文件时点下面的手动回收。", "setting-note"),
+            vacuumList,
           );
 
           // 左栏「使用说明」是全局界面开关，关掉后所有机器人都不再显示这块面板。
@@ -3923,6 +3997,10 @@
           const save = button(
             "保存设置",
             async () => {
+              if (saving) return;
+              saving = true;
+              save.disabled = true;
+              save.textContent = "正在保存…";
               try {
                 const n = Number(count.value),
                   d = Number(days.value),
@@ -3982,7 +4060,12 @@
                 state.settings.notify_everyone = notifyEveryone.box.checked;
                 messageImageCache.clear();
                 closeDialog();
-                notice("设置已保存");
+                // 缩短期限会立刻删掉超期消息，此时正好是回收磁盘空间最有效的时机。
+                notice(
+                  messageRetention > 0 && messageRetention < current.message
+                    ? "设置已保存：已删除超期消息，可在设置里点「立即回收磁盘空间」缩小文件"
+                    : "设置已保存",
+                );
                 // 缩短了记录期限：当前打开的消息里可能有已被清掉的，重新拉最新一页。
                 if (messageRetention > 0 && messageRetention < current.message) {
                   try {
@@ -3992,6 +4075,10 @@
                 }
               } catch (e) {
                 error(e);
+              } finally {
+                saving = false;
+                save.disabled = false;
+                save.textContent = "保存设置";
               }
             },
             "primary",

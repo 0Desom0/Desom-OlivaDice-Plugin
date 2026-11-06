@@ -44,6 +44,8 @@ class Bridge:
         self._cache_dir = Path(store.root) / 'view-cache'
         # 图片与聊天记录的定期清理共用一把锁：改设置时立即清一次，不能和后台线程撞车。
         self._retention_lock = threading.RLock()
+        # 手动 VACUUM 只允许一个在跑：重复点击不该排队把库反复重写。
+        self._vacuum_lock = threading.Lock()
         self._retention_stop = threading.Event()
         self._retention_worker = threading.Thread(
             target=self._retention_loop, name='QQOfficialConsole-retention', daemon=True
@@ -742,6 +744,15 @@ class Bridge:
                     if removed:
                         self._clear_view_cache()
             return dict(ok, settings=self.store.get_settings())
+        if action == 'Vacuum':
+            # 全局维护动作，不需要 bot_hash；和每小时清理互斥，避免一边删一边整库重写。
+            if not self._vacuum_lock.acquire(blocking=False):
+                return errors.failure('回收正在进行中')
+            try:
+                with self._retention_lock:
+                    return dict(ok, vacuum=self.store.vacuum_databases())
+            finally:
+                self._vacuum_lock.release()
         bot = p.get('bot_hash')
         if not isinstance(bot, str) or bot not in self._bots():
             raise ValueError('机器人无效')

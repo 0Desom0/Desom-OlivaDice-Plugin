@@ -140,6 +140,12 @@ class Store:
     def _bot_path(self, bot_hash):
         return self.root / safe_id(bot_hash)
 
+    def _meta_path(self, bot_hash):
+        return self._bot_path(bot_hash) / 'meta.sqlite3'
+
+    def _chat_path(self, bot_hash, chat_type, chat_id):
+        return self._bot_path(bot_hash) / 'msg' / chat_type / (safe_id(chat_id) + '.sqlite3')
+
     def _get_meta(self, bot_hash):
         key = str(bot_hash)
         now = time.monotonic()
@@ -147,7 +153,7 @@ class Store:
         if key in self._meta:
             db, _ = self._meta.pop(key)
         else:
-            db = self._open(self._bot_path(key) / 'meta.sqlite3', _META)
+            db = self._open(self._meta_path(key), _META)
             if 'left_group' not in {row['name'] for row in db.execute('PRAGMA table_info(chats)')}:
                 db.execute('ALTER TABLE chats ADD COLUMN left_group INTEGER NOT NULL DEFAULT 0')
                 db.commit()
@@ -187,8 +193,7 @@ class Store:
         if key in self._sessions:
             db, _ = self._sessions.pop(key)
         else:
-            path = self._bot_path(bot_hash) / 'msg' / chat_type / (safe_id(chat_id) + '.sqlite3')
-            db = self._open(path, _CHAT)
+            db = self._open(self._chat_path(bot_hash, chat_type, chat_id), _CHAT)
             columns = {row['name'] for row in db.execute('PRAGMA table_info(messages)')}
             if 'is_unread' not in columns:
                 db.execute('ALTER TABLE messages ADD COLUMN is_unread INTEGER NOT NULL DEFAULT 0')
@@ -258,6 +263,23 @@ class Store:
         with self.lock:
             self._expire(time.monotonic())
             self._expire_meta(time.monotonic())
+
+    def _close_cached(self, path):
+        """关掉 LRU 里指向某个库的连接。
+
+        VACUUM 要独占数据库文件，只要还有一个连接开着就可能 database is locked。
+        调用方必须已经持有 self.lock；关掉的连接下次访问时会自动重开。
+        """
+        target = path.resolve()
+        for key, (db, _) in list(self._sessions.items()):
+            bot_hash, chat_type, chat_id = key
+            if self._chat_path(bot_hash, chat_type, chat_id).resolve() == target:
+                db.close()
+                del self._sessions[key]
+        for key, (db, _) in list(self._meta.items()):
+            if self._meta_path(key).resolve() == target:
+                db.close()
+                del self._meta[key]
 
     def _reap_idle(self):
         while not self._stop.wait(max(0.1, min(10, self.idle_seconds))):
@@ -649,6 +671,56 @@ class Store:
                     ),
                 )
         return removed
+
+    def vacuum_databases(self):
+        """手动回收磁盘空间：逐个对会话库和 bot 元数据库执行 VACUUM。
+
+        SQLite 的 DELETE 只是把页挂到 freelist 上，文件不会变小，空页会被之后的
+        新消息直接复用——所以默认的滚动清理不需要 VACUUM，这里也只由用户主动
+        点一次，绝不塞进每小时的保留策略。
+
+        VACUUM 是「整库复制进临时文件再覆盖回来」：耗时与库大小成正比、峰值约
+        占两倍磁盘、期间该文件独占。因此逐库单独持 self.lock，让消息线程能在
+        两个库之间插进来，不至于把整个机器人堵死；global.sqlite3 由常驻连接
+        持有且只有一张设置表，跳过它。
+        """
+        started = time.monotonic()
+        paths = sorted(
+            path
+            for path in self.root.rglob('*.sqlite3')
+            if path.name != 'global.sqlite3' and path.is_file()
+        )
+        result = {
+            'files': len(paths),
+            'vacuumed': 0,
+            'failed': 0,
+            'before': 0,
+            'after': 0,
+            'reclaimed': 0,
+            'seconds': 0,
+        }
+        for path in paths:
+            try:
+                with self.lock:
+                    self._close_cached(path)
+                    # 关掉常驻连接后 WAL 已 checkpoint 进主库，此时量到的才是真实体积。
+                    before = path.stat().st_size
+                    # isolation_level=None：VACUUM 不能包在隐式事务里执行。
+                    db = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+                    try:
+                        db.execute('VACUUM')
+                    finally:
+                        db.close()
+                    after = path.stat().st_size
+                result['vacuumed'] += 1
+                result['before'] += before
+                result['after'] += after
+                result['reclaimed'] += max(0, before - after)
+            except Exception:
+                # 单个库被外部占用 / 磁盘不足 / 文件损坏都不该中断其余库。
+                result['failed'] += 1
+        result['seconds'] = round(time.monotonic() - started, 2)
+        return result
 
     def add_message(self, bot_hash, chat_type, chat_id, message, member=None, token=None, unread=True):
         """插入消息；显式 @ 事件重复到达时，把已存在的入站消息升级。"""
