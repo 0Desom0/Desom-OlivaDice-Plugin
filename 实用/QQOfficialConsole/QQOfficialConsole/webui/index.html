@@ -2617,75 +2617,138 @@
           displayView("chat");
           renderMessages(!target);
           renderInfo();
-          // 3. 未读快照与历史缓存并行；内存命中就不再读缓存。
-          const snapshotRequest = api("UnreadState", current).catch(() => null);
-          let cached = memory || null;
-          if (!cached) {
-            cached = await cachedChat(current);
-            if (token !== switchToken) return;
-            // 游标比最后一条消息还大，说明缓存不完整，按没缓存处理。
+          // 3. 所有读取在切换瞬间一起发出：缓存、最新消息、成员、未读快照互不等待。
+          //    以前是「等 CacheGet → 等 UnreadState → 等 ListMembers → 才拉 PullMessages」，
+          //    宿主每轮往返都要时间，消息就这样被拖到好几轮之后才出现。
+          const snapshotRequest = api("UnreadState", current).catch(() => null),
+            membersRequest = api("ListMembers", current).catch(() => null),
+            pullRequest = api("PullMessages", { ...current, limit: 30, change_cursor: null }).catch(() => null),
+            cacheRequest = memory ? Promise.resolve(null) : cachedChat(current).catch(() => null),
+            roleRequest =
+              c.chat_type === "qq_group" && Date.now() / 1000 - Number(c.role_updated_at || 0) >= 600
+                ? api("RefreshRole", current).catch(() => null)
+                : Promise.resolve(null);
+          // 已经有内容上屏了吗？内存命中就算有；缓存只用来补更早的历史。
+          let filled = !!memory;
+          const isCurrent = () => token === switchToken && sameChat(current);
+          const showMessages = (scroll) => {
+            chatReady = true;
+            renderHeader();
+            renderMessages(scroll);
+            renderInfo();
+          };
+
+          // 缓存通常最慢（要分块读）：还没内容时拿它铺历史，已有内容时把更早的补进去。
+          cacheRequest.then((cached) => {
+            if (!isCurrent() || !cached) return;
+            // 游标比最后一条消息还大，说明这份缓存不完整，丢弃。
             if (
-              cached &&
-              Number(cached.cursor || 0) > Math.max(0, ...(cached.messages || []).map((m) => Number(m.id) || 0))
+              Number(cached.cursor || 0) >
+              Math.max(0, ...(cached.messages || []).map((m) => Number(m.id) || 0))
             )
-              cached = null;
-            if (cached) {
+              return;
+            if (!filled) {
               state.messages = cached.messages || [];
               state.members = cached.members || [];
               state.cursor = cached.cursor || 0;
               state.changeCursor = cached.changeCursor ?? null;
               historyEnded = !!cached.historyEnded;
-              chatReady = true;
-              renderMessages(!target);
+              filled = true;
+              showMessages(!target);
+              return;
             }
-          }
-          // 用快照恢复“有新消息 / 有人 @我”的提示；进会话后自动滚到底不该把它清掉，
-          // 所以这里钉住一段时间，等渲染与图片加载稳定后再允许滚动清除。
-          const snapshot = await snapshotRequest;
-          if (token !== switchToken) return;
-          // 进会话之前的未读：右上角「↑ N 条新消息」。
-          unreadAboveCount = Number(snapshot?.unread) || 0;
-          unreadAboveMention = Number(snapshot?.mention_unread) || 0;
-          unreadAboveTarget = snapshot?.first_unread ?? null;
-          unreadAboveMentionTarget = snapshot?.first_mention ?? null;
-          // 进会话之后才来的消息：右下角「N 条新消息」，从一开始算。
-          newCount = 0;
-          newMentionCount = 0;
-          newMentionId = null;
-          renderHeader();
-          renderChats();
-          renderMessages(!target);
-          renderInfo();
+            const box = $("messages"),
+              anchor = box.querySelector(".message[data-id]"),
+              offset = anchor ? anchor.offsetTop - box.scrollTop : 0,
+              known = new Set(state.messages.map((m) => m.id)),
+              older = (cached.messages || []).filter((m) => !known.has(m.id));
+            if (!older.length) return;
+            state.messages = [...older, ...state.messages].sort(byTime);
+            if (state.messages.length > MESSAGE_LIMIT)
+              state.messages = state.messages.slice(-MESSAGE_LIMIT);
+            state.cursor = Math.max(state.cursor, Number(cached.cursor || 0));
+            historyEnded = !!cached.historyEnded;
+            renderMessages(false);
+            // 往顶部补历史会把内容顶下去，钉住原来那条消息不让视线跳。
+            if (anchor) {
+              const next = box.querySelector(`[data-id="${CSS.escape(String(anchor.dataset.id))}"]`);
+              if (next) box.scrollTop = next.offsetTop - offset;
+            }
+          });
+
+          // 最新消息只要一轮往返：没内容就直接铺开，有内容时按 id 合并新到的 / 更新过的。
+          pullRequest.then((r) => {
+            if (!isCurrent() || !r) return;
+            const list = (r.messages || []).slice();
+            if (!filled) {
+              state.messages = list.sort(byTime);
+              state.cursor = Math.max(0, ...state.messages.map((x) => Number(x.id) || 0));
+              state.changeCursor = r.change_cursor ?? null;
+              historyEnded = list.length < 30;
+              filled = true;
+              showMessages(!target);
+              return;
+            }
+            const known = new Map(state.messages.map((m) => [m.id, m]));
+            for (const m of list) {
+              const old = known.get(m.id);
+              if (old) Object.assign(old, m);
+              else state.messages.push(m);
+            }
+            state.messages.sort(byTime);
+            if (state.messages.length > MESSAGE_LIMIT)
+              state.messages = state.messages.slice(-MESSAGE_LIMIT);
+            state.cursor = Math.max(state.cursor, ...list.map((m) => Number(m.id) || 0));
+            state.changeCursor = r.change_cursor ?? state.changeCursor;
+            renderMessages(false);
+          });
+
+          // 未读快照只更新角标与提示，不重画消息区，免得把刚上屏的内容又滚一次。
+          snapshotRequest.then((snapshot) => {
+            if (!isCurrent()) return;
+            unreadAboveCount = Number(snapshot?.unread) || 0;
+            unreadAboveMention = Number(snapshot?.mention_unread) || 0;
+            unreadAboveTarget = snapshot?.first_unread ?? null;
+            unreadAboveMentionTarget = snapshot?.first_mention ?? null;
+            // 进会话之后才来的消息：右下角「N 条新消息」，从一开始算。
+            newCount = 0;
+            newMentionCount = 0;
+            newMentionId = null;
+            renderHeader();
+            renderChats();
+            updateHistoryControls();
+          });
+          membersRequest.then((m) => {
+            if (!isCurrent() || !m) return;
+            state.members = m.members || [];
+            renderInfo();
+          });
+          roleRequest.then((role) => {
+            if (!isCurrent() || !role?.chat) return;
+            state.chat = Object.assign(state.chat || {}, role.chat, { unread: 0, mention_unread: 0 });
+            renderHeader();
+            renderInfo();
+          });
+          // 标记已读同样是后台操作，回来时更新列表角标即可。
           api("ChatAction", { ...current, action: "read", all: true })
             .then((r) => {
-              if (sameChat(current) && r.chat) {
+              if (isCurrent() && r.chat) {
                 state.chat = Object.assign(state.chat || {}, r.chat, { unread: 0, mention_unread: 0 });
                 renderChats();
                 renderHeader();
               }
             })
             .catch(() => {});
-          const requests = [api("ListMembers", current)];
-          if (!cached) requests.push(api("PullMessages", { ...current, limit: 30, change_cursor: null }));
-          if (c.chat_type === "qq_group" && Date.now() / 1000 - Number(c.role_updated_at || 0) >= 600)
-            requests.push(api("RefreshRole", current).catch(() => null));
-          const [m, r, role] = await Promise.all(requests);
-          if (token !== switchToken) return;
-          state.members = m.members || [];
-          if (!cached) {
-            state.messages = (r.messages || []).sort(byTime);
-            state.cursor = Math.max(0, ...state.messages.map((x) => Number(x.id) || 0));
-            state.changeCursor = r.change_cursor ?? null;
-            historyEnded = state.messages.length < 30;
-            chatReady = true;
-            renderMessages(!target);
+          // 只等「最新消息」这一轮：消息一上屏就能继续操作；慢的缓存留在后台补历史。
+          await pullRequest;
+          if (!isCurrent()) return;
+          if (!filled) {
+            // 拉取失败、缓存也还没到：再等一下缓存，实在不行就交给轮询接管。
+            await cacheRequest;
+            if (!isCurrent()) return;
+            if (!filled) showMessages(!target);
           }
-          const roleResult = cached ? r : role;
-          if (roleResult?.chat)
-            state.chat = Object.assign(state.chat || {}, roleResult.chat, { unread: 0, mention_unread: 0 });
-          renderHeader();
-          renderInfo();
-          // 列表刷新不用等：轮询下一秒也会做，先让切换流程收尾。
+          // 列表刷新不用等：轮询一秒一次，先让切换流程收尾。
           loadChats().catch(() => {});
           if (target && sameChat(current)) await locate(target);
         } catch (e) {
@@ -2910,7 +2973,8 @@
         if (!state.messages.length) {
           messageNodes.clear();
           messageHead = null;
-          box.replaceChildren(el("div", "暂无消息", "empty"));
+          // 刚切进会话、数据还没回来时给个加载态，别让人以为消息丢了。
+          box.replaceChildren(el("div", state.chat && !chatReady ? "正在加载消息…" : "暂无消息", "empty"));
         } else {
           // 从「暂无消息」变成有消息时，先把空态占位拿掉。
           if (!messageHead && box.firstElementChild?.classList.contains("empty")) box.replaceChildren();
@@ -4638,17 +4702,15 @@
           if (a?.preview) URL.revokeObjectURL(a.preview);
         }
       }
-      // Bootstrap 是「机器人列表 + 全局设置」的全量数据，不需要跟着消息每秒拉。
-      const BOOTSTRAP_INTERVAL = 5000;
-      let lastBootstrapAt = 0;
       async function poll() {
         if (switching || state.sending || state.pulling || !state.visible || document.hidden || !state.bot)
           return;
         state.pulling = true;
         const current = ctx(),
-          hasChat = !!state.chat && chatReady,
-          withBootstrap = Date.now() - lastBootstrapAt >= BOOTSTRAP_INTERVAL;
+          hasChat = !!state.chat && chatReady;
         try {
+          // 固定 1 秒一轮：Bootstrap / ListChats / 当前会话消息 / 被动状态一起拉。
+          // 省开销靠节点复用和内容签名，不靠降低轮询频率。
           const requests = [api("ListChats", { bot_hash: state.bot })];
           if (hasChat)
             requests.push(
@@ -4660,14 +4722,10 @@
               }),
               api("PassiveStatus", current),
             );
-          // Bootstrap 固定放在最后一个，前面的下标就不用跟着变。
-          if (withBootstrap) requests.push(api("Bootstrap"));
+          requests.push(api("Bootstrap"));
           const results = await Promise.all(requests);
           if (switching || state.sending || current.bot_hash !== state.bot) return;
-          if (withBootstrap) {
-            lastBootstrapAt = Date.now();
-            renderBots(results[results.length - 1].bots || []);
-          }
+          renderBots(results[results.length - 1].bots || []);
           applyChats(results[0], current.bot_hash);
           if (hasChat && sameChat(current)) {
             const response = results[1],
