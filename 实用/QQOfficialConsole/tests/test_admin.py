@@ -68,6 +68,8 @@ def console(tmp_path, monkeypatch):
             response = state.pages[cursor]
         elif '/approval_join_request/' in parts.path or method == 'DELETE':
             response = {}
+        elif parts.path.endswith('/batch_remove_members'):
+            response = {}
         elif parts.path.endswith('/messages'):
             response = {'id': 'sent-join'}
         else:
@@ -110,6 +112,7 @@ def requests_by_id(c):
     ('ListMembers', {'refresh': True}),
     ('Admin', {'action': 'restrict_query'}),
     ('Admin', {'action': 'restrict_set', 'member_openid': 'someone', 'duration': 60}),
+    ('Admin', {'action': 'kick', 'member_openid': 'someone'}),
     ('JoinRequestList', {'refresh': True}),
     ('JoinRequestAct', {'op': 'approve', 'join_request_id': 'r1', 'member_openid': 'u1'}),
 ])
@@ -307,3 +310,47 @@ def test_failed_recall_preserves_record(console):
     assert not result['ok'] and result['keyword'] == '无撤回权限'
     rows = call(c, 'PullMessages')['messages']
     assert len(rows) == 1 and rows[0]['recalled'] == 0 and rows[0]['content_text'] == 'still visible'
+
+
+def kick_calls(c):
+    return [(method, path, body) for method, path, _, body in c.calls
+            if path.endswith('/batch_remove_members')]
+
+
+def test_admin_kick_removes_member_and_clears_local_cache(console):
+    c = console
+    c.roster.upsert_member(c.bot.hash, 'qq_group', 'group', 'u1', 'Alice')
+    result = call(c, 'Admin', action='kick', member_openid='u1')
+    assert result['ok'] and result['message'] == '成员已移出群聊'
+    posts = kick_calls(c)
+    assert len(posts) == 1 and posts[0][0] == 'POST'
+    assert posts[0][2]['member_openids'] == ['u1']
+    assert posts[0][2]['add_to_member_blacklist'] is False
+    assert c.roster.list_members(c.bot.hash, 'qq_group', 'group') == []
+
+
+def test_admin_kick_passes_blacklist_flag(console):
+    result = call(console, 'Admin', action='kick', member_openid='u2',
+                  add_to_member_blacklist=True)
+    assert result['ok']
+    posts = kick_calls(console)
+    assert len(posts) == 1
+    assert posts[0][2]['member_openids'] == ['u2']
+    assert posts[0][2]['add_to_member_blacklist'] is True
+
+
+@pytest.mark.parametrize('member', ['', '   ', None, 42, [], {}])
+def test_admin_kick_rejects_invalid_member(console, member):
+    result = call(console, 'Admin', action='kick', member_openid=member)
+    assert not result['ok'] and result['keyword'] == '参数无效'
+    assert kick_calls(console) == []
+
+
+def test_failed_kick_preserves_member_cache(console):
+    c = console
+    c.roster.upsert_member(c.bot.hash, 'qq_group', 'group', 'u3', 'Carol')
+    c.failure['/v2/groups/group/batch_remove_members'] = (403, {'code': 11253})
+    result = call(c, 'Admin', action='kick', member_openid='u3')
+    assert not result['ok'] and result['keyword'] == '无接口权限'
+    assert [m['member_openid'] for m in c.roster.list_members(
+        c.bot.hash, 'qq_group', 'group')] == ['u3']

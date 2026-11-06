@@ -631,6 +631,15 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      /* 管理员点成员胶囊可以直接把人移出，鼠标上给个明确反馈。 */
+      .chip-action {
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+      .chip-action:hover {
+        border-color: #f14d58;
+        color: #f14d58;
+      }
       #overlay {
         position: fixed;
         inset: 0;
@@ -1401,7 +1410,7 @@
               <dt>↑ ↓</dt>
               <dd>↑ 翻更早消息：先回到已加载区的顶部，再按一次才加载上一页。↓ 回到最新。右上角「N 条新消息」直接跳到最早一条未读。</dd>
               <dt>ⓘ 资料</dt>
-              <dd>群名、备注、成员和管理员操作都在右栏；手机上点 ☰ 回会话列表。</dd>
+              <dd>群名、备注、成员和管理员操作都在右栏；刷新群名不用管理员身份，管理员可以点成员胶囊把他移出本群（官方接口目前内邀，没开通会提示无权限）。手机上点 ☰ 回会话列表。</dd>
               <dt>右键 / 长按</dt>
               <dd>会话上可置顶、改备注、屏蔽、隐藏；消息上可复制、引用、定位（群聊还有撤回，单聊平台不支持撤回）。撤回后显示「已撤回」和蓝色「重新编辑」，点一下就把原文放回输入框；⚙ 里可开「防撤回」看原文。屏蔽的群消息变灰，不计未读、不提醒 @。</dd>
               <dt>字数与图片</dt>
@@ -3364,7 +3373,7 @@
               }
             }, true),
           );
-        if (admin && state.chat?.chat_type === "qq_group" && m.direction === "in" && m.sender_id)
+        if (admin && state.chat?.chat_type === "qq_group" && m.direction === "in" && m.sender_id) {
           list.append(
             actionItem("⊘", "禁言发送者", "给这个群成员设置禁言时长", async () => {
               const sec = prompt("禁言秒数（0 为解除）", "60");
@@ -3381,7 +3390,12 @@
                 error(e);
               }
             }, true),
+            actionItem("⤵", "移出发送者", "内邀接口，无权限会提示 11253", () => {
+              closeDialog();
+              showKick(m.sender_id, author(m));
+            }, true),
           );
+        }
         box.append(list);
       }
       function renderQuote() {
@@ -4097,17 +4111,27 @@
         box.append(base);
 
         if (c.chat_type === "qq_group") {
-          const members = el("section", null, "info-card");
+          const isAdmin = ["admin", "owner"].includes(c.self_role),
+            members = el("section", null, "info-card");
           members.append(el("h4", "成员缓存：" + state.members.length + " 人"));
           if (state.members.length) {
             const chips = el("div", null, "chips");
-            for (const m of state.members) chips.append(el("span", m.name || m.member_openid, "chip"));
+            for (const m of state.members) {
+              const chip = el("span", m.name || m.member_openid, "chip");
+              // 管理员可以直接点成员胶囊把他移出，省得手抄 openid。
+              if (isAdmin) {
+                chip.classList.add("chip-action");
+                chip.title = "点击移出：" + m.member_openid;
+                chip.onclick = () => showKick(m.member_openid, m.name || m.member_openid);
+              }
+              chips.append(chip);
+            }
             members.append(chips);
           } else {
             members.append(el("div", "还没有成员缓存，可用下面的「刷新官方成员」拉一次。", "setting-note"));
           }
           box.append(members);
-          if (c.self_role === "admin" || c.self_role === "owner") {
+          if (isAdmin) {
             const admin = el("section", null, "info-card");
             admin.append(el("h4", "管理员操作"));
             admin.append(
@@ -4127,6 +4151,7 @@
                   "mini",
                 ),
                 button("禁言查询 / 设置", showRestrict, "mini"),
+                button("移出成员", () => showKick(), "mini"),
               ),
             );
             admin.append(
@@ -4147,6 +4172,43 @@
           button("设置", () =>
             adminAction("restrict_set", { member_openid: member.value, duration: Number(duration.value) }),
           ),
+        );
+      }
+      // 移出群成员：管理员专用。成员胶囊和消息右键会把 openid 预填进来，
+      // 也可以在这里手抄；成功后端会同步删掉本地成员缓存，前端再把资料卡刷新一遍。
+      function showKick(memberOpenid = "", label = "") {
+        const box = dialog("移出群聊", true),
+          member = input("text", "成员 openid"),
+          blacklist = toggle(false);
+        member.value = memberOpenid;
+        box.append(
+          el("div", label ? "将移出：" + label : "填写要移出的成员 openid", "setting-note"),
+          el(
+            "div",
+            "官方「批量移除成员」接口目前是内邀白名单能力，未开通的机器人会回「无接口权限」（11253），不是插件故障；机器人仍须是本群管理员 / 群主。",
+            "setting-note warn",
+          ),
+          member,
+          settingRow("同时拉黑", "加入黑名单后该成员不能再申请入群", blacklist.label),
+          button("确认移出", async () => {
+            const target = member.value.trim();
+            if (!target) return notice("请填写成员 openid");
+            if (!confirm(`确认将 ${label || target} 移出本群？此操作不可撤销。`)) return;
+            try {
+              const r = await api("Admin", {
+                ...ctx(),
+                action: "kick",
+                member_openid: target,
+                add_to_member_blacklist: blacklist.box.checked,
+              });
+              state.members = state.members.filter((m) => m.member_openid !== target);
+              closeDialog();
+              renderInfo();
+              notice(r.message || r.keyword || "成功");
+            } catch (e) {
+              error(e);
+            }
+          }),
         );
       }
       async function adminAction(action, extra) {

@@ -576,6 +576,54 @@ class Bridge:
             chat = self.store.upsert_chat(bot, 'qq_group', chat_id, **fields)
         return result, chat
 
+    def kick_group_member(self, bot_hash, group_openid, member_openid, blacklist=False):
+        """把成员移出群聊，返回桥接结果。
+
+        SDK 的 set_qq_group_batch_remove_members 在当前版本会调用未导入的
+        `_do_qq_group_api_request`（`from ... import *` 不带下划线开头的名字）而直接
+        NameError，所以这里用同一个 API 对象自己发请求，并守同一套 30 QPM 窗口。
+        """
+        op_key = 'group_batch_remove_members'
+        # 和 SDK 一致：11253 之后进冷却期，冷却期间别再撞接口。
+        denied = getattr(sdkCommon, '_check_qq_group_api_denied', None)
+        if callable(denied) and denied(op_key):
+            return errors.failure('无接口权限')
+        acquire = getattr(sdkCommon, '_acquire_qq_group_api_rate', None)
+        if callable(acquire) and not acquire(op_key):
+            return errors.failure('操作过于频繁')
+        try:
+            event = self._event(bot_hash)
+            sdk_bot = OlivOS.qqGuildv2SDK.get_SDK_bot_info_from_Event(event)
+            api = OlivOS.qqGuildv2SDK.API.setQQGroupBatchRemoveMembers(sdk_bot)
+            api.metadata.group_openid = str(group_openid)
+            api.data.member_openids = [str(member_openid)]
+            api.data.add_to_member_blacklist = bool(blacklist)
+            api.do_api('POST')
+            status = getattr(api, 'res_code', None)
+            try:
+                payload = json.loads(getattr(api, 'res', None) or '{}')
+            except (ValueError, TypeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            code = payload.get('code', payload.get('err_code'))
+            try:
+                code = int(code) if code is not None else None
+            except (TypeError, ValueError):
+                code = None
+            if isinstance(status, int) and 200 <= status < 300 and code in (None, 0):
+                return {'ok': True, 'keyword': '成功', 'error_code': None}
+            # 11253 = 内邀白名单没开，和 SDK 一样记冷却，别每次点击都撞一次接口。
+            if code == getattr(sdkCommon, 'qqGroupApiDeniedCode', 11253):
+                marker = getattr(sdkCommon, '_mark_qq_group_api_denied', None)
+                if callable(marker):
+                    marker(op_key)
+            result = errors.failure(errors.CODES.get(code, '无接口权限') if code else '无接口权限')
+            result['error_code'] = code
+            return result
+        except Exception:
+            return errors.failure('移出失败')
+
     def _admin(self, event, bot, chat_type, chat_id):
         if chat_type != 'qq_group':
             return errors.failure('无管理员权限')
@@ -1027,6 +1075,20 @@ class Bridge:
                 if not isinstance(member, str) or not member or duration < 0:
                     raise ValueError()
                 raw = OlivOS.qqGuildv2SDK.event_action.set_qq_group_member_mute(event, chat_id, member, duration)
+            elif operation == 'kick':
+                # 官方批量移除接口（单次最多 20 人），这里一次只踢一个。
+                # 权限已在前面统一过 _admin：普通成员拿不到这一步。
+                member = p.get('member_openid')
+                if not isinstance(member, str) or not member.strip():
+                    raise ValueError()
+                result = self.kick_group_member(
+                    bot, chat_id, member.strip(), bool(p.get('add_to_member_blacklist'))
+                )
+                if result['ok']:
+                    # 踢成功就把本地成员缓存里那一行删掉，资料卡不再显示这个人。
+                    self.roster.remove_member(bot, chat_type, chat_id, member.strip())
+                    result['message'] = '成员已移出群聊'
+                return result
             else:
                 raise ValueError()
             result = self._result(raw)
