@@ -105,6 +105,27 @@
         background: #8881;
         color: var(--muted);
       }
+      /* 左栏「群 / 单」筛选：亮起 = 显示该类会话，按下变暗 = 临时收起。
+         只影响列表显示与顶部合计，消息照常接收。 */
+      .chat-filters {
+        display: flex;
+        gap: 8px;
+        margin: 0 12px 8px;
+      }
+      .filter-chip {
+        flex: 1;
+        padding: 6px 0;
+        border-radius: 8px;
+        font-weight: 600;
+        background: var(--panel);
+        color: var(--muted);
+        border: 1px solid var(--line);
+      }
+      .filter-chip.active {
+        background: #1685ee22;
+        color: var(--accent);
+        border-color: #1685ee55;
+      }
       .scroll {
         overflow: auto;
         min-height: 0;
@@ -139,6 +160,25 @@
         color: white;
         font-weight: bold;
         background: #6595d7;
+      }
+      /* 会话列表头像容器：给「置顶」角标一个定位锚点。 */
+      .avatar-wrap {
+        position: relative;
+        flex: none;
+      }
+      /* 置顶角标：叠在群/单方块底部中间，压住一点边缘才看得清。 */
+      .pin-mark {
+        position: absolute;
+        left: 50%;
+        bottom: -5px;
+        transform: translateX(-50%);
+        font-size: 11px;
+        line-height: 1;
+        padding: 2px 3px;
+        border-radius: 7px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        box-shadow: 0 1px 3px #0004;
       }
       .chat-meta {
         min-width: 0;
@@ -440,6 +480,45 @@
       }
       .result small {
         display: block;
+      }
+      /* —— 全局搜索：会话行带头像，消息行标题与时间同行 —— */
+      .search-chat {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .search-chat .avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 9px;
+        font-size: 14px;
+      }
+      .search-chat-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .search-chat small {
+        color: var(--muted);
+      }
+      .search-msg-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .search-msg-head strong {
+        font-size: 13px;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .search-msg-head small {
+        flex: none;
+        color: var(--muted);
       }
       .member {
         padding: 7px;
@@ -1267,6 +1346,11 @@
         </header>
         <select id="bots" aria-label="切换机器人"></select
         ><button id="globalOpen" class="search-entry">⌕ 搜索会话与消息</button>
+        <!-- 「群 / 单」筛选：点一下收起对应类型的会话，再点恢复；只影响显示，不影响接收。 -->
+        <div id="chatFilters" class="chat-filters" role="group" aria-label="会话类型筛选">
+          <button type="button" data-filter="group" class="filter-chip active" title="显示 / 收起群聊会话">群</button>
+          <button type="button" data-filter="private" class="filter-chip active" title="显示 / 收起单聊会话">单</button>
+        </div>
         <!-- 帮助面板默认收起；第一次用的人点开就能看懂每个按钮 -->
         <details id="helpBox" class="help-box">
           <summary>
@@ -1276,7 +1360,9 @@
           <div class="help-body">
             <dl>
               <dt>选会话</dt>
-              <dd>左边点一个群或好友，中间就能看消息、发消息。官方接口没有会话列表，冷启动要自己填 openid。</dd>
+              <dd>左边点一个群聊或单聊会话，中间就能看消息、发消息。官方接口没有会话列表，冷启动要自己填 openid。</dd>
+              <dt>群 / 单</dt>
+              <dd>列表上方两个按钮分别收起群聊 / 单聊：只影响列表显示和顶部合计，消息照常接收，再点一下恢复。</dd>
               <dt>⚙ ＋ ⌕</dt>
               <dd>⚙ 打开设置（展示条数、@ 提醒开关、聊天记录与图片保留天数）；＋ 手动添加会话；⌕ 搜会话名，也能在所有会话里搜聊天内容。</dd>
               <dt>＠ ▧ ☺ ◷</dt>
@@ -1667,7 +1753,7 @@
       }
       function avatar(c) {
         const group = c && c.chat_type === "qq_group";
-        const a = el("div", group ? "群" : "人", "avatar");
+        const a = el("div", group ? "群" : "单", "avatar");
         a.style.background = group ? "hsl(210 52% 52%)" : "hsl(152 46% 42%)";
         return a;
       }
@@ -2019,17 +2105,42 @@
       }
       let bots = [],
         mentionSnapshots = new Map();
+      // 左栏「群 / 单」筛选：group / private 各管一类会话，true = 显示。
+      // 只影响列表显示与顶部合计，消息照常接收，重新打开页面恢复全开。
+      const chatFilters = { group: true, private: true };
+      // 这个会话在当前筛选下要不要显示（群聊归 group，其余都算单聊）。
+      function chatVisible(c) {
+        return chatFilters[c.chat_type === "qq_group" ? "group" : "private"];
+      }
+      // 当前筛选下仍然显示的会话列表。
+      function visibleChats() {
+        return state.chats.filter(chatVisible);
+      }
+      // 机器人下拉里的合计文案。筛选生效时，当前机器人的未读 / @我 只统计
+      // 还显示着的会话；其他机器人拿不到会话明细，维持后端给的原始总数。
+      function botSummary(b) {
+        let unread = b.unread,
+          mention = b.mention_unread;
+        if (b.hash === state.bot && (!chatFilters.group || !chatFilters.private)) {
+          unread = 0;
+          mention = 0;
+          for (const c of visibleChats()) {
+            unread += Number(c.unread) || 0;
+            mention += Number(c.mention_unread) || 0;
+          }
+        }
+        return (
+          (b.name || b.id || b.hash) +
+          (unread ? " · " + unread : "") +
+          (mention ? " · @我 " + mention : "")
+        );
+      }
       function renderBots(items) {
         bots = items || [];
         const select = $("bots");
         select.replaceChildren();
         for (const b of bots) {
-          const o = el(
-            "option",
-            (b.name || b.id || b.hash) +
-              (b.unread ? " · " + b.unread : "") +
-              (b.mention_unread ? " · @我 " + b.mention_unread : ""),
-          );
+          const o = el("option", botSummary(b));
           o.value = b.hash;
           select.append(o);
         }
@@ -2053,11 +2164,14 @@
         }
         const box = $("chats");
         box.replaceChildren();
-        if (!state.chats.length) {
-          box.append(el("div", "暂无会话，点击 ＋ 手动添加", "empty"));
+        // 「群 / 单」筛选只挡列表显示：真没会话和被筛光了要分开提示。
+        const shown = visibleChats();
+        if (!shown.length) {
+          const why = state.chats.length ? "当前筛选下没有会话，点上方「群 / 单」恢复" : "暂无会话，点击 ＋ 手动添加";
+          box.append(el("div", why, "empty"));
           return;
         }
-        for (const c of state.chats) {
+        for (const c of shown) {
           // 当前列高亮；屏蔽的群整行降为灰色。
           const isActive =
             state.chat?.chat_id === c.chat_id && state.chat?.chat_type === c.chat_type;
@@ -2065,7 +2179,11 @@
           if (isActive) classes.push("active");
           if (c.muted) classes.push("muted");
           const row = el("button", null, classes.join(" "));
-          row.append(avatar(c));
+          // 头像包一层以便把「置顶」小角标叠在群/单方块下面，不挤预览行。
+          const av = el("div", null, "avatar-wrap");
+          av.append(avatar(c));
+          if (c.pinned) av.append(el("span", "📌", "pin-mark"));
+          row.append(av);
           const meta = el("div", null, "chat-meta"),
             line = el("div", null, "line");
           line.append(el("strong", title(c)), el("small", date(c.last_message_at)));
@@ -2073,8 +2191,8 @@
           if (c.unread) line.append(el("span", c.unread, "badge"));
           meta.append(
             line,
-            el("div", (c.chat_type === "qq_group" ? "群  " : "好友  ") + c.chat_id, "muted ellipsis"),
-            el("div", (c.pinned ? "📌 " : "") + (c.last_preview || ""), "muted ellipsis"),
+            el("div", (c.chat_type === "qq_group" ? "群  " : "单  ") + c.chat_id, "muted ellipsis"),
+            el("div", c.last_preview || "", "muted ellipsis"),
           );
           row.append(meta);
           row.onclick = () => openChat(c);
@@ -2146,6 +2264,25 @@
           r = await api("ListChats", { bot_hash: bot });
         if (bot !== state.bot) return;
         applyChats(r, bot);
+      }
+      // 点开的会话还没显示群名/昵称时自动补一次：
+      // 群聊进原来的群名排队队列，单聊在成员缓存里查昵称；查到后刷新列表与标题。
+      async function fetchChatName(c) {
+        try {
+          const r = await api("FetchChatName", {
+            bot_hash: state.bot,
+            chat_type: c.chat_type,
+            chat_id: c.chat_id,
+          });
+          if (!sameChat(c)) return;
+          if (r.status === "known") {
+            await loadChats();
+            renderInfo();
+          } else if (r.status === "queued") {
+            notice("群名排队获取中，稍后自动更新");
+          }
+          // waiting：单聊缓存里暂时没有昵称，等之后的事件带进来，下次点开再查。
+        } catch {}
       }
       // 对会话执行一个 ChatAction（置顶 / 屏蔽 / 隐藏…），成功后关弹窗、刷新列表，
       // 再执行可选的 after（屏蔽切换后需要重画消息区和资料卡）。
@@ -2256,6 +2393,8 @@
           c.unread = 0;
           c.mention_unread = 0;
           state.chat = c;
+          // 没拿到群名/昵称的会话：后台自动补一次，不阻塞会话打开。
+          if (!c.display_name) fetchChatName(c);
           state.messages = [];
           state.members = [];
           state.cursor = 0;
@@ -2343,7 +2482,7 @@
         const role = ["admin", "owner"].includes(c?.self_role) ? " · 管理员" : "";
         $("chatMeta").textContent = group ? `（缓存 ${state.members.length} 人）${role}` : "";
         // 副标题 = 会话类型 + ID；屏蔽的群在末尾标注，让「消息为什么是灰的」一眼可查。
-        const kind = group ? "群  " : "好友  ",
+        const kind = group ? "群  " : "单  ",
           mutedMark = c?.muted ? "（已屏蔽）" : "";
         $("chatSubtitle").textContent = c ? kind + c.chat_id + mutedMark : "";
       }
@@ -3444,7 +3583,7 @@
           who = el("div", null, "info-hero-text");
         who.append(
           el("h3", title(c)),
-          el("p", (c.chat_type === "qq_group" ? "群聊" : "私聊") + "：" + c.chat_id),
+          el("p", (c.chat_type === "qq_group" ? "群聊" : "单聊") + "：" + c.chat_id),
         );
         hero.append(avatar(c), who);
         box.append(hero);
@@ -3676,6 +3815,9 @@
         await fetchRequests(refresh);
       }
       function searchFilters(box, global = false) {
+        // 全局搜索的范围筛选与最近一次结果：先声明再建控件，segmented 初始值要用。
+        let scope = "all",
+          lastRaw = null;
         const q = input("search", "关键词"),
           start = input("date", "开始日期"),
           end = input("date", "结束日期"),
@@ -3687,14 +3829,34 @@
           results = el("div");
         form.append(q);
         if (global) {
+          q.placeholder = "搜会话名、备注、ID 或消息内容";
+          // 范围筛选只切换结果展示（会话/消息本来就一起返回），不重复发请求。
+          form.append(
+            segmented(
+              [
+                ["all", "全部"],
+                ["group", "群聊"],
+                ["private", "单聊"],
+                ["message", "消息"],
+              ],
+              scope,
+              (next) => {
+                scope = next;
+                renderResults(lastRaw || {});
+              },
+            ),
+          );
           const label = el("label", "含已隐藏 ");
           label.prepend(hidden);
-          form.append(label);
+          const actions = el("div", null, "row");
+          label.style.flex = "1";
+          actions.append(label, button("搜索", reset));
+          form.append(actions);
         } else {
           form.append(
             el(
               "div",
-              (state.chat?.chat_type === "qq_group" ? "群" : "好友") + " · " + title(state.chat),
+              (state.chat?.chat_type === "qq_group" ? "群" : "单") + " · " + title(state.chat),
               "muted",
             ),
             start,
@@ -3719,6 +3881,64 @@
           more = false,
           params = null;
         const moreButton = button("加载更多", () => loadPage());
+        // 全局搜索结果：按范围筛选后分「会话 / 消息」两段展示，标题带条数。
+        function renderResults(r) {
+          lastRaw = r;
+          results.replaceChildren();
+          const chats =
+            scope === "message"
+              ? []
+              : (r.chats || []).filter(
+                  (c) => scope === "all" || (c.chat_type === "qq_group") === (scope === "group"),
+                );
+          const messages = scope === "all" || scope === "message" ? r.messages || [] : [];
+          if (!chats.length && !messages.length) {
+            results.append(el("div", "没有匹配的会话或消息", "empty"));
+            return;
+          }
+          if (chats.length) {
+            results.append(el("h3", "会话 " + chats.length));
+            for (const c of chats) {
+              const row = button(
+                null,
+                () => {
+                  closeDialog();
+                  openChat(c);
+                },
+                "result search-chat",
+              );
+              row.append(
+                avatar(c),
+                el("div", title(c), "search-chat-name"),
+                el("small", (c.chat_type === "qq_group" ? "群聊" : "单聊") + " · " + c.chat_id),
+              );
+              results.append(row);
+            }
+          }
+          if (messages.length) {
+            results.append(el("h3", "消息 " + messages.length));
+            for (const m of messages) {
+              const name = m.chat_name || m.remark || m.display_name || m.chat_id || "";
+              const row = button(
+                null,
+                () => {
+                  const c =
+                    state.chats.find((x) => x.chat_id === m.chat_id && x.chat_type === m.chat_type) || m;
+                  closeDialog();
+                  openChat(c, m.id);
+                },
+                "result search-msg",
+              );
+              const head = el("div", null, "search-msg-head");
+              head.append(
+                el("strong", (m.chat_type === "qq_group" ? "群" : "单") + " · " + name),
+                el("small", date(m.created_at)),
+              );
+              row.append(head, el("div", author(m) + "：" + summary(m)));
+              results.append(row);
+            }
+          }
+        }
         async function loadPage() {
           if (busy || !params || (!global && !sameChat(current))) return;
           busy = true;
@@ -3733,51 +3953,24 @@
             if (token !== generation || !box.isConnected || (!global && !sameChat(current))) return;
             moreButton.remove();
             if (global) {
-              results.replaceChildren(el("h3", "会话"));
-              for (const c of r.chats || [])
-                results.append(
-                  button(
-                    `${c.chat_type === "qq_group" ? "群" : "好友"} · ${title(c)} · ${c.chat_id}`,
-                    () => {
-                      closeDialog();
-                      openChat(c);
-                    },
-                    "result",
-                  ),
-                );
-              results.append(el("h3", "消息"));
-            }
-            const messages = r.messages || [],
-              pageCursor = cursor;
-            seen.clear();
-            for (const m of messages) {
-              if (!global && (seen.has(m.id) || (pageCursor !== null && Number(m.id) >= pageCursor)))
-                continue;
-              if (!global) {
+              renderResults(r);
+            } else {
+              const messages = r.messages || [],
+                pageCursor = cursor;
+              seen.clear();
+              for (const m of messages) {
+                if (seen.has(m.id) || (pageCursor !== null && Number(m.id) >= pageCursor)) continue;
                 seen.add(m.id);
                 const d = new Date(Number(m.created_at) * 1000).toLocaleDateString();
                 if (day !== d) {
                   day = d;
                   results.append(el("h4", d));
                 }
+                const row = button(`${author(m)}：${summary(m)}`, () => locate(m.id), "result");
+                row.append(el("small", date(m.created_at)));
+                row.dataset.record = "1";
+                results.append(row);
               }
-              const row = button(
-                `${global ? (m.chat_type === "qq_group" ? "群" : "好友") + " · " + (m.chat_name || m.remark || m.display_name || m.chat_id || "") + " · " : ""}${author(m)}：${summary(m)}`,
-                () => {
-                  if (global) {
-                    const c =
-                      state.chats.find((x) => x.chat_id === m.chat_id && x.chat_type === m.chat_type) || m;
-                    closeDialog();
-                    openChat(c, m.id);
-                  } else locate(m.id);
-                },
-                "result",
-              );
-              row.append(el("small", date(m.created_at)));
-              if (!global) row.dataset.record = "1";
-              results.append(row);
-            }
-            if (!global) {
               const rows = results.querySelectorAll("[data-record]");
               if (rows.length > 300) {
                 const oldHeight = box.scrollHeight,
@@ -3830,7 +4023,8 @@
           }
           loadPage();
         }
-        form.append(button("搜索", reset));
+        // 全局搜索的「搜索」按钮已经在上面和「含已隐藏」同一行；这里只补本会话搜索的。
+        if (!global) form.append(button("搜索", reset));
         q.addEventListener("keydown", (e) => {
           if (e.key === "Enter") reset();
         });
@@ -3858,6 +4052,16 @@
         searchFilters($("rightBody"));
       };
       $("globalOpen").onclick = () => searchFilters(dialog("全局搜索"), true);
+      // 左栏「群 / 单」筛选按钮：切换对应类型会话的显示，并让顶部合计跟着变。
+      for (const chip of document.querySelectorAll("#chatFilters .filter-chip")) {
+        chip.onclick = () => {
+          const key = chip.dataset.filter;
+          chatFilters[key] = !chatFilters[key];
+          chip.classList.toggle("active", chatFilters[key]);
+          renderChats();
+          renderBots(bots);
+        };
+      }
       $("rightBack").onclick = () => {
         stopRequestPolling();
         state.view = "info";

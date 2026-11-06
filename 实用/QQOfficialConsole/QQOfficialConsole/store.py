@@ -444,6 +444,56 @@ class Store:
             ).fetchone()
             return dict(row) if row else None
 
+    def find_member_name(self, bot_hash, member_openid):
+        """在这个号所有会话的成员缓存里找某个人的昵称，最近见过的优先。
+
+        单聊没有官方昵称接口，昵称只能靠事件带进来存进 members；
+        这里跨会话翻缓存，某个群记录过他的昵称就能补到单聊显示上。
+        直接遍历 msg 目录，不在 chats 表注册过的孤儿库也能查到。
+        """
+        best = None
+        root = self._bot_path(bot_hash) / 'msg'
+        for folder in (root / 'qq_group', root / 'qq_private'):
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.glob('*.sqlite3')):
+                with self.lock:
+                    db = self._open(path, _CHAT)
+                    try:
+                        row = db.execute(
+                            'SELECT name, last_seen_at FROM members '
+                            'WHERE member_openid=? AND name IS NOT NULL ORDER BY last_seen_at DESC LIMIT 1',
+                            (str(member_openid),),
+                        ).fetchone()
+                    finally:
+                        db.close()
+                # 昵称等于 openid 说明当时事件里没带昵称（落库时退化成了 ID），不算数。
+                if row and row['name'] and row['name'] != str(member_openid):
+                    if best is None or (row['last_seen_at'] or 0) > best[1]:
+                        best = (row['name'], row['last_seen_at'] or 0)
+        return best[0] if best else None
+
+    def ensure_chat_name(self, bot_hash, chat_type, chat_id):
+        """点开没显示群名/昵称的会话时自动补一次：
+        群聊入原来的群名队列（已在 pending/running 就不重复入队）；
+        单聊查成员缓存，查到就落库，查不到等以后的事件把昵称带进来再查。"""
+        chat = self.get_chat(bot_hash, chat_type, chat_id)
+        if chat is None:
+            return {'status': 'missing'}
+        if str(chat.get('display_name') or '').strip():
+            return {'status': 'known', 'name': chat['display_name']}
+        if chat_type == 'qq_group':
+            job = self.group_info_job(bot_hash, chat_id)
+            if job and job['status'] in ('pending', 'running'):
+                return {'status': 'queued'}
+            self.enqueue_group_info(bot_hash, chat_id)
+            return {'status': 'queued'}
+        name = self.find_member_name(bot_hash, chat_id)
+        if not name:
+            return {'status': 'waiting'}
+        self.upsert_chat(bot_hash, chat_type, chat_id, display_name=name[:255])
+        return {'status': 'known', 'name': name}
+
     def group_info_status(self, bot_hash):
         """未完成的任务映射 {group_openid: 'queued'|'running'|'failed'}。"""
         with self.meta(bot_hash) as db:

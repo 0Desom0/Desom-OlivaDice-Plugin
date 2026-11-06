@@ -652,6 +652,16 @@ class Bridge:
             raise ValueError('机器人无效')
         if action == 'GetSettings':
             return dict(ok, settings=self.store.get_settings(bot))
+        if action == 'FetchChatName':
+            # 点开没显示群名/昵称的会话时自动补一次：群聊入队、单聊查成员缓存。
+            chat_type = str(p.get('chat_type') or '')
+            chat_id = str(p.get('chat_id') or '')
+            if chat_type not in ('qq_group', 'qq_private') or not chat_id:
+                return errors.failure('会话无效')
+            state = self.store.ensure_chat_name(bot, chat_type, chat_id)
+            if state['status'] == 'queued':
+                self.wake_group_info()
+            return dict(ok, **state)
         if action == 'ListChats':
             chats = self.store.list_chats(bot, bool(p.get('include_hidden')))
             status = self.store.group_info_status(bot)

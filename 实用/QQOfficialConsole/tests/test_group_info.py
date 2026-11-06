@@ -64,8 +64,56 @@ def console(tmp_path, monkeypatch):
 
 def call(c, event_name, **payload):
     return c.bridge.handle('QQOfficialConsole_' + event_name, {
-        'bot_hash': c.bot.hash, 'chat_type': 'qq_group', 'chat_id': payload.pop('chat_id', 'group'), **payload,
+        'bot_hash': c.bot.hash,
+        'chat_type': payload.pop('chat_type', 'qq_group'),
+        'chat_id': payload.pop('chat_id', 'group'), **payload,
     })
+
+
+def test_fetch_chat_name_queues_group_without_name(console, monkeypatch):
+    c = console
+    monkeypatch.setattr(c.bridge, 'wake_group_info', lambda: None)
+    c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
+    result = call(c, 'FetchChatName', chat_id='g1')
+    assert result['ok'] and result['status'] == 'queued'
+    # 已在队列里（pending/running）时重复点开不重复入队
+    job = c.store.group_info_job(c.bot.hash, 'g1')
+    assert job['status'] == 'pending'
+    again = call(c, 'FetchChatName', chat_id='g1')
+    assert again['status'] == 'queued'
+    c.bridge.pump_group_info(limit=10)
+    assert c.store.get_chat(c.bot.hash, 'qq_group', 'g1')['display_name'] == '测试群'
+    known = call(c, 'FetchChatName', chat_id='g1')
+    assert known['status'] == 'known' and known['name'] == '测试群'
+
+
+def test_fetch_chat_name_private_uses_member_cache(console):
+    c = console
+    c.store.upsert_chat(c.bot.hash, 'qq_private', 'p1')
+    # 缓存里还没有昵称：waiting，等以后的事件把昵称带进来
+    waiting = call(c, 'FetchChatName', chat_id='p1', chat_type='qq_private')
+    assert waiting['ok'] and waiting['status'] == 'waiting'
+    # 他在某个群聊里露过脸（成员缓存有昵称）→ 单聊也能补到
+    c.bridge.roster.upsert_member(c.bot.hash, 'qq_group', 'g1', 'p1', name='阿米娅')
+    result = call(c, 'FetchChatName', chat_id='p1', chat_type='qq_private')
+    assert result['status'] == 'known' and result['name'] == '阿米娅'
+    assert c.store.get_chat(c.bot.hash, 'qq_private', 'p1')['display_name'] == '阿米娅'
+
+
+def test_find_member_name_ignores_openid_fallback(console):
+    c = console
+    c.store.upsert_chat(c.bot.hash, 'qq_group', 'g1')
+    # 事件没带昵称时落库的 name 退化成 openid 本身，不能当成昵称用
+    c.bridge.roster.upsert_member(c.bot.hash, 'qq_group', 'g1', 'p1', name='p1')
+    assert c.store.find_member_name(c.bot.hash, 'p1') is None
+    c.bridge.roster.upsert_member(c.bot.hash, 'qq_group', 'g1', 'p1', name='阿米娅')
+    assert c.store.find_member_name(c.bot.hash, 'p1') == '阿米娅'
+
+
+def test_fetch_chat_name_rejects_invalid_chat(console):
+    c = console
+    result = call(c, 'FetchChatName', chat_id='x', chat_type='qq_channel')
+    assert not result['ok']
 
 
 def test_queue_is_fifo_by_join_record_time(console):
