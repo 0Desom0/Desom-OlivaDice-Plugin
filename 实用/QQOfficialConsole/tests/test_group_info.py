@@ -36,7 +36,8 @@ def console(tmp_path, monkeypatch):
     members = roster.Roster(database)
     images = media.MediaManager(tmp_path)
     state = SimpleNamespace(bot=bot, proc=proc, store=database, calls=[], ticks=ticks, clock=clock,
-                            group_name='测试群', info_failure={})
+                            group_name='测试群', info_failure={},
+                            self_name='测试机器人', self_failure={})
 
     def request(method, url, **kwargs):
         from urllib.parse import urlsplit
@@ -49,6 +50,10 @@ def console(tmp_path, monkeypatch):
             )
         elif parts.path.endswith('/info'):
             status, body = state.info_failure.get(parts.path, (200, {'group_name': state.group_name}))
+        elif parts.path.endswith('/users/@me'):
+            status, body = state.self_failure.get(
+                parts.path, (200, {'username': state.self_name, 'avatar': 'https://example.invalid/a.png'})
+            )
         else:
             raise AssertionError(f'unexpected QQ HTTP request: {method} {url}')
         return SimpleNamespace(status_code=status, text=json.dumps(body), headers={})
@@ -68,6 +73,20 @@ def call(c, event_name, **payload):
         'chat_type': payload.pop('chat_type', 'qq_group'),
         'chat_id': payload.pop('chat_id', 'group'), **payload,
     })
+
+
+def test_bot_self_returns_name_and_caches(console):
+    c = console
+    result = call(c, 'BotSelf')
+    assert result['ok'] and result['name'] == '测试机器人'
+    requests = len(c.calls)
+    # 成功结果缓存一小时：再问一次不再打接口
+    assert call(c, 'BotSelf')['name'] == '测试机器人'
+    assert len(c.calls) == requests
+    # 接口失败时返回失败，页面继续用「机器人」兜底，不阻断使用
+    c.self_failure['/users/@me'] = (500, {'code': 500})
+    c.bridge._self_cache.clear()
+    assert not call(c, 'BotSelf')['ok']
 
 
 def test_fetch_chat_name_queues_group_without_name(console, monkeypatch):
@@ -236,6 +255,46 @@ def test_manual_refresh_updates_name_and_clears_queue(console, monkeypatch):
     call(c, 'SetRemark', chat_id='g1', remark='备注名')
     chat = c.store.get_chat(c.bot.hash, 'qq_group', 'g1')
     assert chat['remark'] == '备注名' and chat['display_name'] == '新名字'
+
+
+def test_search_global_locates_chats_by_name_or_openid(console):
+    c = console
+    bot = c.bot.hash
+    c.store.upsert_chat(bot, 'qq_group', 'GROUPOPENID1', display_name='跑团日常群', last_message_at=200)
+    c.store.upsert_chat(bot, 'qq_private', 'USEROPENID2', display_name='阿米娅', last_message_at=100)
+    c.store.upsert_chat(bot, 'qq_group', 'OTHERGROUP', display_name='别的群', last_message_at=300)
+
+    def ids(query, include_hidden=False):
+        return [row['chat_id'] for row in c.store.search_global(bot, query, include_hidden)['chats']]
+
+    assert 'GROUPOPENID1' in ids('跑团')
+    assert 'USEROPENID2' in ids('阿米娅')
+    # 搜 openid 一样能定位会话（群聊与单聊都算）
+    assert 'GROUPOPENID1' in ids('GROUPOPENID1')
+    assert 'USEROPENID2' in ids('USEROPENID2')
+    # 名称完全命中的排在前面，方便快速定位
+    assert ids('阿米娅')[0] == 'USEROPENID2'
+
+
+def test_search_global_resolves_private_name_from_member_cache(console):
+    c = console
+    bot = c.bot.hash
+    c.store.upsert_chat(bot, 'qq_private', 'USEROPENID2')
+    # 这个人在群聊里露过脸，成员缓存里存过昵称；单聊本身没有显示名
+    c.bridge.roster.upsert_member(bot, 'qq_group', 'GROUPOPENID1', 'USEROPENID2', name='阿米娅')
+    rows = c.store.search_global(bot, '阿米娅')['chats']
+    assert [row['chat_id'] for row in rows] == ['USEROPENID2']
+    # 补到的名字落库，之后不靠缓存也能按名字搜到
+    assert c.store.get_chat(bot, 'qq_private', 'USEROPENID2')['display_name'] == '阿米娅'
+
+
+def test_search_global_respects_include_hidden(console):
+    c = console
+    bot = c.bot.hash
+    c.store.upsert_chat(bot, 'qq_group', 'HIDDENGROUP', display_name='隐藏的群', hidden=1)
+    assert c.store.search_global(bot, '隐藏的群')['chats'] == []
+    rows = c.store.search_global(bot, '隐藏的群', include_hidden=True)['chats']
+    assert [row['chat_id'] for row in rows] == ['HIDDENGROUP']
 
 
 def test_group_add_robot_event_enqueues_group_name(console, monkeypatch):

@@ -297,6 +297,8 @@ class Store:
                 'message_retention_days': 30,
                 'notify_mention': True,
                 'notify_everyone': True,
+                'show_help': True,
+                'anti_recall': False,
             }
             if bot_hash is None
             else {
@@ -444,14 +446,14 @@ class Store:
             ).fetchone()
             return dict(row) if row else None
 
-    def find_member_name(self, bot_hash, member_openid):
-        """在这个号所有会话的成员缓存里找某个人的昵称，最近见过的优先。
+    def member_names(self, bot_hash):
+        """一次遍历所有会话库，得到 member_openid -> 最近见过的昵称。
 
-        单聊没有官方昵称接口，昵称只能靠事件带进来存进 members；
-        这里跨会话翻缓存，某个群记录过他的昵称就能补到单聊显示上。
+        单聊没有官方昵称接口，昵称只能靠事件带进来存进 members。
         直接遍历 msg 目录，不在 chats 表注册过的孤儿库也能查到。
+        昵称等于 openid 说明当时事件里没带昵称（落库时退化成了 ID），不算数。
         """
-        best = None
+        best = {}
         root = self._bot_path(bot_hash) / 'msg'
         for folder in (root / 'qq_group', root / 'qq_private'):
             if not folder.is_dir():
@@ -460,18 +462,23 @@ class Store:
                 with self.lock:
                     db = self._open(path, _CHAT)
                     try:
-                        row = db.execute(
-                            'SELECT name, last_seen_at FROM members '
-                            'WHERE member_openid=? AND name IS NOT NULL ORDER BY last_seen_at DESC LIMIT 1',
-                            (str(member_openid),),
-                        ).fetchone()
+                        rows = db.execute(
+                            'SELECT member_openid, name, last_seen_at FROM members WHERE name IS NOT NULL'
+                        ).fetchall()
                     finally:
                         db.close()
-                # 昵称等于 openid 说明当时事件里没带昵称（落库时退化成了 ID），不算数。
-                if row and row['name'] and row['name'] != str(member_openid):
-                    if best is None or (row['last_seen_at'] or 0) > best[1]:
-                        best = (row['name'], row['last_seen_at'] or 0)
-        return best[0] if best else None
+                for row in rows:
+                    ident, name = str(row['member_openid']), row['name']
+                    if not name or name == ident:
+                        continue
+                    stamp = row['last_seen_at'] or 0
+                    if ident not in best or stamp > best[ident][1]:
+                        best[ident] = (name, stamp)
+        return {ident: value[0] for ident, value in best.items()}
+
+    def find_member_name(self, bot_hash, member_openid):
+        """查某个人在成员缓存里最近用过的昵称，没有则返回 None。"""
+        return self.member_names(bot_hash).get(str(member_openid))
 
     def ensure_chat_name(self, bot_hash, chat_type, chat_id):
         """点开没显示群名/昵称的会话时自动补一次：
@@ -915,8 +922,21 @@ class Store:
             return [dict(row) for row in db.execute(sql, (*args, max(1, min(int(limit), 1000))))]
 
     def search_global(self, bot_hash, query, include_hidden=False):
+        """全局搜索：既按群名/单聊名/备注/openid 找会话，也扫各库的消息正文。
+
+        单聊没有昵称接口，搜索前先用成员缓存给还没名字的单聊补一次显示名，
+        这样「搜名字定位会话」和点开会话时自动补名用的是同一份数据。
+        """
         words = query.casefold().split()
         chats = self.list_chats(bot_hash, include_hidden)
+        cached_names = self.member_names(bot_hash)
+        for chat in chats:
+            if chat['chat_type'] != 'qq_private' or str(chat.get('display_name') or '').strip():
+                continue
+            name = cached_names.get(str(chat['chat_id']))
+            if name:
+                self.upsert_chat(bot_hash, chat['chat_type'], chat['chat_id'], display_name=name[:255])
+                chat['display_name'] = name[:255]
         matching = [
             chat
             for chat in chats
@@ -925,6 +945,15 @@ class Store:
                 for word in words
             )
         ]
+        # 名称完全等于关键词的会话排最前，其余按最后消息时间倒序：搜名字就是用来定位的。
+        needle = query.casefold().strip()
+        matching.sort(
+            key=lambda chat: (
+                0 if needle and needle == str(chat.get('remark') or chat.get('display_name') or '').casefold() else 1,
+                -(chat['pinned'] or 0),
+                -(chat['last_message_at'] or 0),
+            )
+        )
         messages = []
         for chat in sorted(chats, key=lambda row: row['last_message_at'] or 0, reverse=True):
             remaining = 100 - len(messages)

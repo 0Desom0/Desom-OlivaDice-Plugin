@@ -146,17 +146,16 @@ def test_incoming_switch_and_thirty_message_pages(console):
     assert [row['id'] for row in again] == [row['id'] for row in latest]
 
 
-def test_send_3000_and_3001(console):
+def test_send_long_text_is_not_blocked_locally(console):
+    # QQ 官方机器人没有 3000 字上限：本地不再拦截，超长与否交给平台判定。
     incoming(console, 'alice', 1)
     target = {'chat_type': 'qq_private', 'chat_id': 'alice', 'kind': 'text', 'force_active': True}
-    result = bridge(console, 'Send', text='x' * 3000, **target)
-    assert result['ok'], result
-    assert len(console.calls) == 1
-    result = bridge(console, 'Send', text='x' * 3001, **target)
-    assert not result['ok'] and result['keyword'] == '字符过多'
-    assert len(console.calls) == 1
+    assert bridge(console, 'Send', text='x' * 3000, **target)['ok']
+    assert bridge(console, 'Send', text='x' * 3001, **target)['ok']
+    assert len(console.calls) == 2
     messages = bridge(console, 'PullMessages', chat_type='qq_private', chat_id='alice')['messages']
     assert any(row['direction'] == 'out' and row['content_text'] == 'x' * 3000 for row in messages)
+    assert any(row['direction'] == 'out' and row['content_text'] == 'x' * 3001 for row in messages)
 
 
 @pytest.mark.skipif(not os.environ.get('OLIVOS_WEBUI_BROWSER'), reason='浏览器回归验证需手动开启')
@@ -479,6 +478,25 @@ def test_notification_toggles_default_on_and_validate(console):
     result = bridge(console, 'SaveSettings', settings={'notify_mention': False, 'notify_everyone': False})
     assert result['ok'] and not result['settings']['notify_mention']
     assert bridge(console, 'SaveSettings', settings={'notify_mention': True})['ok']
+
+
+def test_help_panel_toggle_default_on_and_validate(console):
+    settings = bridge(console, 'Bootstrap')['settings']
+    assert settings['show_help'] is True
+    for value in (1, 'no', None):
+        assert not bridge(console, 'SaveSettings', settings={'show_help': value})['ok']
+    result = bridge(console, 'SaveSettings', settings={'show_help': False})
+    assert result['ok'] and result['settings']['show_help'] is False
+    assert bridge(console, 'SaveSettings', settings={'show_help': True})['settings']['show_help'] is True
+
+
+def test_anti_recall_default_off_and_validate(console):
+    assert bridge(console, 'Bootstrap')['settings']['anti_recall'] is False
+    for value in (1, 'on', None):
+        assert not bridge(console, 'SaveSettings', settings={'anti_recall': value})['ok']
+    result = bridge(console, 'SaveSettings', settings={'anti_recall': True})
+    assert result['ok'] and result['settings']['anti_recall'] is True
+    assert bridge(console, 'SaveSettings', settings={'anti_recall': False})['settings']['anti_recall'] is False
 
 
 def test_chat_action_mutes_group_and_silences_counts(console):

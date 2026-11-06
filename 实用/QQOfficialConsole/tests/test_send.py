@@ -299,14 +299,15 @@ def test_at_conversion_and_everyone_confirmation(harness):
     assert result['keyword'] == '无权限或未确认@全体'
 
 
-def test_character_limit_counts_converted_at(harness):
+def test_long_text_is_not_blocked_locally(harness):
+    # QQ 官方机器人没有 3000 字上限：带 @ 标签展开后的长正文也照常发出。
     h = harness
     assert h.sender.send(payload(h, text='界' * 3000))['ok']
-    assert h.sender.send(payload(h, text='界' * 3001))['keyword'] == '字符过多'
+    assert h.sender.send(payload(h, text='界' * 3001))['ok']
     tag = sdk.markdown_tag.at_user('alice')
     assert h.sender.send(payload(h, text='x' * (2999 - len(tag)), at=[{'id': 'alice'}]))['ok']
-    assert h.sender.send(payload(h, text='x' * (3000 - len(tag)), at=[{'id': 'alice'}]))['keyword'] == '字符过多'
-    assert len(sent_requests(h)) == 2
+    assert h.sender.send(payload(h, text='x' * (3000 - len(tag)), at=[{'id': 'alice'}]))['ok']
+    assert len(sent_requests(h)) == 4
 
 
 def test_quote_resolution_and_rejection(harness):

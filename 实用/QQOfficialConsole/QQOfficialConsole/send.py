@@ -277,11 +277,7 @@ class Sender:
                 if marker in markers or '{{' + marker + '}}' not in text:
                     return errors.failure('图片标记无效')
                 markers.append(marker)
-        counted = text
-        for marker in markers:
-            counted = counted.replace('{{' + marker + '}}', '')
-        if len(counted) > 3000:
-            return errors.failure('字符过多')
+        # 正文长度不再本地拦截：QQ 官方机器人没有 3000 字上限，超长与否交给平台判定。
         if not text.strip() and not images:
             return errors.failure('内容为空')
         keyboard = payload.get('keyboard')

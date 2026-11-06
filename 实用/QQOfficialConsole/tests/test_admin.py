@@ -282,6 +282,20 @@ def test_successful_recall_marks_record_without_deleting_content(console):
     assert deletes == [('DELETE', '/v2/groups/group/messages/message-1')]
 
 
+def test_private_chat_recall_is_rejected_without_request(console):
+    c = console
+    c.store.add_message(c.bot.hash, 'qq_private', 'alice', {
+        'direction': 'out', 'platform_message_id': 'private-1', 'msg_kind': 'text',
+        'content_text': '单聊消息', 'created_at': c.now,
+    }, unread=False)
+    result = call(c, 'Recall', chat_type='qq_private', chat_id='alice', message_id='private-1')
+    assert not result['ok'] and result['keyword'] == '单聊不支持撤回'
+    # 官方接口不支持单聊撤回：连删除请求都不该发，记录也保持原样。
+    assert not [x for x in c.calls if x[0] == 'DELETE']
+    rows = call(c, 'PullMessages', chat_type='qq_private', chat_id='alice')['messages']
+    assert len(rows) == 1 and rows[0]['recalled'] == 0 and rows[0]['content_text'] == '单聊消息'
+
+
 def test_failed_recall_preserves_record(console):
     c = console
     c.store.add_message(c.bot.hash, 'qq_group', 'group', {

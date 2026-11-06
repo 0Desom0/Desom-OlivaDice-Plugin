@@ -59,6 +59,9 @@ class Bridge:
             target=self._group_info_loop, name='QQOfficialConsole-group-info', daemon=True
         )
         self._group_info_worker.start()
+        # 机器人自己的昵称/头像：GET /users/@me，成功缓存 1 小时，失败冷却 1 分钟。
+        self._self_lock = threading.Lock()
+        self._self_cache = {}
 
     def _group_info_loop(self):
         while not self._closed.is_set():
@@ -188,6 +191,48 @@ class Bridge:
             result = errors.failure('群信息暂时获取失败')
             result['retryable'] = True
             return result, {}
+
+    def bot_self(self, bot_hash):
+        """GET /users/@me 取机器人自己的昵称与头像；失败返回 None。
+
+        页面显示「机器人」太笼统，官方这个接口能拿到真实昵称。
+        成功缓存 1 小时，失败冷却 1 分钟，避免每开一次会话就请求一次。
+        """
+        now = time.time()
+        with self._self_lock:
+            cached = self._self_cache.get(bot_hash)
+            if cached and now - cached[0] < (3600 if cached[1] else 60):
+                return cached[1]
+        info = None
+        if bot_hash in self._bots():
+            try:
+                event = self._event(bot_hash)
+                sdk_bot = OlivOS.qqGuildv2SDK.get_SDK_bot_info_from_Event(event)
+                token = sdkCommon.getTokenNow(sdk_bot)
+                if token:
+                    host = str(OlivOS.qqGuildv2SDK.sdkAPIHost.get('default') or 'https://api.bot.qq.com')
+                    if '://' not in host:
+                        host = 'https://' + host
+                    response = sdkCommon.req.request(
+                        'GET',
+                        host.rstrip('/') + '/users/@me',
+                        headers={'Authorization': 'QQBot ' + token},
+                        timeout=(5, 20),
+                    )
+                    payload = json.loads(getattr(response, 'text', None) or '{}')
+                    data = payload.get('data') if isinstance(payload.get('data'), dict) else payload
+                    name = data.get('username') or data.get('nick') or ''
+                    avatar = data.get('avatar') or ''
+                    if isinstance(name, str) and name.strip():
+                        info = {
+                            'name': name.strip()[:64],
+                            'avatar': avatar if isinstance(avatar, str) else '',
+                        }
+            except Exception:
+                info = None
+        with self._self_lock:
+            self._self_cache[bot_hash] = (now, info)
+        return info
 
     def _group_info_bot_lock(self, bot_hash):
         """同一机器人同时只允许一个 pump，防止并发调用把 running 任务重新回收。"""
@@ -594,12 +639,14 @@ class Bridge:
                     'message_retention_days',
                     'notify_mention',
                     'notify_everyone',
+                    'show_help',
+                    'anti_recall',
                 )
                 if k in values
             }
             if 'send_key' in global_values and global_values['send_key'] not in ('enter_send', 'ctrl_enter_send'):
                 raise ValueError()
-            for key in ('notify_mention', 'notify_everyone'):
+            for key in ('notify_mention', 'notify_everyone', 'show_help', 'anti_recall'):
                 if key in global_values and type(global_values[key]) is not bool:
                     raise ValueError()
             if (
@@ -652,6 +699,11 @@ class Bridge:
             raise ValueError('机器人无效')
         if action == 'GetSettings':
             return dict(ok, settings=self.store.get_settings(bot))
+        if action == 'BotSelf':
+            info = self.bot_self(bot)
+            if not info:
+                return errors.failure('机器人资料暂时不可用')
+            return dict(ok, name=info['name'], avatar=info.get('avatar') or '')
         if action == 'FetchChatName':
             # 点开没显示群名/昵称的会话时自动补一次：群聊入队、单聊查成员缓存。
             chat_type = str(p.get('chat_type') or '')
@@ -904,6 +956,9 @@ class Bridge:
             result['images'] = sender.sent_images
             return result
         if action == 'Recall':
+            # 官方接口只支持群聊消息撤回；单聊既不显示入口，这里也直接拒绝，不去打平台接口。
+            if chat_type != 'qq_group':
+                return errors.failure('单聊不支持撤回')
             message_id = p.get('platform_message_id') or p.get('message_id')
             if not isinstance(message_id, str) or not message_id:
                 raise ValueError()

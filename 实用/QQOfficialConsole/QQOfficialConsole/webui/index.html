@@ -143,6 +143,11 @@
       .chat-item.active {
         background: #b6dfff80;
       }
+      /* 全局搜索定位过来的会话：短暂描边，告诉用户跳到了哪一行。 */
+      .chat-item.located {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
       /* 屏蔽的群：整行置灰、头像去色；消息照收但不计未读、不提醒。 */
       .chat-item.muted {
         opacity: 0.62;
@@ -246,6 +251,26 @@
       }
       .out .bubble {
         background: var(--out);
+      }
+      /* 撤回行：「已撤回」灰标签 + 蓝色「重新编辑」内联按钮。 */
+      .recall-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .recall-tag {
+        color: var(--muted);
+      }
+      .recall-line .link {
+        min-width: 0;
+        min-height: 0;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--accent);
+        font-size: inherit;
+        line-height: inherit;
+        text-decoration: underline;
       }
       /* 屏蔽群会话里的消息整体变灰。 */
       .message.muted-chat .bubble {
@@ -1276,6 +1301,10 @@
         font-size: 13px;
         line-height: 1.55;
       }
+      /* 全局设置里关掉后整块隐藏；details 由 UA 的 [hidden] 控制，这里写明确一点。 */
+      #helpBox[hidden] {
+        display: none;
+      }
       /* 标题吸顶：正文怎么滚，「收起」都点得到（details 内容在 Chrome 里是独立包裹层，
          所以不能用 flex 固定标题，只能靠 sticky）。 */
       .help-box summary {
@@ -1364,7 +1393,7 @@
               <dt>群 / 单</dt>
               <dd>列表上方两个按钮分别收起群聊 / 单聊：只影响列表显示和顶部合计，消息照常接收，再点一下恢复。</dd>
               <dt>⚙ ＋ ⌕</dt>
-              <dd>⚙ 打开设置（展示条数、@ 提醒开关、聊天记录与图片保留天数）；＋ 手动添加会话；⌕ 搜会话名，也能在所有会话里搜聊天内容。</dd>
+              <dd>⌕ 全局搜索：按群名、单聊名、备注或 openid 找到会话，点结果直接定位；也能在所有会话里搜聊天内容。⚙ 打开设置（展示条数、界面、@ 提醒开关、聊天记录与图片保留天数）；＋ 手动添加会话。看熟了可以在设置「界面」里关掉本说明。</dd>
               <dt>＠ ▧ ☺ ◷</dt>
               <dd>＠ 提及成员；▧ 上传图片；☺ 表情包；◷ 本会话的消息记录。</dd>
               <dt>三种消息</dt>
@@ -1374,9 +1403,9 @@
               <dt>ⓘ 资料</dt>
               <dd>群名、备注、成员和管理员操作都在右栏；手机上点 ☰ 回会话列表。</dd>
               <dt>右键 / 长按</dt>
-              <dd>会话上可置顶、改备注、屏蔽、隐藏；消息上可复制、引用、定位、撤回。屏蔽的群消息变灰，不计未读、不提醒 @。</dd>
+              <dd>会话上可置顶、改备注、屏蔽、隐藏；消息上可复制、引用、定位（群聊还有撤回，单聊平台不支持撤回）。撤回后显示「已撤回」和蓝色「重新编辑」，点一下就把原文放回输入框；⚙ 里可开「防撤回」看原文。屏蔽的群消息变灰，不计未读、不提醒 @。</dd>
               <dt>字数与图片</dt>
-              <dd>电脑默认 Enter 发送（可在 ⚙ 改），手机点「发送」；正文连同引用最多 3000 字。普通图片只能上传，卡片配图才填网址。</dd>
+              <dd>电脑默认 Enter 发送（可在 ⚙ 改），手机点「发送」；字数只作显示，平台没给正文长度上限。普通图片只能上传，卡片配图才填网址。</dd>
             </dl>
           </div>
         </details>
@@ -1450,8 +1479,7 @@
           ></div>
           <div id="attachments"></div>
           <div class="send-row">
-            <span id="count">当前 0 / 3000</span
-            ><span id="countError" class="error" hidden>字符过多无法发送</span><button id="send">发送</button
+            <span id="count">当前 0 字</span><button id="send">发送</button
             ><button id="sendKey" title="发送快捷键">▾</button>
           </div>
         </div>
@@ -1527,11 +1555,24 @@
         box.scrollTop = box.scrollHeight;
         requestAnimationFrame(updateHistoryControls);
       }
+      // 把当前会话整理成一份快照。快照持有的是数组引用，切换时 state.messages /
+      // state.members 会换成新数组，所以后台写缓存期间原数据不会被改掉。
+      function chatSnapshot() {
+        if (!state.chat || !chatReady) return null;
+        return {
+          chat: { ...ctx() },
+          messages: state.messages,
+          members: state.members,
+          cursor: state.cursor,
+          changeCursor: state.changeCursor,
+          scrollTop: $("messages").scrollTop,
+          historyEnded,
+        };
+      }
       // 是否“跟随底部”：图片懒加载、异步贴图都会在渲染后把内容撑高，
-      async function saveChat() {
-        if (!state.chat || !chatReady) return;
-        if (olderLoading || state.uploading || state.sending) throw Error("当前操作尚未结束，请稍后切换");
-        const current = ctx(),
+      async function writeChatCache(snapshot) {
+        if (!snapshot) return;
+        const current = snapshot.chat,
           fields = [
             "id",
             "direction",
@@ -1571,25 +1612,30 @@
           }
         }
         await append('{"messages":[');
-        for (let i = 0; i < state.messages.length; i++) {
-          const m = state.messages[i],
+        for (let i = 0; i < snapshot.messages.length; i++) {
+          const m = snapshot.messages[i],
             entry = Object.fromEntries(fields.filter((k) => m[k] !== undefined).map((k) => [k, m[k]]));
           await append((i ? "," : "") + JSON.stringify(entry));
         }
         await append(
           '],"members":' +
-            JSON.stringify(state.members) +
+            JSON.stringify(snapshot.members) +
             ',"cursor":' +
-            JSON.stringify(state.cursor) +
+            JSON.stringify(snapshot.cursor) +
             ',"changeCursor":' +
-            JSON.stringify(state.changeCursor) +
+            JSON.stringify(snapshot.changeCursor) +
             ',"scrollTop":' +
-            JSON.stringify($("messages").scrollTop) +
+            JSON.stringify(snapshot.scrollTop) +
             ',"historyEnded":' +
-            JSON.stringify(historyEnded) +
+            JSON.stringify(snapshot.historyEnded) +
             "}",
         );
         await flush(true);
+      }
+      async function saveChat() {
+        if (!state.chat || !chatReady) return;
+        if (olderLoading || state.uploading || state.sending) throw Error("当前操作尚未结束，请稍后切换");
+        await writeChatCache(chatSnapshot());
       }
       async function cachedChat(current) {
         const decoder = new TextDecoder("utf-8", { fatal: true }),
@@ -2105,9 +2151,25 @@
       }
       let bots = [],
         mentionSnapshots = new Map();
+      // 机器人真实昵称（GET /users/@me）。消息作者、机器人下拉都用它，取不到才退回「机器人」。
+      const botNames = new Map();
+      async function loadBotName(hash) {
+        if (!hash || botNames.has(hash)) return;
+        try {
+          const r = await api("BotSelf", { bot_hash: hash });
+          if (!r || !r.name || hash !== state.bot) return;
+          botNames.set(hash, r.name);
+          const b = bots.find((x) => x.hash === hash);
+          if (b) b.name = r.name;
+          renderBots(bots);
+          renderMessages(false);
+        } catch {}
+      }
       // 左栏「群 / 单」筛选：group / private 各管一类会话，true = 显示。
       // 只影响列表显示与顶部合计，消息照常接收，重新打开页面恢复全开。
       const chatFilters = { group: true, private: true };
+      // 搜索定位高亮的会话：轮询会重画列表，用标记让 renderChats 自己恢复 class。
+      let locatedChatKey = null;
       // 这个会话在当前筛选下要不要显示（群聊归 group，其余都算单聊）。
       function chatVisible(c) {
         return chatFilters[c.chat_type === "qq_group" ? "group" : "private"];
@@ -2135,9 +2197,19 @@
           (mention ? " · @我 " + mention : "")
         );
       }
+      let botsSignature = "";
       function renderBots(items) {
         bots = items || [];
+        // 轮询每秒都会重拉 Bootstrap，name 是空的对象；用 BotSelf 缓存兜住，别把名字冲掉。
+        for (const b of bots) if (!b.name && botNames.has(b.hash)) b.name = botNames.get(b.hash);
         const select = $("bots");
+        // 内容没变就不动 DOM：下拉每秒重建会让正在展开的选项列表被关掉。
+        const signature = bots.map((b) => b.hash + "\u0001" + botSummary(b)).join("\u0002");
+        if (signature === botsSignature && select.options.length === bots.length) {
+          if (state.bot) select.value = state.bot;
+          return;
+        }
+        botsSignature = signature;
         select.replaceChildren();
         for (const b of bots) {
           const o = el("option", botSummary(b));
@@ -2146,13 +2218,87 @@
         }
         if (state.bot) select.value = state.bot;
       }
-      // 最后一次提及是 @全体成员（含「@全体成员并同时 @ 到我」）时返回真。
+      // 最后一次提及是 @全体成员时返回真；@全体 同时 @ 到我 也按 @全体 归类。
       function isEveryoneMention(c) {
         return c.mention_kind === "everyone" || c.mention_kind === "both";
       }
       // 会话列表角标文案：按最后一次提及的类型显示「@我」或「at全体成员」。
       function mentionBadge(c) {
         return (isEveryoneMention(c) ? "at全体成员 " : "@我 ") + c.mention_unread;
+      }
+      // 弹窗提醒文案，返回 null 表示这条不提醒。两个开关互相独立：
+      // @全体 开着就按「有人at全体成员」；它关掉后，同时也 @ 到我的消息仍按 @我 提示。
+      function mentionNotice(c) {
+        const everyone = isEveryoneMention(c),
+          onEveryone = state.settings.notify_everyone !== false,
+          onMe = state.settings.notify_mention !== false;
+        if (everyone && onEveryone) return "有人at全体成员";
+        if ((!everyone || c.mention_kind === "both") && onMe) return "有人@了我";
+        return null;
+      }
+      // 全局设置 show_help=false 时收起左栏「使用说明」，默认显示。
+      function renderHelpVisibility() {
+        $("helpBox").hidden = state.settings.show_help === false;
+      }
+      // 会话行按「类型:id」缓存复用。轮询每秒刷新一次列表，如果每次都重建节点，
+      // 用户按下鼠标后按钮已经被换掉，click 就永远不会触发（表现为“点不动”）；
+      // 同时几百个节点反复创建销毁也是切换卡顿的主要来源。
+      const chatRows = new Map();
+      function chatRowKey(c) {
+        return c.chat_type + ":" + c.chat_id;
+      }
+      function createChatRow() {
+        const row = el("button", null, "chat-item"),
+          av = el("div", null, "avatar-wrap"),
+          pin = el("span", "📌", "pin-mark"),
+          meta = el("div", null, "chat-meta"),
+          line = el("div", null, "line"),
+          name = el("strong"),
+          when = el("small"),
+          idLine = el("div", null, "muted ellipsis"),
+          preview = el("div", null, "muted ellipsis");
+        av.append(pin);
+        line.append(name, when);
+        meta.append(line, idLine, preview);
+        row.append(av, meta);
+        row._ui = { av, pin, name, when, line, idLine, preview };
+        // 点击时按 dataset 反查当前会话对象，避免闭包握着上一轮轮询的旧对象。
+        const current = () => state.chats.find((x) => chatRowKey(x) === row.dataset.chatType + ":" + row.dataset.chatId);
+        row.onclick = () => {
+          const c = current();
+          if (c) openChat(c);
+        };
+        row.oncontextmenu = (e) => {
+          e.preventDefault();
+          const c = current();
+          if (c) chatMenu(c);
+        };
+        longPress(row, () => {
+          const c = current();
+          if (c) chatMenu(c);
+        });
+        return row;
+      }
+      function updateChatRow(row, c) {
+        const ui = row._ui;
+        // 头像只跟聊天类型有关，建一次就够。
+        if (!ui.av.querySelector(".avatar")) ui.av.prepend(avatar(c));
+        ui.pin.style.display = c.pinned ? "" : "none";
+        ui.name.textContent = title(c);
+        ui.when.textContent = date(c.last_message_at);
+        for (const badge of ui.line.querySelectorAll(".badge")) badge.remove();
+        if (c.mention_unread) ui.line.append(el("span", mentionBadge(c), "badge"));
+        if (c.unread) ui.line.append(el("span", c.unread, "badge"));
+        ui.idLine.textContent = (c.chat_type === "qq_group" ? "群  " : "单  ") + c.chat_id;
+        ui.preview.textContent = c.last_preview || "";
+        // 当前选中高亮、屏蔽置灰、定位高亮都在这里统一算，避免各处漏更新。
+        const classes = ["chat-item"];
+        if (state.chat?.chat_id === c.chat_id && state.chat?.chat_type === c.chat_type) classes.push("active");
+        if (c.muted) classes.push("muted");
+        if (locatedChatKey === chatRowKey(c)) classes.push("located");
+        row.className = classes.join(" ");
+        row.dataset.chatType = c.chat_type;
+        row.dataset.chatId = c.chat_id;
       }
       function renderChats() {
         const jump = $("jumpMention");
@@ -2163,45 +2309,41 @@
           jump.textContent = "@我 " + count;
         }
         const box = $("chats");
-        box.replaceChildren();
         // 「群 / 单」筛选只挡列表显示：真没会话和被筛光了要分开提示。
         const shown = visibleChats();
         if (!shown.length) {
-          const why = state.chats.length ? "当前筛选下没有会话，点上方「群 / 单」恢复" : "暂无会话，点击 ＋ 手动添加";
-          box.append(el("div", why, "empty"));
+          chatRows.clear();
+          box.replaceChildren(
+            el(
+              "div",
+              state.chats.length ? "当前筛选下没有会话，点上方「群 / 单」恢复" : "暂无会话，点击 ＋ 手动添加",
+              "empty",
+            ),
+          );
           return;
         }
+        // 空态占位不属于聊天行，有会话时清掉。
+        if (box.firstElementChild && !box.firstElementChild.classList.contains("chat-item")) box.replaceChildren();
+        const seen = new Set();
+        let ref = box.firstChild;
         for (const c of shown) {
-          // 当前列高亮；屏蔽的群整行降为灰色。
-          const isActive =
-            state.chat?.chat_id === c.chat_id && state.chat?.chat_type === c.chat_type;
-          const classes = ["chat-item"];
-          if (isActive) classes.push("active");
-          if (c.muted) classes.push("muted");
-          const row = el("button", null, classes.join(" "));
-          // 头像包一层以便把「置顶」小角标叠在群/单方块下面，不挤预览行。
-          const av = el("div", null, "avatar-wrap");
-          av.append(avatar(c));
-          if (c.pinned) av.append(el("span", "📌", "pin-mark"));
-          row.append(av);
-          const meta = el("div", null, "chat-meta"),
-            line = el("div", null, "line");
-          line.append(el("strong", title(c)), el("small", date(c.last_message_at)));
-          if (c.mention_unread) line.append(el("span", mentionBadge(c), "badge"));
-          if (c.unread) line.append(el("span", c.unread, "badge"));
-          meta.append(
-            line,
-            el("div", (c.chat_type === "qq_group" ? "群  " : "单  ") + c.chat_id, "muted ellipsis"),
-            el("div", c.last_preview || "", "muted ellipsis"),
-          );
-          row.append(meta);
-          row.onclick = () => openChat(c);
-          row.oncontextmenu = (e) => {
-            e.preventDefault();
-            chatMenu(c);
-          };
-          longPress(row, () => chatMenu(c));
-          box.append(row);
+          const key = chatRowKey(c);
+          seen.add(key);
+          let row = chatRows.get(key);
+          if (!row) {
+            row = createChatRow();
+            chatRows.set(key, row);
+          }
+          updateChatRow(row, c);
+          // 保持与 shown 相同的顺序；已经在位就只推进游标，避免无谓搬动。
+          if (row === ref) ref = ref.nextSibling;
+          else box.insertBefore(row, ref || null);
+        }
+        // 被隐藏或已不存在的会话，把节点一并回收。
+        for (const [key, row] of [...chatRows]) {
+          if (seen.has(key)) continue;
+          row.remove();
+          chatRows.delete(key);
         }
       }
       // 对比这次轮询与会话的 mention_version 快照，找出「本轮新收到 @ 提及」的会话。
@@ -2249,13 +2391,9 @@
         renderChats();
         renderHeader();
         if (mentioned && state.visible && !document.hidden) {
-          // @全体成员（含同时 @ 到我）统一说「有人at全体成员」；
-          // 两类提醒可在设置里分别关掉，屏蔽的群在入库时就不算提及、走不到这里。
-          const everyone = isEveryoneMention(mentioned);
-          const allowed = everyone
-            ? state.settings.notify_everyone !== false
-            : state.settings.notify_mention !== false;
-          if (allowed) notice(title(mentioned) + (everyone ? " 有人at全体成员" : " 有人@了我"));
+          // 屏蔽的群在入库时就不算提及，这里只用管两个提醒开关。
+          const text = mentionNotice(mentioned);
+          if (text) notice(title(mentioned) + " " + text);
         }
       }
       async function loadChats() {
@@ -2283,6 +2421,40 @@
           }
           // waiting：单聊缓存里暂时没有昵称，等之后的事件带进来，下次点开再查。
         } catch {}
+      }
+      // 把会话列表里对应的行滚到可见处并短暂高亮，让用户看清定位到了哪里。
+      function highlightChat(c) {
+        const key = c.chat_type + ":" + c.chat_id;
+        locatedChatKey = key;
+        renderChats();
+        const row = [...document.querySelectorAll("#chats .chat-item")].find(
+          (x) => x.dataset.chatType === c.chat_type && x.dataset.chatId === c.chat_id,
+        );
+        if (!row) return; // 隐藏会话不在列表里，聊天区已经打开就够了
+        row.scrollIntoView({ block: "center" });
+        setTimeout(() => {
+          if (locatedChatKey === key) locatedChatKey = null;
+          row.classList.remove("located");
+        }, 1600);
+      }
+      // 搜索结果 → 会话：必要时先恢复被「群 / 单」筛选挡住的类型，再打开并定位。
+      function locateChat(c, target) {
+        const key = c.chat_type === "qq_group" ? "group" : "private";
+        if (!chatFilters[key]) {
+          chatFilters[key] = true;
+          const chip = document.querySelector(`#chatFilters .filter-chip[data-filter="${key}"]`);
+          if (chip) chip.classList.add("active");
+          renderChats();
+          renderBots(bots);
+        }
+        closeDialog();
+        openChat(c, target).then(() => highlightChat(c));
+      }
+      // 消息结果只带 chat_type / chat_id：先在当前列表、再在搜索结果里补全会话信息。
+      function chatForMessage(m, lastChats) {
+        const match = (list) =>
+          (list || []).find((x) => x.chat_id === m.chat_id && x.chat_type === m.chat_type);
+        return match(state.chats) || match(lastChats) || m;
       }
       // 对会话执行一个 ChatAction（置顶 / 屏蔽 / 隐藏…），成功后关弹窗、刷新列表，
       // 再执行可选的 after（屏蔽切换后需要重画消息区和资料卡）。
@@ -2368,28 +2540,49 @@
         }
       }
       function sameChat(c) {
+        // 会话行来自 ListChats / 全局搜索，不带 bot_hash；只有传了才比较它。
         return (
           c &&
           state.chat &&
-          c.bot_hash === state.bot &&
+          (c.bot_hash == null || c.bot_hash === state.bot) &&
           c.chat_id === state.chat.chat_id &&
           c.chat_type === state.chat.chat_type
         );
       }
+      // 会话切走后把消息留在内存里：来回切换时先显示上次内容，不必等宿主读缓存。
+      const chatMemory = new Map(),
+        CHAT_MEMORY_LIMIT = 20;
+      function rememberChat(snapshot) {
+        if (!snapshot) return;
+        const key = snapshot.chat.chat_type + ":" + snapshot.chat.chat_id;
+        chatMemory.delete(key);
+        chatMemory.set(key, snapshot);
+        while (chatMemory.size > CHAT_MEMORY_LIMIT) chatMemory.delete(chatMemory.keys().next().value);
+      }
+      // 切换代数：连点两个会话时，晚到的旧请求发现代数变了就自行退出，
+      // 不再拿旧会话的数据覆盖新会话，也不必把后一次点击弹回去。
+      let switchToken = 0;
       async function openChat(c, target) {
-        if (switching) return notice("正在切换会话，请稍候");
+        // 上传 / 发送中不让切走，避免附件和回执状态丢失；翻更早消息被打断没关系，
+        // 它的响应回来时会发现会话已经变了并自行丢弃。
+        if (state.uploading || state.sending) return notice("当前操作尚未结束，请稍后切换");
+        // 点的就是当前会话：只切视图，不重新拉一遍。
+        if (sameChat(c) && chatReady) {
+          displayView("chat");
+          if (target) await locate(target);
+          return;
+        }
+        const token = ++switchToken;
         switching = true;
+        const current = { bot_hash: state.bot, chat_type: c.chat_type, chat_id: c.chat_id };
         try {
-          await saveChat();
-          const current = { bot_hash: state.bot, chat_type: c.chat_type, chat_id: c.chat_id };
-          // 必须在“整会话标记已读”之前取快照，否则未读位置就找不回来了。
-          const snapshotRequest = api("UnreadState", current).catch(() => null);
-          let cached = await cachedChat(current);
-          if (
-            cached &&
-            Number(cached.cursor || 0) > Math.max(0, ...(cached.messages || []).map((m) => Number(m.id) || 0))
-          )
-            cached = null;
+          // 1. 旧会话存档：快照先抓好，写缓存丢后台，别让切换等它。
+          const leaving = chatSnapshot();
+          if (leaving) {
+            rememberChat(leaving);
+            writeChatCache(leaving).catch(() => {});
+          }
+          // 2. 立刻切到新会话，界面先有反应；数据随后补。
           c.unread = 0;
           c.mention_unread = 0;
           state.chat = c;
@@ -2408,19 +2601,48 @@
           unreadAboveTarget = null;
           unreadAboveMentionTarget = null;
           chatReady = false;
-          if (cached) {
-            state.messages = cached.messages || [];
-            state.members = cached.members || [];
-            state.cursor = cached.cursor || 0;
-            state.changeCursor = cached.changeCursor ?? null;
-            historyEnded = !!cached.historyEnded;
+          // 刚看过的会话直接复用内存里的消息，省掉读宿主缓存的两三次往返。
+          const memory = chatMemory.get(current.chat_type + ":" + current.chat_id);
+          if (memory) {
+            state.messages = memory.messages || [];
+            state.members = memory.members || [];
+            state.cursor = memory.cursor || 0;
+            state.changeCursor = memory.changeCursor ?? null;
+            historyEnded = !!memory.historyEnded;
             chatReady = true;
           }
           renderQuote();
+          renderHeader();
+          renderChats();
+          displayView("chat");
+          renderMessages(!target);
+          renderInfo();
+          // 3. 未读快照与历史缓存并行；内存命中就不再读缓存。
+          const snapshotRequest = api("UnreadState", current).catch(() => null);
+          let cached = memory || null;
+          if (!cached) {
+            cached = await cachedChat(current);
+            if (token !== switchToken) return;
+            // 游标比最后一条消息还大，说明缓存不完整，按没缓存处理。
+            if (
+              cached &&
+              Number(cached.cursor || 0) > Math.max(0, ...(cached.messages || []).map((m) => Number(m.id) || 0))
+            )
+              cached = null;
+            if (cached) {
+              state.messages = cached.messages || [];
+              state.members = cached.members || [];
+              state.cursor = cached.cursor || 0;
+              state.changeCursor = cached.changeCursor ?? null;
+              historyEnded = !!cached.historyEnded;
+              chatReady = true;
+              renderMessages(!target);
+            }
+          }
           // 用快照恢复“有新消息 / 有人 @我”的提示；进会话后自动滚到底不该把它清掉，
           // 所以这里钉住一段时间，等渲染与图片加载稳定后再允许滚动清除。
           const snapshot = await snapshotRequest;
-          if (!sameChat(current)) return;
+          if (token !== switchToken) return;
           // 进会话之前的未读：右上角「↑ N 条新消息」。
           unreadAboveCount = Number(snapshot?.unread) || 0;
           unreadAboveMention = Number(snapshot?.mention_unread) || 0;
@@ -2432,7 +2654,6 @@
           newMentionId = null;
           renderHeader();
           renderChats();
-          displayView("chat");
           renderMessages(!target);
           renderInfo();
           api("ChatAction", { ...current, action: "read", all: true })
@@ -2449,7 +2670,7 @@
           if (c.chat_type === "qq_group" && Date.now() / 1000 - Number(c.role_updated_at || 0) >= 600)
             requests.push(api("RefreshRole", current).catch(() => null));
           const [m, r, role] = await Promise.all(requests);
-          if (!sameChat(current)) return;
+          if (token !== switchToken) return;
           state.members = m.members || [];
           if (!cached) {
             state.messages = (r.messages || []).sort(byTime);
@@ -2464,14 +2685,17 @@
             state.chat = Object.assign(state.chat || {}, roleResult.chat, { unread: 0, mention_unread: 0 });
           renderHeader();
           renderInfo();
-          await loadChats();
+          // 列表刷新不用等：轮询下一秒也会做，先让切换流程收尾。
+          loadChats().catch(() => {});
           if (target && sameChat(current)) await locate(target);
         } catch (e) {
           error(e);
         } finally {
-          switching = false;
-          requestAnimationFrame(markVisibleRead);
-          poll();
+          if (token === switchToken) {
+            switching = false;
+            requestAnimationFrame(markVisibleRead);
+            poll();
+          }
         }
       }
       function renderHeader() {
@@ -2503,7 +2727,9 @@
           .slice(0, 100);
       }
       function author(m) {
-        return m.sender_name || m.sender_id || (m.direction === "out" ? "机器人" : "未知用户");
+        // 自己发的消息优先显示机器人真实昵称（BotSelf 取到后覆盖入库时的「机器人」）。
+        if (m.direction === "out") return botNames.get(state.bot) || m.sender_name || "机器人";
+        return m.sender_name || m.sender_id || "未知用户";
       }
       function getReference(m) {
         return state.messages.find(
@@ -2530,8 +2756,14 @@
           b.onclick = () => ref && locate(ref.id);
           bubble.append(b);
         }
-        if (m.recalled) bubble.append(el("span", "[已撤回]"));
-        else if (m.msg_kind === "card") {
+        if (m.recalled && state.settings.anti_recall !== true) {
+          // 默认（防撤回关）：只显示「已撤回」，自己发的还能一键放回输入框。
+          const line = el("div", null, "recall-line");
+          line.append(el("span", "已撤回", "recall-tag"));
+          if (m.direction === "out" && Number(m.id) > 0)
+            line.append(button("重新编辑", () => reedit(m), "link"));
+          bubble.append(line);
+        } else if (m.msg_kind === "card") {
           const data = content(m),
             outer = data.card || data,
             card = outer.content || outer;
@@ -2565,6 +2797,41 @@
         };
         longPress(bubble, () => messageMenu(m));
         return wrap;
+      }
+      // 把自己撤回的消息放回输入框：文本 / Markdown 进编辑器，卡片还原四个字段。
+      function reedit(m) {
+        if (!state.chat) return notice("请先选择会话");
+        if (state.sending) return notice("正在发送，请稍后再试");
+        const data = content(m),
+          kind = m.msg_kind === "card" ? "card" : m.msg_kind === "markdown" ? "markdown" : "text";
+        const text = String(m.content_text || data.text || "");
+        if (kind === "card") {
+          const outer = data.card || data,
+            card = outer.content || outer;
+          if (!card.title) return notice("这条卡片没有可重新编辑的内容");
+          if (editorText().trim() && !confirm("输入框里已有内容，替换为这条撤回的消息？")) return;
+          $("cardTitle").value = card.title || "";
+          $("cardDescription").value = card.description || "";
+          $("cardLink").value = card.url || "";
+          $("cardPicUrl").value = card.pic_url || "";
+        } else {
+          if (!text.trim()) return notice("这条消息没有可重新编辑的正文");
+          if (editorText().trim() && !confirm("输入框里已有内容，替换为这条撤回的消息？")) return;
+          // 撤回消息里的图片没法直接复活，清掉旧附件，提示重新上传。
+          for (const a of [...state.attachments]) removeAttachment(a);
+          $("editor").replaceChildren(document.createTextNode(text));
+        }
+        state.mode = kind;
+        $("kind").value = kind;
+        $("cardFields").hidden = kind !== "card";
+        $("keyboardArea").hidden = kind === "text";
+        $("editor").hidden = kind === "card";
+        state.quote = null;
+        renderQuote();
+        updateCount();
+        displayView("chat");
+        $("editor").focus();
+        notice("已放回输入框" + (data.images && data.images.length ? "，图片需要重新上传" : ""));
       }
       let readBusy = false,
         readQueued = false;
@@ -2607,18 +2874,84 @@
           }
         }
       }
+      // 消息节点按 id 复用：轮询只会重建变化的那几条，图片不重解码、滚动不跳。
+      const messageNodes = new Map();
+      let messageHead = null,
+        messageChatKey = "";
+      // 这一条消息的渲染指纹：只有影响气泡外观的字段变了才重建它。
+      function messageSignature(m) {
+        return [
+          m.direction,
+          m.created_at,
+          m.msg_kind,
+          m.recalled,
+          m._sending,
+          m.keyword,
+          m.reply_to,
+          m.content_text,
+          JSON.stringify(m.content_json || null),
+          author(m),
+          state.settings.anti_recall === true,
+          !!state.chat?.muted,
+        ].join("\u0001");
+      }
       function renderMessages(scroll) {
         updateHistoryControls();
         if (state.messages.length > MESSAGE_LIMIT) state.messages = state.messages.slice(-MESSAGE_LIMIT);
-        const box = $("messages");
-        box.replaceChildren();
-        if (!state.messages.length) box.append(el("div", "暂无消息", "empty"));
-        else {
-          // 前面没有更早的消息时，用文字说明，而不是把按钮直接藏掉。
-          box.append(
-            historyEnded ? el("div", "暂无更多消息", "muted history-end") : button("加载更早消息", loadOlder),
-          );
-          for (const m of state.messages) box.append(renderMessage(m));
+        const box = $("messages"),
+          chatKey = state.chat ? state.chat.chat_type + ":" + state.chat.chat_id : "";
+        // 换会话：旧节点和「加载更早」都作废。
+        if (chatKey !== messageChatKey) {
+          box.replaceChildren();
+          messageNodes.clear();
+          messageHead = null;
+          messageChatKey = chatKey;
+        }
+        if (!state.messages.length) {
+          messageNodes.clear();
+          messageHead = null;
+          box.replaceChildren(el("div", "暂无消息", "empty"));
+        } else {
+          // 从「暂无消息」变成有消息时，先把空态占位拿掉。
+          if (!messageHead && box.firstElementChild?.classList.contains("empty")) box.replaceChildren();
+          // 头部：没有更早的消息时用文字说明，而不是把按钮直接藏掉。
+          const ended = String(!!historyEnded);
+          if (!messageHead || messageHead.dataset.ended !== ended) {
+            const fresh = historyEnded
+              ? el("div", "暂无更多消息", "muted history-end")
+              : button("加载更早消息", loadOlder);
+            fresh.dataset.ended = ended;
+            if (messageHead && messageHead.isConnected) messageHead.replaceWith(fresh);
+            else box.prepend(fresh);
+            messageHead = fresh;
+          }
+          const seen = new Set();
+          let ref = messageHead.nextSibling;
+          for (const m of state.messages) {
+            seen.add(m.id);
+            const sig = messageSignature(m);
+            let node = messageNodes.get(m.id);
+            if (!node || node.dataset.sig !== sig) {
+              const fresh = renderMessage(m);
+              fresh.dataset.sig = sig;
+              if (node && node.isConnected) {
+                // 被替换的节点如果正好是游标，游标要跟着往后挪，否则后面会插错位置。
+                if (node === ref) ref = node.nextSibling;
+                node.replaceWith(fresh);
+              } else box.insertBefore(fresh, ref || null);
+              messageNodes.set(m.id, fresh);
+              node = fresh;
+            }
+            // 顺序：已就位就推进游标，否则搬到游标前面。
+            if (node === ref) ref = ref.nextSibling;
+            else if (node.nextSibling !== ref) box.insertBefore(node, ref || null);
+          }
+          // 被截断或删除的消息，节点一并回收。
+          for (const [id, node] of [...messageNodes]) {
+            if (seen.has(id)) continue;
+            node.remove();
+            messageNodes.delete(id);
+          }
         }
         if (scroll) {
           followBottom = true;
@@ -2940,8 +3273,11 @@
           ),
         );
         const role = state.chat?.self_role,
-          admin = role === "admin" || role === "owner";
+          admin = role === "admin" || role === "owner",
+          // 官方接口只给群聊提供撤回，单聊的消息菜单里不出现这一项。
+          canRecall = state.chat?.chat_type === "qq_group";
         if (
+          canRecall &&
           !m.recalled &&
           m.platform_message_id &&
           (m.direction === "out" || admin) &&
@@ -3032,18 +3368,16 @@
       }
       function bodyCount() {
         // 输入后删干净时，contenteditable 往往残留一个 <br>（或 <div><br></div>），
-        // editorText() 会把它读成 "\n"，按长度算就变成 1 / 3000。
+        // editorText() 会把它读成 "\n"，按长度算就变成 1；
         // 发送时本来也是 trim 后判空，所以这里同样把“全是空白”当作 0 个字符。
         const text = editorText().replace(/\{\{img_\d+_\d+\}\}/g, "");
         return Array.from(quotePrefix() + (/\S/.test(text) ? text : "")).length;
       }
       function updateCount() {
-        const count = bodyCount(),
-          over = state.mode !== "card" && count > 3000;
-        $("count").textContent = `当前 ${count} / 3000`;
-        $("count").classList.toggle("error", over);
-        $("countError").hidden = !over;
-        $("send").disabled = over || state.uploading;
+        // 只显示当前字数：QQ 官方机器人没有 3000 字上限，是否超长交给平台判定。
+        const count = bodyCount();
+        $("count").textContent = `当前 ${count} 字`;
+        $("send").disabled = state.uploading;
       }
       $("editor").addEventListener("input", () => {
         for (const a of [...state.attachments])
@@ -3151,7 +3485,7 @@
               data_b64: btoa(binary),
             });
           }
-          return { upload_id: begin.upload_id, name: file.name, preview: URL.createObjectURL(file), kind };
+          return { upload_id: begin.upload_id, name: file.name, preview: URL.createObjectURL(file), kind, file };
         } catch (e) {
           api("UploadAbort", { bot_hash: state.bot, upload_id: begin.upload_id }).catch(() => {});
           throw e;
@@ -3242,7 +3576,6 @@
           kind = state.mode,
           raw = editorText(),
           text = quotePrefix() + raw;
-        if (kind !== "card" && bodyCount() > 3000) return notice("字符过多无法发送");
         if (kind !== "card" && !raw.trim() && !state.attachments.length) return notice("消息不能为空");
         let keyboard = null;
         if ((kind === "markdown" || kind === "card") && $("keyboardJson").value.trim()) {
@@ -3271,6 +3604,24 @@
           return notice("请填写有效的卡片标题、描述及不超过 1024 字符的 HTTPS 链接和图片地址");
         const atAll = kind !== "card" && /<qqbot-at-everyone\b/i.test(text);
         if (atAll && !confirm("消息包含 @全体。需要机器人是管理员，每群每天仅可使用一次。确认发送？")) return;
+        // 上次发送失败后服务端已清掉临时图：重试前用原始文件重新上传，避免「图片已失效」。
+        if (state.attachments.some((a) => a.stale)) {
+          state.uploading = true;
+          updateCount();
+          try {
+            for (const a of state.attachments.filter((x) => x.stale)) {
+              const fresh = await upload(a.file, a.kind);
+              a.upload_id = fresh.upload_id;
+              a.file = fresh.file;
+              a.stale = false;
+            }
+          } catch (err) {
+            return error(err);
+          } finally {
+            state.uploading = false;
+            updateCount();
+          }
+        }
         const images = state.attachments.map((a) => ({ upload_id: a.upload_id, marker: a.marker }));
         const payload = {
           ...current,
@@ -3325,17 +3676,16 @@
           }
         } catch (e) {
           if (sameChat(current)) {
-            applySendId(draft, e.payload);
-            if (kind !== "card")
-              draft.content_json = { images: e.payload?.images || [], has_image: !!images.length };
-            draft._sending = false;
-            draft.keyword = e.message;
-            for (const a of state.attachments) if (a.preview) URL.revokeObjectURL(a.preview);
-            state.attachments = [];
-            for (const n of $("editor").querySelectorAll(".edit-image")) n.remove();
-            attachmentView();
+            // 发送失败：撤掉乐观气泡，内容原样留在输入框（卡片字段、引用也不清），
+            // 图片标记成 stale，下次点发送会先用原始文件重新上传。
+            state.messages = state.messages.filter((x) => x !== draft);
+            for (const a of state.attachments) a.stale = true;
             renderMessages(true);
-            notice(e.message);
+            notice(
+              e.message +
+                "，内容已放回输入框" +
+                (state.attachments.length ? "，图片会在下次发送时重新上传" : ""),
+            );
           }
         } finally {
           state.sending = false;
@@ -3450,9 +3800,13 @@
           notifyEveryone.box.setAttribute("aria-label", "有人@全体成员时弹提示");
           const notify = settingsSection("@ 提醒（全部机器人）");
           notify.append(
-            settingRow("有人 @ 我", "群里有人 @ 机器人时弹提示", notifyMe.label),
-            settingRow("有人 @ 全体成员", "含「@全体并同时 @ 到我」的情况", notifyEveryone.label),
-            el("div", "屏蔽的群永远不提醒，与这里的开关无关。", "setting-note"),
+            settingRow("有人 @ 我", "消息直接 @ 到机器人时弹提示", notifyMe.label),
+            settingRow("有人 @ 全体成员", "群消息里出现 @全体成员 时弹提示", notifyEveryone.label),
+            el(
+              "div",
+              "两个开关互相独立。同一条消息既 @全体 又 @ 到我时只弹一条：@全体 提醒开着按「有人at全体成员」，关掉后按「有人@了我」。屏蔽的群永远不提醒。",
+              "setting-note",
+            ),
           );
           const syncWarn = () => {
             warn.hidden = !(Number(imageDays.value) === 0 || Number(messageDays.value) === 0);
@@ -3466,6 +3820,26 @@
             settingRow("聊天记录保留", "超过这个天数的消息每小时自动清理一次；0 = 永久保留", withUnit(messageDays, "天")),
             settingRow("图片本地保留", "只删本地图片副本，不删消息；0 = 永久保留", withUnit(imageDays, "天")),
             warn,
+          );
+
+          // 左栏「使用说明」是全局界面开关，关掉后所有机器人都不再显示这块面板。
+          const showHelp = toggle(state.settings.show_help !== false);
+          showHelp.box.setAttribute("aria-label", "显示左栏使用说明");
+          const ui = settingsSection("界面（全部机器人）");
+          ui.append(
+            settingRow("左栏使用说明", "关掉后隐藏「第一次用？点开看按钮说明」折叠面板", showHelp.label),
+          );
+
+          // 防撤回：开启后撤回的消息仍显示原文；关闭（默认）时显示「已撤回」+「重新编辑」。
+          const antiRecall = toggle(state.settings.anti_recall === true);
+          antiRecall.box.setAttribute("aria-label", "防撤回");
+          const display = settingsSection("消息显示（全部机器人）");
+          display.append(
+            settingRow(
+              "防撤回",
+              "开启后撤回的消息仍显示原文；关闭时显示「已撤回」和蓝色「重新编辑」",
+              antiRecall.label,
+            ),
           );
 
           const save = button(
@@ -3516,8 +3890,14 @@
                     message_retention_days: messageRetention,
                     notify_mention: notifyMe.box.checked,
                     notify_everyone: notifyEveryone.box.checked,
+                    show_help: showHelp.box.checked,
+                    anti_recall: antiRecall.box.checked,
                   },
                 });
+                state.settings.show_help = showHelp.box.checked;
+                state.settings.anti_recall = antiRecall.box.checked;
+                renderHelpVisibility();
+                renderMessages(false);
                 state.settings.image_retention_days = imageRetention;
                 state.settings.message_retention_days = messageRetention;
                 state.settings.notify_mention = notifyMe.box.checked;
@@ -3540,7 +3920,7 @@
           );
           const actions = el("div", null, "dialog-actions");
           actions.append(save);
-          box.append(view, notify, storage, actions);
+          box.append(view, ui, display, notify, storage, actions);
         } catch (e) {
           box.replaceChildren(el("div", e.message, "error"));
         }
@@ -3901,10 +4281,7 @@
             for (const c of chats) {
               const row = button(
                 null,
-                () => {
-                  closeDialog();
-                  openChat(c);
-                },
+                () => locateChat(c),
                 "result search-chat",
               );
               row.append(
@@ -3921,12 +4298,7 @@
               const name = m.chat_name || m.remark || m.display_name || m.chat_id || "";
               const row = button(
                 null,
-                () => {
-                  const c =
-                    state.chats.find((x) => x.chat_id === m.chat_id && x.chat_type === m.chat_type) || m;
-                  closeDialog();
-                  openChat(c, m.id);
-                },
+                () => locateChat(chatForMessage(m, lastRaw?.chats), m.id),
                 "result search-msg",
               );
               const head = el("div", null, "search-msg-head");
@@ -4266,12 +4638,16 @@
           if (a?.preview) URL.revokeObjectURL(a.preview);
         }
       }
+      // Bootstrap 是「机器人列表 + 全局设置」的全量数据，不需要跟着消息每秒拉。
+      const BOOTSTRAP_INTERVAL = 5000;
+      let lastBootstrapAt = 0;
       async function poll() {
         if (switching || state.sending || state.pulling || !state.visible || document.hidden || !state.bot)
           return;
         state.pulling = true;
         const current = ctx(),
-          hasChat = !!state.chat && chatReady;
+          hasChat = !!state.chat && chatReady,
+          withBootstrap = Date.now() - lastBootstrapAt >= BOOTSTRAP_INTERVAL;
         try {
           const requests = [api("ListChats", { bot_hash: state.bot })];
           if (hasChat)
@@ -4284,10 +4660,14 @@
               }),
               api("PassiveStatus", current),
             );
-          requests.push(api("Bootstrap"));
+          // Bootstrap 固定放在最后一个，前面的下标就不用跟着变。
+          if (withBootstrap) requests.push(api("Bootstrap"));
           const results = await Promise.all(requests);
           if (switching || state.sending || current.bot_hash !== state.bot) return;
-          renderBots(results[results.length - 1].bots || []);
+          if (withBootstrap) {
+            lastBootstrapAt = Date.now();
+            renderBots(results[results.length - 1].bots || []);
+          }
           applyChats(results[0], current.bot_hash);
           if (hasChat && sameChat(current)) {
             const response = results[1],
@@ -4396,6 +4776,7 @@
           renderInfo();
           await api("SaveSettings", { settings: { last_bot_hash: state.bot }, last_bot_hash: state.bot });
           await loadChats();
+          loadBotName(state.bot);
         } catch (e) {
           $("bots").value = state.bot;
           error(e);
@@ -4424,11 +4805,13 @@
         try {
           const r = await api("Bootstrap");
           state.settings = r.settings || {};
+          renderHelpVisibility();
           state.bot = state.settings.last_bot_hash || (r.bots || [])[0]?.hash || "";
           renderBots(r.bots || []);
           if (state.bot && ![...$("bots").options].some((o) => o.value === state.bot))
             state.bot = $("bots").value;
           await loadChats();
+          loadBotName(state.bot);
           poll();
           state.timer = setInterval(poll, Math.max(1000, Number(state.settings.poll_interval_ms) || 1000));
         } catch (e) {
