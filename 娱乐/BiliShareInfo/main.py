@@ -78,6 +78,10 @@ gCardParseResultContext = ContextVar('BiliShareInfo_card_parse_result', default=
 gNonVideoUrlContext: ContextVar[set[str] | None] = ContextVar(
     'BiliShareInfo_non_video_url', default=None
 )
+# 本消息内抓到的专栏/动态预览（key -> 预览数据），没有视频可回时按这个回复。
+gNonVideoPreviewContext: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
+    'BiliShareInfo_non_video_preview', default=None
+)
 gApiCache = {}
 gApiCacheLock = threading.RLock()
 
@@ -190,6 +194,10 @@ BILI_NON_VIDEO_PATH_PATTERN = re.compile(
 )
 # 动态详情接口：只有「投稿」类动态才对应一个视频，纯图文/转发动态没有视频可解析。
 BILI_DYNAMIC_DETAIL_API = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/detail'
+# 专栏正文接口：取标题、摘要、作者和封面图，用于非视频分享的轻量预览。
+BILI_ARTICLE_VIEW_API = 'https://api.bilibili.com/x/article/view'
+NON_VIDEO_PREVIEW_SUMMARY_MAX_LENGTH = 120
+NON_VIDEO_PREVIEW_IMAGE_LIMIT = 3
 
 
 def _safe_text(value):
@@ -436,6 +444,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
     notice_token = None
     card_token = None
     non_video_token = None
+    preview_token = None
     try:
         message = safe_str(plugin_event.data.message)
         command_message = parse_command_message(plugin_event, message)
@@ -462,6 +471,7 @@ def handle_message(plugin_event, is_group: bool) -> None:
         notice_token = gParseNoticeContext.set({})
         card_token = gCardParseResultContext.set({})
         non_video_token = gNonVideoUrlContext.set(set())
+        preview_token = gNonVideoPreviewContext.set({})
         parse_log(
             f'开始处理候选消息 group={is_group} '
             f'group_key={get_group_key(plugin_event)} '
@@ -483,6 +493,8 @@ def handle_message(plugin_event, is_group: bool) -> None:
         )
         parse_log(f'消息引用提取完成 count={len(video_ref_list)} refs={format_video_ref_list(video_ref_list)}')
         if not video_ref_list:
+            if group_enabled:
+                send_non_video_previews(plugin_event)
             send_parse_failure_notice(plugin_event)
             return
 
@@ -524,6 +536,8 @@ def handle_message(plugin_event, is_group: bool) -> None:
             gCardParseResultContext.reset(card_token)
         if non_video_token is not None:
             gNonVideoUrlContext.reset(non_video_token)
+        if preview_token is not None:
+            gNonVideoPreviewContext.reset(preview_token)
 
 
 def add_parse_notice(notice_text: str, notice_key: str = '') -> None:
@@ -2107,20 +2121,176 @@ def classify_bilibili_share_url(url: str) -> tuple[str, dict[str, Any]] | None:
         return 'non_video', {'page': 'dynamic'}
     if BILI_ARTICLE_PATH_PATTERN.match(path):
         article_match = BILI_ARTICLE_ID_PATTERN.search(path)
-        return 'article', {
-            'article_id': article_match.group('article_id') if article_match else '',
-        }
+        article_id = article_match.group('article_id') if article_match else ''
+        if not article_id:
+            # /read/mobile?id=123 这类专栏链接，id 在查询串里
+            query_data = urllib.parse.parse_qs(parsed_url.query)
+            article_id = safe_str((query_data.get('id') or [''])[0]).strip()
+        return 'article', {'article_id': article_id}
     if BILI_NON_VIDEO_PATH_PATTERN.match(path):
         return 'non_video', {'page': 'space'}
     # 其余 B 站页面（首页、活动页等）同样不扫正文，页面里的 BV 都不是本次分享的。
     return 'non_video', {'page': 'other'}
 
 
-def resolve_dynamic_page_media(opus_id: str) -> tuple[str, dict[str, str]]:
+def pick_preview_image_list(url_list: list[Any]) -> list[str]:
+    image_list = []
+    for url in url_list:
+        image_url = normalize_cover_url(safe_str(url).strip())
+        if not image_url or image_url in image_list:
+            continue
+        image_list.append(image_url)
+        if len(image_list) >= NON_VIDEO_PREVIEW_IMAGE_LIMIT:
+            break
+    return image_list
+
+
+def split_preview_title_and_summary(title: str, text: str) -> tuple[str, str]:
+    """动态的标题常常就是正文第一行：标题取第一行，摘要去掉重复的那一行。"""
+    text = chr(10).join(safe_str(text).splitlines()).strip()
+    title = safe_str(title).strip()
+    first_line = text.split('\n', 1)[0].strip() if text else ''
+    if title and text.startswith(title):
+        text = text[len(title):].strip()
+    elif not title:
+        title = first_line
+        if first_line and text.startswith(first_line):
+            text = text[len(first_line):].strip()
+    elif first_line.startswith(title) and '\n' in text:
+        text = text.split('\n', 1)[1].strip()
+    return title or '无标题', text
+
+
+def register_non_video_preview(preview: dict[str, Any] | None) -> None:
+    if not isinstance(preview, dict):
+        return
+    preview_key = safe_str(preview.get('key')).strip()
+    preview_map = gNonVideoPreviewContext.get()
+    if not preview_key or preview_map is None or preview_key in preview_map:
+        return
+    preview_map[preview_key] = preview
+
+
+def build_dynamic_preview(item: dict[str, Any], opus_id: str) -> dict[str, Any]:
+    modules = item.get('modules') or {}
+    author_name = safe_str(
+        (modules.get('module_author') or {}).get('name')
+    ).strip() or '未知UP主'
+    dynamic = modules.get('module_dynamic') or {}
+    major = dynamic.get('major') or {}
+    opus = major.get('opus') or {}
+    article = major.get('article') or {}
+
+    raw_title = ''
+    raw_text = safe_str((dynamic.get('desc') or {}).get('text')).strip()
+    image_url_list: list[Any] = []
+    if opus:
+        raw_title = safe_str(opus.get('title')).strip()
+        raw_text = safe_str((opus.get('summary') or {}).get('text')).strip() or raw_text
+        image_url_list = [
+            pic.get('url') for pic in (opus.get('pics') or []) if isinstance(pic, dict)
+        ]
+    elif article:
+        raw_title = safe_str(article.get('title')).strip()
+        raw_text = safe_str(article.get('desc')).strip() or raw_text
+        for cover in article.get('covers') or []:
+            image_url_list.append(cover.get('url') if isinstance(cover, dict) else cover)
+
+    title, summary = split_preview_title_and_summary(raw_title, raw_text)
+    return {
+        'key': f'opus:{opus_id}',
+        'kind': '动态',
+        'title': title,
+        'author': author_name,
+        'summary': summary,
+        'image_list': pick_preview_image_list(image_url_list),
+        'link': f'https://www.bilibili.com/opus/{opus_id}',
+    }
+
+
+def fetch_article_preview(article_id: str) -> dict[str, Any] | None:
+    article_id = safe_str(article_id).strip()
+    if not article_id.isdigit():
+        return None
+    cache_key = f'article_view:{article_id}'
+    payload = get_api_cache(cache_key)
+    if payload is None:
+        api_url = f'{BILI_ARTICLE_VIEW_API}?id={article_id}'
+        try:
+            payload = json.loads(http_get_json_text(api_url))
+        except Exception as exception_object:
+            parse_log(
+                f'专栏详情接口失败 article_id={article_id} '
+                f'error={type(exception_object).__name__}: '
+                f'{shorten_log_text(exception_object, 120)}'
+            )
+            return None
+        set_api_cache(cache_key, payload)
+    if not isinstance(payload, dict) or payload.get('code') != 0:
+        parse_log(
+            f'专栏详情接口返回异常 article_id={article_id} '
+            f'payload={shorten_log_text(payload, 160)}'
+        )
+        return None
+    data = payload.get('data') or {}
+    title = safe_str(data.get('title')).strip() or '无标题'
+    author_name = safe_str((data.get('author') or {}).get('name')).strip() or '未知UP主'
+    # 摘要里偶尔带 HTML 标签，直接给 QQ 会露出来
+    summary = re.sub(r'<[^>]+>', '', safe_str(data.get('summary'))).strip()
+    image_url_list = data.get('origin_image_urls') or data.get('image_urls') or []
+    if not image_url_list and data.get('banner_url'):
+        image_url_list = [data.get('banner_url')]
+    return {
+        'key': f'article:{article_id}',
+        'kind': '专栏',
+        'title': title,
+        'author': author_name,
+        'summary': summary,
+        'image_list': pick_preview_image_list(image_url_list),
+        'link': f'https://www.bilibili.com/read/cv{article_id}',
+    }
+
+
+def format_non_video_preview_text(preview: dict[str, Any]) -> str:
+    lines = [
+        f'这是{preview.get("kind", "专栏")}：{preview.get("title") or "无标题"}',
+        f'UP主：{preview.get("author") or "未知UP主"}',
+    ]
+    summary = shorten_text(
+        safe_str(preview.get('summary')),
+        NON_VIDEO_PREVIEW_SUMMARY_MAX_LENGTH,
+    )
+    if summary and summary != '无简介':
+        lines.append(summary)
+    return '\n'.join(lines)
+
+
+def format_non_video_preview_reply(preview: dict[str, Any]) -> str:
+    image_prefix = ''.join(
+        f'[OP:image,file={op_escape(image_url)}]'
+        for image_url in preview.get('image_list') or []
+    )
+    return f'{image_prefix}{format_non_video_preview_text(preview)}'
+
+
+def send_non_video_previews(plugin_event) -> None:
+    preview_map = gNonVideoPreviewContext.get()
+    if not preview_map:
+        return
+    for preview in preview_map.values():
+        reply_message(plugin_event, format_non_video_preview_reply(preview))
+        parse_log(
+            f'已回复{preview.get("kind", "专栏")}预览 '
+            f'title={shorten_log_text(preview.get("title"), 60)} '
+            f'images={len(preview.get("image_list") or [])}'
+        )
+
+
+def resolve_dynamic_page_media(opus_id: str) -> tuple[str, dict[str, Any]]:
     """按动态详情接口判断这条动态有没有对应视频。
 
-    纯图文/转发动态（DYNAMIC_TYPE_DRAW/WORD/OPUS 等）确认没有视频；
-    只有投稿类动态（DYNAMIC_TYPE_AV）才返回 BV/av 号。
+    纯图文/转发动态（DYNAMIC_TYPE_DRAW/WORD/OPUS 等）确认没有视频，
+    第二个返回值是该动态的预览数据；只有投稿类动态（DYNAMIC_TYPE_AV）才返回 BV/av 号。
     """
     opus_id = safe_str(opus_id).strip()
     if not opus_id.isdigit():
@@ -2149,7 +2319,7 @@ def resolve_dynamic_page_media(opus_id: str) -> tuple[str, dict[str, str]]:
     dynamic_type = safe_str(item.get('type'))
     if dynamic_type != 'DYNAMIC_TYPE_AV':
         parse_log(f'动态类型不是投稿 dynamic_type={dynamic_type} opus_id={opus_id}')
-        return 'non_video', {}
+        return 'non_video', build_dynamic_preview(item, opus_id)
     major = ((item.get('modules') or {}).get('module_dynamic') or {}).get('major') or {}
     archive = major.get('archive') or {}
     bvid = safe_str(archive.get('bvid')).strip()
@@ -2172,20 +2342,22 @@ def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
 
     page_kind, page_payload = classify_bilibili_share_url(url) or ('', {})
     if page_kind == 'opus':
-        dynamic_kind, dynamic_ref = resolve_dynamic_page_media(page_payload.get('opus_id', ''))
+        dynamic_kind, dynamic_data = resolve_dynamic_page_media(page_payload.get('opus_id', ''))
         if dynamic_kind == 'video':
             parse_log(
-                f'动态页解析为视频 ref={format_video_ref(dynamic_ref)} '
+                f'动态页解析为视频 ref={format_video_ref(dynamic_data)} '
                 f'url={shorten_log_text(url, 180)}'
             )
-            return dynamic_ref
+            return dynamic_data
         if dynamic_kind == 'non_video':
             parse_log(f'动态页不是视频，跳过 url={shorten_log_text(url, 180)}')
             mark_non_video_share_url(url)
+            register_non_video_preview(dynamic_data)
             return None
     elif page_kind == 'article':
         parse_log(f'专栏页不是视频，跳过 url={shorten_log_text(url, 180)}')
         mark_non_video_share_url(url)
+        register_non_video_preview(fetch_article_preview(page_payload.get('article_id', '')))
         return None
     elif page_kind == 'non_video':
         parse_log(
@@ -2241,26 +2413,37 @@ def resolve_video_ref_from_url(url: str) -> dict[str, str] | None:
         # 短链落到专栏/动态页时不能扫正文找 BV，页面里的 BV 是别人的视频。
         final_kind, final_payload = classify_bilibili_share_url(response_url) or ('', {})
         if final_kind == 'opus':
-            dynamic_kind, dynamic_ref = resolve_dynamic_page_media(
+            dynamic_kind, dynamic_data = resolve_dynamic_page_media(
                 final_payload.get('opus_id', '')
             )
             if dynamic_kind == 'video':
                 parse_log(
                     f'短链解析为动态投稿 original={shorten_log_text(url, 180)} '
-                    f'ref={format_video_ref(dynamic_ref)}'
+                    f'ref={format_video_ref(dynamic_data)}'
                 )
-                return dynamic_ref
+                return dynamic_data
             if dynamic_kind == 'non_video':
                 parse_log(
                     f'短链解析为动态页但不是视频 original={shorten_log_text(url, 180)} '
                     f'final={shorten_log_text(response_url, 180)}'
                 )
                 mark_non_video_share_url(url, response_url)
+                register_non_video_preview(dynamic_data)
                 return None
-        elif final_kind in ('article', 'non_video'):
+        elif final_kind == 'article':
             parse_log(
-                f'短链解析为专栏/非视频页面 original={shorten_log_text(url, 180)} '
-                f'final={shorten_log_text(response_url, 180)} kind={final_kind}'
+                f'短链解析为专栏页面 original={shorten_log_text(url, 180)} '
+                f'final={shorten_log_text(response_url, 180)}'
+            )
+            mark_non_video_share_url(url, response_url)
+            register_non_video_preview(
+                fetch_article_preview(final_payload.get('article_id', ''))
+            )
+            return None
+        elif final_kind == 'non_video':
+            parse_log(
+                f'短链解析为非视频页面 original={shorten_log_text(url, 180)} '
+                f'final={shorten_log_text(response_url, 180)}'
             )
             mark_non_video_share_url(url, response_url)
             return None
