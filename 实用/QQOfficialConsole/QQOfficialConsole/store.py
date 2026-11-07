@@ -569,9 +569,17 @@ class Store:
             'first_mention': row['first_mention'],
         }
 
-    def mention_target(self, bot_hash, chat_type, chat_id):
+    def mention_target(self, bot_hash, chat_type, chat_id, include_history=False):
         with self.session(bot_hash, chat_type, chat_id) as db:
             row = db.execute('SELECT id FROM messages WHERE mention_unread=1 ORDER BY id LIMIT 1').fetchone()
+            if row is None and include_history:
+                # 会话已整体标读（或前端快照丢失）时的兜底：找最近一条 @我 / @全体 消息，
+                # 否则右上角「@我」的后备跳转永远只会回一句「没有未读的 @ 消息」。
+                # 只在 MentionTarget 动作里开启；默认仍严格按「未读」计算。
+                row = db.execute(
+                    'SELECT id FROM messages WHERE is_mention=1 OR is_everyone=1 '
+                    'ORDER BY id DESC LIMIT 1'
+                ).fetchone()
             if row is None:
                 return {'message_id': None, 'newer_count': 0}
             message_id = row['id']

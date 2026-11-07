@@ -845,7 +845,9 @@ class Bridge:
                     ),
                 )
         if action == 'MentionTarget':
-            return dict(ok, **self.store.mention_target(bot, chat_type, chat_id))
+            # 右上角「@我」的后备跳转：会话已标读时退到最近一条 @，别让它点了没反应。
+            return dict(ok, **self.store.mention_target(
+                bot, chat_type, chat_id, include_history=True))
         if action == 'UnreadState':
             # 打开会话时会话内全部会标为已读，所以前端必须在这之前取一次快照。
             return dict(ok, **self.store.unread_target(bot, chat_type, chat_id))
@@ -867,8 +869,12 @@ class Bridge:
         if action == 'ChatAction':
             if p.get('action') == 'read':
                 if p.get('all') is True:
+                    # 标读会把 is_unread / mention_unread 清零；先留一份「进会话前」快照，
+                    # 右上角「@我 N」「N 条新消息」的跳转目标全靠它。前端的 UnreadState
+                    # 与这次标读是并行请求，宿主处理顺序不定，快照必须在这里兜底。
+                    snapshot = self.store.unread_target(bot, chat_type, chat_id)
                     self.store.mark_read_all(bot, chat_type, chat_id)
-                    return dict(ok, chat=self.store.get_chat(bot, chat_type, chat_id))
+                    return dict(ok, chat=self.store.get_chat(bot, chat_type, chat_id), snapshot=snapshot)
                 ids = p.get('visible_ids')
                 if not isinstance(ids, list) or len(ids) > 500 or any(type(x) is not int or x <= 0 for x in ids):
                     raise ValueError()

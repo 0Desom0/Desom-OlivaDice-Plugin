@@ -2686,6 +2686,21 @@
       // 会话切走后把消息留在内存里：来回切换时先显示上次内容，不必等宿主读缓存。
       const chatMemory = new Map(),
         CHAT_MEMORY_LIMIT = 20;
+      // 会话一打开就被整体标读，之后再查「最早未读 @」只会得到空。
+      // 把进会话那一刻的快照按会话存起来，切走再切回时右上角仍跳得动。
+      const jumpSnapshots = new Map(),
+        JUMP_SNAPSHOT_LIMIT = 20;
+      function jumpSnapshotKey(chat) {
+        return chat ? chat.chat_type + ":" + chat.chat_id : "";
+      }
+      function rememberJumpSnapshot(chat, snapshot) {
+        if (!chat) return;
+        const key = jumpSnapshotKey(chat);
+        jumpSnapshots.delete(key);
+        jumpSnapshots.set(key, snapshot);
+        while (jumpSnapshots.size > JUMP_SNAPSHOT_LIMIT)
+          jumpSnapshots.delete(jumpSnapshots.keys().next().value);
+      }
       function rememberChat(snapshot) {
         if (!snapshot) return;
         const key = snapshot.chat.chat_type + ":" + snapshot.chat.chat_id;
@@ -2744,6 +2759,15 @@
             state.changeCursor = memory.changeCursor ?? null;
             historyEnded = !!memory.historyEnded;
             chatReady = true;
+          }
+          // 上次进这个会话时留下的未读快照优先恢复：这轮 UnreadState 会查到全 0，
+          // 不能让它把「@我」跳转目标抹掉（切走再回来也要能跳）。
+          const saved = jumpSnapshots.get(jumpSnapshotKey(c));
+          if (saved) {
+            unreadAboveCount = Number(saved.unread) || 0;
+            unreadAboveMention = Number(saved.mention_unread) || 0;
+            unreadAboveTarget = saved.first_unread ?? null;
+            unreadAboveMentionTarget = saved.first_mention ?? null;
           }
           renderQuote();
           renderHeader();
@@ -2838,12 +2862,26 @@
           });
 
           // 未读快照只更新角标与提示，不重画消息区，免得把刚上屏的内容又滚一次。
-          snapshotRequest.then((snapshot) => {
+          // 整体标读后后端会查到全 0；只有「本来没有快照」或「查到了新未读」才覆盖，
+          // 否则切回旧会话时缓存里的跳转目标会被这一轮全 0 冲掉。
+          const applyUnreadSnapshot = (snapshot) => {
             if (!isCurrent()) return;
-            unreadAboveCount = Number(snapshot?.unread) || 0;
-            unreadAboveMention = Number(snapshot?.mention_unread) || 0;
-            unreadAboveTarget = snapshot?.first_unread ?? null;
-            unreadAboveMentionTarget = snapshot?.first_mention ?? null;
+            const unread = Number(snapshot?.unread) || 0,
+              mentions = Number(snapshot?.mention_unread) || 0;
+            if (unread || mentions || !(unreadAboveCount || unreadAboveMention)) {
+              const data = {
+                unread,
+                mention_unread: mentions,
+                first_unread: snapshot?.first_unread ?? null,
+                first_mention: snapshot?.first_mention ?? null,
+              };
+              unreadAboveCount = data.unread;
+              unreadAboveMention = data.mention_unread;
+              unreadAboveTarget = data.first_unread;
+              unreadAboveMentionTarget = data.first_mention;
+              if (data.unread || data.mention_unread) rememberJumpSnapshot(state.chat, data);
+              else jumpSnapshots.delete(jumpSnapshotKey(state.chat));
+            }
             // 进会话之后才来的消息：右下角「N 条新消息」，从一开始算。
             newCount = 0;
             newMentionCount = 0;
@@ -2851,7 +2889,8 @@
             renderHeader();
             renderChats();
             updateHistoryControls();
-          });
+          };
+          snapshotRequest.then(applyUnreadSnapshot);
           membersRequest.then((m) => {
             if (!isCurrent() || !m) return;
             state.members = m.members || [];
@@ -2864,10 +2903,21 @@
             renderHeader();
             renderInfo();
           });
-          // 标记已读同样是后台操作，回来时更新列表角标即可。
-          api("ChatAction", { ...current, action: "read", all: true })
+          // 标记已读必须排在未读快照之后：两个请求并行时宿主可能先执行 read，
+          // UnreadState 就只能拿到全 0，右上角跳转目标凭空消失。消息加载不受影响，
+          // 仍是并行发出，只有这个后台标读等一下快照。
+          snapshotRequest
+            .then(() => api("ChatAction", { ...current, action: "read", all: true }))
             .then((r) => {
-              if (isCurrent() && r.chat) {
+              if (!isCurrent()) return;
+              // 后端标读前也留了一份快照；这次快照被抢先清零时用它纠回来。
+              if (
+                r.snapshot &&
+                (Number(r.snapshot.unread) > unreadAboveCount ||
+                  Number(r.snapshot.mention_unread) > unreadAboveMention)
+              )
+                applyUnreadSnapshot(r.snapshot);
+              if (r.chat) {
                 state.chat = Object.assign(state.chat || {}, r.chat, { unread: 0, mention_unread: 0 });
                 renderChats();
                 renderHeader();
@@ -3257,11 +3307,14 @@
         updateHistoryControls();
       }
       function clearUnreadAbove() {
-        // 右上角：进会话之前积压的未读。
+        // 右上角：进会话之前积压的未读。跳过了就不再留着，切回来也别再弹。
         unreadAboveCount = 0;
         unreadAboveMention = 0;
         unreadAboveTarget = null;
         unreadAboveMentionTarget = null;
+        // 后端已整体标读，但列表轮询可能还没回来；本地先清掉，按钮别残留。
+        if (state.chat) state.chat.mention_unread = 0;
+        jumpSnapshots.delete(jumpSnapshotKey(state.chat));
         renderChats();
         updateHistoryControls();
       }
@@ -5150,8 +5203,9 @@
         }
       }
       const jumpMention = button("@我", () => {
-        // 优先用进会话时的快照定位（此时库里已被标读），没有快照再走后端未读 @。
-        const id = unreadAboveMentionTarget || unreadAboveTarget;
+        // 只认「最早未读 @」：普通未读交给上方「N 条新消息」胶囊，别点 @我 却跳到别处。
+        // 快照丢了才走后端兜底（MentionTarget 在整体标读后会回退到最近一条 @）。
+        const id = unreadAboveMentionTarget;
         if (!id) return jumpToMention();
         clearUnreadAbove();
         locate(id);
