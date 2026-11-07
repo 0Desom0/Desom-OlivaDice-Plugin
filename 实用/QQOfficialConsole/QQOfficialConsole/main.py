@@ -86,6 +86,159 @@ def _at_everyone(raw):
     return False
 
 
+# —— 合并转发（聊天记录）——
+# 官方把「聊天记录」当成 message_type=102 下发，正文是一段纯文本：
+#   [某某的聊天记录]
+#   === 消息 1 ===
+#   [发送者] 某某
+#   [消息内容] 正文
+#   [附件1] 类型:图片 文件名:… 尺寸:… 大小:… URL:…
+# 这里把它还原成前端要的卡片结构；图片只记下标，前端仍走代理下载（CDN 链接会过期）。
+_FORWARD_MESSAGE_RE = re.compile(r'^(?P<indent>[ \t]*)===\s*消息\s+\d+\s*===\s*$', re.M)
+_FORWARD_ATTACH_RE = re.compile(r'^[ \t]*\[附件\d+\][ \t]*(.*)$', re.M)
+_FORWARD_FIELD_RE = re.compile(r'\[(?:消息内容|发送者|消息类型|关联消息|附件\d+)\]')
+_FORWARD_LIMIT = 100        # 一次转发最多收 100 条，别让一条消息把数据库撑爆
+_FORWARD_TEXT_LIMIT = 4000  # 单条正文上限
+_FORWARD_IMAGE_LIMIT = 40   # 单条转发最多缓存 40 张图
+_IMAGE_MIMES = {'png': 'image/png', 'gif': 'image/gif', 'webp': 'image/webp'}
+
+
+def _split_forward_blocks(text):
+    """按「=== 消息 N ===」切块，只认最外层缩进（嵌套转发会缩进一层）。"""
+    matches = list(_FORWARD_MESSAGE_RE.finditer(text))
+    if not matches:
+        return []
+    indent = min(len(match.group('indent').expandtabs(4)) for match in matches)
+    matches = [item for item in matches if len(item.group('indent').expandtabs(4)) == indent]
+    blocks = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        block = text[match.end():end].strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
+def _forward_field(block, name):
+    """取 [发送者]/[消息内容] 的值；值可以换行，遇到下一个字段就收住。"""
+    match = re.search(r'(?m)^[ \t]*\[%s\][ \t]*(.*)$' % re.escape(name), block)
+    if match is None:
+        return None
+    lines = [match.group(1)]
+    for line in block[match.end():].splitlines():
+        stripped = line.strip()
+        if _FORWARD_FIELD_RE.match(stripped) or stripped.startswith(('===', '---')):
+            break
+        lines.append(stripped)
+    value = '\n'.join(lines).strip()
+    return value if value else None
+
+
+def _forward_attachment(text):
+    """把 [附件N] 那行还原成和平台下发一致的附件结构；没有 URL 就当作拿不到。"""
+    found = re.search(r'URL:\s*(\S+)', text)
+    if found is None:
+        return None
+    url = found.group(1)
+    if url.startswith('//'):
+        url = 'https:' + url
+    elif url.startswith('multimedia.nt.qq.com.cn/'):
+        url = 'https://' + url
+    kind = re.search(r'类型:\s*([^\s]+)', text)
+    kind = (kind.group(1) if kind else '').lower()
+    name = re.search(r'文件名:\s*(.*?)(?=\s+(?:尺寸|大小|URL):|$)', text)
+    name = name.group(1).strip() if name else ''
+    suffix = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+    if '图片' in kind or 'image' in kind:
+        content_type = _IMAGE_MIMES.get(suffix, 'image/jpeg')
+    elif '视频' in kind or 'video' in kind:
+        content_type = 'video/mp4'
+    elif '语音' in kind or '音频' in kind or 'audio' in kind:
+        content_type = 'audio/silk'
+    else:
+        content_type = 'application/octet-stream'
+    item = {'url': url, 'content_type': content_type}
+    if name:
+        item['filename'] = name
+    size = re.search(r'大小:\s*([^\s]+)', text)
+    if size:
+        item['size'] = size.group(1)
+    dimension = re.search(r'尺寸:\s*(\d+)\s*[xX×]\s*(\d+)', text)
+    if dimension:
+        item['width'] = int(dimension.group(1))
+        item['height'] = int(dimension.group(2))
+    return item
+
+
+def _forward_payload(raw):
+    """解析合并转发的正文；不是合并转发返回 None。
+
+    返回 {'title', 'messages', 'images'}：messages 里图片段的 attachment
+    是 images 里的下标，最终写入时还要加上原有附件的数量。
+    """
+    elements = raw.get('msg_elements')
+    texts = []
+    if isinstance(elements, list):
+        for element in elements:
+            if isinstance(element, dict) and isinstance(element.get('content'), str):
+                texts.append(element['content'])
+    if not texts and isinstance(raw.get('content'), str):
+        texts.append(raw['content'])
+    content = '\n'.join(texts)
+    blocks = _split_forward_blocks(content)
+    if not blocks:
+        return None
+    try:
+        msg_type = int(raw.get('message_type') or 0)
+    except (TypeError, ValueError):
+        msg_type = 0
+    # 别人手打「=== 消息 1 ===」不该变成卡片：要么平台标了 102，要么真带发送者字段。
+    if msg_type != 102 and '[发送者]' not in content:
+        return None
+
+    title = ''
+    head = content.split('===', 1)[0].strip()
+    if head.startswith('[') and head.endswith(']'):
+        title = head[1:-1].strip()
+
+    images = []
+    messages = []
+    for block in blocks[:_FORWARD_LIMIT]:
+        item = {'name': (_forward_field(block, '发送者') or '')[:64], 'segments': []}
+        body = _forward_field(block, '消息内容')
+        if body:
+            item['segments'].append({'type': 'text', 'text': body[:_FORWARD_TEXT_LIMIT]})
+        for match in _FORWARD_ATTACH_RE.finditer(block):
+            # 附件描述可能折成好几行，读到下一个 [字段] 或分隔线为止。
+            parts = [match.group(1).strip()]
+            for line in block[match.end():].splitlines():
+                stripped = line.strip()
+                if _FORWARD_FIELD_RE.match(stripped) or stripped.startswith(('===', '---')):
+                    break
+                parts.append(stripped)
+            attachment = _forward_attachment(' '.join(part for part in parts if part))
+            if attachment is None:
+                continue
+            kind = attachment['content_type']
+            if kind.startswith('image/'):
+                if len(images) >= _FORWARD_IMAGE_LIMIT:
+                    item['segments'].append({'type': 'text', 'text': '[图片]'})
+                    continue
+                item['segments'].append({'type': 'image', 'attachment': len(images)})
+                images.append(attachment)
+            elif kind.startswith('video/'):
+                item['segments'].append({'type': 'video'})
+            elif kind.startswith('audio/'):
+                item['segments'].append({'type': 'audio'})
+            else:
+                item['segments'].append({'type': 'file', 'name': attachment.get('filename') or '文件'})
+        if item['segments']:
+            messages.append(item)
+    if not messages:
+        return None
+    return {'title': title[:80], 'messages': messages, 'images': images}
+
+
 def _initialise(proc):
     global _state
     with _guard:
@@ -172,12 +325,27 @@ def _incoming(event, proc, group):
     name = sender.get('nickname') or sender.get('name') or sender_id
     created = _timestamp(raw.get('timestamp'))
     msg_id = raw.get('id') or getattr(data, 'message_id', None)
-    at_spans = []
-    text = _render_text(str(raw.get('content') or ''), raw, at_spans)
     attachments = raw.get('attachments') or []
-    msg_kind = 'media' if attachments else 'text'
+    forward = _forward_payload(raw)
+    at_spans = []
+    if forward is None:
+        text = _render_text(str(raw.get('content') or ''), raw, at_spans)
+    else:
+        # 合并转发的正文是「=== 消息 N ===」那种文本块，直接显示会糊一屏；
+        # 气泡里只写 [聊天记录]，真正的内容放进 content_json.forward 给前端画卡片。
+        text = '[聊天记录]'
+    msg_kind = 'forward' if forward is not None else ('media' if attachments else 'text')
     # 只记录真正由 at 占位符生成的文案；没有 at 的消息保持原来的 content_json 结构。
-    content_data = {'text': text, 'attachments': attachments}
+    content_data = {'text': text, 'attachments': list(attachments)}
+    if forward is not None:
+        # 转发里的图片接在原有附件后面，图片下标整体后移。
+        offset = len(attachments)
+        for item in forward['messages']:
+            for segment in item['segments']:
+                if segment['type'] == 'image':
+                    segment['attachment'] += offset
+        content_data['attachments'] = list(attachments) + forward['images']
+        content_data['forward'] = {'title': forward['title'], 'messages': forward['messages']}
     if at_spans:
         content_data['at'] = at_spans
     message = {

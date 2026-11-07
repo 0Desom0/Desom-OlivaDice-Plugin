@@ -22,6 +22,15 @@ def _json(value):
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
 
+# 没有文字正文时，会话列表里用它自己的类型名占位。
+_KIND_LABEL = {'media': '[图片]', 'card': '[卡片]', 'forward': '[聊天记录]'}
+
+
+def _preview_text(text, kind):
+    """会话列表的一行预览：优先用正文，没有正文就用类型占位。"""
+    return str(text or _KIND_LABEL.get(kind, ''))[:200]
+
+
 _META = """
 CREATE TABLE IF NOT EXISTS chats (
  chat_type TEXT NOT NULL, chat_id TEXT NOT NULL, safe_id TEXT NOT NULL,
@@ -654,16 +663,7 @@ class Store:
                 ).fetchone()
                 preview = None
                 if last:
-                    preview = str(
-                        last['content_text']
-                        or (
-                            '[图片]'
-                            if last['msg_kind'] == 'media'
-                            else '[卡片]'
-                            if last['msg_kind'] == 'card'
-                            else ''
-                        )
-                    )[:200]
+                    preview = _preview_text(last['content_text'], last['msg_kind'])
             with self.meta(bot_hash) as meta:
                 meta.execute(
                     'UPDATE chats SET unread=?,mention_unread=?,last_message_at=?,last_preview=?,'
@@ -806,16 +806,7 @@ class Store:
                     self._insert_token(db, chat_type, token, data['created_at'])
             self.upsert_chat(bot_hash, chat_type, chat_id)
             with self.meta(bot_hash) as db:
-                preview = str(
-                    data.get('content_text')
-                    or (
-                        '[图片]'
-                        if data.get('msg_kind') == 'media'
-                        else '[卡片]'
-                        if data.get('msg_kind') == 'card'
-                        else ''
-                    )
-                )[:200]
+                preview = _preview_text(data.get('content_text'), data.get('msg_kind'))
                 db.execute(
                     """UPDATE chats SET last_preview=CASE WHEN last_message_at IS NULL OR last_message_at<=?
                     THEN ? ELSE last_preview END, last_message_at=MAX(COALESCE(last_message_at,0),?),

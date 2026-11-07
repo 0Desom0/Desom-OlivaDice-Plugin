@@ -1034,6 +1034,14 @@
         .view-right #right {
           display: flex;
         }
+        /* 换页时新页面滑进来：列表 → 聊天 → 面板算前进（从右边来），返回从左来。
+           只有真的换了页面才会重播，同一个页面重复调用不受影响。 */
+        #app[data-nav="forward"] .pane {
+          animation: pane-forward 200ms cubic-bezier(0.2, 0.7, 0.3, 1);
+        }
+        #app[data-nav="back"] .pane {
+          animation: pane-back 200ms cubic-bezier(0.2, 0.7, 0.3, 1);
+        }
         .mobile {
           display: inline-block;
         }
@@ -1157,6 +1165,122 @@
         border-radius: 6px;
         margin-top: 6px;
         cursor: zoom-in;
+      }
+      /* —— 合并转发（聊天记录）—— */
+      /* 气泡里只放一张卡片，点开才看详情，和 QQ 里的表现一致。 */
+      .forward-card {
+        display: block;
+        width: 100%;
+        min-width: 200px;
+        min-height: 0;
+        text-align: left;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent);
+        border-radius: 8px;
+        padding: 9px 11px;
+      }
+      .forward-card:hover {
+        border-color: var(--accent);
+        border-left-color: var(--accent);
+      }
+      .forward-title {
+        font-weight: 600;
+      }
+      .forward-source {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .forward-lines {
+        display: grid;
+        gap: 2px;
+        margin-top: 6px;
+      }
+      .forward-line {
+        color: var(--muted);
+        font-size: 13px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .forward-line b {
+        color: var(--text);
+        font-weight: 500;
+      }
+      .forward-more {
+        margin-top: 6px;
+        color: var(--accent);
+        font-size: 12px;
+      }
+      /* 详情弹窗：自己管滚动，别把整屏撑破。 */
+      .forward-view {
+        display: grid;
+        gap: 10px;
+        max-height: min(64dvh, 620px);
+        overflow: auto;
+        padding: 2px;
+      }
+      .forward-item {
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 10px;
+      }
+      .forward-item:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
+      }
+      .forward-head {
+        margin-bottom: 4px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .forward-head b {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .forward-text {
+        font-size: 14px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .forward-image {
+        margin-top: 6px;
+      }
+      .forward-image .message-image {
+        max-width: min(100%, 260px);
+        max-height: 240px;
+      }
+      .forward-note {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      /* 手机端换页动画：新页面从侧边滑入，同时淡入。 */
+      @keyframes pane-forward {
+        from {
+          opacity: 0.35;
+          transform: translateX(24%);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(0);
+        }
+      }
+      @keyframes pane-back {
+        from {
+          opacity: 0.35;
+          transform: translateX(-16%);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(0);
+        }
+      }
+      /* 系统开了「减少动态效果」就老老实实不滑。 */
+      @media (prefers-reduced-motion: reduce) {
+        #app .pane {
+          animation: none !important;
+        }
       }
       /* 点消息里的图看大图：铺满视口；滚轮 / 双指缩放，只认右上角 × 关闭。 */
       #lightbox {
@@ -1915,9 +2039,17 @@
       $("overlay").onclick = (e) => {
         if (e.target === $("overlay")) closeDialog();
       };
+      // 三个页面在手机上的前后关系，只用来决定切换动画的方向。
+      const VIEW_ORDER = { chats: 0, chat: 1, right: 2 };
       function displayView(v) {
         if (v !== "right" || state.view !== "requests") stopRequestPolling();
-        $("app").className = "view-" + v;
+        const app = $("app"),
+          shown = /view-(\w+)/.exec(app.className);
+        const previous = shown ? shown[1] : "";
+        // 往右走（列表 → 聊天 → 面板）是新页面从右边滑进来，往回走是从左边滑回来。
+        if (previous && previous !== v)
+          app.dataset.nav = (VIEW_ORDER[v] ?? 1) > (VIEW_ORDER[previous] ?? 1) ? "forward" : "back";
+        app.className = "view-" + v;
         if (v === "chat") requestAnimationFrame(markVisibleRead);
       }
       function safeImage(url) {
@@ -3020,6 +3152,7 @@
         if (!m) return "[消息]";
         if (m.recalled) return "[已撤回]";
         if (m.msg_kind === "card") return "[卡片]";
+        if (m.msg_kind === "forward") return "[聊天记录]";
         if (m.msg_kind === "media" || (!m.content_text && content(m).has_image)) return "[图片]";
         return String(m.content_text || content(m).text || "[消息]")
           .replace(/\s+/g, " ")
@@ -3034,6 +3167,86 @@
         return state.messages.find(
           (x) => m.reply_to && (x.platform_message_id === m.reply_to || x.ref_idx === m.reply_to),
         );
+      }
+      // —— 合并转发（聊天记录）——
+      // 后端把 message_type=102 的正文解析成 content_json.forward，这里只负责画。
+      function forwardData(m) {
+        const data = content(m);
+        return data.forward && Array.isArray(data.forward.messages) ? data.forward : null;
+      }
+      function forwardStats(forward) {
+        let images = 0;
+        for (const message of forward.messages)
+          for (const segment of message.segments || [])
+            if (segment && segment.type === "image") images++;
+        return { count: forward.messages.length, images };
+      }
+      // 一段内容在卡片摘要里怎么显示：图片/视频这些只给占位词。
+      function forwardSegmentBrief(segment) {
+        if (!segment || typeof segment !== "object") return "";
+        if (segment.type === "text") return String(segment.text || "");
+        if (segment.type === "image") return "[图片]";
+        if (segment.type === "video") return "[视频]";
+        if (segment.type === "audio") return "[语音]";
+        return `[文件] ${segment.name || ""}`.trim();
+      }
+      function renderForwardCard(bubble, m) {
+        const forward = forwardData(m);
+        if (!forward) {
+          bubble.append(el("span", "[聊天记录]"));
+          return;
+        }
+        const card = el("button", null, "forward-card");
+        card.type = "button";
+        card.append(el("div", "聊天记录", "forward-title"));
+        if (forward.title) card.append(el("div", forward.title, "forward-source"));
+        const lines = el("div", null, "forward-lines");
+        for (const message of forward.messages.slice(0, 3)) {
+          const brief = (message.segments || [])
+            .map(forwardSegmentBrief)
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+          const line = el("div", null, "forward-line");
+          line.append(el("b", `${message.name || "未知用户"}：`), document.createTextNode(brief.slice(0, 40) || "[消息]"));
+          lines.append(line);
+        }
+        card.append(lines);
+        const stats = forwardStats(forward);
+        card.append(
+          el("div", `查看 ${stats.count} 条消息${stats.images ? ` · ${stats.images} 张图片` : ""}`, "forward-more"),
+        );
+        card.onclick = () => openForward(m);
+        bubble.append(card);
+      }
+      // 点开转发卡片：逐条列出，图片走和消息里一样的代理下载，点一下能看大图。
+      function openForward(m) {
+        const forward = forwardData(m);
+        if (!forward) return;
+        const body = dialog("聊天记录"),
+          view = el("div", null, "forward-view"),
+          context = ctx();
+        for (const message of forward.messages) {
+          const item = el("div", null, "forward-item"),
+            head = el("div", null, "forward-head");
+          head.append(el("b", message.name || "未知用户"));
+          item.append(head);
+          for (const segment of message.segments || []) {
+            if (!segment || typeof segment !== "object") continue;
+            if (segment.type === "text" && segment.text)
+              item.append(el("div", String(segment.text), "forward-text"));
+            else if (segment.type === "image") {
+              const box = el("div", null, "forward-image");
+              item.append(box);
+              appendInboundImage(box, m, segment.attachment, context);
+            } else if (segment.type === "video") item.append(el("div", "[视频]", "forward-note"));
+            else if (segment.type === "audio") item.append(el("div", "[语音]", "forward-note"));
+            else item.append(el("div", `[文件] ${segment.name || ""}`.trim(), "forward-note"));
+          }
+          view.append(item);
+        }
+        body.append(view);
       }
       function renderMessage(m) {
         // 屏蔽的群：消息照常显示，但整行降为灰色（muted-chat）。
@@ -3088,6 +3301,8 @@
               line.append(a);
               bubble.append(line);
             }
+        } else if (m.msg_kind === "forward") {
+          renderForwardCard(bubble, m);
         } else renderMessageContent(bubble, m);
         wrap.append(bubble);
         bubble.oncontextmenu = (e) => {
@@ -5454,6 +5669,14 @@
         if (e.key === "Escape") closeLightbox();
       });
       $("messages").addEventListener("click", (e) => {
+        const img = e.target && e.target.closest ? e.target.closest("img.message-image") : null;
+        if (img) {
+          e.preventDefault();
+          openLightbox(img);
+        }
+      });
+      // 合并转发详情里的图片同样能点开看大图。
+      $("dialogBody").addEventListener("click", (e) => {
         const img = e.target && e.target.closest ? e.target.closest("img.message-image") : null;
         if (img) {
           e.preventDefault();
