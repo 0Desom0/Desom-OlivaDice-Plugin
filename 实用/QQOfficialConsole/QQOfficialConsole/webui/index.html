@@ -1158,7 +1158,7 @@
         margin-top: 6px;
         cursor: zoom-in;
       }
-      /* 点消息里的图看大图：铺满视口，再点一下或 Esc 关掉。 */
+      /* 点消息里的图看大图：铺满视口；滚轮 / 双指缩放，只认右上角 × 关闭。 */
       #lightbox {
         position: fixed;
         inset: 0;
@@ -1168,7 +1168,10 @@
         justify-content: center;
         padding: 16px;
         background: #000d;
-        cursor: zoom-out;
+        /* 缩放和拖动都由页面自己处理，别让浏览器滚动、长按选中来插一脚 */
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
       }
       #lightbox[hidden] {
         display: none;
@@ -1181,7 +1184,35 @@
         object-fit: contain;
         border-radius: 6px;
         box-shadow: 0 10px 40px #000b;
-        cursor: zoom-out;
+        /* 图片要能被右键和长按点中，浏览器才会给出「复制图片」「图片另存为」
+           「存储到相册」这些菜单；只关掉原生拖拽和文字选择，免得打断缩放平移 */
+        pointer-events: auto;
+        -webkit-touch-callout: default;
+        -webkit-user-drag: none;
+        user-select: auto;
+        -webkit-user-select: auto;
+        cursor: grab;
+      }
+      #lightbox.dragging img {
+        cursor: grabbing;
+      }
+      /* 右上角关闭按钮：桌面和手机都要一眼能看到。 */
+      #lightboxClose {
+        position: absolute;
+        top: 10px;
+        right: 12px;
+        width: 44px;
+        height: 44px;
+        border: none;
+        border-radius: 50%;
+        background: #ffffff2b;
+        color: #fff;
+        font-size: 26px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      #lightboxClose:hover {
+        background: #ffffff47;
       }
       .attachment img,
       .edit-image img {
@@ -1558,8 +1589,11 @@
         <div id="dialogBody" class="scroll"></div>
       </div>
     </div>
-    <!-- 图片放大层：点消息里的图片打开，点一下或 Esc 关闭（必须放在脚本之前） -->
-    <div id="lightbox" hidden><img id="lightboxImage" alt=""></div>
+    <!-- 图片放大层：点消息里的图片打开，只认右上角 × 或 Esc 关闭（必须放在脚本之前） -->
+    <div id="lightbox" hidden>
+      <button id="lightboxClose" aria-label="关闭" title="关闭">×</button>
+      <img id="lightboxImage" alt="" draggable="false">
+    </div>
     <script>
       "use strict";
       const $ = (id) => document.getElementById(id);
@@ -2068,7 +2102,7 @@
           stored = Array.isArray(data.images) ? data.images : [],
           context = ctx(),
           used = new Set(),
-          atCtx = atContext(memberNames(), data.at, m.direction === "out");
+          atMatcher = buildAtMatcher(memberNames(), data.at, m.direction === "out");
         let text = m.content_text || data.text || "";
         if (m.msg_kind === "markdown" && stored.length) {
           let last = 0,
@@ -2077,14 +2111,14 @@
           while ((match = re.exec(text))) {
             const image = stored.find((x) => x.marker === match[1]);
             if (!image) continue;
-            markdown(bubble, text.slice(last, match.index), atCtx);
+            markdown(bubble, text.slice(last, match.index), atMatcher);
             appendStoredImage(bubble, m, image, context);
             used.add(image);
             last = re.lastIndex;
           }
-          markdown(bubble, text.slice(last), atCtx);
-        } else if (m.msg_kind === "markdown") markdown(bubble, text, atCtx);
-        else if (text && !(text === "[图片]" && stored.length)) appendAtText(bubble, text, atCtx);
+          markdown(bubble, text.slice(last), atMatcher);
+        } else if (m.msg_kind === "markdown") markdown(bubble, text, atMatcher);
+        else if (text && !(text === "[图片]" && stored.length)) appendAtText(bubble, text, atMatcher);
         for (const image of stored) if (!used.has(image)) appendStoredImage(bubble, m, image, context);
         const incoming = Array.isArray(data.attachments) ? data.attachments : [];
         let count = 0;
@@ -2102,7 +2136,7 @@
       // 自己发的消息则把编辑器插入的 <qqbot-at-... /> 标签原样存了下来；
       // 老版本入库的是「at全体成员」，没有 at 列表。
       // 只给「明确是 at」的片段上底色：后端标注的文案、平台占位、固定全体文案，
-      // 以及历史消息兜底用的成员缓存昵称。绝不用「@ 后面一路吃到空白」的宽松规则，
+      // 以及历史消息里靠成员昵称认出来的 at。绝不用「@ 后面一路吃到空白」的宽松规则，
       // 否则中文消息「@某人，今晚开团」会把后半句也一起染上颜色。
       function memberNames() {
         return new Map(
@@ -2120,88 +2154,103 @@
       function escapeRegExp(value) {
         return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       }
-      // 一条消息只编译一次正则：普通文本、markdown 分段共用同一个上下文。
-      function atContext(names, spans, outgoing) {
-        // 成员名只作历史消息的兜底；含斜杠的昵称不当名字，免得 @//xxx/ 被误认。
-        const memberLiterals = [...names.values()]
+
+      // 把「哪些文字算 at」编译成一个正则，一条消息只编译一次，各段文字共用。
+      function buildAtMatcher(nameByOpenid, atTexts, outgoing) {
+        // 成员昵称只用来认历史消息；带斜杠的昵称不算名字，免得把 @//xxx/ 误认成 at。
+        const memberWords = [...nameByOpenid.values()]
           .filter((name) => typeof name === "string" && name.trim() && !/[\/\\]/.test(name))
           .map((name) => "@" + name);
-        const literal = [
+        const words = [
           ...new Set([
-            ...(Array.isArray(spans) ? spans : []),
+            ...(Array.isArray(atTexts) ? atTexts : []),
             "@全体成员",
             "at全体成员",
-            ...memberLiterals,
+            ...memberWords,
           ]),
         ]
-          .filter((item) => typeof item === "string" && item.trim())
+          .filter((word) => typeof word === "string" && word.trim())
+          // 长昵称排前面，免得短昵称先把长昵称的开头吃掉
           .sort((a, b) => b.length - a.length)
           .slice(0, 200)
           .map(escapeRegExp);
         // 编辑器插入的 <qqbot-at-... /> 只会出现在自己发的消息里；
         // 别人手打同款标签是假 at，不认。
-        const parts = outgoing
+        const patterns = outgoing
           ? ["<qqbot-at-everyone\\s*\\/?>", "<qqbot-at-user\\b[^>]*>"]
           : [];
-        // 平台 <@openid> 占位不含斜杠/反斜杠/空白，@//xxx/ 这类路径文本不会被当成 at。
-        parts.push("<@!?\\s*[^<>\\s/\\\\]+>");
-        // 字面量按长度降序，长昵称优先；左边界避免把邮箱里的 @xxx 染上色。
-        if (literal.length) parts.push("(?<![\\w@])(?:" + literal.join("|") + ")");
-        return { names, re: new RegExp(parts.join("|"), "gi") };
+        // 平台的 <@openid> 占位里不会有斜杠、反斜杠和空白，所以 @//xxx/ 这类路径文字不会被当成 at。
+        patterns.push("<@!?\\s*[^<>\\s/\\\\]+>");
+        // 左边不能紧挨字母、数字或 @，免得把邮箱里的 @xxx 也染色。
+        if (words.length) patterns.push("(?<![\\w@])(?:" + words.join("|") + ")");
+        return { nameByOpenid, regexp: new RegExp(patterns.join("|"), "gi") };
       }
-      function atDisplayName(raw, atCtx) {
+
+      // 把一个 at 片段变成给人看的文字：@全体成员、@某人，认不出来就原样显示。
+      function atDisplayText(raw, atMatcher) {
         if (/^<qqbot-at-everyone\b|^@全体成员$|^at全体成员$/i.test(raw)) return "@全体成员";
         if (/^<@!?\s*(?:all|everyone)\s*>$/i.test(raw)) return "@全体成员";
-        const user = raw.match(/^<qqbot-at-user\b[^>]*\bid="([^"]+)"/i);
-        if (user) return "@" + (atCtx.names.get(user[1]) || "成员");
+        const userTag = raw.match(/^<qqbot-at-user\b[^>]*\bid="([^"]+)"/i);
+        if (userTag) return "@" + (atMatcher.nameByOpenid.get(userTag[1]) || "成员");
         const openid = raw.match(/^<@!?\s*([^<>\s/\\]+)>$/);
-        if (openid) return "@" + (atCtx.names.get(openid[1].trim()) || "成员");
+        if (openid) return "@" + (atMatcher.nameByOpenid.get(openid[1].trim()) || "成员");
         return raw;
       }
-      function appendAtText(parent, text, atCtx) {
+
+      // 把一段文字按 at 切开：at 的那几个字套一层浅底色，其余部分原样输出。
+      function appendAtText(parent, text, atMatcher) {
         const value = String(text == null ? "" : text);
         if (!value) return;
-        let last = 0,
-          match;
-        atCtx.re.lastIndex = 0;
-        while ((match = atCtx.re.exec(value))) {
-          if (match.index > last)
-            parent.append(document.createTextNode(value.slice(last, match.index)));
-          const label = el("span", atDisplayName(match[0], atCtx), "at-mention");
-          const userTag = match[0].match(/^<qqbot-at-user\b[^>]*\bid="([^"]+)"/i);
+        let lastIndex = 0,
+          found;
+        atMatcher.regexp.lastIndex = 0;
+        while ((found = atMatcher.regexp.exec(value))) {
+          if (found.index > lastIndex)
+            parent.append(document.createTextNode(value.slice(lastIndex, found.index)));
+          const label = el("span", atDisplayText(found[0], atMatcher), "at-mention");
+          // 记下 openid：成员昵称晚到时只改这几个标签的文字，不必重画整屏消息。
+          const userTag = found[0].match(/^<qqbot-at-user\b[^>]*\bid="([^"]+)"/i);
           if (userTag) label.dataset.atOpenid = userTag[1];
           parent.append(label);
-          last = atCtx.re.lastIndex;
+          lastIndex = atMatcher.regexp.lastIndex;
         }
-        if (last < value.length) parent.append(document.createTextNode(value.slice(last)));
+        if (lastIndex < value.length) parent.append(document.createTextNode(value.slice(lastIndex)));
       }
       // 行内 markdown：粗体 / 斜体 / 行内代码 / 链接。全部用节点构造，不解析 HTML。
-      function inlineMarkdown(parent, text, atCtx) {
-        // 星号必须成对且边界干净才当粗体/斜体：`1D100*50` 这类算式里的星号不能误伤。
-        // 开标记前不能紧挨字母数字或另一个星号，闭标记后同理。
-        const re =
-          /(?<![\w*])\*\*([^*\n]+?)\*\*(?![\w*])|(?<![\w*])\*([^*\n]+?)\*(?![\w*])|`([^`\n]+)`|\[([^\]\n]+)\]\((https:\/\/[^\s)]+)\)/g;
-        let last = 0,
-          m;
-        while ((m = re.exec(text))) {
-          appendAtText(parent, text.slice(last, m.index), atCtx);
-          if (m[1] != null) parent.append(el("strong", m[1]));
-          else if (m[2] != null) parent.append(el("em", m[2]));
-          else if (m[3] != null) parent.append(el("code", m[3]));
+      // 四个分支用 | 连起来，顺序和下面的判断一一对应。
+      const INLINE_MARKDOWN_SOURCE = [
+        "(?<![\\w*])\\*\\*([^*\\n]+?)\\*\\*(?![\\w*])", // **粗体**
+        "(?<![\\w*])\\*([^*\\n]+?)\\*(?![\\w*])", // *斜体*
+        "`([^`\\n]+)`", // `行内代码`
+        "\\[([^\\]\\n]+)\\]\\((https:\\/\\/[^\\s)]+)\\)", // [文字](https://链接)
+      ].join("|");
+
+      function inlineMarkdown(parent, text, atMatcher) {
+        // 星号要成对、两边边界干净才算粗体 / 斜体：`1D100*50` 这种算式里的星号不能误伤，
+        // 所以开标记前不能挨着字母数字或另一个星号，闭标记后面同理。
+        // 每次调用都新建一个正则，免得 lastIndex 残留到下一次。
+        const pattern = new RegExp(INLINE_MARKDOWN_SOURCE, "g");
+        let lastIndex = 0,
+          found;
+        while ((found = pattern.exec(text))) {
+          appendAtText(parent, text.slice(lastIndex, found.index), atMatcher);
+          if (found[1] != null) parent.append(el("strong", found[1]));
+          else if (found[2] != null) parent.append(el("em", found[2]));
+          else if (found[3] != null) parent.append(el("code", found[3]));
           else {
-            const a = el("a", m[4]);
-            a.href = m[5];
-            a.target = "_blank";
-            a.rel = "noopener noreferrer";
-            parent.append(a);
+            const link = el("a", found[4]);
+            link.href = found[5];
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            parent.append(link);
           }
-          last = re.lastIndex;
+          lastIndex = pattern.lastIndex;
         }
-        appendAtText(parent, text.slice(last), atCtx);
+        appendAtText(parent, text.slice(lastIndex), atMatcher);
       }
       // 块级 markdown：代码块、标题、列表、引用、分隔线、段落。
       // 只有 msg_kind === "markdown" 的消息走这里，普通文本消息保持原样输出。
-      function markdown(parent, text, atCtx) {
+      function markdown(parent, text, atMatcher) {
         const lines = String(text == null ? "" : text)
           .replace(/\r\n?/g, "\n")
           .split("\n");
@@ -2212,7 +2261,7 @@
           const box = el(ordered ? "ol" : "ul");
           for (const item of items) {
             const li = el("li");
-            inlineMarkdown(li, item, atCtx);
+            inlineMarkdown(li, item, atMatcher);
             box.append(li);
           }
           parent.append(box);
@@ -2232,7 +2281,7 @@
           const heading = line.match(/^(#{1,3})\s+(.*)$/);
           if (heading) {
             const node = el("h" + heading[1].length);
-            inlineMarkdown(node, heading[2], atCtx);
+            inlineMarkdown(node, heading[2], atMatcher);
             parent.append(node);
             i += 1;
             continue;
@@ -2261,7 +2310,7 @@
             while (i < lines.length && /^\s*>\s?/.test(lines[i]))
               quoted.push(lines[i++].replace(/^\s*>\s?/, ""));
             const box = el("blockquote");
-            inlineMarkdown(box, quoted.join("\n"), atCtx);
+            inlineMarkdown(box, quoted.join("\n"), atMatcher);
             parent.append(box);
             continue;
           }
@@ -2275,7 +2324,7 @@
           const p = el("p");
           para.forEach((piece, index) => {
             if (index) p.append(el("br"));
-            inlineMarkdown(p, piece, atCtx);
+            inlineMarkdown(p, piece, atMatcher);
           });
           parent.append(p);
         }
@@ -2585,10 +2634,12 @@
         openChat(c, target).then(() => highlightChat(c));
       }
       // 消息结果只带 chat_type / chat_id：先在当前列表、再在搜索结果里补全会话信息。
-      function chatForMessage(m, lastChats) {
-        const match = (list) =>
-          (list || []).find((x) => x.chat_id === m.chat_id && x.chat_type === m.chat_type);
-        return match(state.chats) || match(lastChats) || m;
+      function chatForMessage(message, lastChats) {
+        const findIn = (list) =>
+          (list || []).find(
+            (chat) => chat.chat_id === message.chat_id && chat.chat_type === message.chat_type,
+          );
+        return findIn(state.chats) || findIn(lastChats) || message;
       }
       // 对会话执行一个 ChatAction（置顶 / 屏蔽 / 隐藏…），成功后关弹窗、刷新列表，
       // 再执行可选的 after（屏蔽切换后需要重画消息区和资料卡）。
@@ -2869,17 +2920,17 @@
             const unread = Number(snapshot?.unread) || 0,
               mentions = Number(snapshot?.mention_unread) || 0;
             if (unread || mentions || !(unreadAboveCount || unreadAboveMention)) {
-              const data = {
+              const counts = {
                 unread,
                 mention_unread: mentions,
                 first_unread: snapshot?.first_unread ?? null,
                 first_mention: snapshot?.first_mention ?? null,
               };
-              unreadAboveCount = data.unread;
-              unreadAboveMention = data.mention_unread;
-              unreadAboveTarget = data.first_unread;
-              unreadAboveMentionTarget = data.first_mention;
-              if (data.unread || data.mention_unread) rememberJumpSnapshot(state.chat, data);
+              unreadAboveCount = counts.unread;
+              unreadAboveMention = counts.mention_unread;
+              unreadAboveTarget = counts.first_unread;
+              unreadAboveMentionTarget = counts.first_mention;
+              if (counts.unread || counts.mention_unread) rememberJumpSnapshot(state.chat, counts);
               else jumpSnapshots.delete(jumpSnapshotKey(state.chat));
             }
             // 进会话之后才来的消息：右下角「N 条新消息」，从一开始算。
@@ -3993,8 +4044,8 @@
       function humanSize(bytes) {
         if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
         const units = ["B", "KB", "MB", "GB", "TB"];
-        const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-        return (bytes / 1024 ** index).toFixed(index ? 1 : 0) + " " + units[index];
+        const unitIndex = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+        return (bytes / 1024 ** unitIndex).toFixed(unitIndex ? 1 : 0) + " " + units[unitIndex];
       }
       function showVacuumDialog() {
         const box = dialog("回收磁盘空间", true),
@@ -4022,14 +4073,14 @@
           status.hidden = false;
           status.textContent = "正在逐个重写数据库，请勿关闭页面。";
           try {
-            const r = await api("Vacuum"),
-              v = r.vacuum || {},
-              text =
-                `已处理 ${v.vacuumed ?? 0} 个数据库，回收 ${humanSize(v.reclaimed || 0)}` +
-                (v.failed ? `，跳过 ${v.failed} 个` : "") +
-                `，耗时 ${v.seconds ?? 0} 秒。` +
-                (v.reclaimed ? "" : " 当前没有可回收的空洞，属于正常情况。");
-            showResult(text);
+            const response = await api("Vacuum");
+            const vacuum = response.vacuum || {};
+            const summary =
+              `已处理 ${vacuum.vacuumed ?? 0} 个数据库，回收 ${humanSize(vacuum.reclaimed || 0)}` +
+              (vacuum.failed ? `，跳过 ${vacuum.failed} 个` : "") +
+              `，耗时 ${vacuum.seconds ?? 0} 秒。` +
+              (vacuum.reclaimed ? "" : " 当前没有可回收的空洞，属于正常情况。");
+            showResult(summary);
           } catch (e) {
             status.textContent = e?.message || String(e);
             start.disabled = false;
@@ -4648,53 +4699,53 @@
           more = false,
           params = null;
         const moreButton = button("加载更多", () => loadPage());
-        // 全局搜索结果：按范围筛选后分「会话 / 消息」两段展示，标题带条数。
-        function renderResults(r) {
-          lastRaw = r;
+        // 全局搜索结果：先按范围筛一遍，再分「会话 / 消息」两段展示，标题带条数。
+        function renderResults(result) {
+          lastRaw = result;
           results.replaceChildren();
           const chats =
             scope === "message"
               ? []
-              : (r.chats || []).filter(
-                  (c) => scope === "all" || (c.chat_type === "qq_group") === (scope === "group"),
+              : (result.chats || []).filter(
+                  (chat) =>
+                    scope === "all" || (chat.chat_type === "qq_group") === (scope === "group"),
                 );
-          const messages = scope === "all" || scope === "message" ? r.messages || [] : [];
+          const messages = scope === "all" || scope === "message" ? result.messages || [] : [];
           if (!chats.length && !messages.length) {
             results.append(el("div", "没有匹配的会话或消息", "empty"));
             return;
           }
           if (chats.length) {
             results.append(el("h3", "会话 " + chats.length));
-            for (const c of chats) {
-              const row = button(
-                null,
-                () => locateChat(c),
-                "result search-chat",
-              );
+            for (const chat of chats) {
+              const row = button(null, () => locateChat(chat), "result search-chat");
               row.append(
-                avatar(c),
-                el("div", title(c), "search-chat-name"),
-                el("small", c.chat_type === "qq_group" ? "群聊" : "单聊"),
+                avatar(chat),
+                el("div", title(chat), "search-chat-name"),
+                el("small", chat.chat_type === "qq_group" ? "群聊" : "单聊"),
               );
               results.append(row);
             }
           }
           if (messages.length) {
             results.append(el("h3", "消息 " + messages.length));
-            for (const m of messages) {
-              const name = String(m.chat_name || m.remark || m.display_name || "").trim(),
-                kind = m.chat_type === "qq_group" ? "群聊" : "单聊";
+            for (const message of messages) {
+              // 显示群名 / 单聊名就够了，openid 又长又看不懂，只在没有名字时才退回去。
+              const name = String(
+                message.chat_name || message.remark || message.display_name || "",
+              ).trim();
+              const kind = message.chat_type === "qq_group" ? "群聊" : "单聊";
               const row = button(
                 null,
-                () => locateChat(chatForMessage(m, lastRaw?.chats), m.id),
+                () => locateChat(chatForMessage(message, lastRaw?.chats), message.id),
                 "result search-msg",
               );
               const head = el("div", null, "search-msg-head");
               head.append(
                 el("strong", name ? kind + " · " + name : kind),
-                el("small", date(m.created_at)),
+                el("small", date(message.created_at)),
               );
-              row.append(head, el("div", author(m) + "：" + summary(m)));
+              row.append(head, el("div", author(message) + "：" + summary(message)));
               results.append(row);
             }
           }
@@ -4706,7 +4757,7 @@
           const token = generation;
           moreButton.disabled = true;
           try {
-            const r = await api(global ? "SearchGlobal" : "SearchChat", {
+            const response = await api(global ? "SearchGlobal" : "SearchChat", {
               ...params,
               ...(!global && cursor !== null ? { before_id: cursor } : {}),
               limit: 50,
@@ -4714,21 +4765,26 @@
             if (token !== generation || !box.isConnected || (!global && !sameChat(current))) return;
             moreButton.remove();
             if (global) {
-              renderResults(r);
+              renderResults(response);
             } else {
-              const messages = r.messages || [],
+              const messages = response.messages || [],
                 pageCursor = cursor;
               seen.clear();
-              for (const m of messages) {
-                if (seen.has(m.id) || (pageCursor !== null && Number(m.id) >= pageCursor)) continue;
-                seen.add(m.id);
-                const d = new Date(Number(m.created_at) * 1000).toLocaleDateString();
-                if (day !== d) {
-                  day = d;
-                  results.append(el("h4", d));
+              for (const message of messages) {
+                if (seen.has(message.id) || (pageCursor !== null && Number(message.id) >= pageCursor))
+                  continue;
+                seen.add(message.id);
+                const dayLabel = new Date(Number(message.created_at) * 1000).toLocaleDateString();
+                if (day !== dayLabel) {
+                  day = dayLabel;
+                  results.append(el("h4", dayLabel));
                 }
-                const row = button(`${author(m)}：${summary(m)}`, () => locate(m.id), "result");
-                row.append(el("small", date(m.created_at)));
+                const row = button(
+                  `${author(message)}：${summary(message)}`,
+                  () => locate(message.id),
+                  "result",
+                );
+                row.append(el("small", date(message.created_at)));
                 row.dataset.record = "1";
                 results.append(row);
               }
@@ -4743,7 +4799,7 @@
                 box.scrollTop = Math.max(0, oldTop - (oldHeight - box.scrollHeight));
               }
               if (messages.length) {
-                const ids = messages.map((m) => Number(m.id)).filter((id) => id > 0);
+                const ids = messages.map((message) => Number(message.id)).filter((id) => id > 0);
                 if (ids.length) cursor = Math.min(...ids);
               }
               more =
@@ -5204,7 +5260,7 @@
       }
       const jumpMention = button("@我", () => {
         // 只认「最早未读 @」：普通未读交给上方「N 条新消息」胶囊，别点 @我 却跳到别处。
-        // 快照丢了才走后端兜底（MentionTarget 在整体标读后会回退到最近一条 @）。
+        // 快照丢了才去问后端（整体标读后，后端会退回到最近一条 @）。
         const id = unreadAboveMentionTarget;
         if (!id) return jumpToMention();
         clearUnreadAbove();
@@ -5214,19 +5270,55 @@
       jumpMention.title = "跳转到最早未读的 @ 消息";
       jumpMention.hidden = true;
       $("showInfo").before(jumpMention);
-      // —— 图片放大：点消息里的图看大图，再点一下或 Esc 关闭 ——
+      // —— 图片放大：点消息里的图看大图 ——
+      // 滚轮以鼠标位置为中心缩放，手机上双指捏合缩放、单指拖动平移，双击在原图和 2.5 倍之间切换。
+      // 关闭只认右上角 × 和 Esc；图片本身允许右键和长按，方便复制、另存为或存到相册。
       const lightbox = $("lightbox"),
-        lightboxImage = $("lightboxImage");
+        lightboxImage = $("lightboxImage"),
+        lightboxClose = $("lightboxClose");
+
+      // 大图打开时用到的一次性地址（分片图片要临时造一个 blob 地址）
       let lightboxUrl = "";
+
+      // 当前的缩放比例和平移距离，单位是像素；比例回到 1 时平移一并清零。
+      let imageScale = 1,
+        imageOffsetX = 0,
+        imageOffsetY = 0;
+
+      // 正在按下的手指或鼠标：key 是 pointerId，value 是它最近一次的位置。
+      // startX / startY 只在判断「这是拖动还是长按」时用。
+      const activePointers = new Map();
+
+      // 移动超过这么多像素才算拖动，没超过就当成长按，把菜单让给浏览器。
+      const DRAG_START_DISTANCE = 6;
+      let isDragging = false;
+
+      function applyImageTransform() {
+        lightboxImage.style.transform =
+          "translate(" + imageOffsetX + "px, " + imageOffsetY + "px) scale(" + imageScale + ")";
+      }
+
+      function resetImageView() {
+        imageScale = 1;
+        imageOffsetX = 0;
+        imageOffsetY = 0;
+        lightboxImage.style.transform = "";
+      }
+
       function closeLightbox() {
         if (lightbox.hidden) return;
         lightbox.hidden = true;
         lightboxImage.removeAttribute("src");
+        resetImageView();
+        activePointers.clear();
+        isDragging = false;
+        lightbox.classList.remove("dragging");
         if (lightboxUrl) {
           URL.revokeObjectURL(lightboxUrl);
           lightboxUrl = "";
         }
       }
+
       function openLightbox(source) {
         if (!source) return;
         if (lightboxUrl) {
@@ -5234,15 +5326,130 @@
           lightboxUrl = "";
         }
         if (source._blob) {
-          // 分片图片：渲染用的 objectURL 在 onload 时已经 revoke，这里用 Blob 重新造。
+          // 分片图片：渲染时用的地址已经回收了，这里用原数据重新造一个。
           lightboxUrl = URL.createObjectURL(source._blob);
           lightboxImage.src = lightboxUrl;
         } else {
           lightboxImage.src = source.currentSrc || source.src;
         }
+        resetImageView();
         lightbox.hidden = false;
+        // 焦点还留在下面的输入框里，光标就会一直闪；打开大图时把焦点挪走。
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       }
-      lightbox.onclick = closeLightbox;
+
+      // 以屏幕上的某个点为中心缩放：滚轮位置和双指中点都走这里，指哪儿放大哪儿。
+      function zoomImageAt(pointX, pointY, factor) {
+        const rect = lightboxImage.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        const nextScale = Math.min(8, Math.max(1, imageScale * factor));
+        if (nextScale === imageScale) return;
+        // 先看这个点底下压着图的哪一处，缩放之后再把它挪回这个点底下。
+        const contentX = centerX + (pointX - centerX - imageOffsetX) / imageScale;
+        const contentY = centerY + (pointY - centerY - imageOffsetY) / imageScale;
+        imageScale = nextScale;
+        imageOffsetX = pointX - centerX - imageScale * (contentX - centerX);
+        imageOffsetY = pointY - centerY - imageScale * (contentY - centerY);
+        if (imageScale === 1) {
+          imageOffsetX = 0;
+          imageOffsetY = 0;
+        }
+        applyImageTransform();
+      }
+
+      lightbox.addEventListener("wheel", (e) => {
+        if (lightbox.hidden) return;
+        e.preventDefault();
+        // 向上滚放大、向下滚缩小，一次 15%
+        zoomImageAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+      }, { passive: false });
+
+      // 双击：原图和 2.5 倍之间来回切换。
+      lightbox.addEventListener("dblclick", (e) => {
+        if (lightbox.hidden) return;
+        zoomImageAt(e.clientX, e.clientY, imageScale > 1.01 ? 1 / imageScale : 2.5);
+      });
+
+      // 按下时先只记位置，不急着接管指针：
+      // 手机上长按图片要靠浏览器自己的菜单保存，一按下就抢会让菜单弹不出来。
+      function beginImageDrag() {
+        if (isDragging) return;
+        isDragging = true;
+        lightbox.classList.add("dragging");
+        for (const pointerId of activePointers.keys()) {
+          try {
+            lightbox.setPointerCapture(pointerId);
+          } catch (error) {
+            // 指针已经抬起了，浏览器就不让接管了，忽略即可
+          }
+        }
+      }
+
+      function isCloseButton(node) {
+        return !!(node && node.closest && node.closest("#lightboxClose"));
+      }
+
+      lightbox.addEventListener("pointerdown", (e) => {
+        if (lightbox.hidden) return;
+        // 右键留给浏览器菜单（复制图片 / 图片另存为），不参与拖动
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        // 按在 × 上时千万不要接管指针：接管后鼠标的点击会落到遮罩层，
+        // 按钮就收不到 click，图也关不掉（触摸不受影响，所以手机原本是好的）
+        if (isCloseButton(e.target)) return;
+        activePointers.set(e.pointerId, {
+          x: e.clientX,
+          y: e.clientY,
+          startX: e.clientX,
+          startY: e.clientY,
+        });
+        // 两根手指一起按下就是捏合，不用等移动
+        if (activePointers.size >= 2) beginImageDrag();
+      });
+
+      lightbox.addEventListener("pointermove", (e) => {
+        const previous = activePointers.get(e.pointerId);
+        if (!previous) return;
+        if (!isDragging) {
+          const movedX = e.clientX - previous.startX;
+          const movedY = e.clientY - previous.startY;
+          // 一根手指还没挪开：当成长按，别抢浏览器的图片菜单
+          if (activePointers.size === 1 && Math.hypot(movedX, movedY) < DRAG_START_DISTANCE) return;
+          beginImageDrag();
+        }
+        if (activePointers.size === 1) {
+          imageOffsetX += e.clientX - previous.x;
+          imageOffsetY += e.clientY - previous.y;
+          applyImageTransform();
+        } else if (activePointers.size === 2) {
+          let other = null;
+          for (const [pointerId, point] of activePointers) {
+            if (pointerId !== e.pointerId) other = point;
+          }
+          // 两根手指：先按中点移动平移，再按两指间距的变化缩放
+          const middleX = (e.clientX + other.x) / 2;
+          const middleY = (e.clientY + other.y) / 2;
+          imageOffsetX += middleX - (previous.x + other.x) / 2;
+          imageOffsetY += middleY - (previous.y + other.y) / 2;
+          const distanceBefore = Math.hypot(previous.x - other.x, previous.y - other.y);
+          const distanceNow = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+          if (distanceBefore > 0 && distanceNow > 0)
+            zoomImageAt(middleX, middleY, distanceNow / distanceBefore);
+        }
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      });
+
+      function endPointer(e) {
+        activePointers.delete(e.pointerId);
+        if (!activePointers.size && isDragging) {
+          isDragging = false;
+          lightbox.classList.remove("dragging");
+        }
+      }
+
+      lightbox.addEventListener("pointerup", endPointer);
+      lightbox.addEventListener("pointercancel", endPointer);
+      lightboxClose.addEventListener("click", closeLightbox);
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") closeLightbox();
       });
