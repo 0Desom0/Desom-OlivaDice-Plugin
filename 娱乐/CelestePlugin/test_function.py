@@ -74,6 +74,40 @@ class CelestePluginFunctionTest(unittest.TestCase):
         file_item = function.normalize_file({'URL': 'https://gamebanana.com/dl/1414214', 'Name': 'map.zip'})
         self.assertEqual(file_item['id'], 1414214)
 
+    def test_search_item_id_from_page_url(self):
+        item = function.normalize_item(
+            {
+                'Name': 'Strawberry Jam Collab',
+                'Author': 'Strawberry Jam Collab Team',
+                'PageURL': 'https://gamebanana.com/mods/424541',
+                'Category': {
+                    'ID': 'GameBanana_Mod_6803',
+                    'Name': 'Collab/Contest',
+                    'Parent': {'ID': 'GameBanana_Mod_6800', 'Name': 'Maps'},
+                },
+            }
+        )
+        self.assertEqual(item['id'], 424541)
+        self.assertEqual(item['item_type'], 'Mod')
+        self.assertEqual(item['category'], 'Maps')
+        self.assertEqual(item['subcategory'], 'Collab/Contest')
+        self.assertEqual(item['page_url'], 'https://gamebanana.com/mods/424541')
+
+    def test_search_item_keeps_explicit_gamebanana_id(self):
+        item = function.normalize_item({'GameBananaId': 123, 'GameBananaType': 'Mod', 'Name': 'X'})
+        self.assertEqual(item['id'], 123)
+        self.assertEqual(item['item_type'], 'Mod')
+
+    def test_item_reference_handles_other_sections(self):
+        self.assertEqual(function.extract_item_reference({'PageURL': 'https://gamebanana.com/tools/9876'}), ('Tool', 9876))
+        self.assertEqual(function.extract_item_reference({'PageURL': 'https://gamebanana.com/mods/1?x=2'}), ('Mod', 1))
+        self.assertEqual(function.extract_item_reference({'PageURL': ''}), ('', 0))
+
+    def test_hydrate_item_rejects_unparsable_id(self):
+        result = function.get_item_by_id(0, 'Mod', include_cover_mirror=False)
+        self.assertFalse(result['ok'])
+        self.assertIn('GameBanana ID', result['error'])
+
     def test_profile_root_category_and_game(self):
         profile = function.normalize_profile(
             {

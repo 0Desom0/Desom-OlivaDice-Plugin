@@ -377,6 +377,48 @@ def normalize_file(raw_file: Any) -> dict[str, Any]:
     }
 
 
+GAMEBANANA_SECTION_TYPES = {
+    'mods': 'Mod',
+    'mod': 'Mod',
+    'tools': 'Tool',
+    'tool': 'Tool',
+    'sounds': 'Sound',
+    'sound': 'Sound',
+    'wips': 'Wip',
+    'wip': 'Wip',
+    'sprays': 'Spray',
+    'spray': 'Spray',
+    'requests': 'Request',
+    'request': 'Request',
+    'concepts': 'Concept',
+    'concept': 'Concept',
+    'contests': 'Contest',
+    'contest': 'Contest',
+    'games': 'Game',
+    'game': 'Game',
+}
+
+
+def extract_item_reference(raw_item: Any) -> tuple[str, int]:
+    """从 PageURL（或 _sProfileUrl）解析条目类型与 ID。
+
+    上游 gamebanana-search 已不再返回 GameBananaId，条目 ID 现在只保留在
+    https://gamebanana.com/mods/<id> 这类链接里；解析失败时返回 ('', 0)。
+    """
+    if not isinstance(raw_item, dict):
+        return '', 0
+    page_url = utils.safe_str(
+        raw_item.get('PageURL', raw_item.get('page_url', raw_item.get('_sProfileUrl', '')))
+    ).strip()
+    if not page_url:
+        return '', 0
+    matched = re.search(r'gamebanana\.com/([A-Za-z]+)/(\d+)', page_url)
+    if not matched:
+        return '', 0
+    item_type = GAMEBANANA_SECTION_TYPES.get(matched.group(1).casefold(), '')
+    return item_type, int(matched.group(2))
+
+
 def normalize_item(raw_item: Any) -> dict[str, Any]:
     if not isinstance(raw_item, dict):
         return {}
@@ -384,7 +426,31 @@ def normalize_item(raw_item: Any) -> dict[str, Any]:
     try:
         item_id = int(item_id)
     except Exception:
-        item_id = 0
+        item_id = extract_file_id(item_id)
+    item_type = utils.safe_str(raw_item.get('GameBananaType', raw_item.get('item_type', ''))).strip()
+    if item_id <= 0 or not item_type:
+        reference_type, reference_id = extract_item_reference(raw_item)
+        if item_id <= 0:
+            item_id = reference_id
+        if not item_type:
+            item_type = reference_type
+    item_type = item_type or 'Mod'
+    raw_category = raw_item.get('Category')
+    category_name = utils.safe_str(raw_item.get('CategoryName', raw_item.get('category', '')))
+    subcategory_name = utils.safe_str(raw_item.get('SubcategoryName', raw_item.get('subcategory', '')))
+    category_id = raw_item.get('CategoryId', raw_item.get('category_id'))
+    subcategory_id = raw_item.get('SubcategoryId', raw_item.get('subcategory_id'))
+    if isinstance(raw_category, dict):
+        if subcategory_id is None:
+            subcategory_id = raw_category.get('ID')
+        if not subcategory_name:
+            subcategory_name = utils.safe_str(raw_category.get('Name', ''))
+        raw_parent_category = raw_category.get('Parent')
+        if isinstance(raw_parent_category, dict):
+            if category_id is None:
+                category_id = raw_parent_category.get('ID')
+            if not category_name:
+                category_name = utils.safe_str(raw_parent_category.get('Name', ''))
     files = raw_item.get('Files', raw_item.get('files', []))
     if not isinstance(files, list):
         files = []
@@ -409,7 +475,7 @@ def normalize_item(raw_item: Any) -> dict[str, Any]:
         cover_url = screenshots[0] if screenshots else ''
     return {
         'id': item_id,
-        'item_type': utils.safe_str(raw_item.get('GameBananaType', raw_item.get('item_type', 'Mod')), 'Mod'),
+        'item_type': item_type,
         'name': utils.safe_str(raw_item.get('Name', raw_item.get('name', '未知标题')), '未知标题'),
         'author': utils.safe_str(raw_item.get('Author', raw_item.get('author', '未知作者')), '未知作者'),
         'description': utils.safe_str(raw_item.get('Description', raw_item.get('description', ''))),
@@ -417,10 +483,10 @@ def normalize_item(raw_item: Any) -> dict[str, Any]:
         'page_url': utils.safe_str(
             raw_item.get('PageURL', raw_item.get('page_url', f'https://gamebanana.com/mods/{item_id}'))
         ),
-        'category': utils.safe_str(raw_item.get('CategoryName', raw_item.get('category', ''))),
-        'subcategory': utils.safe_str(raw_item.get('SubcategoryName', raw_item.get('subcategory', ''))),
-        'category_id': raw_item.get('CategoryId', raw_item.get('category_id')),
-        'subcategory_id': raw_item.get('SubcategoryId', raw_item.get('subcategory_id')),
+        'category': category_name,
+        'subcategory': subcategory_name,
+        'category_id': category_id,
+        'subcategory_id': subcategory_id,
         'views': int(raw_item.get('Views', raw_item.get('views', 0)) or 0),
         'likes': int(raw_item.get('Likes', raw_item.get('likes', 0)) or 0),
         'downloads': int(raw_item.get('Downloads', raw_item.get('downloads', 0)) or 0),
@@ -759,6 +825,10 @@ def get_item_by_id(
     item_type: str = 'Mod',
     include_cover_mirror: bool = True,
 ) -> dict[str, Any]:
+    try:
+        item_id = int(item_id)
+    except Exception:
+        item_id = 0
     detail_cache_key = f'{item_type.casefold()}:{item_id}'
     detail_cache_ttl = max(0, int(utils.load_global_config().get('detail_cache_seconds', 600)))
     cached_detail = load_short_cache(
@@ -769,6 +839,8 @@ def get_item_by_id(
     )
     if isinstance(cached_detail, dict) and cached_detail.get('id'):
         return {'ok': True, 'data': cached_detail, 'error': '', 'from_cache': True}
+    if item_id <= 0:
+        return {'ok': False, 'data': {}, 'error': '无法解析该条目的 GameBanana ID'}
 
     # 上游已改契约：gamebanana-info 不再接受 itemtype/itemid，改为单个 id 参数，
     # 取值形如 GameBanana/Mod/<数字>（旧写法现在返回 400）。
