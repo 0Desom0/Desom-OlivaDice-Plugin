@@ -180,6 +180,23 @@ def reply_permission_denied(plugin_event) -> None:
     )
 
 
+def reply_persist_result(plugin_event, saved: bool, success_text: str) -> None:
+    """统一处理配置落盘结果：写失败时必须说出来，不能照样回「已保存」。
+
+    WebUI 入口一直是检查返回值的，普通命令以前把布尔值直接丢掉，
+    于是磁盘写满、目录没权限时用户看到的仍然是成功提示。
+    失败原因由 utils 记进 data/persist_error.log，这里负责告诉用户去看。
+    """
+    if saved:
+        utils.reply_message(plugin_event, success_text)
+        return
+    utils.reply_message(
+        plugin_event,
+        '配置写入失败，本次修改没有落盘。原因已记录到 data/persist_error.log，'
+        '请检查插件 data 目录的写权限与磁盘空间后重试。',
+    )
+
+
 def parse_secondary_action(command_argument: str):
     """把命令参数拆成 action 与剩余参数。"""
     return utils.split_first_token(command_argument)
@@ -263,8 +280,12 @@ def handle_tplglobal(plugin_event, command_argument: str) -> None:
         )
         return
 
-    utils.save_global_config(global_config)
-    utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_global_status'))
+    saved = utils.save_global_config(global_config)
+    reply_persist_result(
+        plugin_event,
+        saved,
+        render_custom_message(plugin_event, 'reply_global_status'),
+    )
 
 
 def handle_tplbot(plugin_event, command_argument: str) -> None:
@@ -283,14 +304,22 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
 
     if action_name == 'on':
         bot_config['bot_enable_switch'] = True
-        utils.save_bot_config(config_bot_hash, bot_config)
-        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_bot_status'))
+        saved = utils.save_bot_config(config_bot_hash, bot_config)
+        reply_persist_result(
+            plugin_event,
+            saved,
+            render_custom_message(plugin_event, 'reply_bot_status'),
+        )
         return
 
     if action_name == 'off':
         bot_config['bot_enable_switch'] = False
-        utils.save_bot_config(config_bot_hash, bot_config)
-        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_bot_status'))
+        saved = utils.save_bot_config(config_bot_hash, bot_config)
+        reply_persist_result(
+            plugin_event,
+            saved,
+            render_custom_message(plugin_event, 'reply_bot_status'),
+        )
         return
 
     if action_name == 'master':
@@ -312,10 +341,11 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
 
         if master_action == 'add':
             configured_master_list = utils.extend_unique_ids(configured_master_list, target_master_id_list)
-            utils.set_configured_master_list(config_bot_hash, configured_master_list)
+            saved = utils.set_configured_master_list(config_bot_hash, configured_master_list)
             master_text = ', '.join(configured_master_list) or '无'
-            utils.reply_message(
+            reply_persist_result(
                 plugin_event,
+                saved,
                 render_custom_message(
                     plugin_event,
                     'reply_bot_master_updated',
@@ -326,10 +356,11 @@ def handle_tplbot(plugin_event, command_argument: str) -> None:
 
         if master_action == 'del':
             configured_master_list = utils.subtract_ids(configured_master_list, target_master_id_list)
-            utils.set_configured_master_list(config_bot_hash, configured_master_list)
+            saved = utils.set_configured_master_list(config_bot_hash, configured_master_list)
             master_text = ', '.join(configured_master_list) or '无'
-            utils.reply_message(
+            reply_persist_result(
                 plugin_event,
+                saved,
                 render_custom_message(
                     plugin_event,
                     'reply_bot_master_updated',
@@ -396,9 +427,10 @@ def handle_tplgroup(plugin_event, command_argument: str) -> None:
                 render_custom_message(plugin_event, 'reply_group_not_in_group'),
             )
             return
-        utils.add_disabled_group(config_bot_hash, current_group_id)
-        utils.reply_message(
+        saved = utils.add_disabled_group(config_bot_hash, current_group_id)
+        reply_persist_result(
             plugin_event,
+            saved,
             render_custom_message(plugin_event, 'reply_group_disabled'),
         )
         return
@@ -410,9 +442,10 @@ def handle_tplgroup(plugin_event, command_argument: str) -> None:
                 render_custom_message(plugin_event, 'reply_group_not_in_group'),
             )
             return
-        utils.remove_disabled_group(config_bot_hash, current_group_id)
-        utils.reply_message(
+        saved = utils.remove_disabled_group(config_bot_hash, current_group_id)
+        reply_persist_result(
             plugin_event,
+            saved,
             render_custom_message(plugin_event, 'reply_group_enabled'),
         )
         return
@@ -443,10 +476,16 @@ def handle_tplgroup(plugin_event, command_argument: str) -> None:
                 render_custom_message(plugin_event, 'reply_group_usage_add'),
             )
             return
-        for target_group_id in target_group_list:
-            utils.add_disabled_group(config_bot_hash, target_group_id)
-        utils.reply_message(
+        failed_group_list = [
+            target_group_id
+            for target_group_id in target_group_list
+            if not utils.add_disabled_group(config_bot_hash, target_group_id)
+        ]
+        if failed_group_list:
+            utils.record_persist_error('批量禁用群写入失败：%s' % ', '.join(failed_group_list))
+        reply_persist_result(
             plugin_event,
+            len(failed_group_list) == 0,
             render_custom_message(
                 plugin_event,
                 'reply_group_add_done',
@@ -463,10 +502,16 @@ def handle_tplgroup(plugin_event, command_argument: str) -> None:
                 render_custom_message(plugin_event, 'reply_group_usage_del'),
             )
             return
-        for target_group_id in target_group_list:
-            utils.remove_disabled_group(config_bot_hash, target_group_id)
-        utils.reply_message(
+        failed_group_list = [
+            target_group_id
+            for target_group_id in target_group_list
+            if not utils.remove_disabled_group(config_bot_hash, target_group_id)
+        ]
+        if failed_group_list:
+            utils.record_persist_error('批量启用群写入失败：%s' % ', '.join(failed_group_list))
+        reply_persist_result(
             plugin_event,
+            len(failed_group_list) == 0,
             render_custom_message(
                 plugin_event,
                 'reply_group_del_done',

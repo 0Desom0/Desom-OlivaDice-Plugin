@@ -21,7 +21,9 @@ import json
 import os
 import re
 import threading
+import time
 import traceback
+from collections import deque
 from functools import wraps
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -37,6 +39,10 @@ except Exception:
     has_oliva_dice_core = False
 
 file_lock = threading.RLock()
+persist_error_lock = threading.RLock()
+recent_persist_errors: 'deque' = deque(maxlen=20)
+storage_init_lock = threading.RLock()
+initialized_storage_map: Dict[str, str] = {}
 runtime_proc = None
 
 reply_segment_pattern = re.compile(r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]', re.IGNORECASE)
@@ -151,13 +157,72 @@ def list_folder_entries(
     return sorted(entry_list)
 
 
-def read_json_file(file_path: str, default_value: Any) -> Any:
-    """
-    读取 JSON 文件，失败时返回默认值。
+def get_persist_error_log_path() -> str:
+    """持久化异常日志路径。
 
-    这里不直接把异常抛给业务层，是因为模板更重视“先稳定跑起来”。
-    真正要查错时，会通过 error_log 输出详细信息。
+    放在插件 data 目录下，骰主在服务器上直接就能看到，不用连 OlivOS 控制台。
     """
+    return os.path.join(config.plugin_data_dir, 'persist_error.log')
+
+
+def record_persist_error(message: str) -> None:
+    """记录一次持久化异常：内存环形缓存 + data/persist_error.log。
+
+    读写失败必须留下痕迹。旧实现只在注释里承诺“会输出详细信息”，实际是静默
+    返回默认值，配置被写坏之后完全无从排查。
+    """
+    line = '[%s] %s' % (time.strftime('%Y-%m-%d %H:%M:%S'), safe_str(message))
+    with persist_error_lock:
+        recent_persist_errors.append(line)
+        try:
+            ensure_folder(config.plugin_data_dir)
+            with open(get_persist_error_log_path(), 'a', encoding='utf-8') as file_object:
+                file_object.write(line + '\n')
+        except Exception:
+            # 连日志都写不进去时只能保留内存那一份，不能因此影响主流程。
+            pass
+
+
+def get_recent_persist_errors() -> List[str]:
+    """取最近若干条持久化异常，供调试命令或菜单展示。"""
+    with persist_error_lock:
+        return list(recent_persist_errors)
+
+
+def archive_corrupt_file(file_path: str) -> str:
+    """把读不出来的文件改名归档，返回归档路径；失败返回空文本。
+
+    必须在“用默认值写回”之前调用。否则一份被手工改坏的配置会被默认值覆盖，
+    骰主既看不到原内容，也没有任何恢复和排查的余地。
+    """
+    try:
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        archived_path = '%s.corrupt-%s' % (file_path, stamp)
+        index = 1
+        while os.path.exists(archived_path):
+            archived_path = '%s.corrupt-%s-%d' % (file_path, stamp, index)
+            index += 1
+        os.replace(file_path, archived_path)
+        return archived_path
+    except Exception as exception_object:
+        record_persist_error(
+            '归档损坏文件失败：%s（%s: %s）'
+            % (file_path, type(exception_object).__name__, exception_object)
+        )
+        return ''
+
+
+def read_json_file(file_path: str, default_value: Any, kind: str = 'JSON') -> Any:
+    """读取 JSON 文件，失败时返回默认值。
+
+    返回值和以前一致（模板优先“先稳定跑起来”），但失败路径不再静默：
+    - 文件不存在：首次运行的正常情况，直接返回默认值。
+    - 解析失败 / 编码错误 / 权限不足：先把原文件归档成 `<文件名>.corrupt-<时间戳>`，
+      再返回默认值，并把原因写进 persist_error.log。
+    先归档的意义在于：调用方随后即使写回默认值，也只是生成一份新文件，
+    坏掉的那份仍然躺在旁边等人来查。
+    """
+    file_path = os.fspath(file_path)
     if not os.path.exists(file_path):
         return deep_copy_default(default_value)
 
@@ -165,19 +230,57 @@ def read_json_file(file_path: str, default_value: Any) -> Any:
         try:
             with open(file_path, 'r', encoding='utf-8') as file_object:
                 return json.load(file_object)
-        except Exception:
+        except Exception as exception_object:
+            archived_path = archive_corrupt_file(file_path)
+            if archived_path:
+                detail = '已归档为 %s' % archived_path
+            else:
+                detail = '归档失败，请手工备份后删除该文件'
+            record_persist_error(
+                '%s 读取失败：%s（%s: %s）；%s'
+                % (kind, file_path, type(exception_object).__name__, exception_object, detail)
+            )
             return deep_copy_default(default_value)
 
 
-def save_json_file(file_path: str, data: Any) -> bool:
-    """保存 JSON 文件，成功返回 True。"""
+def save_json_file(file_path: str, data: Any, kind: str = 'JSON') -> bool:
+    """保存 JSON 文件，成功返回 True。
+
+    写盘顺序：同目录临时文件 → fsync → 旧文件改名为 `.bak` → 原子替换。
+    这样中断或异常都不会留下半个 JSON，上一份能用的内容也还有 `.bak` 可回滚。
+    """
+    file_path = os.fspath(file_path)
     with file_lock:
+        temp_path = ''
         try:
-            ensure_folder(os.path.dirname(file_path))
-            with open(file_path, 'w', encoding='utf-8') as file_object:
+            folder_path = os.path.dirname(file_path)
+            ensure_folder(folder_path)
+            temp_path = '%s.tmp-%s-%s' % (file_path, os.getpid(), threading.get_ident())
+            with open(temp_path, 'w', encoding='utf-8') as file_object:
                 json.dump(data, file_object, ensure_ascii=False, indent=2)
+                file_object.flush()
+                os.fsync(file_object.fileno())
+            if os.path.exists(file_path):
+                try:
+                    os.replace(file_path, file_path + '.bak')
+                except Exception as exception_object:
+                    # 备份失败不阻断写入，但必须记下来：这次操作没有回滚点。
+                    record_persist_error(
+                        '备份旧文件失败：%s（%s: %s）'
+                        % (file_path, type(exception_object).__name__, exception_object)
+                    )
+            os.replace(temp_path, file_path)
             return True
-        except Exception:
+        except Exception as exception_object:
+            record_persist_error(
+                '%s 保存失败：%s（%s: %s）'
+                % (kind, file_path, type(exception_object).__name__, exception_object)
+            )
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
             return False
 
 
@@ -583,7 +686,7 @@ def load_global_config(bot_hash: Any = None) -> Dict[str, Any]:
     这份配置对所有 bot 共用。
     """
     file_path = get_global_config_file_path(bot_hash)
-    file_data = read_json_file(file_path, config.default_global_config)
+    file_data = read_json_file(file_path, config.default_global_config, '全局配置')
     return merge_dict_with_default(file_data, config.default_global_config)
 
 
@@ -595,7 +698,7 @@ def save_global_config(global_config: Dict[str, Any], bot_hash: Any = None) -> b
     这里写入的是所有 bot 共用的一份 global_config.json。
     """
     final_config = merge_dict_with_default(global_config, config.default_global_config)
-    return save_json_file(get_global_config_file_path(), final_config)
+    return save_json_file(get_global_config_file_path(), final_config, '全局配置')
 
 
 def load_bot_config(bot_hash: Any) -> Dict[str, Any]:
@@ -606,7 +709,7 @@ def load_bot_config(bot_hash: Any) -> Dict[str, Any]:
     只包含数字字符串、且不重复的列表。
     """
     file_path = get_bot_config_file_path(bot_hash)
-    file_data = read_json_file(file_path, config.default_bot_config)
+    file_data = read_json_file(file_path, config.default_bot_config, 'Bot 配置')
     merged_config = merge_dict_with_default(file_data, config.default_bot_config)
     merged_config['configured_master_list'] = normalize_id_list(merged_config.get('configured_master_list', []))
     return merged_config
@@ -623,7 +726,7 @@ def save_bot_config(bot_hash: Any, bot_config: Dict[str, Any]) -> bool:
     for legacy_key in ['bot_id', 'bot_hash', 'raw_bot_hash']:
         final_config.pop(legacy_key, None)
     final_config['configured_master_list'] = normalize_id_list(final_config.get('configured_master_list', []))
-    return save_json_file(get_bot_config_file_path(bot_hash), final_config)
+    return save_json_file(get_bot_config_file_path(bot_hash), final_config, 'Bot 配置')
 
 
 def require_json_object(data: Any, kind: str = '配置') -> Dict[str, Any]:
@@ -674,7 +777,7 @@ def load_bot_message_custom_overlay(bot_hash: Any) -> Dict[str, str]:
 
     文件不存在、损坏或不是对象时，视为没有任何自定义覆盖。
     """
-    file_data = read_json_file(get_message_custom_file_path(bot_hash), {})
+    file_data = read_json_file(get_message_custom_file_path(bot_hash), {}, '回复词')
     if not isinstance(file_data, dict):
         return {}
     overlay_dict: Dict[str, str] = {}
@@ -688,7 +791,7 @@ def load_bot_message_custom_overlay(bot_hash: Any) -> Dict[str, str]:
 
 def save_bot_message_custom_overlay(bot_hash: Any, overlay_dict: Any) -> bool:
     """把覆盖层写回 message_custom.json，写入前再次丢掉与默认相同的条目。"""
-    return save_json_file(get_message_custom_file_path(bot_hash), build_message_custom_overlay(overlay_dict))
+    return save_json_file(get_message_custom_file_path(bot_hash), build_message_custom_overlay(overlay_dict), '回复词')
 
 
 def load_bot_message_custom(bot_hash: Any) -> Dict[str, str]:
@@ -715,14 +818,14 @@ def save_bot_message_custom(bot_hash: Any, custom_message_dict: Dict[str, str]) 
 def load_bot_message_variables(bot_hash: Any) -> Dict[str, str]:
     """读取当前 bot 的自定义变量。"""
     file_path = get_message_variable_file_path(bot_hash)
-    file_data = read_json_file(file_path, message_custom.default_custom_variable_dict)
+    file_data = read_json_file(file_path, message_custom.default_custom_variable_dict, '回复词变量')
     return merge_dict_with_default(file_data, message_custom.default_custom_variable_dict)
 
 
 def save_bot_message_variables(bot_hash: Any, variable_dict: Dict[str, str]) -> bool:
     """保存当前 bot 的自定义变量。"""
     final_dict = merge_dict_with_default(variable_dict, message_custom.default_custom_variable_dict)
-    return save_json_file(get_message_variable_file_path(bot_hash), final_dict)
+    return save_json_file(get_message_variable_file_path(bot_hash), final_dict, '回复词变量')
 
 
 def get_bot_message_key_list(bot_hash: Any) -> List[str]:
@@ -873,11 +976,16 @@ def initialize_bot_storage(bot_hash: Any, bot_id: Any = '') -> Dict[str, Any]:
     """
     初始化单个 bot 的目录与配置文件。
 
-    每次 bot 首次出现时，会把必要的初始化文件都准备好：
+    只在文件缺失时创建，不再每次调用都重写一遍 bot_config：
     - 原始 bot 目录中的 bot_config.json
     - 解析后的 linked_bot_hash 目录中的 storage/
     - 解析后的 linked_bot_hash 目录中的 message_custom.json（只写覆盖层，默认值不落盘）
     - 解析后的 linked_bot_hash 目录中的 message_variable.json
+
+    旧实现是「读一次 → 无条件存一次」。配合消息入口的调用时机，等于每条消息都会
+    覆盖一遍磁盘上的 bot_config；一旦这个文件被改坏，任意一条无关消息都会把默认值
+    写上去，管理员的配置就此丢失。现在读取仍然会补齐默认值（只在内存里），
+    但只有文件真的不存在时才落盘。
     """
     config_bot_hash = get_config_bot_hash(bot_hash)
     reply_bot_hash = get_reply_runtime_bot_hash(bot_hash)
@@ -890,8 +998,13 @@ def initialize_bot_storage(bot_hash: Any, bot_id: Any = '') -> Dict[str, Any]:
     ensure_folder(get_storage_dir(reply_bot_hash))
     ensure_folder(get_reply_bot_root_dir(reply_bot_hash))
 
-    bot_config = load_bot_config(config_bot_hash)
-    save_bot_config(config_bot_hash, bot_config)
+    if not os.path.exists(get_bot_config_file_path(config_bot_hash)):
+        save_bot_config(config_bot_hash, load_bot_config(config_bot_hash))
+    else:
+        # 文件存在时不重写，但要确认它真能读：读不出来就归档，再补一份默认配置。
+        load_bot_config(config_bot_hash)
+        if not os.path.exists(get_bot_config_file_path(config_bot_hash)):
+            save_bot_config(config_bot_hash, load_bot_config(config_bot_hash))
 
     if not os.path.exists(get_message_custom_file_path(reply_bot_hash)):
         save_bot_message_custom(reply_bot_hash, message_custom.default_custom_message_dict)
@@ -937,11 +1050,28 @@ def initialize_plugin(Proc) -> None:
         )
 
 
-def ensure_runtime_storage_by_event(plugin_event, Proc=None) -> str:
-    """按当前事件确保当前 bot 的目录已初始化。"""
+def ensure_runtime_storage_by_event(plugin_event, Proc=None, force: bool = False) -> str:
+    """按当前事件确保当前 bot 的目录已初始化。
+
+    每个 bot 只在进程内首次出现时真正做一次目录与配置文件初始化，之后命中内存标记
+    直接返回。这样做有两层意义：
+    1. 消息热路径上不再反复做 mkdir / 读配置 / 写配置；
+    2. 磁盘上的配置被改坏时，不会因为「下一条无关消息」再触发一轮初始化写盘。
+    需要重新按磁盘现状初始化时传 force=True。
+    """
     raw_bot_hash = get_raw_bot_hash_from_event(plugin_event)
+    memo_key = safe_str(raw_bot_hash)
+    if memo_key and not force:
+        with storage_init_lock:
+            cached_config_hash = initialized_storage_map.get(memo_key)
+        if cached_config_hash is not None:
+            return cached_config_hash
+
     bot_id = get_bot_id_from_event(plugin_event)
     runtime_info = initialize_bot_storage(raw_bot_hash, bot_id=bot_id)
+    if memo_key:
+        with storage_init_lock:
+            initialized_storage_map[memo_key] = runtime_info['config_bot_hash']
     debug_log(
         Proc,
         f'已确认当前事件目录可用：config={runtime_info["config_bot_hash"]} '

@@ -11,9 +11,11 @@
 
 from . import message
 from . import utils
-from . import webui
 
-# OPK 解包目录会在插件加载完成后被 OlivOS 删除，桌面 GUI 必须在这里导入。
+# gui.py 与 webui.py 都是可选模块：
+# - 不需要桌面面板就删掉 gui.py，不需要网页配置页就删掉 webui.py 与 webui/ 目录，
+#   同时删掉 app.json 里对应的 menu_config / webui_config 即可。
+# - OPK 解包目录会在插件加载完成后被 OlivOS 删除，桌面 GUI 必须在模块导入阶段加载。
 try:
     from . import gui
 except Exception as exception_object:
@@ -21,6 +23,14 @@ except Exception as exception_object:
     gui_import_error = exception_object
 else:
     gui_import_error = None
+
+try:
+    from . import webui
+except Exception as exception_object:
+    webui = None
+    webui_import_error = exception_object
+else:
+    webui_import_error = None
 
 
 class Event(object):
@@ -74,6 +84,13 @@ class Event(object):
     def menu(plugin_event, Proc):
         """分发网页请求与桌面菜单。"""
         if isinstance(getattr(plugin_event.data, 'webui', None), dict):
+            if webui is None:
+                utils.error_log(
+                    Proc,
+                    '无法处理 WebUI 请求：webui 模块不可用。'
+                    '如果这个插件不需要网页配置，请同时删除 app.json 中的 webui_config。',
+                )
+                return
             webui.handle_menu_event(plugin_event, Proc)
             return
         if gui is None:
