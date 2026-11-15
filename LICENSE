@@ -1,21 +1,20 @@
-MIT License
+Desom-OlivaDice-Plugin 仓库授权说明
 
 Copyright (c) 2025 Desom-fu
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+本仓库是 OlivOS 插件合集，各个插件按目录独立授权，具体以各插件目录下的 LICENSE 文件为准，
+本文件不再对全仓库给出单一许可。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+- 规则插件：基于 OlivaDiceCore 规则插件模板、注册在 OlivaDiceCore 骰点/回复体系里的插件
+  （含规则插件模板本身，形态上是带 msgReply / msgCustom / msgCustomManager 的规则模块）
+  → GNU Affero 通用公共许可证第 3 版（AGPL-3.0）
+- 其余插件：轻量插件、独立功能插件、工具类插件、轻量模板
+  → MIT
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+为什么这样分：OlivaDiceCore 以 AGPL-3.0 分发，注册进其规则体系、与其链接的插件属于衍生作品，
+分发时必须同样以 AGPL-3.0 提供完整的对应源码；不注册进该体系的插件不受这一条约束，按 MIT 授权。
+
+分发规则插件时请遵守 AGPL-3.0：附带完整源码（可修改的未混淆形式）、保留版权与许可声明、标明修改。
+只发混淆/加密产物而不提供源码，不满足 AGPL-3.0 对「对应的源代码」的要求。
+
+各插件的 LICENSE 文件里带有对应许可证的完整文本。
