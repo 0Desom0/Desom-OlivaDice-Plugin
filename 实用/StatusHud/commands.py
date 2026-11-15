@@ -1,6 +1,6 @@
 """hud 命令解析及权限检查。"""
 
-from .storage import MODE_NAMES, MODE_OFF, MODE_ON, MODE_SN_AUTO, StorageError
+from .storage import MODE_NAMES, MODE_SN_AUTO, StorageError
 
 HELP = (
     'StatusHud 帮助\n'
@@ -16,15 +16,6 @@ HELP = (
     '本插件支持群链。'
     '代投使用被代投人的开关与 sn'
 )
-
-# 也接受旧写法 on / off，等价于 1 / 2。
-GLOBAL_ALIASES = {
-    '1': MODE_ON,
-    '2': MODE_OFF,
-    '3': MODE_SN_AUTO,
-    'on': MODE_ON,
-    'off': MODE_OFF,
-}
 
 
 def command_text(event, olivos):
@@ -126,14 +117,14 @@ def handle(event, proc, manager, olivos):
             if not action:
                 mode = manager.storage.status(bot_hash, user_id, platform)['mode']
                 response = f'HUD 全局模式：{mode}（{MODE_NAMES[mode]}）'
-            elif action not in GLOBAL_ALIASES:
+            elif action not in ('1', '2', '3'):
                 response = '用法：.hud global 1 / 2 / 3（1 全局开启、2 全局关闭、3 跟随 .sn auto on）'
             elif not core.ordinaryInviteManager.isInMasterList(
                 bot_hash, core.userConfig.getUserHash(user_id, 'user', platform),
             ):
                 response = '只有当前 bot 的 OlivaDiceCore 骰主可以修改全局模式。'
             else:
-                mode = GLOBAL_ALIASES[action]
+                mode = int(action)
                 manager.storage.set_global(bot_hash, mode)
                 response = f'HUD 全局模式已设为 {mode}（{MODE_NAMES[mode]}）。'
         else:

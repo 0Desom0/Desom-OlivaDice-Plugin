@@ -707,11 +707,15 @@ def test_off_hint_when_sn_auto_keeps_hud_on(runtime):
 
 def test_global_mode_command(runtime):
     runtime.core.console.dictConsoleSwitch['bot']['masterList'] = [['1', 'qq']]
-    for argument, mode in (('1', 1), ('2', 2), ('3', 3), ('on', 1), ('off', 2)):
+    for argument, mode in (('1', 1), ('2', 2), ('3', 3)):
         event = runtime.Event(f'.hud global {argument}')
         runtime.hud(event)
         assert f'HUD 全局模式已设为 {mode}' in event.sent[0][2]
         assert runtime.storage.status('bot', '2', 'qq')['mode'] == mode
     event = runtime.Event('.hud global')
     runtime.hud(event)
-    assert 'HUD 全局模式：2' in event.sent[0][2]
+    assert 'HUD 全局模式：3' in event.sent[0][2]
+    event = runtime.Event('.hud global on')
+    runtime.hud(event)
+    assert '用法：.hud global 1 / 2 / 3' in event.sent[0][2]
+    assert runtime.storage.status('bot', '2', 'qq')['mode'] == 3

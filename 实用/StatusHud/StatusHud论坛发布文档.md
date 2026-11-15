@@ -85,7 +85,7 @@
 | `.hud global 2` | 全局模式 2：未单独设置的用户默认不显示 | 当前 bot 的 Core 骰主 |
 | `.hud global 3` | 全局模式 3：跟随 `.sn auto on`（默认） | 当前 bot 的 Core 骰主 |
 
-这些指令管理的是**操作者自己的开关**；在 `.hud on/off` 后面 @ 别人不会替对方修改设置。旧写法 `.hud global on/off` 仍然可用，等价于 1 / 2。
+这些指令管理的是**操作者自己的开关**；在 `.hud on/off` 后面 @ 别人不会替对方修改设置。
 
 ---
 
@@ -266,7 +266,7 @@ plugin/data/StatusHud/
 
 - 全局默认改为全局模式：1 全局开启、2 全局关闭、3 跟随 OlivaDiceCore 的 `.sn auto on`，默认 3。
 - 模式 3 下个人 HUD 开关与 `.sn auto` 任一开启即显示；未设置个人 HUD 时视为关闭，`.sn auto` 按 Core 规则只读（用户设置优先，未设置时用 Core 的全局默认）。
-- `.hud global` 改为接受 1 / 2 / 3，旧写法 `on` / `off` 仍等价于 1 / 2；`.hud show` 增加全局模式与 `.sn auto` 状态。
+- `.hud global` 只接受 1 / 2 / 3（不接受 `on` / `off`）；`.hud show` 增加全局模式与 `.sn auto` 状态。
 - 旧版 `global_enabled` 配置自动迁移为 `mode`。
 
 ### v1.1.0
