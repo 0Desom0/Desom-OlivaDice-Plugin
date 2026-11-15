@@ -18,15 +18,18 @@
 | `.hud on` | 保存个人开启设置 | 所有人 |
 | `.hud off` | 保存个人关闭设置 | 所有人 |
 | `.hud` | 将当前有效状态取反，保存为个人设置 | 所有人 |
-| `.hud show` | 查看有效状态、设置来源和全局默认 | 所有人 |
-| `.hud global on/off` | 设置群链共享的全局默认 | 当前 bot 的 Core 骰主 |
+| `.hud show` | 查看有效状态、设置来源和全局模式 | 所有人 |
+| `.hud global 1/2/3` | 设置群链共享的全局模式（1 全局开启、2 全局关闭、3 跟随 `.sn auto on`） | 当前 bot 的 Core 骰主 |
 
-前缀支持 `.`、`。`、`/`；命令忽略大小写，并按轻量模板方式支持 `.hudon`、`.hudglobaloff` 连写。
+前缀支持 `.`、`。`、`/`；命令忽略大小写，并按轻量模板方式支持 `.hudon`、`.hudglobal3` 连写；旧写法 `.hud global on/off` 仍等价于 1 / 2。
 
 ## 状态与显示
 
-- 首次全局默认关闭。没有个人设置的用户跟随全局；个人 on/off 始终优先。已有保存的全局设置保留；需要关闭原有全局默认时由骰主执行 `.hud global off`。
-- 全局默认和个人设置都通过 Core 的 `getRedirectedBotHash` 跟随 link。权限检查仍使用当前实际 bot 的 Core 骰主列表。
+- 首次全局模式为 3（跟随 OlivaDiceCore 的 `.sn auto on`）：没有个人设置的玩家默认不显示，开启 `.sn auto on` 后显示。模式 1 为全局开启、模式 2 为全局关闭。
+- 模式 1 / 2 下个人 on/off 优先于全局；模式 3 下个人 HUD 与 `.sn auto` 任一开启即显示，未设置个人 HUD 时视为关闭。
+- 旧版 `config.json` 的 `global_enabled` 布尔值会在下一次读取时迁移一次（开→1、关→2）。
+- 全局模式和个人设置都通过 Core 的 `getRedirectedBotHash` 跟随 link。权限检查仍使用当前实际 bot 的 Core 骰主列表。
+- `.sn auto` 只读：直接调用 Core 的 `userConfig.getUserConfigByKey(..., userConfigKey='autoSnEnabled', botHash=...)`，与 Core 自身的判定一致（用户设置优先，未设置时用 Core 的全局默认开关），插件不写入 Core 的任何配置。
 - 检测实际的 `roll()` 调用，因此纯计算及骰点错误回复同样适用；没有调用 roll 的指令保留原回复。
 - 代投读取 Core 已解析的实际目标，不根据任意 at 猜测。权限不足的代投提示不加；普通 `.r` 中的 at 不会被当成代投。
 - 暗骰群内提示保持原样；发起人收到的私聊结果和每位旁观者收到的结果均添加同一目标的 HUD。发送目标保持 Core 原行为。
@@ -50,10 +53,10 @@ plugin/data/StatusHud/
         └── {userHash}.json
 ```
 
-`config.json` 默认内容：
+`config.json` 默认内容（`mode`：1 全局开启、2 全局关闭、3 跟随 `.sn auto on`）：
 
 ```json
-{"global_enabled": false}
+{"mode": 3}
 ```
 
 个人文件仅在手动设置时创建：

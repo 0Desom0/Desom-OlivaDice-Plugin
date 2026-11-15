@@ -26,6 +26,7 @@ class Event:
             return
         storage = Storage(core)
         manager = hooks.HookManager(OlivOS, core, Proc, storage, SnProvider(core))
+        storage.log = manager.log
         try:
             for bot_hash in Proc.Proc_data.get('bot_info_dict', {}):
                 try:
@@ -38,7 +39,7 @@ class Event:
             manager.log('HUD 接入失败', error)
             return
         gManager = manager
-        Proc.log(2, 'StatusHud 已接入 OneDice；初始全局默认关闭。', [('StatusHud', 'default')])
+        Proc.log(2, 'StatusHud 已接入 OneDice；初始全局模式为 3（跟随 .sn auto on）。', [('StatusHud', 'default')])
 
     def private_message(plugin_event, Proc):
         unity_reply(plugin_event, Proc)

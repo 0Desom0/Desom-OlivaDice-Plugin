@@ -42,7 +42,7 @@ def test_linked_defaults_and_overrides(runtime):
     runtime.core.console.setAccountRelation('slave', 'bot')
     runtime.storage.initialize('slave')
     runtime.storage.set_user('slave', '1', 'qq', True)
-    runtime.storage.set_global('slave', False)
+    runtime.storage.set_global('slave', 2)
     assert runtime.storage.status('bot', '1', 'qq')['enabled']
     assert not runtime.storage.status('bot', '2', 'qq')['enabled']
     assert not (runtime.storage.root / 'slave').exists()
@@ -53,12 +53,12 @@ def test_linked_defaults_and_overrides(runtime):
 def test_global_permission_uses_current_bot(runtime):
     runtime.core.console.setAccountRelation('slave', 'bot')
     runtime.core.console.dictConsoleSwitch['bot']['masterList'] = [['1', 'qq']]
-    event = runtime.Event('.hud global on', bot='slave')
+    event = runtime.Event('.hud global 1', bot='slave')
     runtime.hud(event)
     assert '只有当前 bot' in event.sent[0][2]
     assert not runtime.storage.status('slave', '1', 'qq')['enabled']
     runtime.core.console.dictConsoleSwitch['slave']['masterList'] = [['1', 'qq']]
-    event = runtime.Event('.hud global on', bot='slave')
+    event = runtime.Event('.hud global 1', bot='slave')
     runtime.hud(event)
     assert runtime.storage.status('bot', '2', 'qq')['enabled']
 
@@ -331,13 +331,13 @@ def test_empty_sn_preserves_result_and_default_template_fallback(runtime):
     assert runtime.sn.get('1', 'qq', '100').startswith('Alice HP10/12')
 
 
-@pytest.mark.parametrize('global_enabled', [False, True])
+@pytest.mark.parametrize('global_mode', [2, 1])
 @pytest.mark.parametrize('enabled_user', ['1', '2'])
-def test_team_respects_each_members_personal_switch(runtime, global_enabled, enabled_user):
+def test_team_respects_each_members_personal_switch(runtime, global_mode, enabled_user):
     runtime.card('1', 'Alice')
     runtime.card('2', 'Bob')
     runtime.card('3', 'Carol')
-    runtime.storage.set_global('bot', global_enabled)
+    runtime.storage.set_global('bot', global_mode)
     runtime.storage.set_user('bot', '1', 'qq', enabled_user == '1')
     runtime.storage.set_user('bot', '2', 'qq', enabled_user == '2')
     runtime.core.userConfig.setUserConfigByKey(
@@ -346,13 +346,13 @@ def test_team_respects_each_members_personal_switch(runtime, global_enabled, ena
     runtime.core.userConfig.setUserConfigByKey('100', 'group', 'qq', 'activeTeam', 'squad', 'bot')
     event = runtime.Event('.team r 1d6', role='owner')
     runtime.proc.run(event)
-    expected_users = [enabled_user] + (['3'] if global_enabled else [])
+    expected_users = [enabled_user] + (['3'] if global_mode == 1 else [])
     expected = '\n'.join(f"『{runtime.sn.get(user, 'qq', '100')}』" for user in expected_users) + '\n\n'
     assert event.sent[0][2].startswith(expected)
     hud = event.sent[0][2].split('\n\n', 1)[0]
     disabled_name = 'Bob' if enabled_user == '1' else 'Alice'
     assert disabled_name not in hud
-    assert ('Carol' in hud) is global_enabled
+    assert ('Carol' in hud) is (global_mode == 1)
 
 
 @pytest.mark.parametrize('success', [True, False])
@@ -684,3 +684,34 @@ def test_default_off_requires_explicit_enable(runtime):
     event = runtime.Event('.r 1d6')
     runtime.proc.run(event)
     assert event.sent[0][2].startswith('『Alice HP10/12')
+
+
+def test_show_reports_mode_and_sn_auto(runtime):
+    runtime.core.userConfig.setUserConfigByKey('1', 'user', 'qq', 'autoSnEnabled', True, 'bot')
+    event = runtime.Event('.hud show')
+    runtime.hud(event)
+    text = event.sent[0][2]
+    assert '全局模式：3' in text
+    assert '.sn auto：开启' in text
+    assert runtime.storage.status('bot', '1', 'qq')['enabled']
+
+
+def test_off_hint_when_sn_auto_keeps_hud_on(runtime):
+    runtime.core.userConfig.setUserConfigByKey('1', 'user', 'qq', 'autoSnEnabled', True, 'bot')
+    event = runtime.Event('.hud off')
+    runtime.hud(event)
+    assert '个人 HUD 已关闭' in event.sent[0][2]
+    assert '.sn auto 仍为开启' in event.sent[0][2]
+    assert runtime.storage.status('bot', '1', 'qq')['enabled']
+
+
+def test_global_mode_command(runtime):
+    runtime.core.console.dictConsoleSwitch['bot']['masterList'] = [['1', 'qq']]
+    for argument, mode in (('1', 1), ('2', 2), ('3', 3), ('on', 1), ('off', 2)):
+        event = runtime.Event(f'.hud global {argument}')
+        runtime.hud(event)
+        assert f'HUD 全局模式已设为 {mode}' in event.sent[0][2]
+        assert runtime.storage.status('bot', '2', 'qq')['mode'] == mode
+    event = runtime.Event('.hud global')
+    runtime.hud(event)
+    assert 'HUD 全局模式：2' in event.sent[0][2]

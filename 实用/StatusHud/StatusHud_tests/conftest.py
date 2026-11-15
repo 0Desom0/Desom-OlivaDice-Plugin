@@ -176,5 +176,5 @@ def runtime(request, monkeypatch, tmp_path):
 
 @pytest.fixture
 def hud_enabled(runtime):
-    """显式开启全局默认，供 HUD 显示功能测试使用。"""
-    runtime.storage.set_global('bot', True)
+    """把全局模式设为 1（全局开启），供 HUD 显示功能测试使用。"""
+    runtime.storage.set_global('bot', 1)

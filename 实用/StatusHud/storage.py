@@ -15,6 +15,18 @@ if os.name == 'nt':
 else:
     import fcntl
 
+# 全局模式：1 全局开启、2 全局关闭、3 跟随 OlivaDiceCore 的 .sn auto on。
+MODE_ON = 1
+MODE_OFF = 2
+MODE_SN_AUTO = 3
+MODES = (MODE_ON, MODE_OFF, MODE_SN_AUTO)
+DEFAULT_MODE = MODE_SN_AUTO
+MODE_NAMES = {
+    MODE_ON: '全局开启',
+    MODE_OFF: '全局关闭',
+    MODE_SN_AUTO: '跟随 .sn auto on',
+}
+
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
 _SAFE_KEY = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
@@ -99,10 +111,34 @@ def _boolean(data, name, default):
     return value
 
 
+def _optional_boolean(data, name):
+    value = data.get(name)
+    if value is None:
+        return None
+    if type(value) is not bool:
+        raise StorageError(f'{name} 必须为布尔值')
+    return value
+
+
+def _mode(value):
+    if type(value) is not int or value not in MODES:
+        raise StorageError('mode 必须为 1、2 或 3')
+    return value
+
+
 class Storage:
-    def __init__(self, core, root=None):
+    def __init__(self, core, root=None, log=None):
         self.core = core
         self.root = Path(root) if root is not None else Path('plugin') / 'data' / 'StatusHud'
+        self.log = log
+
+    def _log(self, message, error=None):
+        if self.log is None:
+            return
+        try:
+            self.log(message, error)
+        except Exception:
+            pass
 
     def linked_hash(self, bot_hash):
         return _key(self.core.userConfig.getRedirectedBotHash(str(bot_hash)))
@@ -116,15 +152,46 @@ class Storage:
             user_path = directory / 'user' / f'{user_hash}.json'
         return directory, directory / 'config.json', user_path
 
+    def _load_mode(self, config_path):
+        """读取全局模式；旧版 global_enabled 按 开→1 / 关→2 迁移，缺失按默认模式。"""
+        config = _read(config_path, {})
+        if 'mode' in config:
+            return _mode(config['mode'])
+        if 'global_enabled' in config:
+            legacy = _boolean(config, 'global_enabled', False)
+            mode = MODE_ON if legacy else MODE_OFF
+            # 迁移只写一次：读路径遇到旧字段时立刻落成新格式。
+            _write(config_path, {'mode': mode})
+            return mode
+        return DEFAULT_MODE
+
+    def sn_auto_enabled(self, bot_hash, user_id, platform):
+        """只读 Core 的 .sn auto：用户设置优先，未设置时用 Core 自己的全局默认。"""
+        getter = getattr(getattr(self.core, 'userConfig', None), 'getUserConfigByKey', None)
+        if getter is None:
+            self._log('Core 缺少 getUserConfigByKey，.sn auto 按关闭处理')
+            return False
+        try:
+            return bool(getter(
+                userId=user_id,
+                userType='user',
+                platform=platform,
+                userConfigKey='autoSnEnabled',
+                botHash=bot_hash,
+            ))
+        except Exception as error:
+            self._log('读取 Core 的 .sn auto 设置失败，按关闭处理', error)
+            return False
+
     def initialize(self, bot_hash):
         try:
             directory, config_path, _ = self._paths(bot_hash)
             with _bot_lock(directory):
                 (directory / 'user').mkdir(exist_ok=True)
                 if not config_path.exists():
-                    _write(config_path, {'global_enabled': False})
+                    _write(config_path, {'mode': DEFAULT_MODE})
                 else:
-                    _boolean(_read(config_path, {}), 'global_enabled', False)
+                    self._load_mode(config_path)
         except (OSError, ValueError, TypeError) as error:
             raise StorageError('初始化 HUD 数据失败') from error
 
@@ -132,14 +199,23 @@ class Storage:
         try:
             directory, config_path, user_path = self._paths(bot_hash, user_id, platform)
             with _bot_lock(directory):
-                global_enabled = _boolean(_read(config_path, {}), 'global_enabled', False)
+                mode = self._load_mode(config_path)
                 user = _read(user_path, {})
-                if 'enabled' in user:
-                    enabled = _boolean(user, 'enabled', global_enabled)
-                    source = 'user'
+                personal = _optional_boolean(user, 'enabled')
+                if personal is None:
+                    hud_enabled = mode == MODE_ON
+                    source = 'mode'
                 else:
-                    enabled, source = global_enabled, 'global'
-                return {'enabled': enabled, 'source': source, 'global_enabled': global_enabled}
+                    hud_enabled = personal
+                    source = 'user'
+                sn_auto = self.sn_auto_enabled(bot_hash, user_id, platform) if mode == MODE_SN_AUTO else False
+                return {
+                    'enabled': hud_enabled or sn_auto,
+                    'hud_enabled': hud_enabled,
+                    'sn_auto_enabled': sn_auto,
+                    'mode': mode,
+                    'source': source,
+                }
         except (OSError, ValueError, TypeError) as error:
             raise StorageError('读取 HUD 设置失败') from error
 
@@ -149,8 +225,9 @@ class Storage:
             with _bot_lock(directory):
                 user = _read(user_path, {})
                 if enabled is None:
-                    global_enabled = _boolean(_read(config_path, {}), 'global_enabled', False)
-                    enabled = not _boolean(user, 'enabled', global_enabled)
+                    personal = _optional_boolean(user, 'enabled')
+                    current = personal if personal is not None else self._load_mode(config_path) == MODE_ON
+                    enabled = not current
                 if type(enabled) is not bool:
                     raise StorageError('enabled 必须为布尔值')
                 user['enabled'] = enabled
@@ -159,15 +236,19 @@ class Storage:
         except (OSError, ValueError, TypeError) as error:
             raise StorageError('保存个人 HUD 设置失败') from error
 
-    def set_global(self, bot_hash, enabled):
+    def set_global(self, bot_hash, mode):
         try:
+            _mode(mode)
             directory, config_path, _ = self._paths(bot_hash)
             with _bot_lock(directory):
                 config = _read(config_path, {})
-                _boolean(config, 'global_enabled', False)
-                if type(enabled) is not bool:
-                    raise StorageError('global_enabled 必须为布尔值')
-                config['global_enabled'] = enabled
+                # 损坏的旧配置不覆盖，交给人排查。
+                if 'mode' in config:
+                    _mode(config['mode'])
+                elif 'global_enabled' in config:
+                    _boolean(config, 'global_enabled', False)
+                config.pop('global_enabled', None)
+                config['mode'] = mode
                 _write(config_path, config)
         except (OSError, ValueError, TypeError) as error:
             raise StorageError('保存全局 HUD 设置失败') from error
