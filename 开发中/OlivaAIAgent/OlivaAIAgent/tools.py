@@ -320,7 +320,7 @@ def _callToolRouter(messages, trace_id, purpose='工具路由'):
         force_no_stream=True,
         response_json=False,
         thinking_off=True,
-        timeout_override=30,
+        timeout_override=5,
         trace_id=trace_id,
         purpose=purpose,
     )

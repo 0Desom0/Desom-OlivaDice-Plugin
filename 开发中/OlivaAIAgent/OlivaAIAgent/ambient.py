@@ -1277,15 +1277,8 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
     )
     aux_tasks = {}
     think_history = context_source or history
-    if allow_tools:
-        aux_tasks['tools'] = lambda: OlivaAIAgent.tools.selectToolNames(
-            runtime_tool_ctx, message, history=think_history, trace_id=trace_id,
-        )
-    if allow_tools and runtime_tool_ctx is not None and OlivaAIAgent.research.enabled():
-        # 前置检索只在本轮允许工具时有意义；失败返回 None 即回退主模型自调工具。
-        aux_tasks['research'] = lambda: OlivaAIAgent.research.runPreflight(
-            runtime_tool_ctx, message, history=think_history, trace_id=trace_id,
-        )
+    # 顺序判定：先只做「要不要接话」，判定为 SKIP 时直接返回，
+    # 工具路由 / 前置检索 / 发图判断全部不跑（省 token 也省延迟）。
     if _shouldFirstThink(cfg('first_thinking', False), skip_first_thinking):
         aux_tasks['reply'] = lambda: _firstThink(
             Proc,
@@ -1299,14 +1292,6 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
             directed=bool(directed),
             affinity=affinity,
             parsed=parsed,
-        )
-    if image_cache:
-        aux_tasks['image'] = lambda: OlivaAIAgent.preflight.selectImageIntent(
-            Proc,
-            message,
-            think_history,
-            image_cache,
-            trace_id=trace_id,
         )
     _ensureGroupAgentActive(agent_token)
     sem = OlivaAIAgent.msgReply._getSem()
@@ -1331,6 +1316,37 @@ def _reply(plugin_event, Proc, parsed, self_id, platform, group_id, bot_hash, lo
         _skip(reply_reason or OlivaAIAgent.conversation.REASON_FIRST_THINK, tools_on=allow_tools)
         return
     _previewGroupAgentHandoff(agent_token)
+    # 已确认要回复，这时才并行跑工具路由 / 前置检索 / 发图判断。
+    second_tasks = {}
+    # 工具路由默认关闭：主模型会拿到全量工具自己选，省掉一次本地判断（实测 5-11s）。
+    if allow_tools and bool(cfg('tool_router', False)):
+        second_tasks['tools'] = lambda: OlivaAIAgent.tools.selectToolNames(
+            runtime_tool_ctx, message, history=think_history, trace_id=trace_id,
+        )
+    if allow_tools and runtime_tool_ctx is not None and OlivaAIAgent.research.enabled():
+        # 前置检索只在本轮允许工具时有意义；失败返回 None 即回退主模型自调工具。
+        second_tasks['research'] = lambda: OlivaAIAgent.research.runPreflight(
+            runtime_tool_ctx, message, history=think_history, trace_id=trace_id,
+        )
+    if image_cache:
+        second_tasks['image'] = lambda: OlivaAIAgent.preflight.selectImageIntent(
+            Proc,
+            message,
+            think_history,
+            image_cache,
+            trace_id=trace_id,
+        )
+    if second_tasks:
+        _ensureGroupAgentActive(agent_token)
+        _sem2 = OlivaAIAgent.msgReply._getSem()
+        _sem2.acquire()
+        try:
+            aux_results.update(OlivaAIAgent.preflight.runCluster(
+                second_tasks, Proc=Proc, trace_id=trace_id,
+            ))
+        finally:
+            _sem2.release()
+        _ensureGroupAgentActive(agent_token)
     selected_tool_names = aux_results.get('tools')
     if not isinstance(selected_tool_names, list):
         selected_tool_names = [

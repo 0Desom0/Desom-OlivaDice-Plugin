@@ -145,7 +145,7 @@ def planResearch(ctx, query_text, history=None, trace_id=None):
             force_no_stream=True,
             response_json=True,
             thinking_off=True,
-            timeout_override=_int('timeout_sec', 30),
+            timeout_override=_int('timeout_sec', 45),
             trace_id=trace_id,
             purpose='检索规划',
         )
@@ -347,7 +347,7 @@ def summarizeResearch(ctx, query_text, findings, trace_id=None):
             force_no_stream=True,
             response_json=False,
             thinking_off=True,
-            timeout_override=_int('timeout_sec', 30),
+            timeout_override=_int('timeout_sec', 45),
             trace_id=trace_id,
             purpose='检索结论压缩',
         )

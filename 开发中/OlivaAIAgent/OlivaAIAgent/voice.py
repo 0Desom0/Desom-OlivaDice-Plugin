@@ -425,7 +425,9 @@ def _dashscopePayload(status, cfg, content, instructions):
     if status['language_type']:
         input_data['language_type'] = status['language_type']
     voice_instructions = str(instructions or '').strip()
-    if voice_instructions and 'instruct' in status['model'].lower():
+    # qwen3-tts-flash 也接受 instructions，不再只认模型名带 instruct 的型号；
+    # 个别老接口不吃这个参数时把 voice.send_instructions 设成 false 即可。
+    if voice_instructions and bool(cfg.get('send_instructions', True)):
         parameters['instructions'] = voice_instructions
         parameters['optimize_instructions'] = bool(cfg.get('optimize_instructions', True))
     parameters['stream'] = False
@@ -693,6 +695,9 @@ def synthesize(text, instructions=''):
     max_chars = max(1, int(cfg.get('max_chars', 500)))
     content = collapseRepeatedSpeech(str(text or '').strip())
     instructions = sanitizeVoiceInstructions(content, instructions)
+    if not instructions:
+        # 主模型没给语气时用配置里的默认语气，保证每条语音都带表演指令。
+        instructions = str(cfg.get('default_instructions', '') or '').strip()
     if not content:
         raise ValueError('语音文本不能为空')
     if len(content) > max_chars:

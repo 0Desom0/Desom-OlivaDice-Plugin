@@ -184,7 +184,7 @@ def selectImageIntent(Proc, query_text, history, image_candidates, trace_id=None
             force_no_stream=True,
             response_json=True,
             thinking_off=True,
-            timeout_override=30,
+            timeout_override=15,
             trace_id=trace_id,
             purpose='图片判断',
         )

@@ -1225,7 +1225,9 @@ def _onGroupMessage(plugin_event, Proc):
         buffer_text = OlivaAIAgent.contentSafety.HIDDEN_TEXT
         OlivaAIAgent.memory.bufferAppend(platform, group_id, user_id, sender_name, buffer_text)
         OlivaAIAgent.ambient.addToHistory(
-            platform, group_id, bot_hash, user_id, sender_name, buffer_text,
+            platform, group_id,
+            plugin_event.bot_info.hash if plugin_event.bot_info else 'unity',
+            user_id, sender_name, buffer_text,
             message_id=parsed.get('message_id'),
             reference_message_id=parsed.get('reference_message_id'),
             event_id=parsed.get('event_id'),

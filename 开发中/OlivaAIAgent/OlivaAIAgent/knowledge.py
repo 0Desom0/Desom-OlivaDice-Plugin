@@ -412,7 +412,11 @@ def runMemoryExtraction(
                 ) % (summary, json.dumps(existing_profiles, ensure_ascii=False), chat),
             },
         ]
-        bc = OlivaAIAgent.aiClient.getAuxiliaryBackendConf(max_tokens=1200, temperature=0.2)
+        # 记忆提炼输出长（数百 token），本地 CPU 模型要跑 40s 且长期占住判断用的 slot，
+        # 因此走主回复后端（云端），只在后台线程里跑，不参与实时判断。
+        bc = OlivaAIAgent.aiClient.getBackendConf()
+        bc['max_tokens'] = 480
+        bc['temperature'] = 0.2
         res = OlivaAIAgent.aiClient.chat(messages, tools=None, backend_conf=bc,
                                          force_no_stream=True, response_json=True, thinking_off=True,
                                          trace_id=trace_id, purpose='后台记忆提炼')
