@@ -17,7 +17,7 @@ help_text = '''【CelestePlugin 帮助】
 
 【地图推荐】
 .clst 随机 [1-10]         从 WEGFan 本地索引随机抽图；多个只显示概要，单个展示完整简介
-.clst today               每日一图，每人每天随机一图，当天固定不变
+.clst today               今日 Mod，每人每天随机一图，当天固定不变
 .clst 更新                骰主限定：手动重建 WEGFan 本地索引
 
 【Celeste Endless】

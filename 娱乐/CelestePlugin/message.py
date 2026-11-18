@@ -608,14 +608,14 @@ def handle_today(plugin_event) -> None:
     else:
         daily_result = function.get_daily_mod(today_date)
         if not daily_result.get('ok'):
-            utils.reply_message(plugin_event, f'每日 Mod 获取失败：{daily_result.get("error", "未知错误")}')
+            utils.reply_message(plugin_event, f'今日 Mod 获取失败：{daily_result.get("error", "未知错误")}')
             return
         detail = daily_result['data']
         utils.save_json_file(
             cache_path,
             {'date': today_date, 'source': 'wegfan_random', 'detail': detail},
         )
-    heading = f'{today_date} 每日 Celeste Mod'
+    heading = f'{today_date} 今日 Mod'
     if utils.can_send_markdown(plugin_event):
         text, keyboard, images = render.render_detail(detail, heading=heading)
         if utils.reply_markdown(plugin_event, text, keyboard, images=images):

@@ -81,7 +81,7 @@ def render_help() -> tuple[str, dict[str, Any] | None]:
             '',
             '**推荐**',
             '- `.clst 随机 [1-10]` 随机地图',
-            '- `.clst today` 每人每天一张',
+            '- `.clst today` 今日 Mod（每人每天一张，当天固定）',
             '- `.clst 更新` 骰主手动重建索引',
             '',
             '**无尽挑战**',
@@ -92,7 +92,7 @@ def render_help() -> tuple[str, dict[str, Any] | None]:
         [
             button('随机一张', 'clst:rnd:1', style=1, callback=True),
             button('随机 3 张', 'clst:rnd:3', callback=True),
-            button('每日一图', 'clst:today', callback=True),
+            button('今日 Mod', 'clst:today', callback=True),
         ],
         [
             button('无尽帮助', 'clst:en:help', callback=True),
@@ -255,7 +255,7 @@ def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, A
         [
             button('再来一张', 'clst:rnd:1', style=1, callback=True),
             button('随机 3 张', 'clst:rnd:3', callback=True),
-            button('每日一图', 'clst:today', callback=True),
+            button('今日 Mod', 'clst:today', callback=True),
         ]
     ]
     return '\n'.join(lines), keyboard(rows), images
