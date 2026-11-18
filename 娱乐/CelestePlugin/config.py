@@ -84,6 +84,8 @@ default_global_config = {
     'description_max_length': 320,
     'credit_max_length': 180,
     'show_cover_image_switch': True,
+    'markdown_enable_switch': True,
+    'reply_quote_switch': True,
     'random_max_count': 10,
     'detail_download_component_limit': 6,
     'long_reply_chunk_size': 1800,

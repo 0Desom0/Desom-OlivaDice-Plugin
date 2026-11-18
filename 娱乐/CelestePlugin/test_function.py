@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from CelestePlugin import function  # noqa: E402
+from CelestePlugin import render  # noqa: E402
 from CelestePlugin import message  # noqa: E402
 from CelestePlugin import utils  # noqa: E402
 
@@ -561,6 +562,106 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['mode'], 'incremental')
         self.assertEqual(result['added'], 3)
+
+    def test_render_list_builds_select_buttons(self):
+        items = [{'name': f'Map {index}', 'author': 'A', 'category': 'Maps'} for index in range(10)]
+        text, keyboard = render.render_list('标题搜索：map', items, 0, 8, 10)
+        rows = keyboard['content']['rows']
+        buttons = [item for row in rows for item in row.get('buttons', [])]
+        self.assertIn('## 标题搜索：map', text)
+        self.assertTrue(any(item['action']['data'] == 'clst:sel:0' for item in buttons))
+        self.assertTrue(any(item['action']['data'] == 'clst:pg:next' for item in buttons))
+        self.assertTrue(all(len(row.get('buttons', [])) <= 4 for row in rows))
+        self.assertLessEqual(len(rows), 5)
+
+    def test_render_detail_download_buttons_are_links(self):
+        detail = function.normalize_wegfan_item(sample_search_item())
+        text, keyboard = render.render_detail(detail)
+        buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
+        link_buttons = [item for item in buttons if item['action']['type'] == 0]
+        self.assertTrue(link_buttons)
+        self.assertIn('download/files', link_buttons[0]['action']['data'])
+        self.assertIn('##', text)
+
+    def test_render_endless_has_action_buttons(self):
+        state = {
+            'status': 'active',
+            'clears': 2,
+            'skips': 1,
+            'current_map': {'name': 'M', 'author': 'A', 'page_url': 'https://gamebanana.com/mods/1'},
+        }
+        text, keyboard = render.render_endless(state, notice='已抽取下一图。')
+        buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
+        payloads = {item['action']['data'] for item in buttons}
+        self.assertIn('clst:en:clear', payloads)
+        self.assertIn('clst:en:undo', payloads)
+        self.assertIn('Celeste Endless', text)
+
+    def test_chat_context_from_extend(self):
+        class Data(object):
+            group_id = 'GROUP'
+            user_id = 'USER'
+            extend = {'flag_from_qq': True}
+
+        class FakeEvent(object):
+            data = Data()
+            plugin_info = {'func_type': 'group_message'}
+            platform = {'platform': 'qqguild'}
+
+        self.assertEqual(utils.get_chat_context(FakeEvent()), ('qq_group', 'GROUP'))
+
+    def test_reply_quote_switch_can_disable_quote(self):
+        class Data(object):
+            message_id = 'MSG'
+            group_id = 'GROUP'
+            user_id = 'USER'
+            extend = {}
+
+        class FakeEvent(object):
+            data = Data()
+            plugin_info = {'func_type': 'group_message'}
+            platform = {'platform': 'qqguild'}
+
+        with mock.patch.object(utils, 'load_global_config', return_value={'reply_quote_switch': False}):
+            self.assertEqual(utils.add_reply_quote(FakeEvent(), 'hello'), 'hello')
+        with mock.patch.object(utils, 'load_global_config', return_value={'reply_quote_switch': True}):
+            self.assertTrue(utils.add_reply_quote(FakeEvent(), 'hello').startswith('[OP:reply'))
+
+    def test_button_click_help_dispatch(self):
+        class Data(object):
+            button_data = 'clst:help'
+            group_id = 'GROUP'
+            user_id = 'USER'
+            extend = {}
+
+        class FakeEvent(object):
+            data = Data()
+            plugin_info = {'func_type': 'button_click'}
+            platform = {'platform': 'qqguild'}
+
+        with (
+            mock.patch.object(utils, 'check_core_group_enable', return_value=True),
+            mock.patch.object(utils, 'is_group_disabled', return_value=False),
+            mock.patch.object(message, 'send_help') as help_mock,
+        ):
+            message.handle_button_click(FakeEvent(), None)
+        help_mock.assert_called_once()
+
+    def test_button_click_ignores_foreign_buttons(self):
+        class Data(object):
+            button_data = 'other:thing'
+            group_id = 'GROUP'
+            user_id = 'USER'
+            extend = {}
+
+        class FakeEvent(object):
+            data = Data()
+            plugin_info = {'func_type': 'button_click'}
+            platform = {'platform': 'qqguild'}
+
+        with mock.patch.object(message, 'send_help') as help_mock:
+            message.handle_button_click(FakeEvent(), None)
+        help_mock.assert_not_called()
 
     def test_heartbeat_schedules_incremental(self):
         with mock.patch.object(message, 'clear_expired_selection_sessions'), mock.patch.object(

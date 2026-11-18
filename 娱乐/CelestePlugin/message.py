@@ -11,6 +11,7 @@ from typing import Any
 from . import config
 from . import function
 from . import message_custom
+from . import render
 from . import utils
 
 
@@ -41,6 +42,10 @@ subcommand_alias_dict = {
     'today': 'today',
     '每日': 'today',
     '今日': 'today',
+    'jump': 'jump',
+    'page': 'jump',
+    '跳页': 'jump',
+    '跳转': 'jump',
     'update': 'update',
     'refresh': 'update',
     '刷新': 'update',
@@ -151,6 +156,79 @@ def handle_save(plugin_event, Proc) -> None:
         selection_session_dict.clear()
 
 
+@utils.log_exception('handle_button_click')
+def handle_button_click(plugin_event, Proc) -> None:
+    """处理 Markdown 键盘按钮回调：clst:<action>:<arg>。"""
+    data = getattr(plugin_event, 'data', None)
+    button_data = utils.safe_str(getattr(data, 'button_data', '')).strip()
+    if not button_data.startswith('clst:'):
+        return
+    if not utils.check_core_group_enable(plugin_event):
+        return
+    if utils.is_group_disabled(plugin_event):
+        return
+    parts = button_data.split(':', 2)
+    action = parts[1] if len(parts) > 1 else ''
+    argument = parts[2] if len(parts) > 2 else ''
+
+    if action == 'help':
+        send_help(plugin_event)
+        return
+    if action == 'status':
+        handle_plugin_switch(plugin_event, 'plugin_status')
+        return
+    if action == 'rnd':
+        handle_random(plugin_event, argument)
+        return
+    if action == 'today':
+        handle_today(plugin_event)
+        return
+    if action == 'en':
+        handle_endless(plugin_event, argument)
+        return
+    if action == 'end':
+        with selection_lock:
+            selection_session_dict.pop(build_selection_key(plugin_event), None)
+        utils.reply_message(plugin_event, '已结束本次 Celeste Mod 选择。')
+        return
+    if action == 'pg':
+        session = get_selection_session(plugin_event)
+        if not session:
+            utils.reply_message(plugin_event, '这次选择已经过期，请重新搜索。')
+            return
+        page_size = max(1, int(session.get('page_size', 8)))
+        page_count = max(1, (len(session.get('results', [])) + page_size - 1) // page_size)
+        current_page = int(session.get('page_index', 0))
+        if argument == 'next':
+            session['page_index'] = min(page_count - 1, current_page + 1)
+        elif argument == 'prev':
+            session['page_index'] = max(0, current_page - 1)
+        elif argument == 'jump':
+            session['await_page'] = True
+            session['updated_at'] = time.time()
+            utils.reply_message(plugin_event, f'请输入页码 1 至 {page_count}。')
+            return
+        send_selection_page(plugin_event, session)
+        return
+    if action == 'sel':
+        session = get_selection_session(plugin_event)
+        if not session:
+            utils.reply_message(plugin_event, '这次选择已经过期，请重新搜索。')
+            return
+        try:
+            index = int(argument)
+        except Exception:
+            return
+        results = session.get('results', [])
+        if index < 0 or index >= len(results):
+            utils.reply_message(plugin_event, '这个序号已经失效，请重新搜索。')
+            return
+        selected_item = results[index]
+        with selection_lock:
+            selection_session_dict.pop(build_selection_key(plugin_event), None)
+        reply_detail(plugin_event, selected_item)
+        return
+
 def build_selection_key(plugin_event) -> str:
     linked_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
     user_id = utils.get_sender_id_from_event(plugin_event)
@@ -233,7 +311,44 @@ def reply_detail(plugin_event, item: dict[str, Any], compact: bool = False) -> N
     if not detail_result.get('ok'):
         utils.reply_message(plugin_event, f'获取 Mod 详情失败：{detail_result.get("error", "未知错误")}')
         return
-    utils.reply_long_text(plugin_event, function.format_detail(detail_result['data'], compact=compact))
+    detail = detail_result['data']
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_detail(detail, compact=compact)
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
+    utils.reply_long_text(plugin_event, function.format_detail(detail, compact=compact))
+
+
+def send_help(plugin_event) -> None:
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_help()
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
+    utils.reply_message(plugin_event, message_custom.help_text)
+
+
+def send_selection_page(plugin_event, session: dict[str, Any]) -> None:
+    session['updated_at'] = time.time()
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_list(
+            utils.safe_str(session.get('title'), 'Celeste Mod 搜索'),
+            session.get('results', []),
+            int(session.get('page_index', 0)),
+            max(1, int(session.get('page_size', 8))),
+            int(session.get('total_count', len(session.get('results', [])))),
+            utils.safe_str(session.get('notice')),
+        )
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
+    send_selection_page(plugin_event, session)
+
+
+def send_endless_state(plugin_event, state: dict[str, Any], notice: str = '') -> None:
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_endless(state, notice)
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
+    utils.reply_long_text(plugin_event, function.format_endless_state(state, notice))
 
 
 def reply_search_result(
@@ -263,7 +378,7 @@ def reply_search_result(
         partial=bool(search_result.get('partial', False)),
         notice=utils.safe_str(search_result.get('notice', '')),
     )
-    utils.reply_long_text(plugin_event, render_selection_page(session))
+    send_selection_page(plugin_event, session)
 
 
 def handle_selection_input(plugin_event, message_text: str) -> bool:
@@ -280,13 +395,23 @@ def handle_selection_input(plugin_event, message_text: str) -> bool:
     page_size = max(1, int(session.get('page_size', 8)))
     results = session.get('results', [])
     page_count = max(1, (len(results) + page_size - 1) // page_size)
+    if session.get('await_page') and text.isdigit():
+        session.pop('await_page', None)
+        page_number = int(text)
+        if page_number < 1 or page_number > page_count:
+            utils.reply_message(plugin_event, f'页码范围为 1 至 {page_count}，请重新发送页码。')
+            session['await_page'] = True
+            return True
+        session['page_index'] = page_number - 1
+        send_selection_page(plugin_event, session)
+        return True
     if text in ['下一页', '下页', 'next', 'down']:
         session['page_index'] = min(page_count - 1, int(session.get('page_index', 0)) + 1)
-        utils.reply_long_text(plugin_event, render_selection_page(session))
+        send_selection_page(plugin_event, session)
         return True
     if text in ['上一页', '上页', 'prev', 'previous', 'up']:
         session['page_index'] = max(0, int(session.get('page_index', 0)) - 1)
-        utils.reply_long_text(plugin_event, render_selection_page(session))
+        send_selection_page(plugin_event, session)
         return True
 
     page_match = re.fullmatch(r'(?:跳页|第|page)\s*(\d+)\s*(?:页)?', text)
@@ -296,7 +421,7 @@ def handle_selection_input(plugin_event, message_text: str) -> bool:
             utils.reply_message(plugin_event, f'页码范围为 1 至 {page_count}。')
             return True
         session['page_index'] = page_number - 1
-        utils.reply_long_text(plugin_event, render_selection_page(session))
+        send_selection_page(plugin_event, session)
         return True
 
     if not text.isdigit():
@@ -356,6 +481,32 @@ def parse_random_count(argument: str) -> tuple[bool, int, str]:
     return True, count, ''
 
 
+def handle_jump(plugin_event, argument: str) -> None:
+    """处理 .clst 跳页 / .clst 跳转 [页码]。"""
+    session = get_selection_session(plugin_event)
+    if not session:
+        utils.reply_message(plugin_event, '当前没有可翻页的列表，请先搜索。')
+        return
+    page_size = max(1, int(session.get('page_size', 8)))
+    page_count = max(1, (len(session.get('results', [])) + page_size - 1) // page_size)
+    text = utils.safe_str(argument).strip()
+    if not text:
+        session['await_page'] = True
+        session['updated_at'] = time.time()
+        utils.reply_message(plugin_event, f'请输入页码 1 至 {page_count}。')
+        return
+    if not text.isdigit():
+        utils.reply_message(plugin_event, f'页码应为 1 至 {page_count} 的数字。')
+        return
+    page_number = int(text)
+    if page_number < 1 or page_number > page_count:
+        utils.reply_message(plugin_event, f'页码范围为 1 至 {page_count}。')
+        return
+    session['page_index'] = page_number - 1
+    session.pop('await_page', None)
+    send_selection_page(plugin_event, session)
+
+
 def handle_random(plugin_event, argument: str) -> None:
     valid, count, error = parse_random_count(argument)
     if not valid:
@@ -370,6 +521,10 @@ def handle_random(plugin_event, argument: str) -> None:
         # 只随机一个时与查询结果一致，展示完整简介
         reply_detail(plugin_event, results[0])
         return
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_random_summary(results)
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
     detail_texts = []
     for index, item in enumerate(results, start=1):
         heading = f'【随机 {index}/{count}】'
@@ -408,8 +563,12 @@ def handle_today(plugin_event) -> None:
             cache_path,
             {'date': today_date, 'source': 'wegfan_random', 'detail': detail},
         )
-    text = function.format_detail(detail, heading=f'【{today_date} 每日 Celeste Mod】')
-    utils.reply_long_text(plugin_event, text)
+    heading = f'{today_date} 每日 Celeste Mod'
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_detail(detail, heading=heading)
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
+    utils.reply_long_text(plugin_event, function.format_detail(detail, heading=f'【{heading}】'))
 
 
 def handle_refresh(plugin_event) -> None:
@@ -581,10 +740,7 @@ def handle_endless(plugin_event, argument: str) -> None:
         state = function.new_endless_state(initial_skips, random_map_result['data'])
         if not persist_endless_state(plugin_event, state):
             return
-        utils.reply_long_text(
-            plugin_event,
-            function.format_endless_state(state, notice='新的 Celeste Endless 已开始。'),
-        )
+        send_endless_state(plugin_event, state, notice='新的 Celeste Endless 已开始。')
         return
 
     state = load_endless_state(plugin_event)
@@ -593,7 +749,7 @@ def handle_endless(plugin_event, argument: str) -> None:
         return
 
     if action == 'status':
-        utils.reply_long_text(plugin_event, function.format_endless_state(state))
+        send_endless_state(plugin_event, state)
         return
     if action == 'continue':
         if state.get('status') != 'pending':
@@ -608,10 +764,7 @@ def handle_endless(plugin_event, argument: str) -> None:
         state['updated_at'] = int(time.time())
         if not persist_endless_state(plugin_event, state):
             return
-        utils.reply_long_text(
-            plugin_event,
-            function.format_endless_state(state, notice='已成功抽取下一图。'),
-        )
+        send_endless_state(plugin_event, state, notice='已成功抽取下一图。')
         return
     if action == 'detail':
         current_map = state.get('current_map', {})
@@ -640,10 +793,7 @@ def handle_endless(plugin_event, argument: str) -> None:
             return
         if not persist_endless_state(plugin_event, new_state):
             return
-        utils.reply_long_text(
-            plugin_event,
-            function.format_endless_state(new_state, notice='已将当前地图标记为坏图并免费重抽。'),
-        )
+        send_endless_state(plugin_event, new_state, notice='已将当前地图标记为坏图并免费重抽。')
         return
 
     try:
@@ -677,24 +827,22 @@ def handle_endless(plugin_event, argument: str) -> None:
         'undo': '已撤销上一步操作。',
         'give_up': '已放弃本局挑战。',
     }
-    utils.reply_long_text(
+    send_endless_state(
         plugin_event,
-        function.format_endless_state(
-            new_state,
-            notice=action_message_dict.get(action, '操作完成。'),
-        ),
+        new_state,
+        notice=action_message_dict.get(action, '操作完成。'),
     )
 
 
 def dispatch_clst_command(plugin_event, command_argument: str) -> None:
     argument = command_argument.strip()
     if not argument:
-        utils.reply_message(plugin_event, message_custom.help_text)
+        send_help(plugin_event)
         return
 
     subcommand, sub_argument = parse_subcommand(argument)
     if subcommand == 'help':
-        utils.reply_message(plugin_event, message_custom.help_text)
+        send_help(plugin_event)
         return
     if subcommand in ['plugin_status', 'plugin_on', 'plugin_off']:
         handle_plugin_switch(plugin_event, subcommand)
@@ -719,6 +867,9 @@ def dispatch_clst_command(plugin_event, command_argument: str) -> None:
         return
     if subcommand == 'today':
         handle_today(plugin_event)
+        return
+    if subcommand == 'jump':
+        handle_jump(plugin_event, sub_argument)
         return
     if subcommand == 'update':
         handle_refresh(plugin_event)

@@ -624,9 +624,76 @@ def build_reply_quote_segment(plugin_event) -> str:
 
 def add_reply_quote(plugin_event, message_text: str) -> str:
     source = safe_str(message_text)
+    if not load_global_config().get('reply_quote_switch', True):
+        return source
     if reply_segment_pattern.match(source.lstrip()):
         return source
     return f'{build_reply_quote_segment(plugin_event)}{source}'
+
+
+def get_chat_context(plugin_event) -> tuple[str, str]:
+    """从事件推导 QQ 官方机器人的 chat_type / chat_id（群、C2C、频道、频道私信）。"""
+    data = getattr(plugin_event, 'data', None)
+    extend = getattr(data, 'extend', None)
+    extend = extend if isinstance(extend, dict) else {}
+    func_type = safe_str((getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type', ''))
+    group_id = safe_str(getattr(data, 'group_id', None))
+    user_id = safe_str(getattr(data, 'user_id', None))
+    host_id = safe_str(extend.get('host_group_id')) or safe_str(getattr(data, 'host_id', None))
+    if extend.get('chat_type') and extend.get('chat_id'):
+        return safe_str(extend.get('chat_type')), safe_str(extend.get('chat_id'))
+    flag_direct = bool(extend.get('flag_from_direct', func_type == 'private_message'))
+    if 'flag_from_qq' in extend:
+        if bool(extend.get('flag_from_qq')):
+            return ('qq_private' if flag_direct else 'qq_group'), (user_id if flag_direct else group_id)
+        return (
+            ('guild_private' if flag_direct else 'guild_channel'),
+            ((host_id or group_id) if flag_direct else group_id),
+        )
+    platform_name = ''
+    try:
+        platform_name = safe_str(plugin_event.platform.get('platform', '')).lower()
+    except Exception:
+        platform_name = ''
+    if platform_name == 'qqguild':
+        if host_id:
+            return (
+                ('guild_private' if flag_direct else 'guild_channel'),
+                ((host_id or group_id) if flag_direct else group_id),
+            )
+        return ('qq_private' if flag_direct else 'qq_group'), (user_id if flag_direct else group_id)
+    return '', ''
+
+
+def can_send_markdown(plugin_event) -> bool:
+    if not load_global_config().get('markdown_enable_switch', True):
+        return False
+    return callable(getattr(getattr(plugin_event, 'indeAPI', None), 'create_markdown_message', None))
+
+
+def reply_markdown(plugin_event, markdown_text: str, keyboard=None) -> bool:
+    """发一条 QQ 官方 Markdown 消息（可带键盘）；失败返回 False 由调用方回退纯文本。"""
+    if not can_send_markdown(plugin_event):
+        return False
+    content = safe_str(markdown_text)
+    if not content:
+        return False
+    chat_type, chat_id = get_chat_context(plugin_event)
+    if not chat_type or not chat_id:
+        return False
+    sender = plugin_event.indeAPI.create_markdown_message
+    payload = {'chat_type': chat_type, 'chat_id': chat_id, 'markdown': {'content': content}}
+    # 频道/频道私信不支持回调按钮，只发 Markdown 正文。
+    if keyboard and chat_type in ('qq_group', 'qq_private'):
+        payload['keyboard'] = keyboard
+    try:
+        result = sender(**payload)
+    except Exception:
+        return False
+    if isinstance(result, dict) and not result.get('active', False):
+        debug_log(None, 'Markdown 发送失败：%s' % safe_str(result.get('data', {}).get('error', result)))
+        return False
+    return True
 
 
 def split_long_text(message_text: str, chunk_size: int) -> list[str]:

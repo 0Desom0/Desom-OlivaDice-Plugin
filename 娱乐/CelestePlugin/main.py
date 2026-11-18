@@ -22,6 +22,9 @@ class Event(object):
     def group_message(plugin_event, Proc):
         message.handle_group_message(plugin_event, Proc)
 
+    def button_click(plugin_event, Proc):
+        message.handle_button_click(plugin_event, Proc)
+
     def heartbeat(plugin_event, Proc):
         message.handle_heartbeat(plugin_event, Proc)
 
