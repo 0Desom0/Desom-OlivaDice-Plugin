@@ -46,6 +46,12 @@ subcommand_alias_dict = {
     'page': 'jump',
     '跳页': 'jump',
     '跳转': 'jump',
+    'prevpage': 'page_prev',
+    '上一页': 'page_prev',
+    '上页': 'page_prev',
+    'nextpage': 'page_next',
+    '下一页': 'page_next',
+    '下页': 'page_next',
     'update': 'update',
     'refresh': 'update',
     '刷新': 'update',
@@ -481,6 +487,27 @@ def parse_random_count(argument: str) -> tuple[bool, int, str]:
     return True, count, ''
 
 
+def handle_page_turn(plugin_event, direction: int) -> None:
+    """处理 .clst 上一页 / .clst 下一页（按钮指令型点击后就是这两条命令）。"""
+    session = get_selection_session(plugin_event)
+    if not session:
+        utils.reply_message(plugin_event, '当前没有可翻页的列表，请先搜索。')
+        return
+    page_size = max(1, int(session.get('page_size', 8)))
+    page_count = max(1, (len(session.get('results', [])) + page_size - 1) // page_size)
+    current_page = min(max(0, int(session.get('page_index', 0))), page_count - 1)
+    target_page = current_page + (1 if direction > 0 else -1)
+    if target_page < 0:
+        utils.reply_message(plugin_event, '已经是第一页了。')
+        return
+    if target_page > page_count - 1:
+        utils.reply_message(plugin_event, '已经是最后一页了。')
+        return
+    session['page_index'] = target_page
+    session.pop('await_page', None)
+    send_selection_page(plugin_event, session)
+
+
 def handle_jump(plugin_event, argument: str) -> None:
     """处理 .clst 跳页 / .clst 跳转 [页码]。"""
     session = get_selection_session(plugin_event)
@@ -870,6 +897,12 @@ def dispatch_clst_command(plugin_event, command_argument: str) -> None:
         return
     if subcommand == 'jump':
         handle_jump(plugin_event, sub_argument)
+        return
+    if subcommand == 'page_prev':
+        handle_page_turn(plugin_event, -1)
+        return
+    if subcommand == 'page_next':
+        handle_page_turn(plugin_event, 1)
         return
     if subcommand == 'update':
         handle_refresh(plugin_event)

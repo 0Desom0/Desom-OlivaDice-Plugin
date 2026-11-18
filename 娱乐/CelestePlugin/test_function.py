@@ -563,16 +563,15 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertEqual(result['mode'], 'incremental')
         self.assertEqual(result['added'], 3)
 
-    def test_render_list_builds_select_buttons(self):
+    def test_render_list_only_has_paging_buttons(self):
         items = [{'name': f'Map {index}', 'author': 'A', 'category': 'Maps'} for index in range(10)]
         text, keyboard = render.render_list('标题搜索：map', items, 0, 8, 10)
-        rows = keyboard['content']['rows']
-        buttons = [item for row in rows for item in row.get('buttons', [])]
+        buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
+        payloads = [item['action']['data'] for item in buttons]
+        self.assertEqual(payloads, ['.clst 下一页', '.clst 跳页'])
+        self.assertTrue(all(item['action']['type'] == 1 for item in buttons))
         self.assertIn('**标题搜索：map**', text)
-        self.assertTrue(any(item['action']['data'] == 'clst:sel:0' for item in buttons))
-        self.assertTrue(any(item['action']['data'] == 'clst:pg:next' for item in buttons))
-        self.assertTrue(all(len(row.get('buttons', [])) <= 3 for row in rows))
-        self.assertLessEqual(len(rows), 5)
+        self.assertIn('回复序号看详情', text)
 
     def test_render_detail_download_buttons_are_links(self):
         detail = function.normalize_wegfan_item(sample_search_item())
@@ -593,8 +592,8 @@ class CelestePluginFunctionTest(unittest.TestCase):
         text, keyboard = render.render_endless(state, notice='已抽取下一图。')
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
         payloads = {item['action']['data'] for item in buttons}
-        self.assertIn('clst:en:clear', payloads)
-        self.assertIn('clst:en:undo', payloads)
+        self.assertIn('.clst 无尽 通关', payloads)
+        self.assertIn('.clst 无尽 撤销', payloads)
         self.assertIn('Celeste Endless', text)
 
     def test_chat_context_from_extend(self):
