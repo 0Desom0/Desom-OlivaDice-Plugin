@@ -514,6 +514,91 @@ def resolve_weg_id(item_type: str, item_id: int) -> str:
     return utils.safe_str(record.get('weg_id')) if isinstance(record, dict) else ''
 
 
+index_refresh_state = {'last_incremental_at': 0.0}
+index_rebuild_lock = threading.Lock()
+
+
+def merge_index_items(records: list[dict[str, Any]]) -> int:
+    """把新抓到的条目合并进内存与磁盘索引，返回新增条数。"""
+    if not records:
+        return 0
+    cache_path = get_index_cache_path()
+    payload = utils.read_json_file(cache_path, {})
+    if not isinstance(payload, dict):
+        payload = {}
+    existing = {}
+    for item in payload.get('items') or []:
+        if not isinstance(item, dict) or safe_int(item.get('id')) <= 0:
+            continue
+        existing[f'{utils.safe_str(item.get("item_type"), "Mod").casefold()}:{safe_int(item.get("id"))}'] = item
+    added = 0
+    for record in records:
+        if safe_int(record.get('id')) <= 0:
+            continue
+        key = f'{utils.safe_str(record.get("item_type"), "Mod").casefold()}:{safe_int(record.get("id"))}'
+        if key not in existing:
+            added += 1
+        existing[key] = record
+    payload['items'] = list(existing.values())
+    payload.setdefault('fetched_at', int(time.time()))
+    payload.setdefault('complete', False)
+    utils.save_json_file(cache_path, payload)
+    with cache_lock:
+        index_memory_cache.update({'data': prepare_index(payload), 'loaded_at': time.time()})
+    return added
+
+
+def refresh_index_incremental(section: str = '', min_interval_seconds: int = 60) -> dict[str, Any]:
+    """索引未命中时补抓最新一页（默认 500 条），覆盖刚发布/刚更新的条目。
+
+    section 为空时补抓全部分节；传入具体分节只补该节，避免一次拖太久。
+    """
+    current_time = time.time()
+    if current_time - float(index_refresh_state.get('last_incremental_at', 0) or 0) < min_interval_seconds:
+        return {'ok': False, 'added': 0, 'error': '刚刚补抓过，仍在冷却期'}
+    index_refresh_state['last_incremental_at'] = current_time
+    section_list = [section] if section else list(config.wegfan_index_sections)
+    records: list[dict[str, Any]] = []
+    error_parts = []
+    for section_name in section_list:
+        try:
+            data = wegfan_get(
+                config.wegfan_search_path,
+                {
+                    'page': 1,
+                    'size': config.wegfan_index_page_size,
+                    'section': section_name,
+                    'sort': config.wegfan_sort_default,
+                },
+                timeout_seconds=max(20, get_timeout_seconds()),
+            )
+        except Exception as exception_object:
+            error_parts.append(f'{section_name}：{utils.safe_str(exception_object)}')
+            continue
+        for raw_item in data.get('content') or []:
+            record = normalize_wegfan_item(raw_item, compact=True)
+            if record.get('id'):
+                records.append(record)
+    added = merge_index_items(records)
+    return {'ok': bool(records), 'added': added, 'error': '；'.join(error_parts)}
+
+
+def start_background_index_rebuild() -> None:
+    """索引未命中且补抓也没找到时，后台整份重建一次，避免阻塞当前回复。"""
+    if not index_rebuild_lock.acquire(blocking=False):
+        return
+
+    def worker():
+        try:
+            load_index(force_refresh=True)
+        except Exception:
+            pass
+        finally:
+            index_rebuild_lock.release()
+
+    threading.Thread(target=worker, name='CelestePluginIndexRebuild', daemon=True).start()
+
+
 # ---------------------------------------------------------------------------
 # 短期缓存
 # ---------------------------------------------------------------------------
@@ -694,12 +779,18 @@ def get_item_by_id(
 
     resolved_weg_id = utils.safe_str(weg_id).strip() or resolve_weg_id(item_type, item_id)
     if not resolved_weg_id:
+        # 索引里没有：先补抓该分节最新一页（刚发布/刚更新），仍没有就后台整份重建。
+        refresh_index_incremental(item_type)
+        resolved_weg_id = resolve_weg_id(item_type, item_id)
+    if not resolved_weg_id:
+        start_background_index_rebuild()
         return {
             'ok': False,
             'data': {},
             'error': (
-                f'WEGFan 本地索引里还没有 {item_type} {item_id}，可能尚未同步；'
-                '稍后再试，或直接用标题搜索定位。'
+                f'WEGFan 索引和最新更新页里都还没有 {item_type} {item_id}；'
+                '如果它刚发布，等 WEGFan 收录后再试，或直接用标题搜索定位'
+                '（索引正在后台补全）。'
             ),
         }
 

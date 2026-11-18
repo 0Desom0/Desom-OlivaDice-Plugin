@@ -313,10 +313,37 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertTrue(result['ok'])
 
     def test_get_item_by_id_without_index_entry_reports_error(self):
-        with mock.patch.object(function, 'resolve_weg_id', return_value=''):
+        with (
+            mock.patch.object(function, 'resolve_weg_id', return_value=''),
+            mock.patch.object(function, 'refresh_index_incremental') as incremental_mock,
+            mock.patch.object(function, 'start_background_index_rebuild') as rebuild_mock,
+        ):
             result = function.get_item_by_id(123456, 'Mod')
+        incremental_mock.assert_called_once_with('Mod')
+        rebuild_mock.assert_called_once()
         self.assertFalse(result['ok'])
         self.assertIn('索引', result['error'])
+
+    def test_get_item_by_id_refreshes_index_on_miss(self):
+        resolved = {'value': ''}
+
+        def fake_resolve(_item_type, _item_id):
+            return resolved['value']
+
+        def fake_incremental(*_args, **_kwargs):
+            resolved['value'] = '570697585105248105'
+            return {'ok': True, 'added': 1, 'error': ''}
+
+        with (
+            mock.patch.object(function, 'resolve_weg_id', side_effect=fake_resolve),
+            mock.patch.object(function, 'refresh_index_incremental', side_effect=fake_incremental) as incremental_mock,
+            mock.patch.object(function, 'start_background_index_rebuild') as rebuild_mock,
+            mock.patch.object(function, 'wegfan_get', return_value=sample_search_item()),
+        ):
+            result = function.get_item_by_id(708235, 'Mod')
+        self.assertTrue(result['ok'])
+        incremental_mock.assert_called_once_with('Mod')
+        rebuild_mock.assert_not_called()
 
     def test_get_item_by_id_rejects_mismatched_id(self):
         with (
