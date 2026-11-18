@@ -126,8 +126,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
 
     def test_user_agent_identifies_bot(self):
         headers = function.build_headers()
-        self.assertIn("Desom's Bot - Fronia", headers['User-Agent'])
-        self.assertIn('CelestePlugin', headers['User-Agent'])
+        self.assertEqual(headers['User-Agent'], "Desom's Bot - Fronia (CelestePlugin)")
 
     def test_parse_wegfan_time(self):
         self.assertEqual(function.parse_wegfan_time('1970-01-01T00:00:00Z'), 0)
