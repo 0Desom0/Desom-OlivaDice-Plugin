@@ -671,6 +671,23 @@ def can_send_markdown(plugin_event) -> bool:
     return callable(getattr(getattr(plugin_event, 'indeAPI', None), 'create_markdown_message', None))
 
 
+def build_markdown_header(plugin_event) -> str:
+    """Markdown 不支持引用，用首行引用块 @发送者 + 原消息内容代替。"""
+    if not load_global_config().get('reply_quote_switch', True):
+        return ''
+    data = getattr(plugin_event, 'data', None)
+    user_id = safe_str(getattr(data, 'user_id', None)).strip()
+    if not user_id:
+        return ''
+    text = safe_str(get_message_text_from_event(plugin_event)).strip()
+    text = strip_reply_segment(text)
+    text = re.sub(r'\[OP:[^\]]*\]', '', text).strip()
+    if len(text) > 40:
+        text = f'{text[:40]}…'
+    at_tag = f'<qqbot-at-user id="{op_escape(user_id)}" />'
+    return f'> {at_tag}：{text}' if text else f'> {at_tag}'
+
+
 def reply_markdown(plugin_event, markdown_text: str, keyboard=None) -> bool:
     """发一条 QQ 官方 Markdown 消息（可带键盘）；失败返回 False 由调用方回退纯文本。"""
     if not can_send_markdown(plugin_event):
@@ -681,11 +698,24 @@ def reply_markdown(plugin_event, markdown_text: str, keyboard=None) -> bool:
     chat_type, chat_id = get_chat_context(plugin_event)
     if not chat_type or not chat_id:
         return False
+    header = build_markdown_header(plugin_event)
+    if header:
+        content = f'{header}\n\n{content}'
     sender = plugin_event.indeAPI.create_markdown_message
     payload = {'chat_type': chat_type, 'chat_id': chat_id, 'markdown': {'content': content}}
     # 频道/频道私信不支持回调按钮，只发 Markdown 正文。
     if keyboard and chat_type in ('qq_group', 'qq_private'):
         payload['keyboard'] = keyboard
+    # 带键盘的消息必须是被动回复，主动消息里按钮点了只会退化成文字。
+    data = getattr(plugin_event, 'data', None)
+    extend = getattr(data, 'extend', None)
+    extend = extend if isinstance(extend, dict) else {}
+    message_id = safe_str(getattr(data, 'message_id', '')).strip()
+    event_id = safe_str(extend.get('event_id')).strip()
+    if message_id and message_id != '-1':
+        payload['msg_id'] = message_id
+    elif event_id:
+        payload['event_id'] = event_id
     try:
         result = sender(**payload)
     except Exception:

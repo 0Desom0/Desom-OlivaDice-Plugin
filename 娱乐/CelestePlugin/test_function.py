@@ -568,10 +568,10 @@ class CelestePluginFunctionTest(unittest.TestCase):
         text, keyboard = render.render_list('标题搜索：map', items, 0, 8, 10)
         rows = keyboard['content']['rows']
         buttons = [item for row in rows for item in row.get('buttons', [])]
-        self.assertIn('## 标题搜索：map', text)
+        self.assertIn('**标题搜索：map**', text)
         self.assertTrue(any(item['action']['data'] == 'clst:sel:0' for item in buttons))
         self.assertTrue(any(item['action']['data'] == 'clst:pg:next' for item in buttons))
-        self.assertTrue(all(len(row.get('buttons', [])) <= 4 for row in rows))
+        self.assertTrue(all(len(row.get('buttons', [])) <= 3 for row in rows))
         self.assertLessEqual(len(rows), 5)
 
     def test_render_detail_download_buttons_are_links(self):
@@ -581,7 +581,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
         link_buttons = [item for item in buttons if item['action']['type'] == 0]
         self.assertTrue(link_buttons)
         self.assertIn('download/files', link_buttons[0]['action']['data'])
-        self.assertIn('##', text)
+        self.assertIn('**', text)
 
     def test_render_endless_has_action_buttons(self):
         state = {
