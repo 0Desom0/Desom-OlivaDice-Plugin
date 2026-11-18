@@ -80,7 +80,7 @@ default_global_config = {
     'search_result_limit': 30,
     'slow_request_log_seconds': 3,
     'result_page_size': 8,
-    'selection_timeout_seconds': 300,
+    'selection_timeout_seconds': 1800,
     'description_max_length': 320,
     'credit_max_length': 180,
     'show_cover_image_switch': True,
