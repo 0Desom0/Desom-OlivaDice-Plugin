@@ -1,5 +1,14 @@
 # -*- encoding: utf-8 -*-
-"""Celeste 社区 API、缓存、格式化与 Endless 业务逻辑。"""
+"""Celeste 社区数据（统一走 WEGFan 镜像）、缓存、格式化与 Endless 业务逻辑。
+
+数据来源全部是 https://celeste.weg.fan 的 /api/v2 接口：
+- /submission/search  搜索、分页、按分节/分类过滤、排序
+- /submission/detail  按站内 ID 取详情（含文件与 mod 清单）
+- /download/files/... 或 /download/gamebanana-files/... 下载镜像
+
+WEGFan 详情只认站内 ID，不认 GameBanana ID，所以插件会先把搜索列表抓成本地索引，
+用 GameBanana ID 反查站内 ID；索引同时承担作者/分类检索与随机抽图。
+"""
 
 import copy
 import datetime
@@ -7,6 +16,7 @@ import hashlib
 import html
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -21,22 +31,26 @@ from . import config
 from . import utils
 
 
-try:
-    import yaml
-except Exception:
-    yaml = None
-
-
 cache_lock = threading.RLock()
-yaml_cache_lock_dict = {
-    'mod_search_database': threading.RLock(),
-    'everest_update': threading.RLock(),
-}
-database_memory_cache: dict[str, Any] = {}
-updater_memory_cache: dict[str, Any] = {}
+index_build_lock = threading.Lock()
+index_memory_cache: dict[str, Any] = {}
 profile_memory_cache: dict[str, dict[str, Any]] = {}
 search_memory_cache: dict[str, dict[str, Any]] = {}
 detail_memory_cache: dict[str, dict[str, Any]] = {}
+
+
+GAMEBANANA_SECTION_TYPES = {
+    'mods': 'Mod',
+    'mod': 'Mod',
+    'tools': 'Tool',
+    'tool': 'Tool',
+    'wips': 'Wip',
+    'wip': 'Wip',
+    'sounds': 'Sound',
+    'sound': 'Sound',
+    'sprays': 'Spray',
+    'spray': 'Spray',
+}
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -56,8 +70,8 @@ def get_timeout_seconds() -> int:
 
 def build_headers(extra_headers: dict[str, str] | None = None) -> dict[str, str]:
     headers = {
-        'User-Agent': 'CelestePlugin-OlivOS/1.3',
-        'Accept': 'application/json, text/yaml, text/plain, */*',
+        'User-Agent': 'CelestePlugin-OlivOS/1.4',
+        'Accept': 'application/json, text/plain, */*',
     }
     if isinstance(extra_headers, dict):
         headers.update(extra_headers)
@@ -126,12 +140,354 @@ def decode_json_response(response: dict[str, Any]) -> Any:
     return json.loads(response.get('content', b'').decode('utf-8'))
 
 
-def get_cache_paths(cache_name: str) -> tuple[str, str]:
-    cache_dir = utils.get_shared_cache_dir()
-    return (
-        os.path.join(cache_dir, f'{cache_name}.yaml'),
-        os.path.join(cache_dir, f'{cache_name}.meta.json'),
+def wegfan_get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    timeout_seconds: int | None = None,
+) -> Any:
+    """调用 WEGFan /api/v2 接口，校验统一响应包装并返回 data。"""
+    url = f'{config.wegfan_api_base}{path}'
+    if isinstance(params, dict):
+        cleaned_params = {key: value for key, value in params.items() if value not in ['', None]}
+        if cleaned_params:
+            url = f'{url}?{urllib.parse.urlencode(cleaned_params)}'
+    payload = decode_json_response(http_get(url, timeout_seconds=timeout_seconds))
+    if not isinstance(payload, dict):
+        raise ValueError('WEGFan 接口返回格式异常')
+    code = payload.get('code')
+    if code not in [200, 0, '200']:
+        raise ValueError(utils.safe_str(payload.get('message'), 'WEGFan 接口返回错误') or f'WEGFan 接口返回 {code}')
+    data = payload.get('data')
+    if data is None:
+        raise ValueError('WEGFan 未返回对应数据')
+    return data
+
+
+def safe_int(value: Any, default_value: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default_value
+
+
+def parse_wegfan_time(value: Any) -> int:
+    """把 WEGFan 的 ISO8601 时间转成时间戳（秒），失败返回 0。"""
+    text = utils.safe_str(value).strip()
+    if not text:
+        return 0
+    normalized = text.replace('Z', '+00:00')
+    try:
+        parsed = datetime.datetime.fromisoformat(normalized)
+    except Exception:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return int(parsed.timestamp())
+
+
+def normalize_wegfan_credits(raw_credits: Any) -> list[dict[str, Any]]:
+    groups = []
+    for raw_group in raw_credits if isinstance(raw_credits, list) else []:
+        if not isinstance(raw_group, dict):
+            continue
+        authors = []
+        for raw_author in raw_group.get('authors') or []:
+            if not isinstance(raw_author, dict):
+                continue
+            name = utils.safe_str(raw_author.get('name'))
+            if not name:
+                continue
+            authors.append(
+                {
+                    'name': name,
+                    'role': utils.safe_str(raw_author.get('role')),
+                    'id': raw_author.get('id'),
+                    'url': utils.safe_str(raw_author.get('url')),
+                }
+            )
+        if authors:
+            groups.append({'group': utils.safe_str(raw_group.get('groupName'), '署名') or '署名', 'authors': authors})
+    return groups
+
+
+def normalize_wegfan_file(raw_file: Any) -> dict[str, Any]:
+    """把 WEGFan 的文件对象映射成插件内部结构（id 保留 GameBanana 文件 ID）。"""
+    if not isinstance(raw_file, dict):
+        return {}
+    download_url = utils.safe_str(raw_file.get('url'))
+    if download_url.startswith('/'):
+        download_url = f'{config.wegfan_origin}{download_url}'
+    raw_mods = [mod for mod in raw_file.get('mods') or [] if isinstance(mod, dict)]
+    versions = [utils.safe_str(mod.get('version')) for mod in raw_mods if utils.safe_str(mod.get('version'))]
+    return {
+        'id': safe_int(raw_file.get('gameBananaId')),
+        'weg_file_id': utils.safe_str(raw_file.get('id')),
+        'name': utils.safe_str(raw_file.get('fileName')),
+        'size': safe_int(raw_file.get('size')),
+        'created_at': parse_wegfan_time(raw_file.get('createTime') or raw_file.get('updateTime')),
+        'downloads': safe_int(raw_file.get('downloads')),
+        'url': download_url,
+        'version': versions[0] if versions else '',
+        'description': utils.safe_str(raw_file.get('description')),
+        'archived': bool(raw_file.get('deleteTime')),
+        'has_everest_yaml': bool(raw_mods),
+        'mods': [
+            {'name': utils.safe_str(mod.get('name')), 'version': utils.safe_str(mod.get('version'))}
+            for mod in raw_mods
+        ],
+    }
+
+
+def build_updater_components(raw_files: Any) -> list[dict[str, Any]]:
+    """用 WEGFan 文件里的 mod 清单生成下载分组所需的组件条目。"""
+    components = []
+    for raw_file in raw_files if isinstance(raw_files, list) else []:
+        if not isinstance(raw_file, dict):
+            continue
+        file_id = safe_int(raw_file.get('gameBananaId'))
+        size = safe_int(raw_file.get('size'))
+        updated_at = parse_wegfan_time(raw_file.get('updateTime') or raw_file.get('createTime'))
+        download_url = utils.safe_str(raw_file.get('url'))
+        for raw_mod in raw_file.get('mods') or []:
+            if not isinstance(raw_mod, dict):
+                continue
+            components.append(
+                {
+                    'InternalName': utils.safe_str(raw_mod.get('name')),
+                    'Version': utils.safe_str(raw_mod.get('version')),
+                    'GameBananaFileId': file_id,
+                    'Size': size,
+                    'LastUpdate': updated_at,
+                    'URL': download_url,
+                }
+            )
+    return components
+
+
+def normalize_wegfan_item(raw_item: Any, compact: bool = False) -> dict[str, Any]:
+    """把 WEGFan 的 submission 对象映射成插件内部条目。
+
+    compact=True 时只保留列表/索引需要的字段，用于本地索引与搜索结果。
+    """
+    if not isinstance(raw_item, dict):
+        return {}
+    item_id = safe_int(raw_item.get('gameBananaId'))
+    if item_id <= 0:
+        return {}
+    item_type = utils.safe_str(raw_item.get('gameBananaSection')).strip()
+    if not item_type:
+        matched = re.search(r'gamebanana\.com/([A-Za-z]+)/', utils.safe_str(raw_item.get('pageUrl')))
+        item_type = GAMEBANANA_SECTION_TYPES.get(matched.group(1).casefold(), '') if matched else ''
+    screenshots = []
+    for raw_shot in raw_item.get('screenshots') or []:
+        image_url = utils.safe_str(raw_shot.get('url')) if isinstance(raw_shot, dict) else utils.safe_str(raw_shot)
+        if image_url and image_url not in screenshots:
+            screenshots.append(image_url)
+    description = utils.safe_str(raw_item.get('description'))
+    item = {
+        'id': item_id,
+        'weg_id': utils.safe_str(raw_item.get('id')),
+        'item_type': item_type or 'Mod',
+        'name': utils.safe_str(raw_item.get('name'), '未知标题') or '未知标题',
+        'author': utils.safe_str(raw_item.get('submitter'), '未知作者') or '未知作者',
+        'subtitle': utils.safe_str(raw_item.get('subtitle')),
+        'description': description if not compact else description[:600],
+        'text': '',
+        'page_url': utils.safe_str(raw_item.get('pageUrl')) or f'https://gamebanana.com/mods/{item_id}',
+        'category': utils.safe_str(raw_item.get('categoryName')),
+        'subcategory': utils.safe_str(raw_item.get('subCategoryName')),
+        'views': safe_int(raw_item.get('views')),
+        'likes': safe_int(raw_item.get('likes')),
+        'downloads': safe_int(raw_item.get('downloads')),
+        'created_at': parse_wegfan_time(raw_item.get('createTime')),
+        'updated_at': parse_wegfan_time(
+            raw_item.get('latestUpdateAddedTime') or raw_item.get('updateTime') or raw_item.get('createTime')
+        ),
+        'screenshots': screenshots[:3] if compact else screenshots,
+        'mirrored_screenshots': [],
+        'cover_urls': screenshots[:3],
+        'cover_url': screenshots[0] if screenshots else '',
+        'credits': [],
+        'tags': [],
+        'nsfw': False,
+        'files': [],
+        'updater_components': [],
+        'weg_synced_at': int(time.time()),
+    }
+    if compact:
+        return item
+    raw_files = raw_item.get('files')
+    if not isinstance(raw_files, list):
+        raw_files = []
+    item['files'] = [normalize_wegfan_file(raw_file) for raw_file in raw_files if isinstance(raw_file, dict)]
+    item['updater_components'] = build_updater_components(raw_files)
+    item['credits'] = normalize_wegfan_credits(raw_item.get('credits'))
+    return item
+
+
+# ---------------------------------------------------------------------------
+# 本地索引：WEGFan 搜索列表 → GameBanana ID ↔ 站内 ID
+# ---------------------------------------------------------------------------
+
+
+def get_index_cache_path() -> str:
+    return os.path.join(utils.get_shared_cache_dir(), f'{config.wegfan_index_cache_name}.json')
+
+
+def prepare_index(payload: Any) -> dict[str, Any]:
+    raw_items = payload.get('items') if isinstance(payload, dict) else []
+    items = []
+    for raw_item in raw_items if isinstance(raw_items, list) else []:
+        if not isinstance(raw_item, dict):
+            continue
+        if safe_int(raw_item.get('id')) <= 0:
+            continue
+        items.append(raw_item)
+    by_gamebanana_id = {}
+    for item in items:
+        item_type = utils.safe_str(item.get('item_type'), 'Mod').casefold() or 'mod'
+        by_gamebanana_id[f'{item_type}:{safe_int(item.get("id"))}'] = item
+    return {
+        'items': items,
+        'by_gamebanana_id': by_gamebanana_id,
+        'fetched_at': safe_int(payload.get('fetched_at')) if isinstance(payload, dict) else 0,
+    }
+
+
+def fetch_full_index() -> dict[str, Any]:
+    """逐分节抓取 WEGFan 搜索列表，构建完整索引。"""
+    items: dict[str, dict[str, Any]] = {}
+    error_parts = []
+    page_size = max(1, int(config.wegfan_index_page_size))
+    max_pages = max(1, int(config.wegfan_index_max_pages))
+    index_timeout = max(30, get_timeout_seconds() * 3)
+    for section in config.wegfan_index_sections:
+        page = 1
+        while page <= max_pages:
+            try:
+                data = wegfan_get(
+                    config.wegfan_search_path,
+                    {
+                        'page': page,
+                        'size': page_size,
+                        'section': section,
+                        'sort': config.wegfan_sort_default,
+                    },
+                    timeout_seconds=index_timeout,
+                )
+            except Exception as exception_object:
+                error_parts.append(f'{section} 第 {page} 页：{utils.safe_str(exception_object)}')
+                break
+            content = data.get('content') if isinstance(data, dict) else None
+            if not isinstance(content, list) or not content:
+                break
+            for raw_item in content:
+                record = normalize_wegfan_item(raw_item, compact=True)
+                if not record.get('id'):
+                    continue
+                items[f"{record['item_type'].casefold()}:{record['id']}"] = record
+            if not data.get('hasNextPage'):
+                break
+            page += 1
+    if not items:
+        return {'ok': False, 'items': [], 'fetched_at': 0, 'error': '；'.join(error_parts) or 'WEGFan 索引为空'}
+    return {
+        'ok': True,
+        'items': list(items.values()),
+        'fetched_at': int(time.time()),
+        'error': '；'.join(error_parts),
+    }
+
+
+def load_index(force_refresh: bool = False) -> dict[str, Any]:
+    """读取 WEGFan 本地索引；过期时重建，重建失败则沿用旧索引。"""
+    ttl = max(600, int(utils.load_global_config().get('database_cache_seconds', 21600)))
+    current_time = time.time()
+    with cache_lock:
+        memory_index = index_memory_cache.get('data')
+        if (
+            memory_index
+            and not force_refresh
+            and current_time - float(index_memory_cache.get('loaded_at', 0) or 0) < ttl
+        ):
+            return {'ok': True, 'data': memory_index, 'error': '', 'from_cache': True}
+
+    cache_path = get_index_cache_path()
+    disk_payload = utils.read_json_file(cache_path, {})
+    if not isinstance(disk_payload, dict):
+        disk_payload = {}
+    disk_has_items = bool(disk_payload.get('items'))
+    disk_fresh = (
+        disk_has_items
+        and not force_refresh
+        and current_time - float(disk_payload.get('fetched_at', 0) or 0) < ttl
     )
+    if disk_fresh:
+        prepared = prepare_index(disk_payload)
+        with cache_lock:
+            index_memory_cache.update({'data': prepared, 'loaded_at': current_time})
+        return {'ok': True, 'data': prepared, 'error': '', 'from_cache': True}
+
+    if not index_build_lock.acquire(blocking=False):
+        if disk_has_items:
+            prepared = prepare_index(disk_payload)
+            with cache_lock:
+                index_memory_cache.update({'data': prepared, 'loaded_at': current_time})
+            return {'ok': True, 'data': prepared, 'error': 'WEGFan 索引正在重建，本次使用旧索引', 'from_cache': True}
+        return {'ok': False, 'data': None, 'error': 'WEGFan 本地索引正在建立，请稍后再试', 'from_cache': False}
+
+    try:
+        fetched = fetch_full_index()
+    finally:
+        index_build_lock.release()
+
+    if fetched.get('ok'):
+        utils.save_json_file(cache_path, fetched)
+        prepared = prepare_index(fetched)
+        with cache_lock:
+            index_memory_cache.update({'data': prepared, 'loaded_at': current_time})
+        return {'ok': True, 'data': prepared, 'error': fetched.get('error', ''), 'from_cache': False}
+
+    if disk_has_items:
+        prepared = prepare_index(disk_payload)
+        with cache_lock:
+            index_memory_cache.update({'data': prepared, 'loaded_at': current_time})
+        return {
+            'ok': True,
+            'data': prepared,
+            'error': fetched.get('error', '') or 'WEGFan 索引重建失败，已沿用旧索引',
+            'from_cache': True,
+        }
+    return {'ok': False, 'data': None, 'error': fetched.get('error', 'WEGFan 索引构建失败'), 'from_cache': False}
+
+
+def refresh_community_data() -> dict[str, Any]:
+    """骰主手动更新：忽略 TTL，强制重建 WEGFan 本地索引。"""
+    result = load_index(force_refresh=True)
+    prepared = result.get('data') if isinstance(result.get('data'), dict) else {}
+    return {
+        'ok': bool(result.get('ok')),
+        'database_count': len(prepared.get('items', [])) if prepared else 0,
+        'database_from_cache': bool(result.get('from_cache', False)),
+        'error': result.get('error', ''),
+    }
+
+
+def resolve_weg_id(item_type: str, item_id: int) -> str:
+    """GameBanana ID → WEGFan 站内 ID。"""
+    index_result = load_index()
+    if not index_result.get('ok'):
+        return ''
+    prepared = index_result.get('data') or {}
+    record = (prepared.get('by_gamebanana_id') or {}).get(
+        f'{utils.safe_str(item_type, "Mod").casefold()}:{safe_int(item_id)}'
+    )
+    return utils.safe_str(record.get('weg_id')) if isinstance(record, dict) else ''
+
+
+# ---------------------------------------------------------------------------
+# 短期缓存
+# ---------------------------------------------------------------------------
 
 
 def get_short_cache_path(cache_group: str, cache_key: str) -> str:
@@ -179,656 +535,121 @@ def save_short_cache(
     utils.save_json_file(get_short_cache_path(cache_group, cache_key), cache_value)
 
 
-def parse_yaml_text(yaml_text: str) -> Any:
-    if yaml is None:
-        raise RuntimeError('缺少 PyYAML，无法读取 Celeste 社区数据库')
-    loader = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
-    return yaml.load(yaml_text, Loader=loader)
-
-
-def load_cached_yaml(cache_name: str, url: str, ttl_seconds: int) -> dict[str, Any]:
-    """串行更新同一组大型缓存，避免预热线程与消息线程同时写临时文件。"""
-    target_lock = yaml_cache_lock_dict.setdefault(cache_name, threading.RLock())
-    with target_lock:
-        return _load_cached_yaml_unlocked(cache_name, url, ttl_seconds)
-
-
-def _load_cached_yaml_unlocked(cache_name: str, url: str, ttl_seconds: int) -> dict[str, Any]:
-    """使用 ETag 与本地文件缓存大型 YAML。"""
-    yaml_path, meta_path = get_cache_paths(cache_name)
-    current_time = time.time()
-    memory_cache = database_memory_cache if cache_name == 'mod_search_database' else updater_memory_cache
-
-    with cache_lock:
-        if memory_cache.get('data') is not None and current_time - memory_cache.get('loaded_at', 0) < ttl_seconds:
-            return {'ok': True, 'data': memory_cache['data'], 'error': '', 'from_cache': True}
-
-    file_exists = os.path.exists(yaml_path)
-    file_is_fresh = file_exists and current_time - os.path.getmtime(yaml_path) < ttl_seconds
-    if file_is_fresh:
-        try:
-            parsed = parse_yaml_text(utils.read_text_file(yaml_path))
-            with cache_lock:
-                memory_cache.update({'data': parsed, 'loaded_at': current_time})
-            return {'ok': True, 'data': parsed, 'error': '', 'from_cache': True}
-        except Exception:
-            pass
-
-    meta = utils.read_json_file(meta_path, {})
-    conditional_headers = {}
-    if meta.get('etag'):
-        conditional_headers['If-None-Match'] = utils.safe_str(meta['etag'])
-    if meta.get('last_modified'):
-        conditional_headers['If-Modified-Since'] = utils.safe_str(meta['last_modified'])
-
-    response = http_get(url, extra_headers=conditional_headers)
-    if response.get('status') == 304 and file_exists:
-        try:
-            parsed = parse_yaml_text(utils.read_text_file(yaml_path))
-            os.utime(yaml_path, None)
-            with cache_lock:
-                memory_cache.update({'data': parsed, 'loaded_at': current_time})
-            return {'ok': True, 'data': parsed, 'error': '', 'from_cache': True}
-        except Exception as exception_object:
-            return {'ok': False, 'data': None, 'error': f'缓存解析失败：{exception_object}', 'from_cache': True}
-
-    if response.get('ok') and response.get('status') == 200:
-        try:
-            yaml_text = response['content'].decode('utf-8')
-            parsed = parse_yaml_text(yaml_text)
-            utils.save_text_file(yaml_path, yaml_text)
-            header_dict = {key.lower(): value for key, value in response.get('headers', {}).items()}
-            utils.save_json_file(
-                meta_path,
-                {
-                    'etag': header_dict.get('etag', ''),
-                    'last_modified': header_dict.get('last-modified', ''),
-                    'updated_at': int(current_time),
-                },
-            )
-            with cache_lock:
-                memory_cache.update({'data': parsed, 'loaded_at': current_time})
-            return {'ok': True, 'data': parsed, 'error': '', 'from_cache': False}
-        except Exception as exception_object:
-            response['error'] = f'数据解析失败：{exception_object}'
-
-    if file_exists:
-        try:
-            parsed = parse_yaml_text(utils.read_text_file(yaml_path))
-            with cache_lock:
-                memory_cache.update({'data': parsed, 'loaded_at': current_time})
-            return {
-                'ok': True,
-                'data': parsed,
-                'error': response.get('error', ''),
-                'from_cache': True,
-            }
-        except Exception as exception_object:
-            return {'ok': False, 'data': None, 'error': f'网络及缓存均不可用：{exception_object}', 'from_cache': True}
-
-    return {'ok': False, 'data': None, 'error': response.get('error', '社区数据库不可用'), 'from_cache': False}
-
-
-def refresh_community_data() -> dict[str, Any]:
-    """骰主手动更新：忽略本地 TTL，强制向数据源重新校验社区数据库与 Everest 更新库。"""
-    database_result = load_cached_yaml('mod_search_database', config.database_url, 0)
-    if database_result.get('ok') and not isinstance(database_result.get('data'), list):
-        database_result = {'ok': False, 'data': None, 'error': 'Mod 数据库格式异常', 'from_cache': True}
-    updater_result = load_cached_yaml('everest_update', config.updater_url, 0)
-    if updater_result.get('ok'):
-        with cache_lock:
-            updater_memory_cache['index'] = build_updater_index(updater_result.get('data'))
-            updater_memory_cache['index_source_identity'] = id(updater_result.get('data'))
-    database_count = len(database_result.get('data') or []) if database_result.get('ok') else 0
-    updater_count = len(updater_result.get('data') or {}) if updater_result.get('ok') else 0
-    error_parts = []
-    if not database_result.get('ok'):
-        error_parts.append(f'Mod 数据库：{database_result.get("error", "未知错误")}')
-    if not updater_result.get('ok'):
-        error_parts.append(f'Everest 更新库：{updater_result.get("error", "未知错误")}')
-    return {
-        'ok': not error_parts,
-        'database_count': database_count,
-        'updater_count': updater_count,
-        'database_from_cache': bool(database_result.get('from_cache', True)),
-        'updater_from_cache': bool(updater_result.get('from_cache', True)),
-        'error': '；'.join(error_parts),
-    }
-
-
-def load_mod_database() -> dict[str, Any]:
-    ttl = int(utils.load_global_config().get('database_cache_seconds', 21600))
-    result = load_cached_yaml('mod_search_database', config.database_url, max(600, ttl))
-    if result.get('ok') and not isinstance(result.get('data'), list):
-        return {'ok': False, 'data': [], 'error': 'Mod 数据库格式异常'}
-    return result
-
-
-def build_updater_index(raw_data: Any) -> dict[tuple[str, int], list[dict[str, Any]]]:
-    index: dict[tuple[str, int], list[dict[str, Any]]] = {}
-    if not isinstance(raw_data, dict):
-        return index
-    for internal_name, raw_info in raw_data.items():
-        if not isinstance(raw_info, dict):
-            continue
-        try:
-            item_id = int(raw_info.get('GameBananaId', 0))
-        except Exception:
-            continue
-        item_type = utils.safe_str(raw_info.get('GameBananaType', 'Mod'), 'Mod')
-        if item_id <= 0:
-            continue
-        info = dict(raw_info)
-        info['InternalName'] = utils.safe_str(internal_name)
-        index.setdefault((item_type.lower(), item_id), []).append(info)
-    for component_list in index.values():
-        component_list.sort(key=lambda item: int(item.get('LastUpdate', 0) or 0), reverse=True)
-    return index
-
-
-def load_updater_index() -> dict[str, Any]:
-    ttl = int(utils.load_global_config().get('database_cache_seconds', 21600))
-    result = load_cached_yaml('everest_update', config.updater_url, max(600, ttl))
-    if not result.get('ok'):
-        return {'ok': False, 'data': {}, 'error': result.get('error', '')}
-    with cache_lock:
-        source_identity = id(result.get('data'))
-        if updater_memory_cache.get('index_source_identity') != source_identity:
-            updater_memory_cache['index'] = build_updater_index(result.get('data'))
-            updater_memory_cache['index_source_identity'] = source_identity
-        index = updater_memory_cache.get('index', {})
-    return {'ok': True, 'data': index, 'error': result.get('error', '')}
-
-
-def normalize_file(raw_file: Any) -> dict[str, Any]:
-    if not isinstance(raw_file, dict):
-        return {}
-    file_id = raw_file.get('_idRow', raw_file.get('id', 0))
-    try:
-        file_id = int(file_id)
-    except Exception:
-        file_id = extract_file_id(raw_file.get('_sDownloadUrl', raw_file.get('URL', '')))
-    if file_id <= 0:
-        file_id = extract_file_id(
-            raw_file.get('_sDownloadUrl', raw_file.get('URL', raw_file.get('url', '')))
-        )
-    return {
-        'id': file_id,
-        'name': utils.safe_str(raw_file.get('_sFile', raw_file.get('Name', raw_file.get('name', '')))),
-        'size': int(raw_file.get('_nFilesize', raw_file.get('Size', raw_file.get('size', 0))) or 0),
-        'created_at': int(
-            raw_file.get('_tsDateAdded', raw_file.get('CreatedDate', raw_file.get('created_at', 0))) or 0
-        ),
-        'downloads': int(
-            raw_file.get('_nDownloadCount', raw_file.get('Downloads', raw_file.get('downloads', 0))) or 0
-        ),
-        'url': utils.safe_str(
-            raw_file.get(
-                '_sDownloadUrl',
-                raw_file.get('URL', raw_file.get('url', f'https://gamebanana.com/dl/{file_id}')),
-            )
-        ),
-        'version': utils.safe_str(raw_file.get('_sVersion', raw_file.get('version', ''))),
-        'description': utils.safe_str(
-            raw_file.get('_sDescription', raw_file.get('Description', raw_file.get('description', '')))
-        ),
-        'archived': bool(raw_file.get('_bIsArchived', raw_file.get('archived', False))),
-        'has_everest_yaml': bool(raw_file.get('HasEverestYaml', raw_file.get('has_everest_yaml', False))),
-    }
-
-
-GAMEBANANA_SECTION_TYPES = {
-    'mods': 'Mod',
-    'mod': 'Mod',
-    'tools': 'Tool',
-    'tool': 'Tool',
-    'sounds': 'Sound',
-    'sound': 'Sound',
-    'wips': 'Wip',
-    'wip': 'Wip',
-    'sprays': 'Spray',
-    'spray': 'Spray',
-    'requests': 'Request',
-    'request': 'Request',
-    'concepts': 'Concept',
-    'concept': 'Concept',
-    'contests': 'Contest',
-    'contest': 'Contest',
-    'games': 'Game',
-    'game': 'Game',
-}
-
-
-def extract_item_reference(raw_item: Any) -> tuple[str, int]:
-    """从 PageURL（或 _sProfileUrl）解析条目类型与 ID。
-
-    上游 gamebanana-search 已不再返回 GameBananaId，条目 ID 现在只保留在
-    https://gamebanana.com/mods/<id> 这类链接里；解析失败时返回 ('', 0)。
-    """
-    if not isinstance(raw_item, dict):
-        return '', 0
-    page_url = utils.safe_str(
-        raw_item.get('PageURL', raw_item.get('page_url', raw_item.get('_sProfileUrl', '')))
-    ).strip()
-    if not page_url:
-        return '', 0
-    matched = re.search(r'gamebanana\.com/([A-Za-z]+)/(\d+)', page_url)
-    if not matched:
-        return '', 0
-    item_type = GAMEBANANA_SECTION_TYPES.get(matched.group(1).casefold(), '')
-    return item_type, int(matched.group(2))
-
-
-def normalize_item(raw_item: Any) -> dict[str, Any]:
-    if not isinstance(raw_item, dict):
-        return {}
-    item_id = raw_item.get('GameBananaId', raw_item.get('id', 0))
-    try:
-        item_id = int(item_id)
-    except Exception:
-        item_id = extract_file_id(item_id)
-    item_type = utils.safe_str(raw_item.get('GameBananaType', raw_item.get('item_type', ''))).strip()
-    if item_id <= 0 or not item_type:
-        reference_type, reference_id = extract_item_reference(raw_item)
-        if item_id <= 0:
-            item_id = reference_id
-        if not item_type:
-            item_type = reference_type
-    item_type = item_type or 'Mod'
-    raw_category = raw_item.get('Category')
-    category_name = utils.safe_str(raw_item.get('CategoryName', raw_item.get('category', '')))
-    subcategory_name = utils.safe_str(raw_item.get('SubcategoryName', raw_item.get('subcategory', '')))
-    category_id = raw_item.get('CategoryId', raw_item.get('category_id'))
-    subcategory_id = raw_item.get('SubcategoryId', raw_item.get('subcategory_id'))
-    if isinstance(raw_category, dict):
-        if subcategory_id is None:
-            subcategory_id = raw_category.get('ID')
-        if not subcategory_name:
-            subcategory_name = utils.safe_str(raw_category.get('Name', ''))
-        raw_parent_category = raw_category.get('Parent')
-        if isinstance(raw_parent_category, dict):
-            if category_id is None:
-                category_id = raw_parent_category.get('ID')
-            if not category_name:
-                category_name = utils.safe_str(raw_parent_category.get('Name', ''))
-    files = raw_item.get('Files', raw_item.get('files', []))
-    if not isinstance(files, list):
-        files = []
-    screenshots = raw_item.get('Screenshots', raw_item.get('screenshots', []))
-    mirrored_screenshots = raw_item.get('MirroredScreenshots', raw_item.get('mirrored_screenshots', []))
-    if not isinstance(screenshots, list):
-        screenshots = []
-    if not isinstance(mirrored_screenshots, list):
-        mirrored_screenshots = []
-    screenshots = [utils.safe_str(url) for url in screenshots if utils.safe_str(url)]
-    mirrored_screenshots = [utils.safe_str(url) for url in mirrored_screenshots if utils.safe_str(url)]
-    provided_cover_urls = raw_item.get('cover_urls', [])
-    if not isinstance(provided_cover_urls, list):
-        provided_cover_urls = []
-    provided_cover_urls = [utils.safe_str(url) for url in provided_cover_urls if utils.safe_str(url)]
-    cover_url = utils.safe_str(raw_item.get('cover_url', ''))
-    if provided_cover_urls:
-        cover_url = provided_cover_urls[0]
-    elif mirrored_screenshots:
-        cover_url = mirrored_screenshots[0]
-    elif not cover_url:
-        cover_url = screenshots[0] if screenshots else ''
-    return {
-        'id': item_id,
-        'item_type': item_type,
-        'name': utils.safe_str(raw_item.get('Name', raw_item.get('name', '未知标题')), '未知标题'),
-        'author': utils.safe_str(raw_item.get('Author', raw_item.get('author', '未知作者')), '未知作者'),
-        'description': utils.safe_str(raw_item.get('Description', raw_item.get('description', ''))),
-        'text': utils.safe_str(raw_item.get('Text', raw_item.get('text', ''))),
-        'page_url': utils.safe_str(
-            raw_item.get('PageURL', raw_item.get('page_url', f'https://gamebanana.com/mods/{item_id}'))
-        ),
-        'category': category_name,
-        'subcategory': subcategory_name,
-        'category_id': category_id,
-        'subcategory_id': subcategory_id,
-        'views': int(raw_item.get('Views', raw_item.get('views', 0)) or 0),
-        'likes': int(raw_item.get('Likes', raw_item.get('likes', 0)) or 0),
-        'downloads': int(raw_item.get('Downloads', raw_item.get('downloads', 0)) or 0),
-        'created_at': int(raw_item.get('CreatedDate', raw_item.get('created_at', 0)) or 0),
-        'updated_at': int(raw_item.get('UpdatedDate', raw_item.get('updated_at', 0)) or 0),
-        'files': [normalize_file(file_item) for file_item in files if isinstance(file_item, dict)],
-        'screenshots': screenshots,
-        'mirrored_screenshots': mirrored_screenshots,
-        'cover_urls': provided_cover_urls,
-        'cover_url': cover_url,
-        'credits': copy.deepcopy(raw_item.get('credits', [])),
-        'tags': list(raw_item.get('tags', [])) if isinstance(raw_item.get('tags', []), list) else [],
-        'nsfw': bool(raw_item.get('nsfw', False)),
-    }
+# ---------------------------------------------------------------------------
+# 检索
+# ---------------------------------------------------------------------------
 
 
 def search_title(query: str) -> dict[str, Any]:
     query_text = utils.safe_str(query).strip()
     if not query_text:
         return {'ok': False, 'results': [], 'count': 0, 'error': '请输入搜索关键词'}
-    cache_key = query_text.casefold()
+    cache_key = f'title|{query_text.casefold()}'
     cache_ttl = max(0, int(utils.load_global_config().get('search_cache_seconds', 300)))
     cached_result = load_short_cache(search_memory_cache, 'searches', cache_key, cache_ttl)
     if isinstance(cached_result, dict):
         return cached_result
-    url = f'{config.search_api_url}?{urllib.parse.urlencode({"q": query_text, "full": "true"})}'
+
+    result_limit = max(1, int(utils.load_global_config().get('search_result_limit', 100)))
     try:
-        data = decode_json_response(http_get(url))
+        data = wegfan_get(
+            config.wegfan_search_path,
+            {
+                'search': query_text,
+                'page': 1,
+                'size': result_limit,
+                'sort': config.wegfan_sort_default,
+            },
+            timeout_seconds=max(8, get_timeout_seconds()),
+        )
     except Exception as exception_object:
         fallback = search_local(['name'], query_text)
-        if fallback.get('ok'):
-            fallback['notice'] = '标题搜索接口暂时不可用，本次使用本地数据库的普通包含匹配。'
+        if fallback.get('ok') and fallback.get('results'):
+            fallback['notice'] = 'WEGFan 搜索接口暂时不可用，本次使用本地索引做关键词匹配。'
             save_short_cache(search_memory_cache, 'searches', cache_key, fallback)
             return fallback
         return {'ok': False, 'results': [], 'count': 0, 'error': utils.safe_str(exception_object)}
-    if not isinstance(data, list):
-        data = []
-    results = [normalize_item(item) for item in data if isinstance(item, dict)]
-    result = {'ok': True, 'results': results, 'count': len(results), 'error': ''}
+
+    content = data.get('content') if isinstance(data, dict) else []
+    results = [normalize_wegfan_item(raw_item, compact=True) for raw_item in content or []]
+    results = [item for item in results if item.get('id')]
+    total_count = safe_int(data.get('totalElements')) if isinstance(data, dict) else len(results)
+    total_count = max(total_count, len(results))
+    result = {'ok': True, 'results': results, 'count': total_count, 'error': ''}
+    if total_count > len(results):
+        result['notice'] = f'共匹配 {total_count} 项，列表展示前 {len(results)} 项；加关键词可以缩窄范围。'
     save_short_cache(search_memory_cache, 'searches', cache_key, result)
     return result
-
-
-def make_index_item(item: dict[str, Any]) -> dict[str, Any]:
-    """移除列表会话不需要的大字段，降低大分类查询的内存占用。"""
-    compact_item = dict(item)
-    compact_item['text'] = ''
-    compact_item['description'] = ''
-    compact_item['files'] = []
-    compact_item['credits'] = []
-    compact_item['tags'] = []
-    compact_item['screenshots'] = compact_item.get('screenshots', [])[:1]
-    compact_item['mirrored_screenshots'] = compact_item.get('mirrored_screenshots', [])[:1]
-    return compact_item
 
 
 def search_local(field_names: list[str], query: str, limit: int = 10000) -> dict[str, Any]:
     query_text = utils.safe_str(query).strip().casefold()
     if not query_text:
         return {'ok': False, 'results': [], 'count': 0, 'error': '请输入筛选内容'}
-    database_result = load_mod_database()
-    if not database_result.get('ok'):
-        return {'ok': False, 'results': [], 'count': 0, 'error': database_result.get('error', '')}
+    index_result = load_index()
+    if not index_result.get('ok'):
+        return {'ok': False, 'results': [], 'count': 0, 'error': index_result.get('error', 'WEGFan 索引不可用')}
 
     exact_matches = []
     contains_matches = []
-    for raw_item in database_result.get('data', []):
-        normalized = normalize_item(raw_item)
-        values = [utils.safe_str(normalized.get(field_name, '')).casefold() for field_name in field_names]
+    for item in index_result['data'].get('items', []):
+        values = [utils.safe_str(item.get(field_name, '')).casefold() for field_name in field_names]
         if query_text in values:
-            exact_matches.append(make_index_item(normalized))
+            exact_matches.append(dict(item))
         elif any(query_text in value for value in values):
-            contains_matches.append(make_index_item(normalized))
+            contains_matches.append(dict(item))
     results = exact_matches + contains_matches
     results.sort(key=lambda item: (item.get('downloads', 0), item.get('likes', 0)), reverse=True)
-    return {'ok': True, 'results': results[:limit], 'count': len(results), 'error': ''}
+    return {
+        'ok': True,
+        'results': results[:limit],
+        'count': len(results),
+        'error': '',
+        'notice': utils.safe_str(index_result.get('error')),
+    }
 
 
 def search_author(query: str) -> dict[str, Any]:
     result = search_local(['author'], query)
     if not result.get('ok'):
         return result
-    query_text = utils.safe_str(query).strip().casefold()
-    result_map = {
-        (item.get('item_type', '').lower(), item.get('id', 0)): item for item in result.get('results', [])
-    }
-    profile_dir = os.path.join(utils.get_shared_cache_dir(), 'profiles')
-    if os.path.isdir(profile_dir):
-        for file_name in os.listdir(profile_dir):
-            if not file_name.endswith('.json'):
-                continue
-            cached = utils.read_json_file(os.path.join(profile_dir, file_name), {})
-            credited_names = []
-            for group in cached.get('credits', []):
-                credited_names.extend(author.get('name', '') for author in group.get('authors', []))
-            if any(query_text in utils.safe_str(name).casefold() for name in credited_names):
-                item = make_index_item(normalize_item(cached))
-                result_map[(item.get('item_type', '').lower(), item.get('id', 0))] = item
-    results = list(result_map.values())
-    results.sort(key=lambda item: (item.get('downloads', 0), item.get('likes', 0)), reverse=True)
-    return {
-        'ok': True,
-        'results': results,
-        'count': len(results),
-        'error': '',
-        'notice': '主投稿者搜索覆盖完整社区数据库；合作者搜索仅覆盖已缓存过的详情。',
-    }
+    notices = [notice for notice in [result.get('notice', ''), '作者检索基于 WEGFan 本地索引的投稿者字段。'] if notice]
+    result['notice'] = '；'.join(notices)
+    return result
 
 
 def search_category(query: str) -> dict[str, Any]:
     return search_local(['category', 'subcategory'], query)
 
 
-def get_profile_cache_path(item_type: str, item_id: int) -> str:
-    folder = utils.ensure_folder(os.path.join(utils.get_shared_cache_dir(), 'profiles'))
-    safe_type = re.sub(r'[^A-Za-z0-9_-]', '', item_type) or 'Mod'
-    return os.path.join(folder, f'{safe_type}_{item_id}.json')
-
-
-def normalize_credit_groups(raw_credits: Any) -> list[dict[str, Any]]:
-    if isinstance(raw_credits, list):
-        groups = raw_credits
-    elif isinstance(raw_credits, dict) and '_aAuthors' in raw_credits:
-        groups = [raw_credits]
-    elif isinstance(raw_credits, dict):
-        groups = list(raw_credits.values())
-    else:
-        groups = []
-    result = []
-    for raw_group in groups:
-        if not isinstance(raw_group, dict):
-            continue
-        raw_authors = raw_group.get('_aAuthors', [])
-        if isinstance(raw_authors, dict):
-            raw_authors = [raw_authors]
-        authors = []
-        for raw_author in raw_authors if isinstance(raw_authors, list) else []:
-            if not isinstance(raw_author, dict):
-                continue
-            authors.append(
-                {
-                    'name': utils.safe_str(raw_author.get('_sName', '')),
-                    'role': utils.safe_str(raw_author.get('_sRole', '')),
-                    'id': raw_author.get('_idRow'),
-                    'url': utils.safe_str(raw_author.get('_sProfileUrl', '')),
-                }
-            )
-        if authors:
-            result.append({'group': utils.safe_str(raw_group.get('_sGroupName', '署名')), 'authors': authors})
+def search_tag(query: str) -> dict[str, Any]:
+    """WEGFan 没有自由标签字段，按子分类、标题与简介关键词匹配。"""
+    result = search_local(['subcategory', 'name', 'description'], query)
+    if not result.get('ok'):
+        return result
+    notices = [notice for notice in [result.get('notice', ''), 'WEGFan 不提供自由标签，本次按子分类、标题与简介关键词匹配。'] if notice]
+    result['notice'] = '；'.join(notices)
+    result['partial'] = True
     return result
 
 
-def normalize_profile(raw_profile: Any, item_type: str, item_id: int) -> dict[str, Any]:
-    if not isinstance(raw_profile, dict):
-        return {}
-    raw_tags = raw_profile.get('_aTags', [])
-    if isinstance(raw_tags, dict):
-        raw_tags = [raw_tags]
-    tags = []
-    for raw_tag in raw_tags if isinstance(raw_tags, list) else []:
-        value = raw_tag.get('_sValue', '') if isinstance(raw_tag, dict) else raw_tag
-        value_text = utils.safe_str(value).strip()
-        if value_text and value_text not in tags:
-            tags.append(value_text)
-
-    submitter = raw_profile.get('_aSubmitter', {})
-    category = raw_profile.get('_aCategory', {})
-    super_category = raw_profile.get('_aSuperCategory', {})
-    game = raw_profile.get('_aGame', {})
-    root_category_name = utils.safe_str(super_category.get('_sName', '')) if isinstance(super_category, dict) else ''
-    leaf_category_name = utils.safe_str(category.get('_sName', '')) if isinstance(category, dict) else ''
-    if not root_category_name:
-        root_category_name = leaf_category_name
-        leaf_category_name = ''
-    raw_files = raw_profile.get('_aFiles', [])
-    if not isinstance(raw_files, list):
-        raw_files = []
-    preview_media = raw_profile.get('_aPreviewMedia', {})
-    raw_images = preview_media.get('_aImages', []) if isinstance(preview_media, dict) else []
-    if isinstance(raw_images, dict):
-        raw_images = [raw_images]
-    screenshots = []
-    for raw_image in raw_images if isinstance(raw_images, list) else []:
-        if not isinstance(raw_image, dict):
-            continue
-        base_url = utils.safe_str(raw_image.get('_sBaseUrl', '')).rstrip('/')
-        file_name = utils.safe_str(raw_image.get('_sFile', ''))
-        if file_name.startswith(('http://', 'https://')):
-            image_url = file_name
-        elif base_url and file_name:
-            image_url = f'{base_url}/{file_name}'
-        else:
-            image_url = ''
-        if image_url and image_url not in screenshots:
-            screenshots.append(image_url)
-    return {
-        'id': item_id,
-        'item_type': item_type,
-        'name': utils.safe_str(raw_profile.get('_sName', '未知标题'), '未知标题'),
-        'page_url': utils.safe_str(
-            raw_profile.get('_sProfileUrl', f'https://gamebanana.com/{item_type.lower()}s/{item_id}')
-        ),
-        'author': utils.safe_str(submitter.get('_sName', '')) if isinstance(submitter, dict) else '',
-        'description': utils.safe_str(raw_profile.get('_sDescription', '')),
-        'text': utils.safe_str(raw_profile.get('_sText', '')),
-        'category': root_category_name,
-        'subcategory': leaf_category_name,
-        'views': int(raw_profile.get('_nViewCount', 0) or 0),
-        'likes': int(raw_profile.get('_nLikeCount', 0) or 0),
-        'downloads': int(raw_profile.get('_nDownloadCount', 0) or 0),
-        'created_at': int(raw_profile.get('_tsDateAdded', 0) or 0),
-        'updated_at': int(raw_profile.get('_tsDateModified', 0) or 0),
-        'credits': normalize_credit_groups(raw_profile.get('_aCredits', [])),
-        'tags': tags,
-        'files': [normalize_file(file_item) for file_item in raw_files],
-        'screenshots': screenshots,
-        'cover_url': screenshots[0] if screenshots else '',
-        'nsfw': bool(raw_profile.get('_bIsNsfw', False))
-        or utils.safe_str(raw_profile.get('_sInitialVisibility', 'show')).lower() not in ['', 'show', 'visible']
-        or bool(raw_profile.get('_aContentRatings')),
-        'game_id': int(game.get('_idRow', 0) or 0) if isinstance(game, dict) else 0,
-        'page_version': utils.safe_str(raw_profile.get('_sVersion', '')),
-        'cached_at': int(time.time()),
-    }
-
-
-def get_profile(item_type: str, item_id: int, force_refresh: bool = False) -> dict[str, Any]:
-    cache_key = f'{item_type.lower()}:{item_id}'
-    ttl = int(utils.load_global_config().get('profile_cache_seconds', 21600))
-    current_time = time.time()
-    with cache_lock:
-        memory_value = profile_memory_cache.get(cache_key)
-        if memory_value and not force_refresh and current_time - memory_value.get('cached_at', 0) < ttl:
-            return {'ok': True, 'data': copy.deepcopy(memory_value), 'error': '', 'from_cache': True}
-
-    cache_path = get_profile_cache_path(item_type, item_id)
-    cached_value = utils.read_json_file(cache_path, {})
-    if (
-        cached_value
-        and not force_refresh
-        and current_time - float(cached_value.get('cached_at', 0) or 0) < ttl
-    ):
-        with cache_lock:
-            profile_memory_cache[cache_key] = cached_value
-        return {'ok': True, 'data': copy.deepcopy(cached_value), 'error': '', 'from_cache': True}
-
-    url = config.gamebanana_profile_url.format(item_type=item_type, item_id=item_id)
-    try:
-        raw_profile = decode_json_response(http_get(url))
-        normalized = normalize_profile(raw_profile, item_type, item_id)
-        if not normalized:
-            raise ValueError('GameBanana 详情为空')
-        utils.save_json_file(cache_path, normalized)
-        with cache_lock:
-            profile_memory_cache[cache_key] = normalized
-        return {'ok': True, 'data': copy.deepcopy(normalized), 'error': '', 'from_cache': False}
-    except Exception as exception_object:
-        if cached_value:
-            return {
-                'ok': True,
-                'data': cached_value,
-                'error': utils.safe_str(exception_object),
-                'from_cache': True,
-            }
-        return {'ok': False, 'data': {}, 'error': utils.safe_str(exception_object), 'from_cache': False}
-
-
-def get_wegfan_cover_url(item_type: str, item_id: int, item_name: str) -> str:
-    """通过 WEGFan 搜索接口按标题查询，再用 GameBanana ID 精确核对封面。"""
-    query_name = utils.safe_str(item_name).strip()
-    if item_id <= 0 or not query_name or query_name == '未知标题':
-        return ''
-    query = urllib.parse.urlencode(
-        {
-            'search': query_name,
-            'page': 1,
-            'size': 20,
-            'section': item_type,
-            'sort': 'updateAdded',
-        }
-    )
-    timeout = int(utils.load_global_config().get('cover_mirror_lookup_timeout_seconds', 6))
-    try:
-        response = http_get(f'{config.wegfan_search_url}?{query}', timeout_seconds=max(2, timeout))
-        raw_result = decode_json_response(response)
-    except Exception:
-        return ''
-    data = raw_result.get('data', {}) if isinstance(raw_result, dict) else {}
-    content = data.get('content', []) if isinstance(data, dict) else []
-    for raw_item in content if isinstance(content, list) else []:
-        if not isinstance(raw_item, dict):
-            continue
-        try:
-            gamebanana_id = int(raw_item.get('gameBananaId', 0) or 0)
-        except Exception:
-            continue
-        section = utils.safe_str(raw_item.get('gameBananaSection', '')).casefold()
-        if gamebanana_id != item_id or (section and section != item_type.casefold()):
-            continue
-        screenshots = raw_item.get('screenshots', [])
-        if not isinstance(screenshots, list):
-            return ''
-        for screenshot in screenshots:
-            if not isinstance(screenshot, dict):
-                continue
-            image_url = utils.safe_str(screenshot.get('url', '')).strip()
-            if image_url:
-                return image_url
-    return ''
-
-
-def apply_cover_priority(detail: dict[str, Any], wegfan_cover_url: str = '') -> dict[str, Any]:
-    """按 WEGFan、0x0ade、GameBanana 原站的顺序选择封面。"""
-    result = copy.deepcopy(detail)
-    candidate_urls = []
-    source_groups = [
-        [wegfan_cover_url],
-        result.get('mirrored_screenshots', []),
-        result.get('screenshots', []),
-        [result.get('cover_url', '')],
-    ]
-    for source_group in source_groups:
-        if not isinstance(source_group, list):
-            continue
-        for raw_url in source_group:
-            image_url = utils.safe_str(raw_url).strip()
-            if image_url and image_url not in candidate_urls:
-                candidate_urls.append(image_url)
-    result['cover_urls'] = candidate_urls
-    result['cover_url'] = candidate_urls[0] if candidate_urls else ''
-    return result
+# ---------------------------------------------------------------------------
+# 详情
+# ---------------------------------------------------------------------------
 
 
 def get_item_by_id(
     item_id: int,
     item_type: str = 'Mod',
     include_cover_mirror: bool = True,
+    weg_id: str = '',
 ) -> dict[str, Any]:
+    """按 GameBanana ID 取详情；weg_id 存在时直接用它请求 WEGFan 详情。"""
     try:
         item_id = int(item_id)
     except Exception:
         item_id = 0
+    item_type = utils.safe_str(item_type, 'Mod') or 'Mod'
     detail_cache_key = f'{item_type.casefold()}:{item_id}'
     detail_cache_ttl = max(0, int(utils.load_global_config().get('detail_cache_seconds', 600)))
     cached_detail = load_short_cache(
@@ -837,106 +658,173 @@ def get_item_by_id(
         detail_cache_key,
         detail_cache_ttl,
     )
-    if isinstance(cached_detail, dict) and cached_detail.get('id'):
+    if isinstance(cached_detail, dict) and cached_detail.get('id') and cached_detail.get('name'):
         return {'ok': True, 'data': cached_detail, 'error': '', 'from_cache': True}
     if item_id <= 0:
         return {'ok': False, 'data': {}, 'error': '无法解析该条目的 GameBanana ID'}
 
-    # 上游已改契约：gamebanana-info 不再接受 itemtype/itemid，改为单个 id 参数，
-    # 取值形如 GameBanana/Mod/<数字>（旧写法现在返回 400）。
-    query = urllib.parse.urlencode({'id': f'GameBanana/{item_type}/{item_id}'})
-    try:
-        raw_item = decode_json_response(http_get(f'{config.info_api_url}?{query}'))
-        base_item = normalize_item(raw_item)
-        community_ok = True
-    except Exception as exception_object:
-        base_item = {'id': item_id, 'item_type': item_type}
-        community_error = utils.safe_str(exception_object)
-        community_ok = False
-    else:
-        community_error = ''
-
-    profile_result = get_profile(item_type, item_id)
-    if not base_item.get('name') and not profile_result.get('ok'):
+    resolved_weg_id = utils.safe_str(weg_id).strip() or resolve_weg_id(item_type, item_id)
+    if not resolved_weg_id:
         return {
             'ok': False,
             'data': {},
-            'error': community_error or profile_result.get('error', '未找到对应 Mod'),
+            'error': (
+                f'WEGFan 本地索引里还没有 {item_type} {item_id}，可能尚未同步；'
+                '稍后再试，或直接用标题搜索定位。'
+            ),
         }
 
-    detail = dict(base_item)
-    if profile_result.get('ok'):
-        profile = profile_result['data']
-        game_id = int(profile.get('game_id', 0) or 0)
-        if game_id and game_id != 6460:
-            return {'ok': False, 'data': {}, 'error': '该 GameBanana 条目不属于 Celeste'}
-        if not community_ok and game_id != 6460:
-            return {'ok': False, 'data': {}, 'error': '无法确认该 GameBanana 条目属于 Celeste'}
-        for key, value in profile.items():
-            if value not in ['', None, [], {}, 0, False]:
-                detail[key] = value
-    detail.setdefault('name', f'{item_type} {item_id}')
-    detail.setdefault('author', '未知作者')
-    detail.setdefault('page_url', f'https://gamebanana.com/{item_type.lower()}s/{item_id}')
+    try:
+        raw_item = wegfan_get(
+            config.wegfan_detail_path,
+            {'id': resolved_weg_id},
+            timeout_seconds=max(8, get_timeout_seconds()),
+        )
+        detail = normalize_wegfan_item(raw_item)
+        if not detail:
+            raise ValueError('WEGFan 详情为空')
+        if safe_int(detail.get('id')) != item_id:
+            raise ValueError('WEGFan 返回的条目与请求的 GameBanana ID 不一致')
+    except Exception as exception_object:
+        if isinstance(cached_detail, dict) and cached_detail.get('id'):
+            return {
+                'ok': True,
+                'data': cached_detail,
+                'error': utils.safe_str(exception_object),
+                'from_cache': True,
+            }
+        return {'ok': False, 'data': {}, 'error': utils.safe_str(exception_object), 'from_cache': False}
 
-    updater_result = load_updater_index()
-    detail['updater_components'] = updater_result.get('data', {}).get((item_type.lower(), item_id), [])
-    detail['stale_warning'] = profile_result.get('error', '') or community_error or updater_result.get('error', '')
-    wegfan_cover_url = ''
-    if include_cover_mirror:
-        wegfan_cover_url = get_wegfan_cover_url(item_type, item_id, detail.get('name', ''))
-    detail = apply_cover_priority(detail, wegfan_cover_url)
-    if include_cover_mirror:
-        save_short_cache(detail_memory_cache, 'details', detail_cache_key, detail)
+    detail['stale_warning'] = ''
+    save_short_cache(detail_memory_cache, 'details', detail_cache_key, detail)
     return {'ok': True, 'data': detail, 'error': '', 'from_cache': False}
 
 
 def hydrate_item(item: dict[str, Any]) -> dict[str, Any]:
-    return get_item_by_id(int(item.get('id', 0)), utils.safe_str(item.get('item_type', 'Mod'), 'Mod'))
+    return get_item_by_id(
+        safe_int(item.get('id', 0)),
+        utils.safe_str(item.get('item_type', 'Mod'), 'Mod'),
+        weg_id=utils.safe_str(item.get('weg_id', '')),
+    )
 
 
-def search_tag(query: str) -> dict[str, Any]:
-    """完整筛选社区子分类，并用详情缓存补充 GameBanana 自由标签。"""
-    query_text = utils.safe_str(query).strip().casefold()
-    if not query_text:
-        return {'ok': False, 'results': [], 'count': 0, 'error': '请输入标签'}
+# ---------------------------------------------------------------------------
+# 随机与每日
+# ---------------------------------------------------------------------------
 
-    result_map: dict[tuple[str, int], dict[str, Any]] = {}
-    subcategory_result = search_local(['subcategory'], query)
-    if subcategory_result.get('ok'):
-        for item in subcategory_result.get('results', []):
-            result_map[(item.get('item_type', '').lower(), item.get('id', 0))] = item
 
-    profile_dir = os.path.join(utils.get_shared_cache_dir(), 'profiles')
-    if os.path.isdir(profile_dir):
-        for file_name in os.listdir(profile_dir):
-            if not file_name.endswith('.json'):
-                continue
-            cached = utils.read_json_file(os.path.join(profile_dir, file_name), {})
-            tags = [utils.safe_str(tag).casefold() for tag in cached.get('tags', [])]
-            if any(query_text in tag for tag in tags):
-                normalized = normalize_item(cached)
-                result_map[(normalized.get('item_type', '').lower(), normalized.get('id', 0))] = normalized
+def pick_random_index_item() -> dict[str, Any]:
+    index_result = load_index()
+    if not index_result.get('ok'):
+        return {}
+    items = index_result['data'].get('items', [])
+    map_items = [
+        item
+        for item in items
+        if utils.safe_str(item.get('item_type'), '').casefold() == 'mod'
+        and utils.safe_str(item.get('category'), '').casefold() == 'maps'
+    ]
+    pool = map_items or [item for item in items if utils.safe_str(item.get('item_type'), '').casefold() == 'mod']
+    return random.choice(pool) if pool else {}
 
-    title_result = search_title(query)
-    for item in title_result.get('results', [])[:8]:
-        detail_result = hydrate_item(item)
-        if not detail_result.get('ok'):
-            continue
-        detail = detail_result['data']
-        tags = [utils.safe_str(tag).casefold() for tag in detail.get('tags', [])]
-        if any(query_text in tag for tag in tags):
-            result_map[(detail.get('item_type', '').lower(), detail.get('id', 0))] = normalize_item(detail)
 
-    results = list(result_map.values())
-    results.sort(key=lambda item: (item.get('downloads', 0), item.get('likes', 0)), reverse=True)
-    return {
-        'ok': True,
-        'results': results,
-        'count': len(results),
-        'error': '',
-        'partial': True,
+def pick_random_via_api() -> dict[str, Any]:
+    """索引不可用时的兜底：随机翻一页 WEGFan 的 Maps 搜索结果。"""
+    base_params = {
+        'section': 'Mod',
+        'categoryId': config.wegfan_categories['maps'],
+        'sort': config.wegfan_sort_default,
     }
+    try:
+        first_page = wegfan_get(
+            config.wegfan_search_path,
+            dict(base_params, page=1, size=1),
+            timeout_seconds=max(8, get_timeout_seconds()),
+        )
+        total_count = safe_int(first_page.get('totalElements')) if isinstance(first_page, dict) else 0
+        page_size = 50
+        page_count = max(1, (total_count + page_size - 1) // page_size)
+        page = random.randint(1, page_count)
+        page_data = wegfan_get(
+            config.wegfan_search_path,
+            dict(base_params, page=page, size=page_size),
+            timeout_seconds=max(8, get_timeout_seconds()),
+        )
+        content = page_data.get('content') if isinstance(page_data, dict) else []
+        candidates = [normalize_wegfan_item(raw_item, compact=True) for raw_item in content or []]
+        candidates = [item for item in candidates if item.get('id')]
+        if not candidates:
+            return {'error': 'WEGFan 搜索结果为空'}
+        return random.choice(candidates)
+    except Exception as exception_object:
+        return {'error': utils.safe_str(exception_object)}
+
+
+def get_random_map(include_cover_mirror: bool = True) -> dict[str, Any]:
+    """随机地图：优先本地索引，索引不可用时随机翻页 WEGFan 搜索。"""
+    picked = pick_random_index_item()
+    if picked:
+        detail_result = get_item_by_id(
+            safe_int(picked.get('id')),
+            'Mod',
+            include_cover_mirror,
+            weg_id=utils.safe_str(picked.get('weg_id')),
+        )
+        if detail_result.get('ok'):
+            return detail_result
+    fallback_picked = pick_random_via_api()
+    if fallback_picked.get('id'):
+        return get_item_by_id(
+            safe_int(fallback_picked.get('id')),
+            'Mod',
+            include_cover_mirror,
+            weg_id=utils.safe_str(fallback_picked.get('weg_id')),
+        )
+    return {'ok': False, 'data': {}, 'error': fallback_picked.get('error') or '无法抽取随机地图'}
+
+
+def random_mods(count: int, excluded_ids: set[int] | None = None) -> dict[str, Any]:
+    """批量随机，避免重复 ID。"""
+    target_count = max(1, int(count))
+    excluded = set(excluded_ids or set())
+    results = []
+    last_error = ''
+    for _index in range(target_count):
+        selected = None
+        for _attempt in range(5):
+            random_result = get_random_map(include_cover_mirror=target_count == 1)
+            if not random_result.get('ok'):
+                last_error = random_result.get('error', '随机地图接口不可用')
+                continue
+            item = random_result.get('data', {})
+            item_id = safe_int(item.get('id'))
+            if item_id <= 0 or item_id in excluded:
+                last_error = '随机地图接口连续返回了重复条目'
+                continue
+            selected = item
+            excluded.add(item_id)
+            break
+        if selected is None:
+            return {'ok': False, 'results': [], 'error': last_error or '无法抽取足够数量的地图'}
+        results.append(selected)
+    return {'ok': True, 'results': results, 'error': ''}
+
+
+def get_hong_kong_date() -> str:
+    return datetime.datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y-%m-%d')
+
+
+def get_daily_mod(date_text: str | None = None) -> dict[str, Any]:
+    date_value = date_text or get_hong_kong_date()
+    random_result = get_random_map(include_cover_mirror=True)
+    if not random_result.get('ok'):
+        return {'ok': False, 'data': {}, 'date': date_value, 'error': random_result.get('error', '')}
+    return {'ok': True, 'data': random_result.get('data', {}), 'date': date_value, 'error': ''}
+
+
+# ---------------------------------------------------------------------------
+# 下载分组与文本格式化
+# ---------------------------------------------------------------------------
 
 
 def extract_file_id(url_or_id: Any) -> int:
@@ -1013,16 +901,9 @@ def build_download_groups(detail: dict[str, Any]) -> list[dict[str, Any]]:
     return fallback_groups
 
 
-def get_download_urls(file_id: int, include_mirrors: bool = True) -> dict[str, str]:
-    urls = {'gamebanana': f'https://gamebanana.com/dl/{file_id}'}
-    if include_mirrors:
-        urls.update(
-            {
-                'wegfan': f'https://celeste.weg.fan/api/v2/download/gamebanana-files/{file_id}',
-                '0x0ade': f'https://celestemodupdater.0x0a.de/banana-mirror/{file_id}.zip',
-            }
-        )
-    return urls
+def get_download_urls(file_id: int) -> dict[str, str]:
+    """下载地址统一走 WEGFan 镜像。"""
+    return {'wegfan': config.wegfan_gamebanana_file_url.format(file_id=int(file_id))}
 
 
 def strip_html_text(source_text: str) -> str:
@@ -1110,8 +991,6 @@ def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = 
             f'作者/投稿者：{author_text}',
         ]
     )
-    if detail.get('nsfw'):
-        lines.append('⚠ 内容警告：GameBanana 将该条目标记为需要内容分级或初始隐藏。')
     if credit_text:
         lines.append(f'完整署名：{credit_text}')
     detail_lines = [
@@ -1125,6 +1004,11 @@ def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = 
     lines.extend(detail_lines)
 
     download_groups = build_download_groups(detail)
+    file_url_map = {}
+    for file_item in detail.get('files', []):
+        file_id = int(file_item.get('id', 0) or 0)
+        if file_id > 0 and file_item.get('url'):
+            file_url_map[file_id] = utils.safe_str(file_item['url'])
     if download_groups:
         lines.append('最新下载：')
         for index, group in enumerate(download_groups[: max(1, component_limit)], start=1):
@@ -1132,24 +1016,23 @@ def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = 
             component_text = '、'.join(entry_texts) or '、'.join(group.get('components', []))
             component_text = component_text or f'文件 {group.get("file_id", 0)}'
             verified = bool(group.get('verified'))
-            marker = 'Everest 已确认' if verified else '非 Everest 确认'
+            marker = '含 Everest mod 清单' if verified else '无 mod 清单'
             lines.append(
                 f'{index}. {component_text}\n'
                 f'   大小：{format_file_size(group.get("size", 0))}｜{marker}'
             )
-            urls = get_download_urls(int(group.get('file_id', 0)), include_mirrors=True)
-            lines.append(f'   GameBanana：{urls["gamebanana"]}')
-            lines.append(f'   WEGFan：{urls["wegfan"]}')
-            lines.append(f'   0x0ade：{urls["0x0ade"]}')
+            file_id = int(group.get('file_id', 0) or 0)
+            download_url = file_url_map.get(file_id) or get_download_urls(file_id)['wegfan']
+            lines.append(f'   WEGFan 镜像：{download_url}')
             if not verified:
-                lines.append('   镜像提示：该文件未进入 Everest 当前更新库，镜像可能不存在。')
+                lines.append('   提示：该文件没有 mod 清单信息，可能不是可直接加载的 Mod。')
         if len(download_groups) > component_limit:
             lines.append(f'另有 {len(download_groups) - component_limit} 个当前组件未展开。')
     else:
         lines.append('最新下载：未找到可用文件。')
 
     if detail.get('stale_warning'):
-        lines.append('提示：部分实时数据获取失败，本次使用了缓存或社区数据库中的旧数据。')
+        lines.append('提示：部分实时数据获取失败，本次使用了缓存中的旧数据。')
     return image_prefix + '\n'.join(lines)
 
 
@@ -1159,60 +1042,9 @@ def format_list_item(item: dict[str, Any], index: int) -> str:
     return f'{index}. {item.get("name", "未知标题")}｜{item.get("author", "未知作者")}{suffix}'
 
 
-def random_mods(count: int, excluded_ids: set[int] | None = None) -> dict[str, Any]:
-    """直接调用 Maddie random-map；批量随机时避免重复 ID。"""
-    target_count = max(1, int(count))
-    excluded = set(excluded_ids or set())
-    results = []
-    last_error = ''
-    for _index in range(target_count):
-        selected = None
-        for _attempt in range(5):
-            random_result = get_random_map(include_cover_mirror=target_count == 1)
-            if not random_result.get('ok'):
-                last_error = random_result.get('error', '随机地图接口不可用')
-                continue
-            item = random_result.get('data', {})
-            item_id = int(item.get('id', 0) or 0)
-            if item_id <= 0 or item_id in excluded:
-                last_error = '随机地图接口连续返回了重复条目'
-                continue
-            selected = item
-            excluded.add(item_id)
-            break
-        if selected is None:
-            return {'ok': False, 'results': [], 'error': last_error or '无法抽取足够数量的地图'}
-        results.append(selected)
-    return {'ok': True, 'results': results, 'error': ''}
-
-
-def get_hong_kong_date() -> str:
-    return datetime.datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y-%m-%d')
-
-
-def get_daily_mod(date_text: str | None = None) -> dict[str, Any]:
-    date_value = date_text or get_hong_kong_date()
-    random_result = get_random_map(include_cover_mirror=True)
-    if not random_result.get('ok'):
-        return {'ok': False, 'data': {}, 'date': date_value, 'error': random_result.get('error', '')}
-    return {'ok': True, 'data': random_result.get('data', {}), 'date': date_value, 'error': ''}
-
-
-def get_random_map(include_cover_mirror: bool = True) -> dict[str, Any]:
-    """Maddie random-map 只返回地图，直接解析跳转 ID 并获取详情。"""
-    response = http_get(config.random_map_url, no_redirect=True)
-    if response.get('status') not in [301, 302, 303, 307, 308]:
-        return {'ok': False, 'data': {}, 'error': response.get('error', '随机地图接口没有返回跳转')}
-    header_dict = {key.lower(): value for key, value in response.get('headers', {}).items()}
-    location = utils.safe_str(header_dict.get('location', ''))
-    matched = re.search(r'/mods/(\d+)', location)
-    if not matched:
-        return {'ok': False, 'data': {}, 'error': '无法从随机地图地址解析 Mod ID'}
-    return get_item_by_id(
-        int(matched.group(1)),
-        'Mod',
-        include_cover_mirror=include_cover_mirror,
-    )
+# ---------------------------------------------------------------------------
+# Celeste Endless
+# ---------------------------------------------------------------------------
 
 
 def make_endless_snapshot(state: dict[str, Any]) -> dict[str, Any]:
@@ -1222,17 +1054,18 @@ def make_endless_snapshot(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def compact_endless_map(raw_map: dict[str, Any]) -> dict[str, Any]:
-    item = normalize_item(raw_map)
+    item = raw_map if isinstance(raw_map, dict) else {}
     return {
-        'id': item.get('id', 0),
-        'item_type': item.get('item_type', 'Mod'),
-        'name': item.get('name', '未知地图'),
-        'author': item.get('author', '未知作者'),
-        'category': item.get('category', ''),
-        'subcategory': item.get('subcategory', ''),
-        'cover_url': item.get('cover_url', ''),
+        'id': safe_int(item.get('id', 0)),
+        'weg_id': utils.safe_str(item.get('weg_id', '')),
+        'item_type': utils.safe_str(item.get('item_type', 'Mod'), 'Mod'),
+        'name': utils.safe_str(item.get('name', '未知地图'), '未知地图'),
+        'author': utils.safe_str(item.get('author', '未知作者'), '未知作者'),
+        'category': utils.safe_str(item.get('category', '')),
+        'subcategory': utils.safe_str(item.get('subcategory', '')),
+        'cover_url': utils.safe_str(item.get('cover_url', '')),
         'cover_urls': copy.deepcopy(item.get('cover_urls', [])),
-        'page_url': item.get('page_url', ''),
+        'page_url': utils.safe_str(item.get('page_url', '')),
         'credits': copy.deepcopy(item.get('credits', [])),
     }
 

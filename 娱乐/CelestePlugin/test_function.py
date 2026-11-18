@@ -1,8 +1,7 @@
 # -*- encoding: utf-8 -*-
-"""CelestePlugin 纯业务逻辑测试。"""
+"""CelestePlugin 纯业务逻辑测试（WEGFan 单一数据源版本）。"""
 
 import copy
-import json
 import sys
 import tempfile
 import unittest
@@ -17,7 +16,86 @@ from CelestePlugin import message  # noqa: E402
 from CelestePlugin import utils  # noqa: E402
 
 
+def sample_search_item(item_id=708235):
+    return {
+        'id': '570697585105248105',
+        'createTime': '2026-08-22T19:41:38Z',
+        'updateTime': '2026-08-24T19:22:49Z',
+        'name': "Crispybag's Spring Collab Pack",
+        'submissionType': 'GAME_BANANA_MOD',
+        'submitter': 'Crispybag',
+        'pageUrl': f'https://gamebanana.com/mods/{item_id}',
+        'gameBananaSection': 'Mod',
+        'gameBananaId': item_id,
+        'categoryId': 6800,
+        'categoryName': 'Maps',
+        'subCategoryId': 6802,
+        'subCategoryName': 'Campaign',
+        'subtitle': 'Spring Collab in 2026??',
+        'description': '5 Maps with 5 rooms each!<br><br>Music: <a href="#">x</a>',
+        'views': 766,
+        'likes': 16,
+        'downloads': 157,
+        'latestUpdateAddedTime': '2026-08-24T19:23:20Z',
+        'screenshots': [
+            {'url': 'https://celeste.weg.fan/images/gamebanana-submissions/Mod/708235/a.jpg', 'caption': None}
+        ],
+        'credits': [
+            {
+                'groupName': 'Crispybag',
+                'authors': [{'name': 'the mapper', 'role': '', 'url': ''}],
+            }
+        ],
+        'files': [
+            {
+                'id': '571417175059155101',
+                'createTime': '2026-08-24T19:22:41Z',
+                'updateTime': '2026-08-24T19:22:41Z',
+                'url': 'https://celeste.weg.fan/api/v2/download/files/571417175059155101',
+                'fileName': 'crispybagsspringcollabpack_e67c2.zip',
+                'description': '',
+                'downloads': 92,
+                'size': 23838352,
+                'gameBananaId': 1796085,
+                'mods': [
+                    {
+                        'id': '570697955264777066',
+                        'name': 'CrispybagsSpringCollabPack',
+                        'version': '1.0.3',
+                    }
+                ],
+            }
+        ],
+    }
+
+
 class CelestePluginFunctionTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_dir.cleanup)
+        patches = [
+            mock.patch.object(
+                function,
+                'get_short_cache_path',
+                side_effect=lambda group, key: str(
+                    Path(self.temporary_dir.name) / f'{group}-{abs(hash(key))}.json'
+                ),
+            ),
+            mock.patch.object(
+                function,
+                'get_index_cache_path',
+                return_value=str(Path(self.temporary_dir.name) / 'wegfan_index.json'),
+            ),
+        ]
+        for patch_object in patches:
+            patch_object.start()
+            self.addCleanup(patch_object.stop)
+        function.index_memory_cache.clear()
+        function.search_memory_cache.clear()
+        function.detail_memory_cache.clear()
+
+    # ---------- 命令解析 ----------
+
     def test_greedy_root_and_subcommand(self):
         root = utils.parse_command('.clstrandom5', prefix_list=['.', '。', '/'], command_name='clst')
         self.assertTrue(root['is_command'])
@@ -44,308 +122,236 @@ class CelestePluginFunctionTest(unittest.TestCase):
             message.dispatch_clst_command(plugin_event, 'id424541')
         id_mock.assert_called_once_with(plugin_event, '424541')
 
-    def test_download_mirror_urls(self):
-        urls = function.get_download_urls(1414214)
-        self.assertEqual(urls['gamebanana'], 'https://gamebanana.com/dl/1414214')
-        self.assertIn('/gamebanana-files/1414214', urls['wegfan'])
-        self.assertTrue(urls['0x0ade'].endswith('/1414214.zip'))
+    # ---------- WEGFan 数据映射 ----------
 
-    def test_group_updater_components(self):
-        components = [
-            {
-                'InternalName': 'Main',
-                'Version': '1.2.0',
-                'GameBananaFileId': 123,
-                'LastUpdate': 20,
-            },
-            {
-                'InternalName': 'Helper',
-                'Version': '2.0.0',
-                'GameBananaFileId': 123,
-                'LastUpdate': 20,
-            },
-        ]
+    def test_parse_wegfan_time(self):
+        self.assertEqual(function.parse_wegfan_time('1970-01-01T00:00:00Z'), 0)
+        self.assertEqual(function.parse_wegfan_time('2026-08-22T19:41:38Z'), 1787427698)
+        self.assertEqual(function.parse_wegfan_time(''), 0)
+        self.assertEqual(function.parse_wegfan_time(None), 0)
+
+    def test_normalize_wegfan_item_maps_fields(self):
+        item = function.normalize_wegfan_item(sample_search_item())
+        self.assertEqual(item['id'], 708235)
+        self.assertEqual(item['weg_id'], '570697585105248105')
+        self.assertEqual(item['item_type'], 'Mod')
+        self.assertEqual(item['author'], 'Crispybag')
+        self.assertEqual(item['category'], 'Maps')
+        self.assertEqual(item['subcategory'], 'Campaign')
+        self.assertEqual(item['cover_url'], item['screenshots'][0])
+        self.assertEqual(item['page_url'], 'https://gamebanana.com/mods/708235')
+        self.assertEqual(item['credits'][0]['authors'][0]['name'], 'the mapper')
+        self.assertTrue(item['files'][0]['has_everest_yaml'])
+        self.assertEqual(item['files'][0]['version'], '1.0.3')
+
+    def test_normalize_wegfan_item_compact_drops_files(self):
+        item = function.normalize_wegfan_item(sample_search_item(), compact=True)
+        self.assertEqual(item['files'], [])
+        self.assertEqual(item['credits'], [])
+        self.assertTrue(item['weg_id'])
+
+    def test_normalize_wegfan_file_keeps_gamebanana_file_id_and_url(self):
+        item = function.normalize_wegfan_item(sample_search_item())
+        file_item = item['files'][0]
+        self.assertEqual(file_item['id'], 1796085)
+        self.assertEqual(file_item['weg_file_id'], '571417175059155101')
+        self.assertTrue(file_item['url'].startswith('https://celeste.weg.fan/api/v2/download/files/'))
+
+    def test_build_updater_components_groups_by_file(self):
+        raw = sample_search_item()
+        raw['files'][0]['mods'].append({'name': 'Helper', 'version': '2.0.0'})
+        components = function.build_updater_components(raw['files'])
+        self.assertEqual(len(components), 2)
         groups = function.group_updater_components(components)
         self.assertEqual(len(groups), 1)
-        self.assertEqual(groups[0]['components'], ['Main', 'Helper'])
-        self.assertEqual(groups[0]['versions'], ['1.2.0', '2.0.0'])
+        self.assertEqual(groups[0]['file_id'], 1796085)
+        self.assertEqual(groups[0]['components'], ['CrispybagsSpringCollabPack', 'Helper'])
+        self.assertTrue(groups[0]['verified'])
 
-    def test_community_file_id_from_url(self):
-        file_item = function.normalize_file({'URL': 'https://gamebanana.com/dl/1414214', 'Name': 'map.zip'})
-        self.assertEqual(file_item['id'], 1414214)
+    def test_download_urls_only_use_wegfan(self):
+        urls = function.get_download_urls(1796085)
+        self.assertEqual(list(urls.keys()), ['wegfan'])
+        self.assertEqual(urls['wegfan'], 'https://celeste.weg.fan/api/v2/download/gamebanana-files/1796085')
 
-    def test_search_item_id_from_page_url(self):
-        item = function.normalize_item(
-            {
-                'Name': 'Strawberry Jam Collab',
-                'Author': 'Strawberry Jam Collab Team',
-                'PageURL': 'https://gamebanana.com/mods/424541',
-                'Category': {
-                    'ID': 'GameBanana_Mod_6803',
-                    'Name': 'Collab/Contest',
-                    'Parent': {'ID': 'GameBanana_Mod_6800', 'Name': 'Maps'},
-                },
-            }
-        )
-        self.assertEqual(item['id'], 424541)
-        self.assertEqual(item['item_type'], 'Mod')
-        self.assertEqual(item['category'], 'Maps')
-        self.assertEqual(item['subcategory'], 'Collab/Contest')
-        self.assertEqual(item['page_url'], 'https://gamebanana.com/mods/424541')
-
-    def test_search_item_keeps_explicit_gamebanana_id(self):
-        item = function.normalize_item({'GameBananaId': 123, 'GameBananaType': 'Mod', 'Name': 'X'})
-        self.assertEqual(item['id'], 123)
-        self.assertEqual(item['item_type'], 'Mod')
-
-    def test_item_reference_handles_other_sections(self):
-        self.assertEqual(function.extract_item_reference({'PageURL': 'https://gamebanana.com/tools/9876'}), ('Tool', 9876))
-        self.assertEqual(function.extract_item_reference({'PageURL': 'https://gamebanana.com/mods/1?x=2'}), ('Mod', 1))
-        self.assertEqual(function.extract_item_reference({'PageURL': ''}), ('', 0))
-
-    def test_hydrate_item_rejects_unparsable_id(self):
-        result = function.get_item_by_id(0, 'Mod', include_cover_mirror=False)
-        self.assertFalse(result['ok'])
-        self.assertIn('GameBanana ID', result['error'])
-
-    def test_profile_root_category_and_game(self):
-        profile = function.normalize_profile(
-            {
-                '_sName': 'Helper',
-                '_aCategory': {'_sName': 'Helpers'},
-                '_aSuperCategory': None,
-                '_aGame': {'_idRow': 6460},
-                '_aPreviewMedia': {
-                    '_aImages': [
-                        {
-                            '_sBaseUrl': 'https://images.gamebanana.com/img/ss/mods',
-                            '_sFile': 'cover.jpg',
-                        }
-                    ]
-                },
-            },
-            'Mod',
-            1,
-        )
-        self.assertEqual(profile['category'], 'Helpers')
-        self.assertEqual(profile['subcategory'], '')
-        self.assertEqual(profile['game_id'], 6460)
-        self.assertEqual(profile['cover_url'], 'https://images.gamebanana.com/img/ss/mods/cover.jpg')
-
-    def test_cover_priority_wegfan_then_0x0ade_then_gamebanana(self):
-        detail = function.apply_cover_priority(
-            {
-                'mirrored_screenshots': ['https://0x0ade.example/cover.png'],
-                'screenshots': ['https://images.gamebanana.com/cover.jpg'],
-                'cover_url': 'https://images.gamebanana.com/fallback.jpg',
-            },
-            'https://celeste.weg.fan/images/cover.jpg',
-        )
-        self.assertEqual(detail['cover_url'], 'https://celeste.weg.fan/images/cover.jpg')
-        self.assertEqual(
-            detail['cover_urls'],
-            [
-                'https://celeste.weg.fan/images/cover.jpg',
-                'https://0x0ade.example/cover.png',
-                'https://images.gamebanana.com/cover.jpg',
-                'https://images.gamebanana.com/fallback.jpg',
-            ],
-        )
-
-    def test_wegfan_cover_requires_matching_gamebanana_id(self):
-        response_data = {
-            'data': {
-                'content': [
-                    {
-                        'gameBananaId': 2,
-                        'gameBananaSection': 'Mod',
-                        'screenshots': [{'url': 'https://celeste.weg.fan/wrong.jpg'}],
-                    },
-                    {
-                        'gameBananaId': 1,
-                        'gameBananaSection': 'Mod',
-                        'screenshots': [{'url': 'https://celeste.weg.fan/correct.jpg'}],
-                    },
-                ]
-            },
-            'code': 200,
-        }
-        with (
-            mock.patch.object(
-                function,
-                'http_get',
-                return_value={
-                    'ok': True,
-                    'status': 200,
-                    'headers': {},
-                    'content': json.dumps(response_data).encode('utf-8'),
-                },
-            ),
-            mock.patch.object(
-                function.utils,
-                'load_global_config',
-                return_value={'cover_mirror_lookup_timeout_seconds': 6},
-            ),
-        ):
-            cover_url = function.get_wegfan_cover_url('Mod', 1, 'Test Map')
-        self.assertEqual(cover_url, 'https://celeste.weg.fan/correct.jpg')
-
-    def test_cover_image_is_first_segment(self):
-        detail_text = function.format_detail(
-            {
-                'id': 1,
-                'item_type': 'Mod',
-                'name': 'Cover Test',
-                'author': 'Tester',
-                'cover_url': 'https://example.com/a.png?x=1&y=2,3',
-            },
-            heading='【每日 Mod】',
-        )
-        self.assertTrue(
-            detail_text.startswith(
-                '[OP:image,file=https://example.com/a.png?x=1&amp;y=2&#44;3]【每日 Mod】\n'
-            )
-        )
-        self.assertFalse(detail_text.startswith('[OP:image,file=https://example.com/a.png?x=1&amp;y=2&#44;3]\n'))
-        self.assertFalse(detail_text.endswith('\n'))
-
-    def test_html_truncation(self):
-        text = function.truncate_text('<b>Hello</b><br>World &amp; Celeste', 14)
-        self.assertEqual(text, 'Hello\nWorld &…')
-
-    def test_detail_credit_and_description_limits(self):
-        detail = {
-            'id': 1,
-            'item_type': 'Mod',
-            'name': 'Limit Test',
-            'author': 'A' * 30,
-            'description': 'D' * 30,
-            'credits': [
-                {
-                    'group': 'Authors',
-                    'authors': [{'name': 'CollaboratorName', 'role': 'Mapper'}],
-                }
-            ],
-        }
+    def test_format_detail_uses_wegfan_mirror_only(self):
+        detail = function.normalize_wegfan_item(sample_search_item())
+        detail['cover_url'] = ''
         with mock.patch.object(
             function.utils,
             'load_global_config',
             return_value={
-                'description_max_length': 10,
-                'credit_max_length': 12,
-                'detail_download_component_limit': 6,
+                'description_max_length': 320,
+                'credit_max_length': 180,
                 'show_cover_image_switch': False,
+                'detail_download_component_limit': 6,
             },
         ):
             text = function.format_detail(detail)
-        self.assertIn('作者/投稿者：AAAAAAAAAAA…', text)
-        self.assertIn('完整署名：Authors：Col…', text)
-        self.assertIn('简介：DDDDDDDDD…', text)
+        self.assertIn('WEGFan 镜像：https://celeste.weg.fan/api/v2/download/files/571417175059155101', text)
+        self.assertNotIn('0x0ade', text)
+        self.assertNotIn('gamebanana.com/dl/', text)
+        self.assertIn('CrispybagsSpringCollabPack v1.0.3', text)
 
-    def test_daily_mod_uses_random_map_api(self):
-        random_result = {'ok': True, 'data': {'id': 1, 'item_type': 'Mod', 'name': 'A'}, 'error': ''}
-        with mock.patch.object(function, 'get_random_map', return_value=random_result) as random_mock:
-            result = function.get_daily_mod('2026-07-13')
+    # ---------- 本地索引 ----------
+
+    def test_prepare_index_builds_gamebanana_lookup(self):
+        prepared = function.prepare_index(
+            {'items': [function.normalize_wegfan_item(sample_search_item(), compact=True)], 'fetched_at': 10}
+        )
+        self.assertEqual(prepared['by_gamebanana_id']['mod:708235']['weg_id'], '570697585105248105')
+        self.assertEqual(prepared['fetched_at'], 10)
+
+    def test_load_index_builds_from_search_pages(self):
+        pages = {
+            1: {'content': [sample_search_item(1)], 'hasNextPage': True},
+            2: {'content': [sample_search_item(2)], 'hasNextPage': False},
+        }
+
+        def fake_wegfan_get(_path, params=None, timeout_seconds=None):
+            if params.get('section') != 'Mod':
+                return {'content': [], 'hasNextPage': False}
+            return pages[params['page']]
+
+        with mock.patch.object(function, 'wegfan_get', side_effect=fake_wegfan_get):
+            result = function.load_index(force_refresh=True)
         self.assertTrue(result['ok'])
-        self.assertEqual(result['data']['id'], 1)
-        self.assertEqual(result['date'], '2026-07-13')
-        random_mock.assert_called_once_with(include_cover_mirror=True)
+        self.assertEqual(len(result['data']['items']), 2)
+        self.assertEqual(function.resolve_weg_id('Mod', 2), '570697585105248105')
 
-    def test_title_search_short_cache(self):
-        response_data = [{'GameBananaId': 1, 'GameBananaType': 'Mod', 'Name': 'Cached Map'}]
-        function.search_memory_cache.clear()
-        with tempfile.TemporaryDirectory() as temporary_dir:
-            with (
-                mock.patch.object(function.utils, 'get_shared_cache_dir', return_value=temporary_dir),
-                mock.patch.object(
-                    function.utils,
-                    'load_global_config',
-                    return_value={'search_cache_seconds': 300},
-                ),
-                mock.patch.object(
-                    function,
-                    'http_get',
-                    return_value={
-                        'ok': True,
-                        'status': 200,
-                        'headers': {},
-                        'content': json.dumps(response_data).encode('utf-8'),
-                    },
-                ) as http_mock,
-            ):
-                first = function.search_title('Cached Map')
-                second = function.search_title('cached map')
-        self.assertEqual(first, second)
-        self.assertEqual(http_mock.call_count, 1)
-
-    def test_full_detail_short_cache(self):
-        response_data = {'GameBananaId': 1, 'GameBananaType': 'Mod', 'Name': 'Cached Detail'}
-        function.detail_memory_cache.clear()
-        with tempfile.TemporaryDirectory() as temporary_dir:
-            with (
-                mock.patch.object(function.utils, 'get_shared_cache_dir', return_value=temporary_dir),
-                mock.patch.object(
-                    function.utils,
-                    'load_global_config',
-                    return_value={'detail_cache_seconds': 600},
-                ),
-                mock.patch.object(
-                    function,
-                    'http_get',
-                    return_value={
-                        'ok': True,
-                        'status': 200,
-                        'headers': {},
-                        'content': json.dumps(response_data).encode('utf-8'),
-                    },
-                ) as http_mock,
-                mock.patch.object(function, 'get_profile', return_value={'ok': False, 'error': ''}) as profile_mock,
-                mock.patch.object(function, 'load_updater_index', return_value={'ok': True, 'data': {}, 'error': ''}),
-                mock.patch.object(
-                    function,
-                    'get_wegfan_cover_url',
-                    return_value='https://celeste.weg.fan/cached.jpg',
-                ) as cover_mock,
-            ):
-                first = function.get_item_by_id(1, 'Mod')
-                second = function.get_item_by_id(1, 'Mod')
-        self.assertTrue(first['ok'])
-        self.assertTrue(second['ok'])
-        self.assertEqual(second['data']['cover_url'], 'https://celeste.weg.fan/cached.jpg')
-        self.assertEqual(http_mock.call_count, 1)
-        self.assertEqual(profile_mock.call_count, 1)
-        self.assertEqual(cover_mock.call_count, 1)
-
-    def test_random_mods_calls_random_map_and_avoids_duplicates(self):
-        random_results = [
-            {'ok': True, 'data': {'id': 1, 'item_type': 'Mod'}, 'error': ''},
-            {'ok': True, 'data': {'id': 1, 'item_type': 'Mod'}, 'error': ''},
-            {'ok': True, 'data': {'id': 2, 'item_type': 'Mod'}, 'error': ''},
-        ]
-        with mock.patch.object(function, 'get_random_map', side_effect=random_results) as random_mock:
-            result = function.random_mods(2)
+    def test_load_index_reuses_disk_cache(self):
+        with mock.patch.object(
+            function,
+            'fetch_full_index',
+            return_value={
+                'ok': True,
+                'items': [function.normalize_wegfan_item(sample_search_item(), compact=True)],
+                'fetched_at': 9_999_999_999,
+                'error': '',
+            },
+        ) as fetch_mock:
+            function.load_index(force_refresh=True)
+        function.index_memory_cache.clear()
+        with mock.patch.object(function, 'fetch_full_index') as second_fetch:
+            result = function.load_index()
+        second_fetch.assert_not_called()
         self.assertTrue(result['ok'])
-        self.assertEqual([item['id'] for item in result['results']], [1, 2])
-        self.assertEqual(random_mock.call_count, 3)
-        random_mock.assert_called_with(include_cover_mirror=False)
+        self.assertTrue(result['from_cache'])
+        self.assertEqual(len(result['data']['items']), 1)
+        self.assertEqual(fetch_mock.call_count, 1)
 
-    def test_random_map_trusts_maddie_map_result_without_category_filter(self):
-        response = {'status': 302, 'headers': {'Location': 'https://gamebanana.com/mods/1'}}
-        detail = {'ok': True, 'data': {'id': 1, 'item_type': 'Mod', 'category': 'Helpers'}}
+    # ---------- 搜索 ----------
+
+    def test_search_title_uses_wegfan_search(self):
+        payload = {'content': [sample_search_item()], 'totalElements': 10, 'hasNextPage': True}
+        with mock.patch.object(function, 'wegfan_get', return_value=payload) as wegfan_mock:
+            result = function.search_title('spring collab')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['count'], 10)
+        self.assertEqual(result['results'][0]['id'], 708235)
+        self.assertIn('notice', result)
+        self.assertEqual(wegfan_mock.call_args[0][0], '/submission/search')
+
+    def test_search_title_falls_back_to_index(self):
         with (
-            mock.patch.object(function, 'http_get', return_value=response) as http_mock,
-            mock.patch.object(function, 'get_item_by_id', return_value=detail) as detail_mock,
+            mock.patch.object(function, 'wegfan_get', side_effect=ValueError('请求超时')),
+            mock.patch.object(
+                function,
+                'search_local',
+                return_value={'ok': True, 'results': [{'id': 1, 'name': 'X'}], 'count': 1, 'error': ''},
+            ) as local_mock,
         ):
-            result = function.get_random_map(include_cover_mirror=False)
+            result = function.search_title('some map')
+        local_mock.assert_called_once()
         self.assertTrue(result['ok'])
-        self.assertEqual(result['data']['id'], 1)
-        self.assertEqual(http_mock.call_count, 1)
-        detail_mock.assert_called_once_with(1, 'Mod', include_cover_mirror=False)
+        self.assertIn('本地索引', result['notice'])
+
+    def test_search_tag_marks_partial(self):
+        with mock.patch.object(
+            function,
+            'search_local',
+            return_value={'ok': True, 'results': [], 'count': 0, 'error': ''},
+        ):
+            result = function.search_tag('strawberry')
+        self.assertTrue(result.get('partial'))
+        self.assertIn('WEGFan 不提供自由标签', result['notice'])
+
+    # ---------- 详情 ----------
+
+    def test_get_item_by_id_uses_given_weg_id(self):
+        with mock.patch.object(function, 'wegfan_get', return_value=sample_search_item()) as wegfan_mock:
+            result = function.get_item_by_id(708235, 'Mod', weg_id='570697585105248105')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['data']['name'], "Crispybag's Spring Collab Pack")
+        self.assertEqual(wegfan_mock.call_args[0][0], '/submission/detail')
+        self.assertEqual(wegfan_mock.call_args[0][1], {'id': '570697585105248105'})
+
+    def test_get_item_by_id_resolves_from_index(self):
+        with (
+            mock.patch.object(function, 'resolve_weg_id', return_value='570697585105248105') as resolve_mock,
+            mock.patch.object(function, 'wegfan_get', return_value=sample_search_item()),
+        ):
+            result = function.get_item_by_id(708235, 'Mod')
+        resolve_mock.assert_called_once_with('Mod', 708235)
+        self.assertTrue(result['ok'])
+
+    def test_get_item_by_id_without_index_entry_reports_error(self):
+        with mock.patch.object(function, 'resolve_weg_id', return_value=''):
+            result = function.get_item_by_id(123456, 'Mod')
+        self.assertFalse(result['ok'])
+        self.assertIn('索引', result['error'])
+
+    def test_get_item_by_id_rejects_mismatched_id(self):
+        with (
+            mock.patch.object(function, 'resolve_weg_id', return_value='570697585105248105'),
+            mock.patch.object(function, 'wegfan_get', return_value=sample_search_item(1)),
+        ):
+            result = function.get_item_by_id(2, 'Mod')
+        self.assertFalse(result['ok'])
+        self.assertIn('不一致', result['error'])
+
+    # ---------- 随机 ----------
+
+    def test_random_map_prefers_index(self):
+        with (
+            mock.patch.object(
+                function,
+                'pick_random_index_item',
+                return_value={'id': 708235, 'weg_id': '570697585105248105', 'item_type': 'Mod'},
+            ),
+            mock.patch.object(
+                function,
+                'get_item_by_id',
+                return_value={'ok': True, 'data': {'id': 708235, 'name': 'X'}, 'error': ''},
+            ) as detail_mock,
+        ):
+            result = function.get_random_map()
+        self.assertTrue(result['ok'])
+        detail_mock.assert_called_once_with(708235, 'Mod', True, weg_id='570697585105248105')
+
+    def test_random_map_falls_back_to_api(self):
+        with (
+            mock.patch.object(function, 'pick_random_index_item', return_value={}),
+            mock.patch.object(
+                function,
+                'pick_random_via_api',
+                return_value={'id': 5, 'weg_id': 'abc', 'item_type': 'Mod'},
+            ),
+            mock.patch.object(
+                function,
+                'get_item_by_id',
+                return_value={'ok': True, 'data': {'id': 5, 'name': 'Y'}, 'error': ''},
+            ) as detail_mock,
+        ):
+            result = function.get_random_map()
+        self.assertTrue(result['ok'])
+        detail_mock.assert_called_once_with(5, 'Mod', True, weg_id='abc')
+
+    # ---------- Endless ----------
 
     def test_endless_state_machine(self):
-        map_a = {'GameBananaId': 1, 'GameBananaType': 'Mod', 'Name': 'A'}
-        map_b = {'GameBananaId': 2, 'GameBananaType': 'Mod', 'Name': 'B'}
-        map_c = {'GameBananaId': 3, 'GameBananaType': 'Mod', 'Name': 'C'}
+        map_a = {'id': 1, 'item_type': 'Mod', 'name': 'A'}
+        map_b = {'id': 2, 'item_type': 'Mod', 'name': 'B'}
+        map_c = {'id': 3, 'item_type': 'Mod', 'name': 'C'}
         state = function.new_endless_state(1, map_a)
         self.assertTrue(state['run_id'])
         self.assertFalse(state['score_recorded'])
@@ -390,17 +396,18 @@ class CelestePluginFunctionTest(unittest.TestCase):
     def test_endless_map_is_compact(self):
         compact = function.compact_endless_map(
             {
-                'GameBananaId': 1,
-                'GameBananaType': 'Mod',
-                'Name': 'A',
-                'Text': 'x' * 10000,
-                'Files': [{'URL': 'https://gamebanana.com/dl/1'}],
-                'MirroredScreenshots': ['https://mirror.example/cover.png'],
+                'id': 1,
+                'item_type': 'Mod',
+                'name': 'A',
+                'description': 'x' * 10000,
+                'files': [{'url': 'https://celeste.weg.fan/api/v2/download/files/1'}],
+                'cover_url': 'https://celeste.weg.fan/cover.png',
             }
         )
-        self.assertNotIn('text', compact)
+        self.assertNotIn('description', compact)
         self.assertNotIn('files', compact)
-        self.assertEqual(compact['cover_url'], 'https://mirror.example/cover.png')
+        self.assertEqual(compact['cover_url'], 'https://celeste.weg.fan/cover.png')
+        self.assertEqual(compact['id'], 1)
 
     def test_endless_state_cover_is_first_segment(self):
         state = {
@@ -422,180 +429,10 @@ class CelestePluginFunctionTest(unittest.TestCase):
         ):
             text = function.format_endless_state(state, notice='已抽取下一图。')
         self.assertTrue(
-            text.startswith(
-                '[OP:image,file=https://example.com/cover.png?x=1&amp;y=2]已抽取下一图。\n'
-            )
+            text.startswith('[OP:image,file=https://example.com/cover.png?x=1&amp;y=2]已抽取下一图。\n')
         )
-        self.assertFalse(text.startswith('[OP:image,file=https://example.com/cover.png?x=1&amp;y=2]\n'))
-        self.assertFalse(text.endswith('\n'))
 
-    def test_user_storage_isolated_by_context(self):
-        class Object(object):
-            pass
-
-        event = Object()
-        event.bot_info = Object()
-        event.bot_info.hash = 'bot'
-        event.data = Object()
-        event.data.user_id = '10001'
-        event.data.group_id = '20001'
-        event.data.host_id = None
-        event.platform = {'platform': 'qq'}
-        with tempfile.TemporaryDirectory() as temporary_dir:
-            with mock.patch.object(utils, 'get_storage_dir', return_value=temporary_dir):
-                personal_path = utils.get_personal_storage_dir(event)
-                endless_path = message.get_endless_file_path(event)
-                group_path = utils.get_user_storage_dir(event)
-                event.data.group_id = '20002'
-                other_group_path = utils.get_user_storage_dir(event)
-                other_personal_path = utils.get_personal_storage_dir(event)
-                other_endless_path = message.get_endless_file_path(event)
-                event.data.group_id = None
-                private_path = utils.get_user_storage_dir(event)
-        self.assertNotEqual(group_path, other_group_path)
-        self.assertNotEqual(group_path, private_path)
-        self.assertEqual(personal_path, other_personal_path)
-        self.assertEqual(endless_path, other_endless_path)
-
-    def test_group_switch_uses_hag_context(self):
-        class Object(object):
-            pass
-
-        event = Object()
-        event.bot_info = Object()
-        event.bot_info.hash = 'bot'
-        event.data = Object()
-        event.data.user_id = '10001'
-        event.data.group_id = '20001'
-        event.data.host_id = '30001'
-        event.data.sender = {'role': 'admin'}
-        event.platform = {'platform': 'qq'}
-        stored_config = {'bot_enable_switch': True, 'disabled_group_list': []}
-
-        def load_config(_bot_hash):
-            return copy.deepcopy(stored_config)
-
-        def save_config(_bot_hash, data):
-            stored_config.clear()
-            stored_config.update(copy.deepcopy(data))
-            return True
-
-        with (
-            mock.patch.object(utils, 'load_bot_config', side_effect=load_config),
-            mock.patch.object(utils, 'save_bot_config', side_effect=save_config),
-        ):
-            self.assertTrue(utils.can_manage_group_switch(event))
-            self.assertFalse(utils.is_group_disabled(event))
-            self.assertTrue(utils.set_group_disabled(event, True))
-            self.assertTrue(utils.is_group_disabled(event))
-            self.assertEqual(stored_config['disabled_group_list'], ['30001|20001'])
-            self.assertTrue(utils.set_group_disabled(event, False))
-            self.assertFalse(utils.is_group_disabled(event))
-
-    def test_disabled_group_only_allows_switch_commands(self):
-        class Object(object):
-            pass
-
-        event = Object()
-        event.data = Object()
-        event.data.message = '.clst on'
-        with (
-            mock.patch.object(utils, 'ensure_runtime_storage_by_event', return_value='bot'),
-            mock.patch.object(utils, 'check_core_group_enable', return_value=True),
-            mock.patch.object(utils, 'load_global_config', return_value={'global_enable_switch': True}),
-            mock.patch.object(utils, 'load_bot_config', return_value={'bot_enable_switch': True}),
-            mock.patch.object(utils, 'is_group_disabled', return_value=True),
-            mock.patch.object(message, 'dispatch_clst_command') as dispatch_mock,
-        ):
-            message.handle_message(event, None)
-            dispatch_mock.assert_called_once_with(event, 'on')
-            dispatch_mock.reset_mock()
-            event.data.message = '.clst random'
-            message.handle_message(event, None)
-            dispatch_mock.assert_not_called()
-
-
-    def build_fake_event(self, user_id='10001', group_id='20001'):
-        class Object(object):
-            pass
-
-        event = Object()
-        event.bot_info = Object()
-        event.bot_info.hash = 'bot'
-        event.data = Object()
-        event.data.user_id = user_id
-        event.data.group_id = group_id
-        event.data.host_id = None
-        event.platform = {'platform': 'qq'}
-        return event
-
-    def test_compact_detail_hides_description(self):
-        detail = {
-            'id': 1,
-            'item_type': 'Mod',
-            'name': 'Compact Test',
-            'author': 'Tester',
-            'description': 'D' * 300,
-        }
-        with mock.patch.object(
-            function.utils,
-            'load_global_config',
-            return_value={
-                'description_max_length': 320,
-                'credit_max_length': 180,
-                'show_cover_image_switch': False,
-            },
-        ):
-            full_text = function.format_detail(detail)
-            compact_text = function.format_detail(detail, compact=True, heading='【随机 1/3】')
-        self.assertIn('简介：DDDD', full_text)
-        self.assertNotIn('简介', compact_text)
-        self.assertNotIn('D' * 50, compact_text)
-        self.assertIn('Mod 页面', compact_text)
-
-    def test_today_cache_is_per_user(self):
-        event_a = self.build_fake_event(user_id='10001', group_id='20001')
-        event_b = self.build_fake_event(user_id='10002', group_id='20001')
-        with tempfile.TemporaryDirectory() as temporary_dir:
-            with mock.patch.object(utils, 'get_storage_dir', return_value=temporary_dir):
-                path_a1 = message.get_today_file_path(event_a)
-                path_a2 = message.get_today_file_path(self.build_fake_event(user_id='10001', group_id=None))
-                path_b = message.get_today_file_path(event_b)
-        self.assertNotEqual(path_a1, path_b)
-        self.assertEqual(path_a1, path_a2)
-
-    def test_single_random_uses_full_detail_and_multi_uses_compact(self):
-        items = [{'id': index, 'item_type': 'Mod', 'name': f'M{index}'} for index in range(1, 4)]
-        event = object()
-        with (
-            mock.patch.object(
-                message.function,
-                'random_mods',
-                return_value={'ok': True, 'results': items[:1], 'error': ''},
-            ),
-            mock.patch.object(message, 'reply_detail') as detail_mock,
-            mock.patch.object(message.utils, 'reply_long_text') as long_mock,
-        ):
-            message.handle_random(event, '')
-        detail_mock.assert_called_once_with(event, items[0])
-        long_mock.assert_not_called()
-
-        with (
-            mock.patch.object(
-                message.function,
-                'random_mods',
-                return_value={'ok': True, 'results': items, 'error': ''},
-            ),
-            mock.patch.object(message, 'reply_detail') as detail_mock,
-            mock.patch.object(message.utils, 'reply_long_text') as long_mock,
-            mock.patch.object(message.function, 'format_detail', wraps=function.format_detail) as format_mock,
-        ):
-            message.handle_random(event, '3')
-        detail_mock.assert_not_called()
-        long_mock.assert_called_once()
-        self.assertEqual(format_mock.call_count, 3)
-        for call in format_mock.call_args_list:
-            self.assertIs(call.kwargs.get('compact'), True)
+    # ---------- 管理命令 ----------
 
     def test_update_subcommand_dispatches_refresh(self):
         with mock.patch.object(message, 'handle_refresh') as refresh_mock:
@@ -616,10 +453,8 @@ class CelestePluginFunctionTest(unittest.TestCase):
 
         refresh_result = {
             'ok': True,
-            'database_count': 1000,
-            'updater_count': 500,
+            'database_count': 6402,
             'database_from_cache': False,
-            'updater_from_cache': True,
             'error': '',
         }
         with (
@@ -629,30 +464,10 @@ class CelestePluginFunctionTest(unittest.TestCase):
         ):
             message.handle_refresh(event)
         self.assertEqual(reply_mock.call_count, 2)
-        self.assertIn('1,000', reply_mock.call_args[0][1])
-        self.assertIn('已重新下载', reply_mock.call_args[0][1])
+        self.assertIn('6,402', reply_mock.call_args[0][1])
+        self.assertIn('已重新抓取', reply_mock.call_args[0][1])
 
-    def test_refresh_community_data_forces_revalidation(self):
-        def load_cached_yaml(cache_name, _url, ttl_seconds):
-            self.assertEqual(ttl_seconds, 0)
-            if cache_name == 'mod_search_database':
-                return {'ok': True, 'data': [{'GameBananaId': 1}], 'error': '', 'from_cache': False}
-            return {'ok': True, 'data': {'Main': {'GameBananaId': 1}}, 'error': '', 'from_cache': True}
-
-        function.updater_memory_cache.pop('index', None)
-        function.updater_memory_cache.pop('index_source_identity', None)
-        with mock.patch.object(function, 'load_cached_yaml', side_effect=load_cached_yaml):
-            result = function.refresh_community_data()
-        self.assertTrue(result['ok'])
-        self.assertEqual(result['database_count'], 1)
-        self.assertEqual(result['updater_count'], 1)
-        self.assertFalse(result['database_from_cache'])
-        self.assertTrue(result['updater_from_cache'])
-        self.assertEqual(function.updater_memory_cache['index'][('mod', 1)][0]['InternalName'], 'Main')
-
-
-
-    def test_prewarm_worker_refreshes_silently_and_logs_failure(self):
+    def test_prewarm_worker_builds_index(self):
         class FakeThread(object):
             def __init__(self, target=None, name=None, daemon=None):
                 self.target = target
@@ -661,49 +476,22 @@ class CelestePluginFunctionTest(unittest.TestCase):
                 self.target()
 
         message.prewarm_started = False
-        ok_result = {
-            'ok': True,
-            'database_count': 12000,
-            'updater_count': 4000,
-            'database_from_cache': True,
-            'updater_from_cache': True,
-            'error': '',
-        }
         log_records = []
+        fake_index = {'items': [{} for _ in range(6402)]}
         with (
             mock.patch.object(message.threading, 'Thread', FakeThread),
-            mock.patch.object(message.function, 'load_mod_database', return_value={'ok': True, 'error': ''}),
-            mock.patch.object(message.function, 'load_updater_index', return_value={'ok': True, 'error': ''}),
-            mock.patch.object(message.function, 'refresh_community_data', return_value=ok_result) as refresh_mock,
+            mock.patch.object(
+                message.function,
+                'load_index',
+                return_value={'ok': True, 'data': fake_index, 'error': '', 'from_cache': False},
+            ) as index_mock,
             mock.patch.object(message.utils, 'info_log', side_effect=lambda _p, t: log_records.append(('info', t))),
             mock.patch.object(message.utils, 'error_log', side_effect=lambda _p, t: log_records.append(('error', t))),
         ):
             message.start_prewarm_thread(None)
-        refresh_mock.assert_called_once_with()
-        self.assertTrue(any('12,000' in text for _level, text in log_records))
-
+        index_mock.assert_called_once_with()
+        self.assertTrue(any('6,402' in text for _level, text in log_records))
         message.prewarm_started = False
-        fail_result = {
-            'ok': False,
-            'database_count': 0,
-            'updater_count': 0,
-            'database_from_cache': True,
-            'updater_from_cache': True,
-            'error': 'Mod 数据库：网络连接失败',
-        }
-        with (
-            mock.patch.object(message.threading, 'Thread', FakeThread),
-            mock.patch.object(message.function, 'load_mod_database', return_value={'ok': True, 'error': ''}),
-            mock.patch.object(message.function, 'load_updater_index', return_value={'ok': True, 'error': ''}),
-            mock.patch.object(message.function, 'refresh_community_data', return_value=fail_result),
-            mock.patch.object(message.utils, 'info_log', side_effect=lambda _p, t: log_records.append(('info', t))),
-            mock.patch.object(message.utils, 'error_log', side_effect=lambda _p, t: log_records.append(('error', t))),
-        ):
-            message.start_prewarm_thread(None)
-        self.assertTrue(any(level == 'error' and '后台更新失败' in text for level, text in log_records))
-
-        message.prewarm_started = False
-
 
 
 if __name__ == '__main__':

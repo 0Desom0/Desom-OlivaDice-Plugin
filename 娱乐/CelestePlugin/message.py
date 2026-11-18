@@ -97,34 +97,26 @@ endless_action_alias_dict = {
 
 
 def start_prewarm_thread(Proc) -> None:
-    """后台预热大型社区数据库并静默刷新 Mod 列表，避免首次查询长时间阻塞。"""
+    """后台构建 WEGFan 本地索引，避免首次查询与 GameBanana ID 反查时无索引可用。"""
     global prewarm_started
     if prewarm_started:
         return
     prewarm_started = True
 
     def worker():
-        database_result = function.load_mod_database()
-        updater_result = function.load_updater_index()
-        if database_result.get('ok') and updater_result.get('ok'):
-            utils.info_log(Proc, 'Celeste 社区数据库与 Everest 更新库预热完成。')
-        else:
-            utils.debug_log(
-                Proc,
-                f'缓存预热未完全成功：{database_result.get("error", "")} {updater_result.get("error", "")}',
-            )
-        refresh_result = function.refresh_community_data()
-        if not refresh_result.get('ok'):
-            utils.error_log(Proc, f'Celeste Mod 列表后台更新失败：{refresh_result.get("error", "未知错误")}')
-        elif refresh_result.get('error'):
-            utils.info_log(Proc, f'Celeste Mod 列表后台更新未能联网，已沿用本地缓存：{refresh_result["error"]}')
-        else:
+        index_result = function.load_index()
+        index_data = index_result.get('data') if isinstance(index_result.get('data'), dict) else {}
+        index_count = len(index_data.get('items', []))
+        if not index_result.get('ok'):
+            utils.error_log(Proc, f'WEGFan 本地索引不可用：{index_result.get("error", "未知错误")}')
+        elif index_result.get('error'):
             utils.info_log(
                 Proc,
-                'Celeste Mod 列表后台更新完成：'
-                f'社区数据库 {refresh_result["database_count"]:,} 条、'
-                f'Everest 更新库 {refresh_result["updater_count"]:,} 项。',
+                f'WEGFan 本地索引可用（{index_count:,} 条），但本次更新有问题：{index_result["error"]}',
             )
+        else:
+            source_text = '本地缓存' if index_result.get('from_cache') else '已刷新'
+            utils.info_log(Proc, f'WEGFan 本地索引就绪：{index_count:,} 条（{source_text}）。')
 
     threading.Thread(target=worker, name='CelestePluginPrewarm', daemon=True).start()
 
@@ -224,7 +216,7 @@ def render_selection_page(session: dict[str, Any]) -> str:
         f'第 {page_index + 1}/{page_count} 页，共匹配 {session.get("total_count", len(results))} 项',
     ]
     if session.get('partial'):
-        lines.append('提示：子分类结果完整；GameBanana 自由标签来自本地详情缓存，可能不完整。')
+        lines.append('提示：WEGFan 不提供自由标签，本次按子分类、标题与简介关键词匹配，结果可能不完整。')
     if session.get('notice'):
         lines.append(f'提示：{session["notice"]}')
     for offset, item in enumerate(page_items):
@@ -255,7 +247,7 @@ def reply_search_result(
         return
     if len(results) == 1:
         if search_result.get('partial'):
-            utils.reply_message(plugin_event, '提示：该自由标签结果来自本地详情缓存，可能不完整。')
+            utils.reply_message(plugin_event, '提示：WEGFan 不提供自由标签，本次按子分类、标题与简介关键词匹配。')
         if search_result.get('notice'):
             utils.reply_message(plugin_event, f'提示：{search_result["notice"]}')
         reply_detail(plugin_event, results[0])
@@ -399,7 +391,7 @@ def handle_today(plugin_event) -> None:
         cached_detail = {}
     if (
         cached.get('date') == today_date
-        and cached.get('source') == 'maddie_random_map'
+        and cached.get('source') == 'wegfan_random'
         and cached_detail
     ):
         detail = cached_detail
@@ -411,28 +403,27 @@ def handle_today(plugin_event) -> None:
         detail = daily_result['data']
         utils.save_json_file(
             cache_path,
-            {'date': today_date, 'source': 'maddie_random_map', 'detail': detail},
+            {'date': today_date, 'source': 'wegfan_random', 'detail': detail},
         )
     text = function.format_detail(detail, heading=f'【{today_date} 每日 Celeste Mod】')
     utils.reply_long_text(plugin_event, text)
 
 
 def handle_refresh(plugin_event) -> None:
-    """骰主手动更新本地 Mod 列表缓存。"""
+    """骰主手动重建 WEGFan 本地索引。"""
     if not utils.is_sender_core_master(plugin_event):
         utils.reply_message(plugin_event, '仅 OlivaDiceCore 骰主可以手动更新 Mod 列表。')
         return
-    utils.reply_message(plugin_event, '正在更新 Celeste Mod 列表，数据包较大，请稍候……')
+    utils.reply_message(plugin_event, '正在重建 WEGFan 本地索引，约需一两分钟，请稍候……')
     refresh_result = function.refresh_community_data()
     if not refresh_result.get('ok'):
-        utils.reply_message(plugin_event, f'Mod 列表更新失败：{refresh_result.get("error", "未知错误")}')
+        utils.reply_message(plugin_event, f'WEGFan 索引更新失败：{refresh_result.get("error", "未知错误")}')
         return
-    fresh_text_dict = {True: '数据源无变化', False: '已重新下载'}
+    fresh_text_dict = {True: '沿用旧索引', False: '已重新抓取'}
     utils.reply_message(
         plugin_event,
-        'Celeste Mod 列表更新完成：\n'
-        f'社区数据库 {refresh_result["database_count"]:,} 条（{fresh_text_dict[refresh_result["database_from_cache"]]}）\n'
-        f'Everest 更新库 {refresh_result["updater_count"]:,} 项（{fresh_text_dict[refresh_result["updater_from_cache"]]}）',
+        'WEGFan 本地索引更新完成：\n'
+        f'索引条目 {refresh_result["database_count"]:,} 条（{fresh_text_dict[refresh_result["database_from_cache"]]}）'
     )
 
 

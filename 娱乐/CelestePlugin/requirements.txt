@@ -1,2 +1,1 @@
-# CelestePlugin 社区 YAML 数据源解析依赖
-PyYAML>=6.0
+# 无第三方依赖：全部数据走 WEGFan /api/v2，仅使用 Python 标准库
