@@ -602,9 +602,19 @@ def set_group_disabled(plugin_event, disabled: bool) -> bool:
 
 
 def reply_message(plugin_event, message_text: str) -> Any:
-    """统一回复。"""
+    """统一回复：回调事件没有 reply 通道，改走该会话的主动发送接口。"""
+    text = add_reply_quote(plugin_event, message_text)
+    if safe_str((getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type')) == 'button_click':
+        chat_type, chat_id = get_chat_context(plugin_event)
+        sender = getattr(getattr(plugin_event, 'indeAPI', None), 'send_message', None)
+        if chat_type and chat_id and callable(sender):
+            try:
+                return sender(chat_type=chat_type, chat_id=chat_id, message=text)
+            except Exception:
+                return None
+        return None
     try:
-        return plugin_event.reply(add_reply_quote(plugin_event, message_text))
+        return plugin_event.reply(text)
     except Exception:
         return None
 
@@ -624,7 +634,10 @@ def build_reply_quote_segment(plugin_event) -> str:
 
 def add_reply_quote(plugin_event, message_text: str) -> str:
     source = safe_str(message_text)
-    if not load_global_config().get('reply_quote_switch', True):
+    if load_global_config().get('reply_quote_switch', True) is False:
+        return source
+    # 按钮回调没有可直接引用的源消息，引用了反而会让主动消息被平台拒绝。
+    if safe_str((getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type')) == 'button_click':
         return source
     if reply_segment_pattern.match(source.lstrip()):
         return source
@@ -688,8 +701,8 @@ def build_markdown_header(plugin_event) -> str:
     return f'> {at_tag}：{text}' if text else f'> {at_tag}'
 
 
-def reply_markdown(plugin_event, markdown_text: str, keyboard=None) -> bool:
-    """发一条 QQ 官方 Markdown 消息（可带键盘）；失败返回 False 由调用方回退纯文本。"""
+def reply_markdown(plugin_event, markdown_text: str, keyboard=None, *, images=None) -> bool:
+    """发 QQ Markdown，可带键盘及图片；不支持时由调用方走原有图文回复。"""
     if not can_send_markdown(plugin_event):
         return False
     content = safe_str(markdown_text)
@@ -704,15 +717,24 @@ def reply_markdown(plugin_event, markdown_text: str, keyboard=None) -> bool:
     sender = plugin_event.indeAPI.create_markdown_message
     payload = {'chat_type': chat_type, 'chat_id': chat_id, 'markdown': {'content': content}}
     # 频道/频道私信不支持回调按钮，只发 Markdown 正文。
-    if keyboard and chat_type in ('qq_group', 'qq_private'):
+    is_qq_chat = chat_type in ('qq_group', 'qq_private')
+    if keyboard and is_qq_chat:
         payload['keyboard'] = keyboard
-    # 带键盘的消息必须是被动回复，主动消息里按钮点了只会退化成文字。
+    if images:
+        if not is_qq_chat:
+            return False
+        # 由适配器上传 WEGFan 封面、替换占位符并填写实际像素尺寸。
+        payload['local_images'] = images
     data = getattr(plugin_event, 'data', None)
     extend = getattr(data, 'extend', None)
     extend = extend if isinstance(extend, dict) else {}
     message_id = safe_str(getattr(data, 'message_id', '')).strip()
     event_id = safe_str(extend.get('event_id')).strip()
-    if message_id and message_id != '-1':
+    if plugin_event.plugin_info.get('func_type') == 'button_click':
+        # message_id 是原卡片 ID，不是用户这次点击的被动回复凭据。
+        if event_id:
+            payload['event_id'] = event_id
+    elif message_id and message_id != '-1':
         payload['msg_id'] = message_id
     elif event_id:
         payload['event_id'] = event_id

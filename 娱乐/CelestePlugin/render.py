@@ -30,16 +30,19 @@ def button(
 ) -> dict[str, Any]:
     """构造键盘按钮：link=跳转链接，callback=服务端回调，默认是指令型（data 为真命令）。"""
     data_text = utils.safe_str(data)
-    action_type = 0 if link else (2 if callback else 1)
+    # QQ 官方键盘：0 跳转，1 回调，2 指令。只有跳页需要填入输入框。
+    action = {
+        'type': 0 if link else (1 if callback else 2),
+        'permission': {'type': 2},
+        'data': data_text,
+        'unsupport_tips': '请更新 QQ 客户端后使用按钮',
+    }
+    if not link and not callback:
+        action.update(enter=False, reply=False)
     return {
         'id': data_text[:64] or 'btn',
         'render_data': {'label': _label(text), 'visited_label': _label(text), 'style': style},
-        'action': {
-            'type': action_type,
-            'permission': {'type': 2},
-            'data': data_text,
-            'unsupport_tips': '请更新 QQ 客户端后使用按钮',
-        },
+        'action': action,
     }
 
 
@@ -137,12 +140,20 @@ def render_list(
     return '\n'.join(lines), keyboard([nav])
 
 
+def add_cover(lines: list[str], images: dict[str, str], item: dict[str, Any], label: str) -> None:
+    url = utils.safe_str(item.get('cover_url')).strip()
+    if url.startswith(('https://', 'http://')):
+        lines.extend([f'{{{{{label}}}}}', ''])
+        images[label] = url
+
+
 def render_detail(
     detail: dict[str, Any],
     compact: bool = False,
     heading: str = '',
     show_random: bool = False,
-) -> tuple[str, dict[str, Any] | None]:
+    show_endless: bool = False,
+) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
     config = utils.load_global_config()
     description = function.truncate_text(
         detail.get('description') or detail.get('text') or '暂无简介',
@@ -154,6 +165,9 @@ def render_detail(
     )
     title = utils.safe_str(detail.get('name'), '未知标题')
     lines = []
+    images: dict[str, str] = {}
+    if config.get('show_cover_image_switch', True):
+        add_cover(lines, images, detail, '地图封面')
     if heading:
         lines.append(f'**{heading}**')
     lines.append(f'**{title}**')
@@ -205,13 +219,23 @@ def render_detail(
         lines.append('')
         lines.append('**下载**：未找到可用文件')
 
+    controls = []
     if show_random:
-        rows.append([button('再来一张', 'clst:rnd:1', callback=True), button('随机 3 张', 'clst:rnd:3', callback=True)])
-    return '\n'.join(lines), keyboard(rows)
+        controls.extend([
+            button('再来一张', 'clst:rnd:1', callback=True),
+            button('随机 3 张', 'clst:rnd:3', callback=True),
+        ])
+    if show_endless:
+        controls.append(button('返回无尽', 'clst:en:status', callback=True))
+    if controls:
+        rows = rows[:MAX_ROWS - 1] + [controls]
+    return '\n'.join(lines), keyboard(rows), images
 
 
-def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:
+def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
     lines = [f'**随机地图 · {len(items)} 张**', '']
+    images: dict[str, str] = {}
+    show_cover = utils.load_global_config().get('show_cover_image_switch', True)
     for index, item in enumerate(items, start=1):
         category = ' / '.join(
             value for value in [item.get('category', ''), item.get('subcategory', '')] if value
@@ -225,6 +249,8 @@ def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, A
         if page_url:
             lines.append(f'[查看详情]({page_url})')
         lines.append('')
+        if show_cover:
+            add_cover(lines, images, item, f'地图封面 {index}')
     rows = [
         [
             button('再来一张', 'clst:rnd:1', style=1, callback=True),
@@ -232,13 +258,18 @@ def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, A
             button('每日一图', 'clst:today', callback=True),
         ]
     ]
-    return '\n'.join(lines), keyboard(rows)
+    return '\n'.join(lines), keyboard(rows), images
 
 
-def render_endless(state: dict[str, Any], notice: str = '') -> tuple[str, dict[str, Any] | None]:
+def render_endless(
+    state: dict[str, Any], notice: str = '',
+) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
     status_name = {'active': '进行中', 'pending': '等待抽取下一图', 'failed': '已失败'}
     current_map = state.get('current_map', {}) or {}
     lines = []
+    images: dict[str, str] = {}
+    if utils.load_global_config().get('show_cover_image_switch', True):
+        add_cover(lines, images, current_map, '地图封面')
     if notice:
         lines.append(f'**{notice}**')
     lines.append('**Celeste Endless**')
@@ -274,4 +305,4 @@ def render_endless(state: dict[str, Any], notice: str = '') -> tuple[str, dict[s
     ]
     if state.get('status') == 'pending':
         rows.insert(0, [button('继续抽下一图', 'clst:en:continue', style=1, callback=True)])
-    return '\n'.join(lines), keyboard(rows)
+    return '\n'.join(lines), keyboard(rows), images

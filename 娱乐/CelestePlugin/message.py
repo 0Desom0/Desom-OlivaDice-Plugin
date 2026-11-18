@@ -163,10 +163,7 @@ def handle_save(plugin_event, Proc) -> None:
 
 
 def process_button_data(plugin_event, button_data: str) -> bool:
-    """处理按钮数据：clst:<action>:<arg>。
-
-    既从 button_click 事件进来，也兼容 QQ 客户端把按钮 data 当文字发回来的情况。
-    """
+    """分发 QQ 回调事件携带的 clst:<action>:<arg>。"""
     button_data = utils.safe_str(button_data).strip()
     if not button_data.startswith('clst:'):
         return False
@@ -248,7 +245,15 @@ def process_button_data(plugin_event, button_data: str) -> bool:
 def handle_button_click(plugin_event, Proc) -> None:
     """QQ 官方机器人按钮回调入口。"""
     data = getattr(plugin_event, 'data', None)
-    process_button_data(plugin_event, utils.safe_str(getattr(data, 'button_data', '')))
+    button_data = utils.safe_str(getattr(data, 'button_data', ''))
+    if not button_data.startswith('clst:'):
+        return
+    if not utils.load_global_config().get('global_enable_switch', True):
+        return
+    raw_bot_hash = utils.get_bot_hash_from_event(plugin_event)
+    if not utils.load_bot_config(raw_bot_hash).get('bot_enable_switch', True):
+        return
+    process_button_data(plugin_event, button_data)
 
 
 def build_selection_key(plugin_event) -> str:
@@ -328,15 +333,19 @@ def render_selection_page(session: dict[str, Any]) -> str:
     return '\n'.join(lines)
 
 
-def reply_detail(plugin_event, item: dict[str, Any], compact: bool = False) -> None:
+def reply_detail(
+    plugin_event, item: dict[str, Any], compact: bool = False, *, show_random: bool = False, show_endless: bool = False
+) -> None:
     detail_result = function.hydrate_item(item)
     if not detail_result.get('ok'):
         utils.reply_message(plugin_event, f'获取 Mod 详情失败：{detail_result.get("error", "未知错误")}')
         return
     detail = detail_result['data']
     if utils.can_send_markdown(plugin_event):
-        text, keyboard = render.render_detail(detail, compact=compact)
-        if utils.reply_markdown(plugin_event, text, keyboard):
+        text, keyboard, images = render.render_detail(
+            detail, compact=compact, show_random=show_random, show_endless=show_endless,
+        )
+        if utils.reply_markdown(plugin_event, text, keyboard, images=images):
             return
     utils.reply_long_text(plugin_event, function.format_detail(detail, compact=compact))
 
@@ -362,13 +371,13 @@ def send_selection_page(plugin_event, session: dict[str, Any]) -> None:
         )
         if utils.reply_markdown(plugin_event, text, keyboard):
             return
-    send_selection_page(plugin_event, session)
+    utils.reply_long_text(plugin_event, render_selection_page(session))
 
 
 def send_endless_state(plugin_event, state: dict[str, Any], notice: str = '') -> None:
     if utils.can_send_markdown(plugin_event):
-        text, keyboard = render.render_endless(state, notice)
-        if utils.reply_markdown(plugin_event, text, keyboard):
+        text, keyboard, images = render.render_endless(state, notice)
+        if utils.reply_markdown(plugin_event, text, keyboard, images=images):
             return
     utils.reply_long_text(plugin_event, function.format_endless_state(state, notice))
 
@@ -561,12 +570,12 @@ def handle_random(plugin_event, argument: str) -> None:
         return
     results = random_result.get('results', [])
     if count == 1 and results:
-        # 只随机一个时与查询结果一致，展示完整简介
-        reply_detail(plugin_event, results[0])
+        # 单图仍展示完整简介，并带继续随机的回调。
+        reply_detail(plugin_event, results[0], show_random=True)
         return
     if utils.can_send_markdown(plugin_event):
-        text, keyboard = render.render_random_summary(results)
-        if utils.reply_markdown(plugin_event, text, keyboard):
+        text, keyboard, images = render.render_random_summary(results)
+        if utils.reply_markdown(plugin_event, text, keyboard, images=images):
             return
     detail_texts = []
     for index, item in enumerate(results, start=1):
@@ -608,8 +617,8 @@ def handle_today(plugin_event) -> None:
         )
     heading = f'{today_date} 每日 Celeste Mod'
     if utils.can_send_markdown(plugin_event):
-        text, keyboard = render.render_detail(detail, heading=heading)
-        if utils.reply_markdown(plugin_event, text, keyboard):
+        text, keyboard, images = render.render_detail(detail, heading=heading)
+        if utils.reply_markdown(plugin_event, text, keyboard, images=images):
             return
     utils.reply_long_text(plugin_event, function.format_detail(detail, heading=f'【{heading}】'))
 
@@ -814,7 +823,7 @@ def handle_endless(plugin_event, argument: str) -> None:
         if not current_map:
             utils.reply_message(plugin_event, '当前无尽挑战没有地图信息。')
             return
-        reply_detail(plugin_event, current_map)
+        reply_detail(plugin_event, current_map, show_endless=True)
         return
     if action == 'end':
         if not record_endless_score(plugin_event, state, 'ended'):
@@ -943,9 +952,6 @@ def handle_message(plugin_event, Proc) -> None:
     if at_items and not utils.is_force_reply_to_current_bot(at_items, plugin_event):
         return
 
-    button_token = utils.safe_str(remaining_after_at).strip()
-    if button_token.startswith('clst:') and process_button_data(plugin_event, button_token):
-        return
     prefix, _remaining = utils.parse_prefix(remaining_after_at, config.allowed_prefix_list)
     global_config = utils.load_global_config()
     bot_config = utils.load_bot_config(raw_bot_hash)

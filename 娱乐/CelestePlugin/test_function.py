@@ -569,18 +569,37 @@ class CelestePluginFunctionTest(unittest.TestCase):
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
         payloads = [item['action']['data'] for item in buttons]
         self.assertEqual(payloads, ['clst:pg:next', '.clst 跳页'])
-        self.assertEqual([item['action']['type'] for item in buttons], [2, 1])
+        # 回调按钮 type=1；只有跳页是 type=2 指令型（需要用户补页码）。
+        self.assertEqual([item['action']['type'] for item in buttons], [1, 2])
+        # 回调按钮不带 enter/reply；跳页按钮 enter=False 只把命令填进输入框。
+        self.assertNotIn('enter', buttons[0]['action'])
+        self.assertFalse(buttons[1]['action']['enter'])
         self.assertIn('**标题搜索：map**', text)
         self.assertIn('回复序号看详情', text)
 
     def test_render_detail_download_buttons_are_links(self):
         detail = function.normalize_wegfan_item(sample_search_item())
-        text, keyboard = render.render_detail(detail)
+        text, keyboard, images = render.render_detail(detail)
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
         link_buttons = [item for item in buttons if item['action']['type'] == 0]
         self.assertTrue(link_buttons)
         self.assertIn('download/files', link_buttons[0]['action']['data'])
         self.assertIn('**', text)
+        # 封面交给适配器上传，正文只留占位符。
+        self.assertEqual(list(images), ['地图封面'])
+        self.assertIn('{{地图封面}}', text)
+        self.assertNotIn(images['地图封面'], text)
+
+    def test_render_detail_has_callback_controls(self):
+        detail = function.normalize_wegfan_item(sample_search_item())
+        _, keyboard, _ = render.render_detail(detail, show_random=True, show_endless=True)
+        buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
+        controls = [item for item in buttons if item['action']['type'] != 0]
+        self.assertTrue(controls)
+        self.assertTrue(all(item['action']['type'] == 1 for item in controls))
+        payloads = {item['action']['data'] for item in controls}
+        self.assertEqual(payloads, {'clst:rnd:1', 'clst:rnd:3', 'clst:en:status'})
+        self.assertLessEqual(len(keyboard['content']['rows']), 5)
 
     def test_render_endless_has_action_buttons(self):
         state = {
@@ -589,12 +608,50 @@ class CelestePluginFunctionTest(unittest.TestCase):
             'skips': 1,
             'current_map': {'name': 'M', 'author': 'A', 'page_url': 'https://gamebanana.com/mods/1'},
         }
-        text, keyboard = render.render_endless(state, notice='已抽取下一图。')
+        text, keyboard, _ = render.render_endless(state, notice='已抽取下一图。')
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
         payloads = {item['action']['data'] for item in buttons}
         self.assertIn('clst:en:clear', payloads)
         self.assertIn('clst:en:undo', payloads)
+        self.assertTrue(all(item['action']['type'] == 1 for item in buttons))
         self.assertIn('Celeste Endless', text)
+
+    def test_render_random_summary_returns_images(self):
+        items = [function.normalize_wegfan_item(sample_search_item())]
+        text, keyboard, images = render.render_random_summary(items)
+        self.assertEqual(list(images), ['地图封面 1'])
+        self.assertIn('{{地图封面 1}}', text)
+        self.assertTrue(keyboard['content']['rows'])
+
+    def test_reply_markdown_uses_event_id_on_button_click(self):
+        class Data(object):
+            message_id = 'ORIGIN_CARD'
+            group_id = 'GROUP'
+            user_id = 'USER'
+            extend = {'event_id': 'INTERACTION', 'chat_type': 'qq_group', 'chat_id': 'GROUP'}
+
+        class API(object):
+            captured = None
+
+            def create_markdown_message(self, **payload):
+                API.captured = payload
+                return {'active': True, 'data': {}}
+
+        class FakeEvent(object):
+            data = Data()
+            indeAPI = API()
+            plugin_info = {'func_type': 'button_click'}
+            platform = {'platform': 'qqguild'}
+
+        with mock.patch.object(utils, 'load_global_config', return_value={}):
+            ok = utils.reply_markdown(
+                FakeEvent(), 'body', {'content': {'rows': []}}, images={'地图封面': 'https://x/y.jpg'}
+            )
+        self.assertTrue(ok)
+        captured = API.captured
+        self.assertEqual(captured['event_id'], 'INTERACTION')
+        self.assertNotIn('msg_id', captured)
+        self.assertEqual(captured['local_images'], {'地图封面': 'https://x/y.jpg'})
 
     def test_chat_context_from_extend(self):
         class Data(object):
