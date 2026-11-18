@@ -351,6 +351,7 @@ def prepare_index(payload: Any) -> dict[str, Any]:
         'items': items,
         'by_gamebanana_id': by_gamebanana_id,
         'fetched_at': safe_int(payload.get('fetched_at')) if isinstance(payload, dict) else 0,
+        'complete': bool(payload.get('complete', True)) if isinstance(payload, dict) else True,
     }
 
 
@@ -363,22 +364,36 @@ def fetch_full_index() -> dict[str, Any]:
     index_timeout = max(30, get_timeout_seconds() * 3)
     for section in config.wegfan_index_sections:
         page = 1
+        consecutive_failures = 0
         while page <= max_pages:
-            try:
-                data = wegfan_get(
-                    config.wegfan_search_path,
-                    {
-                        'page': page,
-                        'size': page_size,
-                        'section': section,
-                        'sort': config.wegfan_sort_default,
-                    },
-                    timeout_seconds=index_timeout,
-                )
-            except Exception as exception_object:
-                error_parts.append(f'{section} 第 {page} 页：{utils.safe_str(exception_object)}')
-                break
-            content = data.get('content') if isinstance(data, dict) else None
+            page_data = None
+            last_error = ''
+            for _attempt in range(3):
+                try:
+                    page_data = wegfan_get(
+                        config.wegfan_search_path,
+                        {
+                            'page': page,
+                            'size': page_size,
+                            'section': section,
+                            'sort': config.wegfan_sort_default,
+                        },
+                        timeout_seconds=index_timeout,
+                    )
+                    break
+                except Exception as exception_object:
+                    last_error = utils.safe_str(exception_object)
+                    page_data = None
+                    time.sleep(1.5)
+            if page_data is None:
+                error_parts.append(f'{section} 第 {page} 页：{last_error}')
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    break
+                page += 1
+                continue
+            consecutive_failures = 0
+            content = page_data.get('content') if isinstance(page_data, dict) else None
             if not isinstance(content, list) or not content:
                 break
             for raw_item in content:
@@ -386,15 +401,22 @@ def fetch_full_index() -> dict[str, Any]:
                 if not record.get('id'):
                     continue
                 items[f"{record['item_type'].casefold()}:{record['id']}"] = record
-            if not data.get('hasNextPage'):
+            if not page_data.get('hasNextPage'):
                 break
             page += 1
     if not items:
-        return {'ok': False, 'items': [], 'fetched_at': 0, 'error': '；'.join(error_parts) or 'WEGFan 索引为空'}
+        return {
+            'ok': False,
+            'items': [],
+            'fetched_at': 0,
+            'complete': False,
+            'error': '；'.join(error_parts) or 'WEGFan 索引为空',
+        }
     return {
         'ok': True,
         'items': list(items.values()),
         'fetched_at': int(time.time()),
+        'complete': not error_parts,
         'error': '；'.join(error_parts),
     }
 
@@ -417,16 +439,23 @@ def load_index(force_refresh: bool = False) -> dict[str, Any]:
     if not isinstance(disk_payload, dict):
         disk_payload = {}
     disk_has_items = bool(disk_payload.get('items'))
+    disk_complete = bool(disk_payload.get('complete', True))
+    effective_ttl = ttl if disk_complete else min(ttl, 1800)
     disk_fresh = (
         disk_has_items
         and not force_refresh
-        and current_time - float(disk_payload.get('fetched_at', 0) or 0) < ttl
+        and current_time - float(disk_payload.get('fetched_at', 0) or 0) < effective_ttl
     )
     if disk_fresh:
         prepared = prepare_index(disk_payload)
         with cache_lock:
             index_memory_cache.update({'data': prepared, 'loaded_at': current_time})
-        return {'ok': True, 'data': prepared, 'error': '', 'from_cache': True}
+        return {
+            'ok': True,
+            'data': prepared,
+            'error': utils.safe_str(disk_payload.get('error')),
+            'from_cache': True,
+        }
 
     if not index_build_lock.acquire(blocking=False):
         if disk_has_items:

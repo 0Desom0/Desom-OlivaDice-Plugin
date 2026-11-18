@@ -218,6 +218,24 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertEqual(len(result['data']['items']), 2)
         self.assertEqual(function.resolve_weg_id('Mod', 2), '570697585105248105')
 
+    def test_fetch_full_index_retries_and_marks_partial(self):
+        def fake_wegfan_get(_path, params=None, timeout_seconds=None):
+            if params.get('section') != 'Mod':
+                return {'content': [], 'hasNextPage': False}
+            if params['page'] == 1:
+                raise ValueError('handshake operation timed out')
+            return {'content': [sample_search_item(5)], 'hasNextPage': False}
+
+        with (
+            mock.patch.object(function, 'wegfan_get', side_effect=fake_wegfan_get),
+            mock.patch.object(function.time, 'sleep'),
+        ):
+            result = function.fetch_full_index()
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['complete'])
+        self.assertIn('第 1 页', result['error'])
+        self.assertEqual(len(result['items']), 1)
+
     def test_load_index_reuses_disk_cache(self):
         with mock.patch.object(
             function,
