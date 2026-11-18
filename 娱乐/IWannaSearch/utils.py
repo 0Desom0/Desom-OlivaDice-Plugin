@@ -1413,6 +1413,14 @@ def reply_message(
     if record_by_logger:
         record_reply_to_logger(plugin_event, final_message)
 
+    # QQ 官方机器人优先走 Markdown；不支持或发送失败时回退到原来的纯文本。
+    try:
+        from . import markdown
+        if markdown.reply_markdown(plugin_event, final_message):
+            return None
+    except Exception:
+        pass
+
     try:
         outgoing_message = add_reply_quote(plugin_event, final_message) if quote_reply else final_message
         return plugin_event.reply(outgoing_message)

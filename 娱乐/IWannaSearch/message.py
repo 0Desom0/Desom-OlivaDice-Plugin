@@ -519,6 +519,23 @@ def render_result_list(plugin_event, session_data: Dict[str, Any]) -> str:
     return '\n'.join(line_list)
 
 
+def reply_result_page(plugin_event, session_data: Dict[str, Any]) -> None:
+    """搜索列表页：Markdown + 翻页键盘（上一页/下一页回调，跳页填命令）。"""
+    content = render_result_list(plugin_event, session_data)
+    results = session_data.get('results', [])
+    page_size = max(1, int(session_data.get('page_size', config.result_page_size)))
+    total_page = max(1, math.ceil(len(results) / page_size))
+    page_index = max(0, min(int(session_data.get('page_index', 0)), total_page - 1))
+    try:
+        from . import markdown
+        keyboard_dict = markdown.page_keyboard(page_index, total_page) if total_page > 1 else None
+        if markdown.reply_markdown(plugin_event, content, keyboard_dict):
+            return
+    except Exception:
+        pass
+    utils.reply_message(plugin_event, content)
+
+
 def reply_search_payload(plugin_event, payload: Dict[str, Any]) -> None:
     if not payload.get('ok', False):
         utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_api_error', extra_value_dict=payload))
@@ -544,7 +561,7 @@ def reply_search_payload(plugin_event, payload: Dict[str, Any]) -> None:
         runtime_config['selection_timeout'],
     )
     session_data = get_valid_selection_session(plugin_event)
-    utils.reply_message(plugin_event, render_result_list(plugin_event, session_data))
+    reply_result_page(plugin_event, session_data)
 
 
 def handle_iw_id(plugin_event, query_text: str) -> None:
@@ -1137,6 +1154,37 @@ def handle_jump_page_input(plugin_event, session_data: Dict[str, Any], page_text
     return True
 
 
+def handle_button_click(plugin_event, Proc) -> None:
+    """处理翻页回调按钮：iw:pg:next / iw:pg:prev。"""
+    data = getattr(plugin_event, 'data', None)
+    button_data = utils.safe_str(getattr(data, 'button_data', '')).strip()
+    if not button_data.startswith('iw:pg:'):
+        return
+    argument = button_data.split(':', 2)[2] if button_data.count(':') >= 2 else ''
+    session_data = get_valid_selection_session(plugin_event)
+    if not session_data:
+        utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_session_expired'))
+        return
+    results = session_data.get('results', [])
+    page_size = max(1, int(session_data.get('page_size', config.result_page_size)))
+    total_page = max(1, math.ceil(len(results) / page_size))
+    page_index = max(0, min(int(session_data.get('page_index', 0)), total_page - 1))
+    if argument == 'next':
+        if page_index >= total_page - 1:
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_last_page'))
+            return
+        session_data['page_index'] = page_index + 1
+    elif argument == 'prev':
+        if page_index <= 0:
+            utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_first_page'))
+            return
+        session_data['page_index'] = page_index - 1
+    else:
+        return
+    session_data['updated_at'] = time.time()
+    reply_result_page(plugin_event, session_data)
+
+
 def handle_selection_input(plugin_event, input_text: str) -> bool:
     session_data = get_valid_selection_session(plugin_event)
     if not session_data:
@@ -1171,22 +1219,18 @@ def handle_selection_input(plugin_event, input_text: str) -> bool:
             return True
         if stripped_text.lower() in ['下一页', 'down', 'next']:
             if session_data.get('page_index', 0) >= total_page - 1:
-                utils.reply_message(
-                    plugin_event,
-                    f'{render_custom_message(plugin_event, "reply_last_page")}\n{render_result_list(plugin_event, session_data)}',
-                )
+                utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_last_page'))
+                reply_result_page(plugin_event, session_data)
                 return True
             session_data['page_index'] = int(session_data.get('page_index', 0)) + 1
         else:
             if session_data.get('page_index', 0) <= 0:
-                utils.reply_message(
-                    plugin_event,
-                    f'{render_custom_message(plugin_event, "reply_first_page")}\n{render_result_list(plugin_event, session_data)}',
-                )
+                utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_first_page'))
+                reply_result_page(plugin_event, session_data)
                 return True
             session_data['page_index'] = int(session_data.get('page_index', 0)) - 1
         session_data['updated_at'] = time.time()
-        utils.reply_message(plugin_event, render_result_list(plugin_event, session_data))
+        reply_result_page(plugin_event, session_data)
         return True
 
     if not number_pattern.match(stripped_text):

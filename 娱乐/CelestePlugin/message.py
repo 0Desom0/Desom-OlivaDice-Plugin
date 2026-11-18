@@ -617,7 +617,7 @@ def handle_today(plugin_event) -> None:
         )
     heading = f'{today_date} 今日 Mod'
     if utils.can_send_markdown(plugin_event):
-        text, keyboard, images = render.render_detail(detail, heading=heading)
+        text, keyboard, images = render.render_detail(detail, heading=heading, show_today=True)
         if utils.reply_markdown(plugin_event, text, keyboard, images=images):
             return
     utils.reply_long_text(plugin_event, function.format_detail(detail, heading=f'【{heading}】'))

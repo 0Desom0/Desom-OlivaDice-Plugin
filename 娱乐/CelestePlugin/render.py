@@ -136,7 +136,8 @@ def render_list(
         nav.append(button('上一页', 'clst:pg:prev', callback=True))
     if page_index < page_count - 1:
         nav.append(button('下一页', 'clst:pg:next', style=1, callback=True))
-    nav.append(button('跳页', '.clst 跳页'))
+    # 结尾留一个空格，点完直接在输入框里补页码。
+    nav.append(button('跳页', '.clst 跳页 '))
     return '\n'.join(lines), keyboard([nav])
 
 
@@ -153,6 +154,7 @@ def render_detail(
     heading: str = '',
     show_random: bool = False,
     show_endless: bool = False,
+    show_today: bool = False,
 ) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
     config = utils.load_global_config()
     description = function.truncate_text(
@@ -170,21 +172,25 @@ def render_detail(
         add_cover(lines, images, detail, '地图封面')
     if heading:
         lines.append(f'**{heading}**')
-    lines.append(f'**{title}**')
-    lines.append(f"ID：{utils.safe_str(detail.get('item_type'), 'Mod')} {int(detail.get('id', 0) or 0)}")
-    lines.append(
-        f"作者/投稿者：{utils.safe_str(detail.get('author'), '未知作者')} · 分类：{_category_text(detail)}"
-    )
-    lines.append(_stats_line(detail))
-    if credit_text:
-        lines.append(f'完整署名：{credit_text}')
-    lines.append('')
-    if not compact:
-        lines.append(description)
         lines.append('')
+    lines.append(f'**{title}**')
+    lines.append('')
+    # 每项信息单独一条列表，正文不再挤成一整段。
+    lines.append(f"- **ID**：{utils.safe_str(detail.get('item_type'), 'Mod')} "
+                 f"{int(detail.get('id', 0) or 0)}")
+    lines.append(
+        f"- **作者**：{utils.safe_str(detail.get('author'), '未知作者')} · "
+        f"**分类**：{_category_text(detail)}"
+    )
+    lines.append(f'- **数据**：{_stats_line(detail)}')
+    if credit_text:
+        lines.append(f'- **署名**：{credit_text}')
+    if not compact:
+        one_line_description = ' '.join(description.split())
+        lines.append(f'- **简介**：{one_line_description}')
     page_url = utils.safe_str(detail.get('page_url'))
     if page_url:
-        lines.append(f'[在 GameBanana 上查看]({page_url})')
+        lines.append(f'- [在 GameBanana 上查看]({page_url})')
 
     file_url_map: dict[int, str] = {}
     for file_item in detail.get('files', []):
@@ -227,6 +233,9 @@ def render_detail(
         ])
     if show_endless:
         controls.append(button('返回无尽', 'clst:en:status', callback=True))
+    if show_today:
+        # 指令型：点一下只把命令填进输入框，让其他人也能抽自己那份。
+        controls.append(button('我也要抽取', '.clst today'))
     if controls:
         rows = rows[:MAX_ROWS - 1] + [controls]
     return '\n'.join(lines), keyboard(rows), images

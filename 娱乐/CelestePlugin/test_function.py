@@ -568,7 +568,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
         text, keyboard = render.render_list('标题搜索：map', items, 0, 8, 10)
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
         payloads = [item['action']['data'] for item in buttons]
-        self.assertEqual(payloads, ['clst:pg:next', '.clst 跳页'])
+        self.assertEqual(payloads, ['clst:pg:next', '.clst 跳页 '])
         # 回调按钮 type=1；只有跳页是 type=2 指令型（需要用户补页码）。
         self.assertEqual([item['action']['type'] for item in buttons], [1, 2])
         # 回调按钮不带 enter/reply；跳页按钮 enter=False 只把命令填进输入框。
@@ -585,6 +585,10 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertTrue(link_buttons)
         self.assertIn('download/files', link_buttons[0]['action']['data'])
         self.assertIn('**', text)
+        # 详情页每项信息都是列表项。
+        self.assertIn('- **ID**：', text)
+        self.assertIn('- **作者**：', text)
+        self.assertIn('- **数据**：', text)
         # 封面交给适配器上传，正文只留占位符。
         self.assertEqual(list(images), ['地图封面'])
         self.assertIn('{{地图封面}}', text)

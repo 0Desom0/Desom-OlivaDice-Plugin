@@ -36,6 +36,10 @@ class Event(object):
         """群聊消息入口"""
         message.handle_group_message(plugin_event, Proc)
 
+    def button_click(plugin_event, Proc):
+        """回调按钮入口（clst 风格：iw:pg:next / iw:pg:prev）。"""
+        message.handle_button_click(plugin_event, Proc)
+
     def heartbeat(plugin_event, Proc):
         """心跳事件入口"""
         message.handle_heartbeat(plugin_event, Proc)
