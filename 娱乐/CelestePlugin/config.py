@@ -36,6 +36,9 @@ wegfan_index_cache_name = 'wegfan_index'
 # sort 取值来自 WEGFan 前端：new / updateAdded / updated / views / likes
 wegfan_sort_default = 'updateAdded'
 
+# WEGFan 作者要求：调用接口时用 User-Agent 注明是哪个 bot。
+bot_user_agent = "Desom's Bot - Fronia (CelestePlugin 1.4.2; +https://github.com/0Desom0/Desom-OlivaDice-Plugin)"
+
 # 分类名 → categoryId（与 WEGFan 前端分类树一致），用于分类检索时直接走服务端过滤。
 wegfan_categories = {
     'maps': 6800,

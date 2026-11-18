@@ -124,6 +124,11 @@ class CelestePluginFunctionTest(unittest.TestCase):
 
     # ---------- WEGFan 数据映射 ----------
 
+    def test_user_agent_identifies_bot(self):
+        headers = function.build_headers()
+        self.assertIn("Desom's Bot - Fronia", headers['User-Agent'])
+        self.assertIn('CelestePlugin', headers['User-Agent'])
+
     def test_parse_wegfan_time(self):
         self.assertEqual(function.parse_wegfan_time('1970-01-01T00:00:00Z'), 0)
         self.assertEqual(function.parse_wegfan_time('2026-08-22T19:41:38Z'), 1787427698)

@@ -70,7 +70,8 @@ def get_timeout_seconds() -> int:
 
 def build_headers(extra_headers: dict[str, str] | None = None) -> dict[str, str]:
     headers = {
-        'User-Agent': 'CelestePlugin-OlivOS/1.4',
+        # WEGFan 作者要求：UA 里注明调用方 bot。
+        'User-Agent': config.bot_user_agent,
         'Accept': 'application/json, text/plain, */*',
     }
     if isinstance(extra_headers, dict):
