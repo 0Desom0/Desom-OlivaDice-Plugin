@@ -97,26 +97,28 @@ endless_action_alias_dict = {
 
 
 def start_prewarm_thread(Proc) -> None:
-    """后台构建 WEGFan 本地索引，避免首次查询与 GameBanana ID 反查时无索引可用。"""
+    """插件加载时检查一次 WEGFan 本地索引：有就只补增量，没有才全量构建。"""
     global prewarm_started
     if prewarm_started:
         return
     prewarm_started = True
 
     def worker():
-        index_result = function.load_index()
-        index_data = index_result.get('data') if isinstance(index_result.get('data'), dict) else {}
-        index_count = len(index_data.get('items', []))
-        if not index_result.get('ok'):
-            utils.error_log(Proc, f'WEGFan 本地索引不可用：{index_result.get("error", "未知错误")}')
-        elif index_result.get('error'):
+        warm_result = function.warm_index()
+        if not warm_result.get('ok'):
+            utils.error_log(Proc, f'WEGFan 本地索引不可用：{warm_result.get("error", "未知错误")}')
+        elif warm_result.get('error'):
             utils.info_log(
                 Proc,
-                f'WEGFan 本地索引可用（{index_count:,} 条），但本次更新有问题：{index_result["error"]}',
+                f'WEGFan 本地索引 {warm_result["count"]:,} 条（{warm_result["mode"]}，新增 {warm_result["added"]}），'
+                f'本次增量有问题：{warm_result["error"]}',
             )
         else:
-            source_text = '本地缓存' if index_result.get('from_cache') else '已刷新'
-            utils.info_log(Proc, f'WEGFan 本地索引就绪：{index_count:,} 条（{source_text}）。')
+            utils.info_log(
+                Proc,
+                f'WEGFan 本地索引就绪：{warm_result["count"]:,} 条'
+                f'（{warm_result["mode"]}，新增 {warm_result["added"]}）。',
+            )
 
     threading.Thread(target=worker, name='CelestePluginPrewarm', daemon=True).start()
 
@@ -141,6 +143,7 @@ def handle_group_message(plugin_event, Proc) -> None:
 
 def handle_heartbeat(plugin_event, Proc) -> None:
     clear_expired_selection_sessions()
+    function.maybe_schedule_incremental()
 
 
 def handle_save(plugin_event, Proc) -> None:

@@ -516,7 +516,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertIn('6,402', reply_mock.call_args[0][1])
         self.assertIn('已重新抓取', reply_mock.call_args[0][1])
 
-    def test_prewarm_worker_builds_index(self):
+    def test_prewarm_worker_warm_index_only(self):
         class FakeThread(object):
             def __init__(self, target=None, name=None, daemon=None):
                 self.target = target
@@ -526,21 +526,104 @@ class CelestePluginFunctionTest(unittest.TestCase):
 
         message.prewarm_started = False
         log_records = []
-        fake_index = {'items': [{} for _ in range(6402)]}
         with (
             mock.patch.object(message.threading, 'Thread', FakeThread),
             mock.patch.object(
                 message.function,
-                'load_index',
-                return_value={'ok': True, 'data': fake_index, 'error': '', 'from_cache': False},
-            ) as index_mock,
+                'warm_index',
+                return_value={'ok': True, 'count': 6410, 'mode': 'incremental', 'added': 7, 'error': ''},
+            ) as warm_mock,
             mock.patch.object(message.utils, 'info_log', side_effect=lambda _p, t: log_records.append(('info', t))),
             mock.patch.object(message.utils, 'error_log', side_effect=lambda _p, t: log_records.append(('error', t))),
         ):
             message.start_prewarm_thread(None)
-        index_mock.assert_called_once_with()
-        self.assertTrue(any('6,402' in text for _level, text in log_records))
+        warm_mock.assert_called_once_with()
+        self.assertTrue(any('6,410' in text and 'incremental' in text for _level, text in log_records))
         message.prewarm_started = False
+
+    def test_warm_index_runs_incremental_when_index_exists(self):
+        prepared = {'items': [{'id': 1}], 'fetched_at': 100, 'watermark': 100}
+        with (
+            mock.patch.object(
+                function,
+                'load_index',
+                return_value={'ok': True, 'data': prepared, 'error': '', 'from_cache': True},
+            ),
+            mock.patch.object(
+                function,
+                'refresh_index_incremental',
+                return_value={'ok': True, 'added': 3, 'watermark': 120, 'error': ''},
+            ) as incremental_mock,
+        ):
+            function.index_memory_cache['data'] = {'items': [{'id': 1}, {'id': 2}], 'watermark': 120}
+            result = function.warm_index()
+        incremental_mock.assert_called_once_with(min_interval_seconds=0)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['mode'], 'incremental')
+        self.assertEqual(result['added'], 3)
+
+    def test_heartbeat_schedules_incremental(self):
+        with mock.patch.object(message, 'clear_expired_selection_sessions'), mock.patch.object(
+            message.function, 'maybe_schedule_incremental'
+        ) as schedule_mock:
+            message.handle_heartbeat(object(), None)
+        schedule_mock.assert_called_once_with()
+
+    def test_maybe_schedule_incremental_respects_interval(self):
+        function.index_memory_cache['data'] = {'items': [{'id': 1}], 'watermark': 10}
+        function.index_refresh_state['last_incremental_at'] = 0
+        function.index_refresh_state['running'] = False
+        with (
+            mock.patch.object(function, 'get_incremental_interval', return_value=300),
+            mock.patch.object(function, 'refresh_index_incremental') as incremental_mock,
+            mock.patch.object(function.threading, 'Thread') as thread_mock,
+        ):
+            function.index_refresh_state['last_incremental_at'] = 2_000_000_000
+            scheduled = function.maybe_schedule_incremental()
+        self.assertFalse(scheduled)
+        thread_mock.assert_not_called()
+        incremental_mock.assert_not_called()
+
+    def test_maybe_schedule_incremental_spawns_background_thread(self):
+        function.index_memory_cache['data'] = {'items': [{'id': 1}], 'watermark': 10}
+        function.index_refresh_state['last_incremental_at'] = 0
+        function.index_refresh_state['running'] = False
+        with (
+            mock.patch.object(function, 'get_incremental_interval', return_value=60),
+            mock.patch.object(function.threading, 'Thread') as thread_mock,
+        ):
+            scheduled = function.maybe_schedule_incremental()
+        self.assertTrue(scheduled)
+        thread_mock.assert_called_once()
+        thread_mock.return_value.start.assert_called_once()
+        function.index_refresh_state['running'] = False
+
+    def test_memory_cache_is_trimmed(self):
+        function.index_memory_cache.clear()
+        with mock.patch.object(function, 'get_index_cache_path', return_value=str(Path(self.temporary_dir.name) / 'idx.json')):
+            for index in range(10):
+                function.save_short_cache(
+                    function.search_memory_cache,
+                    'searches',
+                    f'key-{index}',
+                    {'index': index},
+                )
+        self.assertLessEqual(len(function.search_memory_cache), 300)
+
+        bounded = {'a': {'cached_at': 1}, 'b': {'cached_at': 2}, 'c': {'cached_at': 3}}
+        with mock.patch.object(function, 'get_memory_cache_limit', return_value=2):
+            function.trim_memory_cache(bounded)
+        self.assertEqual(sorted(bounded), ['b', 'c'])
+
+    def test_warm_index_reports_failure(self):
+        with mock.patch.object(
+            function,
+            'load_index',
+            return_value={'ok': False, 'data': None, 'error': '网络连接失败', 'from_cache': False},
+        ):
+            result = function.warm_index()
+        self.assertFalse(result['ok'])
+        self.assertIn('网络连接失败', result['error'])
 
 
 if __name__ == '__main__':

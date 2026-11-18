@@ -34,7 +34,6 @@ from . import utils
 cache_lock = threading.RLock()
 index_build_lock = threading.Lock()
 index_memory_cache: dict[str, Any] = {}
-profile_memory_cache: dict[str, dict[str, Any]] = {}
 search_memory_cache: dict[str, dict[str, Any]] = {}
 detail_memory_cache: dict[str, dict[str, Any]] = {}
 
@@ -364,6 +363,7 @@ def prepare_index(payload: Any) -> dict[str, Any]:
         'by_gamebanana_id': by_gamebanana_id,
         'fetched_at': safe_int(payload.get('fetched_at')) if isinstance(payload, dict) else 0,
         'complete': bool(payload.get('complete', True)) if isinstance(payload, dict) else True,
+        'watermark': safe_int(payload.get('watermark')) if isinstance(payload, dict) else 0,
     }
 
 
@@ -429,36 +429,29 @@ def fetch_full_index() -> dict[str, Any]:
         'items': list(items.values()),
         'fetched_at': int(time.time()),
         'complete': not error_parts,
+        'watermark': max((safe_int(item.get('updated_at')) for item in items.values()), default=0),
         'error': '；'.join(error_parts),
     }
 
 
 def load_index(force_refresh: bool = False) -> dict[str, Any]:
-    """读取 WEGFan 本地索引；过期时重建，重建失败则沿用旧索引。"""
-    ttl = max(600, int(utils.load_global_config().get('database_cache_seconds', 21600)))
+    """读取 WEGFan 本地索引。
+
+    有索引就立刻返回，不等网络；到点后由后台线程做水位线增量（每天最多一次全量对账）。
+    只有首次启动、索引文件缺失或 force_refresh 才同步重建。
+    """
     current_time = time.time()
     with cache_lock:
         memory_index = index_memory_cache.get('data')
-        if (
-            memory_index
-            and not force_refresh
-            and current_time - float(index_memory_cache.get('loaded_at', 0) or 0) < ttl
-        ):
-            return {'ok': True, 'data': memory_index, 'error': '', 'from_cache': True}
+    if memory_index and not force_refresh:
+        return {'ok': True, 'data': memory_index, 'error': '', 'from_cache': True}
 
     cache_path = get_index_cache_path()
     disk_payload = utils.read_json_file(cache_path, {})
     if not isinstance(disk_payload, dict):
         disk_payload = {}
     disk_has_items = bool(disk_payload.get('items'))
-    disk_complete = bool(disk_payload.get('complete', True))
-    effective_ttl = ttl if disk_complete else min(ttl, 1800)
-    disk_fresh = (
-        disk_has_items
-        and not force_refresh
-        and current_time - float(disk_payload.get('fetched_at', 0) or 0) < effective_ttl
-    )
-    if disk_fresh:
+    if disk_has_items and not force_refresh:
         prepared = prepare_index(disk_payload)
         with cache_lock:
             index_memory_cache.update({'data': prepared, 'loaded_at': current_time})
@@ -526,12 +519,43 @@ def resolve_weg_id(item_type: str, item_id: int) -> str:
     return utils.safe_str(record.get('weg_id')) if isinstance(record, dict) else ''
 
 
-index_refresh_state = {'last_incremental_at': 0.0}
+index_refresh_state = {'last_incremental_at': 0.0, 'running': False}
 index_rebuild_lock = threading.Lock()
+index_incremental_lock = threading.Lock()
+_incremental_interval_cache = {'value': 300, 'loaded_at': 0.0}
 
 
-def merge_index_items(records: list[dict[str, Any]]) -> int:
-    """把新抓到的条目合并进内存与磁盘索引，返回新增条数。"""
+def get_index_meta_path() -> str:
+    return os.path.join(utils.get_shared_cache_dir(), f'{config.wegfan_index_cache_name}_meta.json')
+
+
+def load_index_meta() -> dict[str, Any]:
+    meta = utils.read_json_file(get_index_meta_path(), {})
+    return meta if isinstance(meta, dict) else {}
+
+
+def save_index_meta(meta: dict[str, Any]) -> None:
+    utils.save_json_file(get_index_meta_path(), meta)
+
+
+def get_incremental_interval() -> int:
+    """定时增量的间隔（秒）；参数缓存 5 分钟，心跳每秒调用也不会反复读盘。"""
+    now = time.time()
+    cache = _incremental_interval_cache
+    if now - float(cache.get('loaded_at', 0) or 0) > 300:
+        try:
+            cache['value'] = max(60, int(utils.load_global_config().get('incremental_refresh_seconds', 300)))
+        except Exception:
+            cache['value'] = 300
+        cache['loaded_at'] = now
+    return int(cache.get('value', 300))
+
+
+def merge_index_items(records: list[dict[str, Any]], watermark: int = 0) -> int:
+    """把新抓到的条目合并进内存与磁盘索引，返回新增条数。
+
+    只有确实有新增/更新时才重写索引大文件，纯水位推进走 meta 小文件。
+    """
     if not records:
         return 0
     cache_path = get_index_cache_path()
@@ -544,16 +568,26 @@ def merge_index_items(records: list[dict[str, Any]]) -> int:
             continue
         existing[f'{utils.safe_str(item.get("item_type"), "Mod").casefold()}:{safe_int(item.get("id"))}'] = item
     added = 0
+    updated = 0
     for record in records:
         if safe_int(record.get('id')) <= 0:
             continue
         key = f'{utils.safe_str(record.get("item_type"), "Mod").casefold()}:{safe_int(record.get("id"))}'
-        if key not in existing:
+        old_record = existing.get(key)
+        if old_record is None:
             added += 1
+        elif safe_int(record.get('updated_at')) > safe_int(old_record.get('updated_at')):
+            updated += 1
         existing[key] = record
+    if not added and not updated:
+        return 0
     payload['items'] = list(existing.values())
     payload.setdefault('fetched_at', int(time.time()))
-    payload.setdefault('complete', False)
+    payload['complete'] = bool(payload.get('complete', False))
+    new_watermark = max(safe_int(payload.get('watermark')), safe_int(watermark))
+    if not new_watermark:
+        new_watermark = max((safe_int(record.get('updated_at')) for record in records), default=0)
+    payload['watermark'] = new_watermark
     utils.save_json_file(cache_path, payload)
     with cache_lock:
         index_memory_cache.update({'data': prepare_index(payload), 'loaded_at': time.time()})
@@ -561,38 +595,97 @@ def merge_index_items(records: list[dict[str, Any]]) -> int:
 
 
 def refresh_index_incremental(section: str = '', min_interval_seconds: int = 60) -> dict[str, Any]:
-    """索引未命中时补抓最新一页（默认 500 条），覆盖刚发布/刚更新的条目。
-
-    section 为空时补抓全部分节；传入具体分节只补该节，避免一次拖太久。
-    """
+    """按水位线补增量：只抓 updateAdded 前几页里比 watermark 新的条目。"""
     current_time = time.time()
-    if current_time - float(index_refresh_state.get('last_incremental_at', 0) or 0) < min_interval_seconds:
-        return {'ok': False, 'added': 0, 'error': '刚刚补抓过，仍在冷却期'}
-    index_refresh_state['last_incremental_at'] = current_time
+    with cache_lock:
+        if current_time - float(index_refresh_state.get('last_incremental_at', 0) or 0) < min_interval_seconds:
+            return {'ok': False, 'added': 0, 'error': '刚刚补抓过，仍在冷却期'}
+        index_refresh_state['last_incremental_at'] = current_time
+        prepared = index_memory_cache.get('data') or {}
+        watermark = safe_int(prepared.get('watermark')) if isinstance(prepared, dict) else 0
+        if not watermark and isinstance(prepared, dict):
+            watermark = max(
+                (safe_int(item.get('updated_at')) for item in prepared.get('items') or []),
+                default=0,
+            )
+    meta = load_index_meta()
+    watermark = max(watermark, safe_int(meta.get('watermark')))
     section_list = [section] if section else list(config.wegfan_index_sections)
+    page_size = max(10, int(utils.load_global_config().get('incremental_page_size', 200)))
+    max_pages = 10
     records: list[dict[str, Any]] = []
+    new_watermark = watermark
     error_parts = []
     for section_name in section_list:
-        try:
-            data = wegfan_get(
-                config.wegfan_search_path,
-                {
-                    'page': 1,
-                    'size': config.wegfan_index_page_size,
-                    'section': section_name,
-                    'sort': config.wegfan_sort_default,
-                },
-                timeout_seconds=max(20, get_timeout_seconds()),
+        for page in range(1, max_pages + 1):
+            try:
+                data = wegfan_get(
+                    config.wegfan_search_path,
+                    {
+                        'page': page,
+                        'size': page_size,
+                        'section': section_name,
+                        'sort': config.wegfan_sort_default,
+                    },
+                    timeout_seconds=max(15, get_timeout_seconds()),
+                )
+            except Exception as exception_object:
+                error_parts.append(f'{section_name} 第 {page} 页：{utils.safe_str(exception_object)}')
+                break
+            content = data.get('content') if isinstance(data, dict) else None
+            if not isinstance(content, list) or not content:
+                break
+            page_records = []
+            page_times = []
+            for raw_item in content:
+                record = normalize_wegfan_item(raw_item, compact=True)
+                if not record.get('id'):
+                    continue
+                updated_at = safe_int(record.get('updated_at'))
+                page_times.append(updated_at)
+                if not watermark or updated_at >= watermark:
+                    page_records.append(record)
+            records.extend(page_records)
+            new_watermark = max(
+                [new_watermark] + page_times + [safe_int(r.get('updated_at')) for r in page_records]
             )
-        except Exception as exception_object:
-            error_parts.append(f'{section_name}：{utils.safe_str(exception_object)}')
-            continue
-        for raw_item in data.get('content') or []:
-            record = normalize_wegfan_item(raw_item, compact=True)
-            if record.get('id'):
-                records.append(record)
-    added = merge_index_items(records)
-    return {'ok': bool(records), 'added': added, 'error': '；'.join(error_parts)}
+            oldest = min(page_times) if page_times else 0
+            if not data.get('hasNextPage') or (watermark and oldest <= watermark):
+                break
+    added = merge_index_items(records, watermark=new_watermark)
+    with cache_lock:
+        current_index = index_memory_cache.get('data')
+        if isinstance(current_index, dict):
+            current_index['watermark'] = max(safe_int(current_index.get('watermark')), new_watermark)
+    meta.update({'watermark': new_watermark, 'last_incremental_at': int(current_time)})
+    save_index_meta(meta)
+    return {'ok': True, 'added': added, 'watermark': new_watermark, 'error': '；'.join(error_parts)}
+
+
+def maybe_schedule_incremental() -> bool:
+    """心跳/命令入口调用：到点才起后台增量线程，立即返回，不阻塞正在进行的查询。"""
+    prepared = index_memory_cache.get('data')
+    if not prepared or index_refresh_state.get('running'):
+        return False
+    if not index_incremental_lock.acquire(blocking=False):
+        return False
+    now = time.time()
+    if now - float(index_refresh_state.get('last_incremental_at') or 0) < get_incremental_interval():
+        index_incremental_lock.release()
+        return False
+    index_refresh_state['running'] = True
+
+    def worker():
+        try:
+            refresh_index_incremental(min_interval_seconds=0)
+        except Exception:
+            pass
+        finally:
+            index_refresh_state['running'] = False
+            index_incremental_lock.release()
+
+    threading.Thread(target=worker, name='CelestePluginIndexIncremental', daemon=True).start()
+    return True
 
 
 def start_background_index_rebuild() -> None:
@@ -609,6 +702,31 @@ def start_background_index_rebuild() -> None:
             index_rebuild_lock.release()
 
     threading.Thread(target=worker, name='CelestePluginIndexRebuild', daemon=True).start()
+
+
+def warm_index() -> dict[str, Any]:
+    """插件加载时调用：有索引就只按水位线补一次增量，没有索引才全量构建。"""
+    index_result = load_index()
+    if not index_result.get('ok'):
+        return {'ok': False, 'count': 0, 'mode': 'none', 'added': 0, 'error': index_result.get('error', '')}
+    prepared = index_result.get('data') or {}
+    origin_mode = 'cache' if index_result.get('from_cache') else 'full'
+    error_text = utils.safe_str(index_result.get('error'))
+    added = 0
+    if prepared.get('fetched_at'):
+        incremental = refresh_index_incremental(min_interval_seconds=0)
+        added = int(incremental.get('added') or 0)
+        error_text = utils.safe_str(incremental.get('error')) or error_text
+        refreshed = index_memory_cache.get('data')
+        if isinstance(refreshed, dict):
+            prepared = refreshed
+    return {
+        'ok': True,
+        'count': len(prepared.get('items', [])),
+        'mode': 'incremental' if origin_mode == 'cache' else 'full',
+        'added': added,
+        'error': error_text,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +766,36 @@ def load_short_cache(
     return copy.deepcopy(cached_value.get('data'))
 
 
+_memory_cache_limit_cache = {'value': 300, 'loaded_at': 0.0}
+
+
+def get_memory_cache_limit() -> int:
+    """内存缓存条数上限；参数缓存 5 分钟，避免每次写缓存都读配置。"""
+    current_time = time.time()
+    cache = _memory_cache_limit_cache
+    if current_time - float(cache.get('loaded_at', 0) or 0) > 300:
+        try:
+            cache['value'] = max(20, int(utils.load_global_config().get('memory_cache_max_items', 300)))
+        except Exception:
+            cache['value'] = 300
+        cache['loaded_at'] = current_time
+    return int(cache.get('value', 300))
+
+
+def trim_memory_cache(memory_cache: dict[str, dict[str, Any]]) -> None:
+    """按写入时间淘汰最旧的条目，避免长时间运行后内存无限增长。"""
+    limit = get_memory_cache_limit()
+    if len(memory_cache) <= limit:
+        return
+    overflow = len(memory_cache) - limit
+    stale_keys = sorted(
+        memory_cache,
+        key=lambda key: float((memory_cache.get(key) or {}).get('cached_at', 0) or 0),
+    )[:overflow]
+    for stale_key in stale_keys:
+        memory_cache.pop(stale_key, None)
+
+
 def save_short_cache(
     memory_cache: dict[str, dict[str, Any]],
     cache_group: str,
@@ -658,6 +806,7 @@ def save_short_cache(
     cache_value = {'cached_at': int(time.time()), 'data': copy.deepcopy(data)}
     with cache_lock:
         memory_cache[cache_key] = cache_value
+        trim_memory_cache(memory_cache)
     utils.save_json_file(get_short_cache_path(cache_group, cache_key), cache_value)
 
 
