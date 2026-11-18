@@ -141,6 +141,17 @@ def decode_json_response(response: dict[str, Any]) -> Any:
     return json.loads(response.get('content', b'').decode('utf-8'))
 
 
+def log_slow_request(action_name: str, elapsed_seconds: float) -> None:
+    """WEGFan 偶发慢请求：超过阈值时记一条 INFO，方便排查「半天没反应」。"""
+    try:
+        threshold = float(utils.load_global_config().get('slow_request_log_seconds', 3))
+    except Exception:
+        threshold = 3.0
+    if elapsed_seconds < threshold:
+        return
+    utils.info_log(getattr(utils, 'runtime_proc', None), f'{action_name} 耗时 {elapsed_seconds:.1f}s')
+
+
 def wegfan_get(
     path: str,
     params: dict[str, Any] | None = None,
@@ -665,7 +676,8 @@ def search_title(query: str) -> dict[str, Any]:
     if isinstance(cached_result, dict):
         return cached_result
 
-    result_limit = max(1, int(utils.load_global_config().get('search_result_limit', 100)))
+    result_limit = max(1, int(utils.load_global_config().get('search_result_limit', 30)))
+    request_started_at = time.time()
     try:
         data = wegfan_get(
             config.wegfan_search_path,
@@ -678,12 +690,14 @@ def search_title(query: str) -> dict[str, Any]:
             timeout_seconds=max(8, get_timeout_seconds()),
         )
     except Exception as exception_object:
+        log_slow_request(f'WEGFan 搜索失败（{query_text}）', time.time() - request_started_at)
         fallback = search_local(['name'], query_text)
         if fallback.get('ok') and fallback.get('results'):
             fallback['notice'] = 'WEGFan 搜索接口暂时不可用，本次使用本地索引做关键词匹配。'
             save_short_cache(search_memory_cache, 'searches', cache_key, fallback)
             return fallback
         return {'ok': False, 'results': [], 'count': 0, 'error': utils.safe_str(exception_object)}
+    log_slow_request(f'WEGFan 搜索（{query_text}）', time.time() - request_started_at)
 
     content = data.get('content') if isinstance(data, dict) else []
     results = [normalize_wegfan_item(raw_item, compact=True) for raw_item in content or []]
@@ -796,11 +810,13 @@ def get_item_by_id(
         }
 
     try:
+        request_started_at = time.time()
         raw_item = wegfan_get(
             config.wegfan_detail_path,
             {'id': resolved_weg_id},
             timeout_seconds=max(8, get_timeout_seconds()),
         )
+        log_slow_request(f'WEGFan 详情（{item_type} {item_id}）', time.time() - request_started_at)
         detail = normalize_wegfan_item(raw_item)
         if not detail:
             raise ValueError('WEGFan 详情为空')
