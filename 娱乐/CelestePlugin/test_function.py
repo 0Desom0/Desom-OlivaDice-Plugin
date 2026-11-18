@@ -568,8 +568,8 @@ class CelestePluginFunctionTest(unittest.TestCase):
         text, keyboard = render.render_list('标题搜索：map', items, 0, 8, 10)
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
         payloads = [item['action']['data'] for item in buttons]
-        self.assertEqual(payloads, ['.clst 下一页', '.clst 跳页'])
-        self.assertTrue(all(item['action']['type'] == 1 for item in buttons))
+        self.assertEqual(payloads, ['clst:pg:next', '.clst 跳页'])
+        self.assertEqual([item['action']['type'] for item in buttons], [2, 1])
         self.assertIn('**标题搜索：map**', text)
         self.assertIn('回复序号看详情', text)
 
@@ -592,8 +592,8 @@ class CelestePluginFunctionTest(unittest.TestCase):
         text, keyboard = render.render_endless(state, notice='已抽取下一图。')
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
         payloads = {item['action']['data'] for item in buttons}
-        self.assertIn('.clst 无尽 通关', payloads)
-        self.assertIn('.clst 无尽 撤销', payloads)
+        self.assertIn('clst:en:clear', payloads)
+        self.assertIn('clst:en:undo', payloads)
         self.assertIn('Celeste Endless', text)
 
     def test_chat_context_from_extend(self):

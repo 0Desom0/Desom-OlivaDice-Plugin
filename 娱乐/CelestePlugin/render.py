@@ -87,13 +87,13 @@ def render_help() -> tuple[str, dict[str, Any] | None]:
     )
     rows = [
         [
-            button('随机一张', '.clst 随机', style=1),
-            button('随机 3 张', '.clst 随机 3'),
-            button('每日一图', '.clst today'),
+            button('随机一张', 'clst:rnd:1', style=1, callback=True),
+            button('随机 3 张', 'clst:rnd:3', callback=True),
+            button('每日一图', 'clst:today', callback=True),
         ],
         [
-            button('无尽帮助', '.clst 无尽 帮助'),
-            button('刷新帮助', '.clst help'),
+            button('无尽帮助', 'clst:en:help', callback=True),
+            button('刷新帮助', 'clst:help', callback=True),
         ],
     ]
     return text, keyboard(rows)
@@ -130,9 +130,9 @@ def render_list(
 
     nav = []
     if page_index > 0:
-        nav.append(button('上一页', '.clst 上一页'))
+        nav.append(button('上一页', 'clst:pg:prev', callback=True))
     if page_index < page_count - 1:
-        nav.append(button('下一页', '.clst 下一页', style=1))
+        nav.append(button('下一页', 'clst:pg:next', style=1, callback=True))
     nav.append(button('跳页', '.clst 跳页'))
     return '\n'.join(lines), keyboard([nav])
 
@@ -206,7 +206,7 @@ def render_detail(
         lines.append('**下载**：未找到可用文件')
 
     if show_random:
-        rows.append([button('再来一张', '.clst 随机'), button('随机 3 张', '.clst 随机 3')])
+        rows.append([button('再来一张', 'clst:rnd:1', callback=True), button('随机 3 张', 'clst:rnd:3', callback=True)])
     return '\n'.join(lines), keyboard(rows)
 
 
@@ -227,9 +227,9 @@ def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, A
         lines.append('')
     rows = [
         [
-            button('再来一张', '.clst 随机', style=1),
-            button('随机 3 张', '.clst 随机 3'),
-            button('每日一图', '.clst today'),
+            button('再来一张', 'clst:rnd:1', style=1, callback=True),
+            button('随机 3 张', 'clst:rnd:3', callback=True),
+            button('每日一图', 'clst:today', callback=True),
         ]
     ]
     return '\n'.join(lines), keyboard(rows)
@@ -256,22 +256,22 @@ def render_endless(state: dict[str, Any], notice: str = '') -> tuple[str, dict[s
             lines.append(f'[查看地图页面]({page_url})')
     rows = [
         [
-            button('通关', '.clst 无尽 通关', style=1),
-            button('全收集', '.clst 无尽 全收集'),
-            button('跳过', '.clst 无尽 跳过'),
-            button('坏图重抽', '.clst 无尽 坏图'),
+            button('通关', 'clst:en:clear', style=1, callback=True),
+            button('全收集', 'clst:en:full_clear', callback=True),
+            button('跳过', 'clst:en:skip', callback=True),
+            button('坏图重抽', 'clst:en:reroll', callback=True),
         ],
         [
-            button('撤销', '.clst 无尽 撤销'),
-            button('放弃', '.clst 无尽 放弃'),
-            button('状态', '.clst 无尽 状态'),
-            button('记录', '.clst 无尽 记录'),
+            button('撤销', 'clst:en:undo', callback=True),
+            button('放弃', 'clst:en:give_up', callback=True),
+            button('状态', 'clst:en:status', callback=True),
+            button('记录', 'clst:en:record', callback=True),
         ],
         [
-            button('结束挑战', '.clst 无尽 结束'),
-            button('查看详情', '.clst 无尽 详情'),
+            button('结束挑战', 'clst:en:end', callback=True),
+            button('查看详情', 'clst:en:detail', callback=True),
         ],
     ]
     if state.get('status') == 'pending':
-        rows.insert(0, [button('继续抽下一图', '.clst 无尽 继续', style=1)])
+        rows.insert(0, [button('继续抽下一图', 'clst:en:continue', style=1, callback=True)])
     return '\n'.join(lines), keyboard(rows)

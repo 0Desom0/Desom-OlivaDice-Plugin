@@ -162,78 +162,94 @@ def handle_save(plugin_event, Proc) -> None:
         selection_session_dict.clear()
 
 
-@utils.log_exception('handle_button_click')
-def handle_button_click(plugin_event, Proc) -> None:
-    """处理 Markdown 键盘按钮回调：clst:<action>:<arg>。"""
-    data = getattr(plugin_event, 'data', None)
-    button_data = utils.safe_str(getattr(data, 'button_data', '')).strip()
+def process_button_data(plugin_event, button_data: str) -> bool:
+    """处理按钮数据：clst:<action>:<arg>。
+
+    既从 button_click 事件进来，也兼容 QQ 客户端把按钮 data 当文字发回来的情况。
+    """
+    button_data = utils.safe_str(button_data).strip()
     if not button_data.startswith('clst:'):
-        return
+        return False
     if not utils.check_core_group_enable(plugin_event):
-        return
+        return False
     if utils.is_group_disabled(plugin_event):
-        return
+        return False
     parts = button_data.split(':', 2)
     action = parts[1] if len(parts) > 1 else ''
     argument = parts[2] if len(parts) > 2 else ''
 
     if action == 'help':
         send_help(plugin_event)
-        return
+        return True
     if action == 'status':
         handle_plugin_switch(plugin_event, 'plugin_status')
-        return
+        return True
     if action == 'rnd':
         handle_random(plugin_event, argument)
-        return
+        return True
     if action == 'today':
         handle_today(plugin_event)
-        return
+        return True
     if action == 'en':
         handle_endless(plugin_event, argument)
-        return
+        return True
     if action == 'end':
         with selection_lock:
             selection_session_dict.pop(build_selection_key(plugin_event), None)
         utils.reply_message(plugin_event, '已结束本次 Celeste Mod 选择。')
-        return
+        return True
     if action == 'pg':
         session = get_selection_session(plugin_event)
         if not session:
             utils.reply_message(plugin_event, '这次选择已经过期，请重新搜索。')
-            return
+            return True
         page_size = max(1, int(session.get('page_size', 8)))
         page_count = max(1, (len(session.get('results', [])) + page_size - 1) // page_size)
-        current_page = int(session.get('page_index', 0))
+        current_page = min(max(0, int(session.get('page_index', 0))), page_count - 1)
         if argument == 'next':
-            session['page_index'] = min(page_count - 1, current_page + 1)
+            if current_page >= page_count - 1:
+                utils.reply_message(plugin_event, '已经是最后一页了。')
+                return True
+            session['page_index'] = current_page + 1
         elif argument == 'prev':
-            session['page_index'] = max(0, current_page - 1)
+            if current_page <= 0:
+                utils.reply_message(plugin_event, '已经是第一页了。')
+                return True
+            session['page_index'] = current_page - 1
         elif argument == 'jump':
             session['await_page'] = True
             session['updated_at'] = time.time()
             utils.reply_message(plugin_event, f'请输入页码 1 至 {page_count}。')
-            return
+            return True
         send_selection_page(plugin_event, session)
-        return
+        return True
     if action == 'sel':
         session = get_selection_session(plugin_event)
         if not session:
             utils.reply_message(plugin_event, '这次选择已经过期，请重新搜索。')
-            return
+            return True
         try:
             index = int(argument)
         except Exception:
-            return
+            return True
         results = session.get('results', [])
         if index < 0 or index >= len(results):
             utils.reply_message(plugin_event, '这个序号已经失效，请重新搜索。')
-            return
+            return True
         selected_item = results[index]
         with selection_lock:
             selection_session_dict.pop(build_selection_key(plugin_event), None)
         reply_detail(plugin_event, selected_item)
-        return
+        return True
+    return False
+
+
+@utils.log_exception('handle_button_click')
+def handle_button_click(plugin_event, Proc) -> None:
+    """QQ 官方机器人按钮回调入口。"""
+    data = getattr(plugin_event, 'data', None)
+    process_button_data(plugin_event, utils.safe_str(getattr(data, 'button_data', '')))
+
 
 def build_selection_key(plugin_event) -> str:
     linked_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
@@ -927,6 +943,9 @@ def handle_message(plugin_event, Proc) -> None:
     if at_items and not utils.is_force_reply_to_current_bot(at_items, plugin_event):
         return
 
+    button_token = utils.safe_str(remaining_after_at).strip()
+    if button_token.startswith('clst:') and process_button_data(plugin_event, button_token):
+        return
     prefix, _remaining = utils.parse_prefix(remaining_after_at, config.allowed_prefix_list)
     global_config = utils.load_global_config()
     bot_config = utils.load_bot_config(raw_bot_hash)
