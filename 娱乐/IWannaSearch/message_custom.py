@@ -80,9 +80,6 @@ default_custom_message_dict = {
 · 标签：{tags}
 · 游戏引擎：{engine}
 · 文档来源：{sources}
-· 外部页面：{external_urls}
-· 档案页面：{page_url}
-· 下载链接：{url}
 · 文件大小：{file_size}''',
     'reply_multiple_header': '查询到了{count}个 I Wanna',
     'reply_multiple_item': '{index}. [{id}] {title}',

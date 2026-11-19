@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 
 from . import config
 from . import function
+from . import markdown
 from . import utils
 
 
@@ -417,6 +418,24 @@ def render_game_detail_with_prefix(plugin_event, game_item: Dict[str, Any], pref
     return metadata_text
 
 
+def send_game_detail(plugin_event, game_item: Dict[str, Any], prefix_key: str = '') -> None:
+    """详情页发送：Markdown 正文 + 链接按钮 + 封面，失败回退纯文本。"""
+    content = render_game_metadata(plugin_event, game_item)
+    if prefix_key:
+        prefix_text = render_custom_message(plugin_event, prefix_key).strip()
+        if prefix_text:
+            content = f'{prefix_text}\n{content}'
+    try:
+        if markdown.reply_detail(plugin_event, content, game_item):
+            return
+    except Exception as error:
+        try:
+            utils.error_log(utils.get_runtime_proc(), f'[Markdown] 详情发送失败 {type(error).__name__}: {error}')
+        except Exception:
+            pass
+    utils.reply_message(plugin_event, content)
+
+
 def render_search_game_detail(plugin_event, game_item: Dict[str, Any]) -> str:
     return render_game_detail_with_prefix(plugin_event, game_item, 'reply_search_result_prefix')
 
@@ -552,7 +571,7 @@ def reply_search_payload(plugin_event, payload: Dict[str, Any]) -> None:
 
     if count == 1 or len(results) == 1:
         pop_selection_session(plugin_event)
-        utils.reply_message(plugin_event, render_search_game_detail(plugin_event, results[0]))
+        send_game_detail(plugin_event, results[0], prefix_key='reply_search_result_prefix')
         return
 
     runtime_config = get_api_runtime_config()
@@ -902,13 +921,16 @@ def reply_random_payload(plugin_event, payload: Dict[str, Any], requested_count:
         return
 
     if requested_count <= 1 or len(results) == 1:
-        utils.reply_message(plugin_event, render_random_game_detail(plugin_event, results[0]))
+        send_game_detail(plugin_event, results[0], prefix_key='reply_random_result_prefix')
         return
 
     prefix_text = render_custom_message(plugin_event, 'reply_random_result_prefix').strip()
     if prefix_text:
         utils.reply_message(plugin_event, prefix_text)
-    send_detail_messages(plugin_event, [render_game_metadata(plugin_event, game_item) for game_item in results])
+    for detail_index, game_item in enumerate(results):
+        if detail_index > 0:
+            time.sleep(1)
+        send_game_detail(plugin_event, game_item)
 
 
 def handle_iw_random(plugin_event, argument_text: str) -> None:
@@ -1249,7 +1271,7 @@ def handle_selection_input(plugin_event, input_text: str) -> bool:
 
     game_item = results[selected_index - 1]
     pop_selection_session(plugin_event)
-    utils.reply_message(plugin_event, render_search_game_detail(plugin_event, game_item))
+    send_game_detail(plugin_event, game_item, prefix_key='reply_search_result_prefix')
     return True
 
 

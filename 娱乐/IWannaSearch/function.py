@@ -633,8 +633,25 @@ def normalize_game_item(item: Dict[str, Any]) -> Dict[str, Any]:
     if not page_url:
         page_url = default_empty_text
 
+    # 封面：API 的 screenshots 第一张；外部页面按来源逐条留存，详情页拿来做按钮
+    screenshot_list = [
+        safe_text(shot).strip()
+        for shot in (item.get('screenshots') or [])
+        if safe_text(shot).strip().startswith(('http://', 'https://'))
+    ]
+    external_sources = []
+    for source_item in source_list:
+        if isinstance(source_item, dict) and safe_text(source_item.get('url')):
+            external_sources.append({
+                'site': safe_text(source_item.get('site')) or safe_text(source_item.get('type')).upper(),
+                'url': safe_text(source_item.get('url')),
+            })
+
     return {
         'id': game_id,
+        'screenshots': screenshot_list,
+        'cover_url': screenshot_list[0] if screenshot_list else '',
+        'external_sources': external_sources,
         'title': safe_text(item.get('title', default_empty_text), default_empty_text),
         'creator': safe_text(item.get('creator', default_empty_text), default_empty_text),
         'url': safe_text(item.get('url', default_empty_text), default_empty_text),

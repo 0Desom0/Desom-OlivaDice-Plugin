@@ -13,9 +13,18 @@ OP_PATTERN = re.compile(r'\[OP:[^\]]*\]')
 HEADING_PATTERN = re.compile(r'【([^】]+)】')
 # 列表项：`1. xxx`（搜索结果是编号列表）。
 LIST_ITEM_PATTERN = re.compile(r'^(\d+)[.、)]\s+(.+)$')
+# 详情页里原本文本形式的链接行，改由按钮承载后从正文剔除。
+LINK_LINE_PATTERN = re.compile(r'^(外部页面|外部链接|档案页面|档案页|下载链接)[：:]\s*\S*https?://')
 # 字段行：`· ID：11510` 或 `· 评分：8.1/10  难度：91.2/100`
 FIELD_PATTERN = re.compile(r'^[·•]\s*([^：:]+)[：:]\s*(.*)$')
 BUTTON_LABEL_LIMIT = 20
+# 外部站点在按钮上用的短名（手机一行放不下全称）
+SITE_LABELS = {
+    'delicious fruit': 'DF',
+    'iwanna wiki': 'Wiki',
+    'i wanna wiki': 'Wiki',
+    'iwannawiki': 'Wiki',
+}
 # 列表条目最长字符数：手机上一行大约放得下 28 个西文字符，超了就截断，避免折成两行。
 ITEM_LINE_LIMIT = 48
 MAX_ROWS = 5
@@ -52,11 +61,8 @@ def convert(content: str) -> str:
             continue
         item_match = LIST_ITEM_PATTERN.match(stripped)
         if item_match:
-            # `1. [11510] 标题` → 单行加粗，条目之间不留空行；标题截断保证一行放得下
-            label = f'{item_match.group(1)}. {item_match.group(2)}'
-            if len(label) > ITEM_LINE_LIMIT:
-                label = label[:ITEM_LINE_LIMIT - 1] + '…'
-            line_list.append(f'**{label}**')
+            # `1. [11510] 标题` → 整行加粗；标题完整显示，长标题由客户端折行
+            line_list.append(f'**{item_match.group(1)}. {item_match.group(2)}**')
             continue
         line_list.append(HEADING_PATTERN.sub(lambda match: f'**{match.group(1)}**', line))
     # 压缩连续空行，保持条目之间恰好一个空行
@@ -175,7 +181,60 @@ def build_header(plugin_event) -> str:
     return f'> {at_tag}：{text}' if text else f'> {at_tag}'
 
 
-def reply_markdown(plugin_event, content: str, keyboard_dict=None) -> bool:
+def strip_link_lines(content: str) -> str:
+    """去掉正文里的纯链接行（这些改成了按钮）。"""
+    kept = []
+    for line in safe_text(content).splitlines():
+        if LINK_LINE_PATTERN.match(line.strip()):
+            continue
+        kept.append(line)
+    return '\n'.join(kept)
+
+
+def detail_keyboard(game_item: Dict[str, Any]):
+    """详情页按钮：下载、档案页，以及每个外部来源各一个链接按钮。"""
+    if not isinstance(game_item, dict):
+        return None
+    rows = []
+    main_row = []
+    download_url = safe_text(game_item.get('url')).strip()
+    if download_url.startswith(('http://', 'https://')):
+        main_row.append(button('下载', download_url, style=1, link=True))
+    page_url = safe_text(game_item.get('page_url')).strip()
+    if page_url.startswith(('http://', 'https://')):
+        main_row.append(button('档案页', page_url, link=True))
+    if main_row:
+        rows.append(main_row)
+
+    external_row = []
+    seen_url = set()
+    for source_item in game_item.get('external_sources') or []:
+        if not isinstance(source_item, dict):
+            continue
+        url = safe_text(source_item.get('url')).strip()
+        if not url.startswith(('http://', 'https://')) or url in seen_url:
+            continue
+        seen_url.add(url)
+        site_name = safe_text(source_item.get('site'))
+        label = SITE_LABELS.get(site_name.casefold()) or site_name or '外部页'
+        external_row.append(button(label[:12], url, link=True))
+    if external_row:
+        rows.append(external_row)
+    return keyboard(rows)
+
+
+def reply_detail(plugin_event, content: str, game_item: Dict[str, Any]) -> bool:
+    """详情页：正文删掉链接行，链接改按钮，封面走 local_images。"""
+    images = {}
+    text = strip_link_lines(content)
+    cover_url = safe_text((game_item or {}).get('cover_url')).strip()
+    if cover_url.startswith(('http://', 'https://')):
+        images['封面'] = cover_url
+        text = f'{{{{封面}}}}\n\n{text}'
+    return reply_markdown(plugin_event, text, detail_keyboard(game_item), images=images)
+
+
+def reply_markdown(plugin_event, content: str, keyboard_dict=None, images=None) -> bool:
     """发送 Markdown 消息；调用方在返回 False 时回退纯文本。"""
     sender = getattr(getattr(plugin_event, 'indeAPI', None), 'create_markdown_message', None)
     if not callable(sender):
@@ -198,6 +257,11 @@ def reply_markdown(plugin_event, content: str, keyboard_dict=None) -> bool:
     is_qq_chat = chat_type in ('qq_group', 'qq_private')
     if keyboard_dict and is_qq_chat:
         payload['keyboard'] = keyboard_dict
+    if images:
+        if not is_qq_chat:
+            return False
+        # 适配器负责下载图片、上传素材库并回填真实尺寸
+        payload['local_images'] = images
     data = getattr(plugin_event, 'data', None)
     extend = getattr(data, 'extend', None)
     extend = extend if isinstance(extend, dict) else {}
