@@ -647,7 +647,10 @@ class CelestePluginFunctionTest(unittest.TestCase):
             plugin_info = {'func_type': 'button_click'}
             platform = {'platform': 'qqguild'}
 
-        with mock.patch.object(utils, 'load_global_config', return_value={}):
+        with (
+            mock.patch.object(utils, 'load_global_config', return_value={}),
+            mock.patch.object(utils, 'prepare_local_image', return_value='/tmp/cover.jpg'),
+        ):
             ok = utils.reply_markdown(
                 FakeEvent(), 'body', {'content': {'rows': []}}, images={'地图封面': 'https://x/y.jpg'}
             )
@@ -655,7 +658,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
         captured = API.captured
         self.assertEqual(captured['event_id'], 'INTERACTION')
         self.assertNotIn('msg_id', captured)
-        self.assertEqual(captured['local_images'], {'地图封面': 'https://x/y.jpg'})
+        self.assertEqual(captured['local_images'], {'地图封面': '/tmp/cover.jpg'})
 
     def test_chat_context_from_extend(self):
         class Data(object):

@@ -22,6 +22,7 @@ import os
 import re
 import threading
 import traceback
+import urllib.request
 from functools import wraps
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -1387,6 +1388,53 @@ def record_reply_to_logger(plugin_event, message_text: str) -> None:
         )
     except Exception:
         pass
+
+
+def get_cover_cache_dir() -> str:
+    base = os.path.join(config.plugin_data_dir, 'cache', 'covers')
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def prepare_local_image(url: str) -> str:
+    """封面先落本地再交给适配器。
+
+    适配器下载远程图只有 5 秒超时，超时会让整条 Markdown 退回纯文本
+    （用户看到的就是带 ** 的原文）。这里用 15 秒超时自己下，失败返回空串，
+    调用方就不带图发 Markdown。
+    """
+    source = safe_str(url).strip()
+    if not source.startswith(('http://', 'https://')):
+        return ''
+    digest = hashlib.sha1(source.encode('utf-8')).hexdigest()
+    for suffix in ('.jpg', '.png'):
+        candidate = os.path.join(get_cover_cache_dir(), digest + suffix)
+        if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+            return candidate
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (compatible; IWannaSearch)',
+        # 截图站不带 Referer 会返回 200 + 0 字节
+        'Referer': 'https://fangame-archive.com/',
+        'Accept': 'image/*',
+    }
+    for _attempt in range(2):
+        try:
+            request = urllib.request.Request(source, headers=headers)
+            with urllib.request.urlopen(request, timeout=15) as response:
+                data = response.read(10 * 1024 * 1024 + 1)
+            if not data or len(data) > 10 * 1024 * 1024:
+                continue
+            if data[:8] == b'\x89PNG\r\n\x1a\n':
+                suffix = '.png'
+            else:
+                suffix = '.jpg'
+            target_path = os.path.join(get_cover_cache_dir(), digest + suffix)
+            with open(target_path, 'wb') as handle:
+                handle.write(data)
+            return target_path
+        except Exception:
+            continue
+    return ''
 
 
 def reply_message(

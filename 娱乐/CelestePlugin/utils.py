@@ -9,6 +9,7 @@ import re
 import shutil
 import threading
 import traceback
+import urllib.request
 from functools import wraps
 from typing import Any, Iterable
 
@@ -681,6 +682,48 @@ def get_chat_context(plugin_event) -> tuple[str, str]:
     return '', ''
 
 
+def get_cover_cache_dir() -> str:
+    return ensure_folder(os.path.join(get_shared_cache_dir(), 'covers'))
+
+
+def prepare_local_image(url: str) -> str:
+    """把封面下载到本地再交给适配器上传。
+
+    适配器自己下载时只有 5 秒超时，WEGFan 经常 5~9 秒，超时就整条 Markdown
+    回退成纯文本（用户看到的是带 ** 的原文）。这里用更长超时先落盘，
+    失败就返回空串，让调用方直接不带图发 Markdown。
+    """
+    source = safe_str(url).strip()
+    if not source.startswith(('http://', 'https://')):
+        return ''
+    digest = hashlib.sha1(source.encode('utf-8')).hexdigest()
+    suffix = '.jpg' if '.png' not in source.lower() else '.png'
+    target_path = os.path.join(get_cover_cache_dir(), digest + suffix)
+    if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
+        return target_path
+    headers = {'User-Agent': config.bot_user_agent}
+    for _attempt in range(2):
+        try:
+            request = urllib.request.Request(source, headers=headers)
+            with urllib.request.urlopen(request, timeout=15) as response:
+                data = response.read(10 * 1024 * 1024 + 1)
+            if not data or len(data) > 10 * 1024 * 1024:
+                continue
+            if data[:3] == b'\xff\xd8\xff':
+                suffix = '.jpg'
+            elif data[:8] == b'\x89PNG\r\n\x1a\n':
+                suffix = '.png'
+            else:
+                suffix = '.jpg'
+            target_path = os.path.join(get_cover_cache_dir(), digest + suffix)
+            with open(target_path, 'wb') as handle:
+                handle.write(data)
+            return target_path
+        except Exception:
+            continue
+    return ''
+
+
 def can_send_markdown(plugin_event) -> bool:
     if not load_global_config().get('markdown_enable_switch', True):
         return False
@@ -726,8 +769,19 @@ def reply_markdown(plugin_event, markdown_text: str, keyboard=None, *, images=No
     if images:
         if not is_qq_chat:
             return False
-        # 由适配器上传 WEGFan 封面、替换占位符并填写实际像素尺寸。
-        payload['local_images'] = images
+        # 先自己把封面落到本地：适配器 5 秒下载超时会让整条 Markdown 回退成纯文本。
+        local_images = {}
+        for label, resource in images.items():
+            local_path = prepare_local_image(resource)
+            if local_path:
+                local_images[label] = local_path
+        if local_images:
+            payload['local_images'] = local_images
+        else:
+            # 封面全部拿不到时把占位符去掉，正文照常发 Markdown。
+            payload['markdown']['content'] = re.sub(
+                r'\{\{[^}]+\}\}\n*', '', payload['markdown']['content']
+            ).strip()
     data = getattr(plugin_event, 'data', None)
     extend = getattr(data, 'extend', None)
     extend = extend if isinstance(extend, dict) else {}

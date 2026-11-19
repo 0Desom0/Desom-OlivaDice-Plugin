@@ -229,8 +229,11 @@ def reply_detail(plugin_event, content: str, game_item: Dict[str, Any]) -> bool:
     text = strip_link_lines(content)
     cover_url = safe_text((game_item or {}).get('cover_url')).strip()
     if cover_url.startswith(('http://', 'https://')):
-        images['封面'] = cover_url
-        text = f'{{{{封面}}}}\n\n{text}'
+        from . import utils
+        local_path = utils.prepare_local_image(cover_url)
+        if local_path:
+            images['封面'] = local_path
+            text = f'{{{{封面}}}}\n\n{text}'
     return reply_markdown(plugin_event, text, detail_keyboard(game_item), images=images)
 
 
