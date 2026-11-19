@@ -48,6 +48,7 @@ default_global_config = {
     'result_page_size': result_page_size,
     'selection_timeout_seconds': selection_timeout_seconds,
     'max_download_concurrency': download_concurrency_default,
+    'cover_cache_max_items': 100,
 }
 
 default_bot_config = {

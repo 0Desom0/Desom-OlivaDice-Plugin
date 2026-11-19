@@ -1402,6 +1402,51 @@ def get_cover_cache_dir() -> str:
     return base
 
 
+def get_cover_cache_limit() -> int:
+    """封面缓存条数上限（默认 100），配错就按 100 处理。"""
+    try:
+        return max(1, int(load_global_config().get('cover_cache_max_items', 100)))
+    except Exception:
+        return 100
+
+
+def get_cover_cache_entries() -> List[Tuple[float, str]]:
+    """列出封面缓存文件，按最后使用时间（mtime）升序，最旧的在前。"""
+    folder = get_cover_cache_dir()
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    entries = []
+    for name in names:
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            entries.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+    entries.sort()
+    return entries
+
+
+def trim_cover_cache() -> int:
+    """超出上限就删最久没被用过的那几张，返回删除数量。"""
+    limit = get_cover_cache_limit()
+    entries = get_cover_cache_entries()
+    overflow = len(entries) - limit
+    if overflow <= 0:
+        return 0
+    removed = 0
+    for _mtime, path in entries[:overflow]:
+        try:
+            os.remove(path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def prepare_local_image(url: str) -> str:
     """封面先落本地再交给适配器。
 
@@ -1416,6 +1461,11 @@ def prepare_local_image(url: str) -> str:
     for suffix in ('.jpg', '.png'):
         candidate = os.path.join(get_cover_cache_dir(), digest + suffix)
         if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+            try:
+                # 命中即刷新使用时间，常发的封面不会被新图挤掉。
+                os.utime(candidate, None)
+            except OSError:
+                pass
             return 'IWannaSearch/covers/' + digest + suffix
     headers = {
         'User-Agent': 'Mozilla/5.0 (compatible; IWannaSearch)',
@@ -1436,6 +1486,7 @@ def prepare_local_image(url: str) -> str:
                 suffix = '.jpg'
             with open(os.path.join(get_cover_cache_dir(), digest + suffix), 'wb') as handle:
                 handle.write(data)
+            trim_cover_cache()
             return 'IWannaSearch/covers/' + digest + suffix
         except Exception:
             continue
@@ -1443,16 +1494,11 @@ def prepare_local_image(url: str) -> str:
 
 
 def release_local_image(resource: str) -> None:
-    """发送完成后删掉临时封面；相对路径（data/images/<...>）与绝对路径都处理。"""
-    path = safe_str(resource).strip()
-    if not path:
-        return
-    if not os.path.isabs(path):
-        path = os.path.join('data', 'images', path)
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+    """封面改为缓存复用，发送后不再删除；保留空实现兼容旧调用点。
+
+    清理交给 trim_cover_cache（上限 cover_cache_max_items），这里删文件会让缓存永远命中不了。
+    """
+    return None
 
 
 def reply_message(

@@ -89,6 +89,7 @@ default_global_config = {
     'random_max_count': 10,
     'detail_download_component_limit': 6,
     'long_reply_chunk_size': 1800,
+    'cover_cache_max_items': 100,
 }
 
 default_bot_config = {

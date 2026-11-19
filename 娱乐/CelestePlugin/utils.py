@@ -705,18 +705,75 @@ def get_cover_cache_dir() -> str:
     return base
 
 
+def get_cover_cache_limit() -> int:
+    """封面缓存条数上限（默认 100），配错就按 100 处理。"""
+    try:
+        return max(1, int(load_global_config().get('cover_cache_max_items', 100)))
+    except Exception:
+        return 100
+
+
+def get_cover_cache_entries() -> list[tuple[float, str]]:
+    """列出封面缓存文件，按最后使用时间（mtime）升序，最旧的在前。"""
+    folder = get_cover_cache_dir()
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    entries = []
+    for name in names:
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            entries.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+    entries.sort()
+    return entries
+
+
+def trim_cover_cache() -> int:
+    """超出上限就删最久没被用过的那几张，返回删除数量。
+
+    命中缓存时会把 mtime 刷成当前时间，所以「最久远」实际是「最久没被用过」，
+    常发的封面不会被新图挤掉。
+    """
+    limit = get_cover_cache_limit()
+    entries = get_cover_cache_entries()
+    overflow = len(entries) - limit
+    if overflow <= 0:
+        return 0
+    removed = 0
+    for _mtime, path in entries[:overflow]:
+        try:
+            os.remove(path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def prepare_local_image(url: str) -> str:
-    """下载封面并返回适配器可读的相对资源路径（发送后由 release_local_image 删除）。
+    """取封面并返回适配器可读的相对资源路径；命中缓存不再重新下载。
 
     适配器自己下载远程图只有 5 秒超时，WEGFan 实测 4.7~9.1 秒，一超时整条
     Markdown 就被降级成图文/纯文本。这里用 15 秒超时自己落盘。
+    文件留在 data/images/CelestePlugin/covers 里复用（发送后不删），
+    超过 cover_cache_max_items（默认 100）张时淘汰最久未使用的。
     """
     source = safe_str(url).strip()
     if not source.startswith(('http://', 'https://')):
         return ''
     digest = hashlib.sha1(source.encode('utf-8')).hexdigest()
     for suffix in ('.jpg', '.png'):
-        if os.path.isfile(os.path.join(get_cover_cache_dir(), digest + suffix)):
+        cached_path = os.path.join(get_cover_cache_dir(), digest + suffix)
+        if os.path.isfile(cached_path) and os.path.getsize(cached_path) > 0:
+            try:
+                # 命中即刷新使用时间，避免常发的图被新图挤掉。
+                os.utime(cached_path, None)
+            except OSError:
+                pass
             return 'CelestePlugin/covers/' + digest + suffix
     headers = {'User-Agent': config.bot_user_agent}
     for _attempt in range(2):
@@ -730,6 +787,7 @@ def prepare_local_image(url: str) -> str:
             file_name = digest + suffix
             with open(os.path.join(get_cover_cache_dir(), file_name), 'wb') as handle:
                 handle.write(data)
+            trim_cover_cache()
             return 'CelestePlugin/covers/' + file_name
         except Exception:
             continue
@@ -737,16 +795,12 @@ def prepare_local_image(url: str) -> str:
 
 
 def release_local_image(resource: str) -> None:
-    """发送完成后删掉临时封面；相对路径与绝对路径都能处理。"""
-    path = safe_str(resource).strip()
-    if not path:
-        return
-    if not os.path.isabs(path):
-        path = os.path.join('data', 'images', path)
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+    """封面改为缓存复用，发送后不再删除；保留空实现兼容旧调用点。
+
+    缓存清理交给 trim_cover_cache（上限 cover_cache_max_items），
+    这里删文件会让缓存永远命中不了。
+    """
+    return None
 
 
 def can_send_markdown(plugin_event) -> bool:

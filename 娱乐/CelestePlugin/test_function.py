@@ -666,6 +666,59 @@ class CelestePluginFunctionTest(unittest.TestCase):
         # 下载/外链都是跳转型按钮（type 0），不是纯文本里的裸链接
         self.assertTrue(all(item['action']['type'] == 0 for item in buttons))
 
+    def test_cover_cache_keeps_100_and_drops_oldest(self):
+        import hashlib  # noqa: F401
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = os.path.join(tmp, 'covers')
+            os.makedirs(folder)
+            for index in range(105):
+                path = os.path.join(folder, '%03d.jpg' % index)
+                with open(path, 'wb') as handle:
+                    handle.write(b'x')
+                os.utime(path, (1000 + index, 1000 + index))
+            with (
+                mock.patch.object(utils, 'get_cover_cache_dir', return_value=folder),
+                mock.patch.object(
+                    utils, 'load_global_config', return_value={'cover_cache_max_items': 100}
+                ),
+            ):
+                removed = utils.trim_cover_cache()
+            remaining = sorted(os.listdir(folder))
+        self.assertEqual(removed, 5)
+        self.assertEqual(len(remaining), 100)
+        self.assertNotIn('000.jpg', remaining)
+        self.assertIn('104.jpg', remaining)
+
+    def test_cover_cache_hit_never_expires_and_touches_mtime(self):
+        import hashlib
+        import os
+        import tempfile
+        import time
+
+        url = 'https://celeste.weg.fan/images/demo.jpg'
+        digest = hashlib.sha1(url.encode('utf-8')).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = os.path.join(tmp, 'covers')
+            os.makedirs(folder)
+            path = os.path.join(folder, digest + '.jpg')
+            with open(path, 'wb') as handle:
+                handle.write(b'cached')
+            old = 1000.0
+            os.utime(path, (old, old))
+            with (
+                mock.patch.object(utils, 'get_cover_cache_dir', return_value=folder),
+                mock.patch.object(utils, 'load_global_config', return_value={}),
+            ):
+                resource = utils.prepare_local_image(url)
+            stat = os.stat(path)
+        self.assertEqual(resource, 'CelestePlugin/covers/' + digest + '.jpg')
+        # 命中后 mtime 被刷新，「最久没被用过」才算数
+        self.assertGreater(stat.st_mtime, old + 1)
+        self.assertLess(abs(stat.st_mtime - time.time()), 120)
+
     def test_render_random_summary_returns_images(self):
         items = [function.normalize_wegfan_item(sample_search_item())]
         text, keyboard, images = render.render_random_summary(items)
