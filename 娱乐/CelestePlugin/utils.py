@@ -645,6 +645,16 @@ def add_reply_quote(plugin_event, message_text: str) -> str:
         return source
     if reply_segment_pattern.match(source.lstrip()):
         return source
+    # QQ 官方机器人的图文混排消息：只要带 reply 段，适配器就整条拒绝走 Markdown
+    # （日志「带引用的图文消息不走 Markdown；回退到原有图文发送流程」）。
+    # 所以自己把引用拼成 Markdown 引用行，消息里不再出现原生引用段。
+    if (
+        '[OP:image' in source
+        and load_global_config().get('markdown_enable_switch', True)
+        and get_chat_context(plugin_event)[0] == 'qq_group'
+    ):
+        header = build_markdown_header(plugin_event)
+        return f'{header}\n\n{source}' if header else source
     return f'{build_reply_quote_segment(plugin_event)}{source}'
 
 

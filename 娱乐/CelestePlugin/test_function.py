@@ -690,6 +690,30 @@ class CelestePluginFunctionTest(unittest.TestCase):
         with mock.patch.object(utils, 'load_global_config', return_value={'reply_quote_switch': True}):
             self.assertTrue(utils.add_reply_quote(FakeEvent(), 'hello').startswith('[OP:reply'))
 
+    def test_quote_with_image_becomes_markdown_line(self):
+        class Data(object):
+            message_id = 'MSG'
+            group_id = 'GROUP'
+            user_id = 'USER'
+            message = '看看这张图'
+            extend = {'flag_from_qq': True, 'flag_from_direct': False}
+
+        class FakeEvent(object):
+            data = Data()
+            plugin_info = {'func_type': 'group_message'}
+            platform = {'platform': 'qqguild'}
+
+        config_dict = {'reply_quote_switch': True, 'markdown_enable_switch': True}
+        with mock.patch.object(utils, 'load_global_config', return_value=config_dict):
+            quoted = utils.add_reply_quote(
+                FakeEvent(), '[OP:image,file=https://x/cover.png]图'
+            )
+        # 带图的消息不能出现 reply 段，否则适配器整条拒绝 Markdown
+        self.assertNotIn('[OP:reply', quoted)
+        self.assertTrue(quoted.startswith('> <qqbot-at-user id="USER" />'))
+        self.assertIn('看看这张图', quoted)
+        self.assertIn('[OP:image', quoted)
+
     def test_button_click_help_dispatch(self):
         class Data(object):
             button_data = 'clst:help'
