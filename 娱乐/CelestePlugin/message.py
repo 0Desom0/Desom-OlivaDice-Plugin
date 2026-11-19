@@ -333,6 +333,34 @@ def render_selection_page(session: dict[str, Any]) -> str:
     return '\n'.join(lines)
 
 
+def reply_detail_data(
+    plugin_event,
+    detail: dict[str, Any],
+    compact: bool = False,
+    *,
+    heading: str = '',
+    show_random: bool = False,
+    show_endless: bool = False,
+    show_today: bool = False,
+) -> None:
+    """用已拿到的详情直接发页面：优先 Markdown + 按钮，失败才回退纯文本。"""
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard, images = render.render_detail(
+            detail,
+            compact=compact,
+            heading=heading,
+            show_random=show_random,
+            show_endless=show_endless,
+            show_today=show_today,
+        )
+        if utils.reply_markdown(plugin_event, text, keyboard, images=images):
+            return
+    utils.reply_long_text(
+        plugin_event,
+        function.format_detail(detail, compact=compact, heading=heading),
+    )
+
+
 def reply_detail(
     plugin_event, item: dict[str, Any], compact: bool = False, *, show_random: bool = False, show_endless: bool = False
 ) -> None:
@@ -340,14 +368,13 @@ def reply_detail(
     if not detail_result.get('ok'):
         utils.reply_message(plugin_event, f'获取 Mod 详情失败：{detail_result.get("error", "未知错误")}')
         return
-    detail = detail_result['data']
-    if utils.can_send_markdown(plugin_event):
-        text, keyboard, images = render.render_detail(
-            detail, compact=compact, show_random=show_random, show_endless=show_endless,
-        )
-        if utils.reply_markdown(plugin_event, text, keyboard, images=images):
-            return
-    utils.reply_long_text(plugin_event, function.format_detail(detail, compact=compact))
+    reply_detail_data(
+        plugin_event,
+        detail_result['data'],
+        compact,
+        show_random=show_random,
+        show_endless=show_endless,
+    )
 
 
 def send_help(plugin_event) -> None:
@@ -495,7 +522,8 @@ def handle_id(plugin_event, argument: str) -> None:
     if not result.get('ok'):
         utils.reply_message(plugin_event, f'精确查询失败：{result.get("error", "未知错误")}')
         return
-    utils.reply_long_text(plugin_event, function.format_detail(result['data']))
+    # 精确查询跟详情页一样走 Markdown + 下载/链接按钮，不再退回纯文本。
+    reply_detail_data(plugin_event, result['data'])
 
 
 def parse_random_count(argument: str) -> tuple[bool, int, str]:
@@ -758,14 +786,33 @@ def handle_plugin_switch(plugin_event, action: str) -> None:
     utils.reply_message(plugin_event, f'已将当前群 CelestePlugin 设置为：{status_text}')
 
 
+def send_endless_help(plugin_event) -> None:
+    """无尽帮助页：Markdown + 按钮，失败才回退纯文本。"""
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_endless_help()
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
+    utils.reply_message(plugin_event, message_custom.endless_help_text)
+
+
+def send_endless_record(plugin_event) -> None:
+    """个人战绩页：同样走 Markdown + 按钮。"""
+    record = load_endless_record(plugin_event)
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_endless_record(record)
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
+    utils.reply_message(plugin_event, function.format_endless_record(record))
+
+
 def handle_endless(plugin_event, argument: str) -> None:
     action, action_argument = parse_endless_action(argument)
     if action in ['', 'help']:
-        utils.reply_message(plugin_event, message_custom.endless_help_text)
+        send_endless_help(plugin_event)
         return
 
     if action == 'record':
-        utils.reply_message(plugin_event, function.format_endless_record(load_endless_record(plugin_event)))
+        send_endless_record(plugin_event)
         return
 
     if action == 'start':

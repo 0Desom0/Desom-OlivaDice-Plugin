@@ -620,6 +620,52 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertTrue(all(item['action']['type'] == 1 for item in buttons))
         self.assertIn('Celeste Endless', text)
 
+    def test_handle_id_renders_markdown_with_download_buttons(self):
+        detail = {
+            'item_type': 'Mod',
+            'id': 644315,
+            'name': 'Test Map',
+            'author': 'Tester',
+            'category': 'Maps',
+            'subcategory': 'Standalone',
+            'downloads': 12,
+            'views': 34,
+            'likes': 5,
+            'description': 'desc',
+            'page_url': 'https://gamebanana.com/mods/644315',
+            'files': [{'id': 999, 'name': 'map.zip', 'size': 2048, 'url': 'https://x/map.zip'}],
+        }
+        captured = {}
+
+        def fake_reply_markdown(event, text, keyboard=None, images=None):
+            captured['text'] = text
+            captured['keyboard'] = keyboard
+            return True
+
+        class Data(object):
+            message_id = '-1'
+            group_id = 'GROUP'
+            user_id = 'USER'
+            extend = {'flag_from_qq': True, 'flag_from_direct': False}
+
+        class FakeEvent(object):
+            data = Data()
+            plugin_info = {'func_type': 'group_message'}
+            platform = {'platform': 'qqguild'}
+
+        with (
+            mock.patch.object(message.function, 'get_item_by_id', return_value={'ok': True, 'data': detail}),
+            mock.patch.object(message.utils, 'can_send_markdown', return_value=True),
+            mock.patch.object(message.utils, 'reply_markdown', side_effect=fake_reply_markdown),
+        ):
+            message.handle_id(FakeEvent(), '644315')
+
+        self.assertIn('- **ID**：Mod 644315', captured['text'])
+        buttons = [item for row in captured['keyboard']['content']['rows'] for item in row['buttons']]
+        self.assertTrue(buttons)
+        # 下载/外链都是跳转型按钮（type 0），不是纯文本里的裸链接
+        self.assertTrue(all(item['action']['type'] == 0 for item in buttons))
+
     def test_render_random_summary_returns_images(self):
         items = [function.normalize_wegfan_item(sample_search_item())]
         text, keyboard, images = render.render_random_summary(items)

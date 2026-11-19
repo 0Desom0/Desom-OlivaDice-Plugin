@@ -337,3 +337,65 @@ def render_endless(
     if state.get('status') == 'pending':
         rows.insert(0, [button('继续抽下一图', 'clst:en:continue', style=1, callback=True)])
     return '\n'.join(lines), keyboard(rows), images
+
+
+def render_endless_help() -> tuple[str, dict[str, Any] | None]:
+    text = '\n'.join(
+        [
+            '## Celeste Endless',
+            '> 地图从 WEGFan 镜像抽取，每次抽图都会带封面',
+            '',
+            '**开始与查看**',
+            '- `.clst 无尽 开始 [0-10]` 开始挑战，默认 1 次跳过',
+            '- `.clst 无尽 状态` 查看分数、跳过次数与当前地图',
+            '- `.clst 无尽 详情` 当前地图的完整 Mod 信息',
+            '',
+            '**结算当前地图**',
+            '- `.clst 无尽 通关` 分数 +1，抽取下一图',
+            '- `.clst 无尽 全收集` 分数 +1、跳过次数 +1，抽取下一图',
+            '- `.clst 无尽 跳过` 消耗 1 次跳过；次数不足本局失败',
+            '- `.clst 无尽 坏图` 免费重抽，不计分也不消耗跳过',
+            '',
+            '**其它**',
+            '- `.clst 无尽 撤销` 撤销上一步操作',
+            '- `.clst 无尽 放弃` / `.clst 无尽 结束` 结算本局',
+            '- `.clst 无尽 记录` 查看个人战绩',
+        ]
+    )
+    rows = [
+        [
+            button('开始挑战', 'clst:en:start', style=1, callback=True),
+            button('状态', 'clst:en:status', callback=True),
+            button('记录', 'clst:en:record', callback=True),
+        ],
+        [button('返回帮助', 'clst:help', callback=True)],
+    ]
+    return text, keyboard(rows)
+
+
+def render_endless_record(record: dict[str, Any] | None) -> tuple[str, dict[str, Any] | None]:
+    normalized = function.normalize_endless_record(record)
+    result_name_dict = {
+        'failed': '失败',
+        'give_up': '放弃',
+        'ended': '结束',
+        'replaced': '重新开始',
+    }
+    lines = [
+        '## 我的无尽记录',
+        '',
+        f'- **上次分数**：{normalized["last_endless_score"]}',
+        f'- **最佳分数**：{normalized["best_endless_score"]}',
+        f'- **已记录局数**：{normalized["total_runs"]}',
+    ]
+    if normalized.get('last_result'):
+        lines.append(
+            f'- **上次结果**：{result_name_dict.get(normalized["last_result"], normalized["last_result"])}'
+        )
+    rows = [
+        [
+            button('开始挑战', 'clst:en:start', style=1, callback=True),
+            button('返回无尽', 'clst:en:status', callback=True),
+        ]
+    ]
+    return '\n'.join(lines), keyboard(rows)
