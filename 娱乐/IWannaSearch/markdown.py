@@ -11,8 +11,10 @@ from typing import Any, Dict, List
 
 OP_PATTERN = re.compile(r'\[OP:[^\]]*\]')
 HEADING_PATTERN = re.compile(r'【([^】]+)】')
-# 列表项：`- xxx` 或 `1. xxx`（回复词里两种写法都有）。
-LIST_ITEM_PATTERN = re.compile(r'^(?:- |\d+[.、)]\s)')
+# 列表项：`1. xxx`（搜索结果是编号列表）。
+LIST_ITEM_PATTERN = re.compile(r'^(\d+)[.、)]\s+(.+)$')
+# 字段行：`· ID：11510` 或 `· 评分：8.1/10  难度：91.2/100`
+FIELD_PATTERN = re.compile(r'^[·•]\s*([^：:]+)[：:]\s*(.*)$')
 BUTTON_LABEL_LIMIT = 20
 MAX_ROWS = 5
 MAX_BUTTONS_PER_ROW = 4
@@ -25,7 +27,11 @@ def safe_text(value: Any, default_value: str = '') -> str:
 
 
 def convert(content: str) -> str:
-    """把纯文本回复词转成 Markdown；已经带 Markdown 的段落保持原样。"""
+    """把纯文本回复词转成 Markdown。
+
+    排版跟 CelestePlugin 一致：标题加粗、每个条目自成一段（标题行 + 空行），
+    不使用 `-` / `1.` 这类列表语法——QQ 客户端会把列表块和后面的正文并成一段。
+    """
     text = OP_PATTERN.sub('', safe_text(content)).strip()
     if not text:
         return ''
@@ -33,25 +39,31 @@ def convert(content: str) -> str:
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
         stripped = line.strip()
-        if stripped.startswith('·'):
-            body = stripped.lstrip('·').lstrip()
-            line_list.append(f'- {body}' if body else '-')
+        if not stripped:
+            line_list.append('')
             continue
-        if stripped.startswith('- '):
-            line_list.append(stripped)
+        field_match = FIELD_PATTERN.match(stripped)
+        if field_match:
+            # `· ID：11510` → `**ID**：11510`
+            label, value = field_match.group(1), field_match.group(2)
+            line_list.append(f'**{label}**：{value}' if value else f'**{label}**')
+            continue
+        item_match = LIST_ITEM_PATTERN.match(stripped)
+        if item_match:
+            # `1. [11510] 标题` → 加粗整行，条目之间留空行
+            if line_list and line_list[-1] != '':
+                line_list.append('')
+            line_list.append(f'**{item_match.group(1)}. {item_match.group(2)}**')
+            line_list.append('')
             continue
         line_list.append(HEADING_PATTERN.sub(lambda match: f'**{match.group(1)}**', line))
-    # 列表块紧接正文时客户端会把两者并成一段，用一行零宽空格隔开。
-    def is_list_line(value: str) -> bool:
-        return bool(LIST_ITEM_PATTERN.match(value))
-
-    spaced = []
-    for index, line in enumerate(line_list):
-        spaced.append(line)
-        next_line = line_list[index + 1] if index + 1 < len(line_list) else ''
-        if is_list_line(line) and next_line.strip() and not is_list_line(next_line):
-            spaced.append('\u200b')
-    return '\n'.join(spaced).strip()
+    # 压缩连续空行，保持条目之间恰好一个空行
+    compact = []
+    for line in line_list:
+        if line == '' and (not compact or compact[-1] == ''):
+            continue
+        compact.append(line)
+    return '\n'.join(compact).strip()
 
 
 def get_chat_context(plugin_event) -> tuple:
