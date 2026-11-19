@@ -16,6 +16,8 @@ LIST_ITEM_PATTERN = re.compile(r'^(\d+)[.、)]\s+(.+)$')
 # 字段行：`· ID：11510` 或 `· 评分：8.1/10  难度：91.2/100`
 FIELD_PATTERN = re.compile(r'^[·•]\s*([^：:]+)[：:]\s*(.*)$')
 BUTTON_LABEL_LIMIT = 20
+# 列表条目最长字符数：手机上一行大约放得下 28 个西文字符，超了就截断，避免折成两行。
+ITEM_LINE_LIMIT = 48
 MAX_ROWS = 5
 MAX_BUTTONS_PER_ROW = 4
 
@@ -50,11 +52,11 @@ def convert(content: str) -> str:
             continue
         item_match = LIST_ITEM_PATTERN.match(stripped)
         if item_match:
-            # `1. [11510] 标题` → 加粗整行，条目之间留空行
-            if line_list and line_list[-1] != '':
-                line_list.append('')
-            line_list.append(f'**{item_match.group(1)}. {item_match.group(2)}**')
-            line_list.append('')
+            # `1. [11510] 标题` → 单行加粗，条目之间不留空行；标题截断保证一行放得下
+            label = f'{item_match.group(1)}. {item_match.group(2)}'
+            if len(label) > ITEM_LINE_LIMIT:
+                label = label[:ITEM_LINE_LIMIT - 1] + '…'
+            line_list.append(f'**{label}**')
             continue
         line_list.append(HEADING_PATTERN.sub(lambda match: f'**{match.group(1)}**', line))
     # 压缩连续空行，保持条目之间恰好一个空行

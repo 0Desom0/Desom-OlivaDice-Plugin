@@ -26,7 +26,7 @@ message_custom_value_max_length = 32768
 
 api_default_base_url = 'https://fangame-archive.com'
 api_timeout_seconds = 12
-result_page_size = 10
+result_page_size = 8
 selection_timeout_seconds = 300
 
 download_size_limit_bytes = 200 * 1024 * 1024

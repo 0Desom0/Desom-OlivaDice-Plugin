@@ -471,7 +471,7 @@ def send_detail_messages(plugin_event, detail_text_list: List[str]) -> None:
         utils.reply_message(plugin_event, detail_text)
 
 
-def render_result_list(plugin_event, session_data: Dict[str, Any]) -> str:
+def render_result_list(plugin_event, session_data: Dict[str, Any], compact: bool = False) -> str:
     results = session_data.get('results', [])
     count = int(session_data.get('count', len(results)))
     available_count = len(results)
@@ -513,15 +513,18 @@ def render_result_list(plugin_event, session_data: Dict[str, Any]) -> str:
                     },
                 )
             )
-        line_list.append(render_custom_message(plugin_event, 'reply_paged_footer'))
-    else:
+        # Markdown 页面用短提示，长页脚会把消息撑得半屏高。
+        footer_key = 'reply_paged_footer' if not compact else None
+        if footer_key:
+            line_list.append(render_custom_message(plugin_event, footer_key))
+    elif not compact:
         line_list.append(render_custom_message(plugin_event, 'reply_multiple_footer'))
     return '\n'.join(line_list)
 
 
 def reply_result_page(plugin_event, session_data: Dict[str, Any]) -> None:
     """搜索列表页：Markdown + 翻页键盘（上一页/下一页回调，跳页填命令）。"""
-    content = render_result_list(plugin_event, session_data)
+    content = render_result_list(plugin_event, session_data, compact=True)
     results = session_data.get('results', [])
     page_size = max(1, int(session_data.get('page_size', config.result_page_size)))
     total_page = max(1, math.ceil(len(results) / page_size))
