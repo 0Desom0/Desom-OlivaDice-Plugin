@@ -75,6 +75,15 @@ def get_chat_context(plugin_event) -> tuple:
     return '', ''
 
 
+def log_failure(reason: str) -> None:
+    """失败原因写进 OlivOS 日志，不要再被 except 静默掉。"""
+    try:
+        from . import utils
+        utils.error_log(utils.get_runtime_proc(), f'[Markdown] {reason}')
+    except Exception:
+        pass
+
+
 def can_send_markdown(plugin_event) -> bool:
     from . import utils
 
@@ -142,13 +151,19 @@ def build_header(plugin_event) -> str:
 
 def reply_markdown(plugin_event, content: str, keyboard_dict=None) -> bool:
     """发送 Markdown 消息；调用方在返回 False 时回退纯文本。"""
-    if not can_send_markdown(plugin_event):
-        return False
+    sender = getattr(getattr(plugin_event, 'indeAPI', None), 'create_markdown_message', None)
+    if not callable(sender):
+        log_failure(
+            f"indeAPI 没有 create_markdown_message（indeAPI={type(getattr(plugin_event, 'indeAPI', None)).__name__}）"
+        )
     text = convert(content)
     if not text:
+        log_failure('正文转换后为空')
         return False
     chat_type, chat_id = get_chat_context(plugin_event)
     if not chat_type or not chat_id:
+        extend = getattr(getattr(plugin_event, 'data', None), 'extend', {})
+        log_failure(f'拿不到会话类型 chat_type={chat_type!r} chat_id={chat_id!r} extend_keys={list(extend) if isinstance(extend, dict) else extend!r}')
         return False
     header = build_header(plugin_event)
     if header:
@@ -171,10 +186,25 @@ def reply_markdown(plugin_event, content: str, keyboard_dict=None) -> bool:
         payload['msg_id'] = message_id
     elif event_id:
         payload['event_id'] = event_id
+    if callable(sender):
+        try:
+            result = sender(**payload)
+        except Exception as error:
+            log_failure(f'indeAPI 调用抛错 {type(error).__name__}: {error}')
+            result = None
+        if isinstance(result, dict) and result.get('active', False):
+            return True
+        if isinstance(result, dict):
+            log_failure(f'indeAPI 发送未激活：{result.get("data")}')
+    # 二级通道：直接走 qqGuildv2 适配器，绕过 indeAPI 的包装层。
     try:
-        result = plugin_event.indeAPI.create_markdown_message(**payload)
-    except Exception:
+        import OlivOS
+        target_event = getattr(getattr(plugin_event, 'indeAPI', None), 'event', None) or plugin_event
+        result = OlivOS.qqGuildv2SDK.event_action.create_markdown_message(target_event, **payload)
+    except Exception as error:
+        log_failure(f'适配器直调也失败 {type(error).__name__}: {error}')
         return False
-    if isinstance(result, dict) and not result.get('active', False):
-        return False
-    return True
+    if isinstance(result, dict) and result.get('active', False):
+        return True
+    log_failure(f'适配器直调未激活：{result if not isinstance(result, dict) else result.get("data")}')
+    return False

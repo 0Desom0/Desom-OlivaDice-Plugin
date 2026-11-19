@@ -26,6 +26,7 @@ from functools import wraps
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import config
+from . import markdown
 from . import message_custom
 
 has_oliva_dice_core = False
@@ -1418,8 +1419,11 @@ def reply_message(
         from . import markdown
         if markdown.reply_markdown(plugin_event, final_message):
             return None
-    except Exception:
-        pass
+    except Exception as error_markdown:
+        try:
+            error_log(get_runtime_proc(), f'[Markdown] 发送异常 {type(error_markdown).__name__}: {error_markdown}')
+        except Exception:
+            pass
 
     try:
         outgoing_message = add_reply_quote(plugin_event, final_message) if quote_reply else final_message
