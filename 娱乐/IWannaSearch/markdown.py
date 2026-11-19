@@ -11,6 +11,8 @@ from typing import Any, Dict, List
 
 OP_PATTERN = re.compile(r'\[OP:[^\]]*\]')
 HEADING_PATTERN = re.compile(r'【([^】]+)】')
+# 列表项：`- xxx` 或 `1. xxx`（回复词里两种写法都有）。
+LIST_ITEM_PATTERN = re.compile(r'^(?:- |\d+[.、)]\s)')
 BUTTON_LABEL_LIMIT = 20
 MAX_ROWS = 5
 MAX_BUTTONS_PER_ROW = 4
@@ -39,7 +41,17 @@ def convert(content: str) -> str:
             line_list.append(stripped)
             continue
         line_list.append(HEADING_PATTERN.sub(lambda match: f'**{match.group(1)}**', line))
-    return '\n'.join(line_list).strip()
+    # 列表块紧接正文时客户端会把两者并成一段，用一行零宽空格隔开。
+    def is_list_line(value: str) -> bool:
+        return bool(LIST_ITEM_PATTERN.match(value))
+
+    spaced = []
+    for index, line in enumerate(line_list):
+        spaced.append(line)
+        next_line = line_list[index + 1] if index + 1 < len(line_list) else ''
+        if is_list_line(line) and next_line.strip() and not is_list_line(next_line):
+            spaced.append('\u200b')
+    return '\n'.join(spaced).strip()
 
 
 def get_chat_context(plugin_event) -> tuple:
