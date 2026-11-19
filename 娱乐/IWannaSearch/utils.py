@@ -1416,7 +1416,6 @@ def reply_message(
 
     # QQ 官方机器人优先走 Markdown；不支持或发送失败时回退到原来的纯文本。
     try:
-        from . import markdown
         if markdown.reply_markdown(plugin_event, final_message):
             return None
     except Exception as error_markdown:
@@ -1427,6 +1426,18 @@ def reply_message(
 
     try:
         outgoing_message = add_reply_quote(plugin_event, final_message) if quote_reply else final_message
+        # 回调事件没有 reply 通道；必须走 send_message 并带 event_id 才是被动回复
+        func_type = safe_str((getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type', ''))
+        if func_type == 'button_click':
+            chat_type, chat_id = markdown.get_chat_context(plugin_event)
+            sender = getattr(getattr(plugin_event, 'indeAPI', None), 'send_message', None)
+            extend = getattr(getattr(plugin_event, 'data', None), 'extend', None)
+            event_id = safe_str(extend.get('event_id')) if isinstance(extend, dict) else ''
+            if chat_type and chat_id and callable(sender):
+                return sender(
+                    chat_type=chat_type, chat_id=chat_id, message=final_message, event_id=event_id or None
+                )
+            return None
         return plugin_event.reply(outgoing_message)
     except Exception:
         return None

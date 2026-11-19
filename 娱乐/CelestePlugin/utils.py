@@ -607,9 +607,12 @@ def reply_message(plugin_event, message_text: str) -> Any:
     if safe_str((getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type')) == 'button_click':
         chat_type, chat_id = get_chat_context(plugin_event)
         sender = getattr(getattr(plugin_event, 'indeAPI', None), 'send_message', None)
+        extend = getattr(getattr(plugin_event, 'data', None), 'extend', None)
+        event_id = safe_str(extend.get('event_id')) if isinstance(extend, dict) else ''
         if chat_type and chat_id and callable(sender):
             try:
-                return sender(chat_type=chat_type, chat_id=chat_id, message=text)
+                # 带 event_id 才是被动回复；不带会被平台当成主动消息（无权限直接 400）
+                return sender(chat_type=chat_type, chat_id=chat_id, message=text, event_id=event_id or None)
             except Exception:
                 return None
         return None
