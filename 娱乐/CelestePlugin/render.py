@@ -7,6 +7,8 @@
 
 from typing import Any
 
+from urllib.parse import quote
+
 from . import function
 from . import utils
 
@@ -19,6 +21,19 @@ MAX_BUTTONS_PER_ROW = 4
 def _label(text: Any, limit: int = LABEL_LIMIT) -> str:
     value = utils.safe_str(text).strip() or '未命名'
     return value[:limit]
+
+
+def cmd_input(text: str, show: str | None = None) -> str:
+    """QQ Markdown 蓝色可点文字：点一下把 text 填进输入框（不自动发送）。
+
+    适配器里有同款 markdown_tag.cmd_input，但插件拿不到那个对象，
+    这里按官方标签格式自己拼；show 是客户端显示的文字。
+    """
+    encoded = quote(str(text), safe='')
+    tag = '<qqbot-cmd-input text="%s"' % encoded
+    if show is not None:
+        tag += ' show="%s"' % quote(str(show), safe='')
+    return tag + ' reference="false" />'
 
 
 def button(
@@ -255,8 +270,15 @@ def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, A
         lines.append(f'**{index}. {item.get("name", "未知地图")}**')
         lines.append(meta)
         page_url = utils.safe_str(item.get('page_url'))
-        if page_url:
-            lines.append(f'[查看详情]({page_url})')
+        links = f'[查看详情]({page_url})' if page_url else ''
+        # 蓝字：点一下把 `.clst id` 精确查询命令填进输入框，回车即查这一张。
+        id_text = int(item.get('id', 0) or 0)
+        if id_text > 0:
+            links = f'{links} · {cmd_input(f".clst id {id_text}", "精确查询")}' if links else cmd_input(
+                f'.clst id {id_text}', '精确查询'
+            )
+        if links:
+            lines.append(links)
         lines.append('')
         if show_cover:
             add_cover(lines, images, item, f'地图封面 {index}')

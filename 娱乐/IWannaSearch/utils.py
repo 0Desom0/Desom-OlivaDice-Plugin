@@ -1391,7 +1391,13 @@ def record_reply_to_logger(plugin_event, message_text: str) -> None:
 
 
 def get_cover_cache_dir() -> str:
-    base = os.path.join(config.plugin_data_dir, 'cache', 'covers')
+    """临时封面目录（相对 OlivOS 根目录）。
+
+    适配器读本地图走 contentAPI.resourcePathTransform('images', path)：绝对路径
+    原样用，相对路径拼到 <OlivOS>/data/images/ 下。所以直接落在
+    data/images/IWannaSearch/covers，交给适配器的也是同一个相对路径。
+    """
+    base = os.path.join('data', 'images', 'IWannaSearch', 'covers')
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -1410,7 +1416,7 @@ def prepare_local_image(url: str) -> str:
     for suffix in ('.jpg', '.png'):
         candidate = os.path.join(get_cover_cache_dir(), digest + suffix)
         if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
-            return candidate
+            return 'IWannaSearch/covers/' + digest + suffix
     headers = {
         'User-Agent': 'Mozilla/5.0 (compatible; IWannaSearch)',
         # 截图站不带 Referer 会返回 200 + 0 字节
@@ -1428,13 +1434,25 @@ def prepare_local_image(url: str) -> str:
                 suffix = '.png'
             else:
                 suffix = '.jpg'
-            target_path = os.path.join(get_cover_cache_dir(), digest + suffix)
-            with open(target_path, 'wb') as handle:
+            with open(os.path.join(get_cover_cache_dir(), digest + suffix), 'wb') as handle:
                 handle.write(data)
-            return target_path
+            return 'IWannaSearch/covers/' + digest + suffix
         except Exception:
             continue
     return ''
+
+
+def release_local_image(resource: str) -> None:
+    """发送完成后删掉临时封面；相对路径（data/images/<...>）与绝对路径都处理。"""
+    path = safe_str(resource).strip()
+    if not path:
+        return
+    if not os.path.isabs(path):
+        path = os.path.join('data', 'images', path)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def reply_message(

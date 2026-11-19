@@ -683,24 +683,31 @@ def get_chat_context(plugin_event) -> tuple[str, str]:
 
 
 def get_cover_cache_dir() -> str:
-    return ensure_folder(os.path.join(get_shared_cache_dir(), 'covers'))
+    """临时封面目录（相对 OlivOS 根目录）。
+
+    适配器读取本地图时会走 contentAPI.resourcePathTransform('images', path)：
+    绝对路径原样使用，相对路径一律拼到 <OlivOS>/data/images/ 下。所以这里
+    直接落在 data/images/CelestePlugin/covers，交给适配器的也是同一相对路径，
+    换机器/换部署目录都不用改。
+    """
+    base = os.path.join('data', 'images', 'CelestePlugin', 'covers')
+    os.makedirs(base, exist_ok=True)
+    return base
 
 
 def prepare_local_image(url: str) -> str:
-    """把封面下载到本地再交给适配器上传。
+    """下载封面并返回适配器可读的相对资源路径（发送后由 release_local_image 删除）。
 
-    适配器自己下载时只有 5 秒超时，WEGFan 经常 5~9 秒，超时就整条 Markdown
-    回退成纯文本（用户看到的是带 ** 的原文）。这里用更长超时先落盘，
-    失败就返回空串，让调用方直接不带图发 Markdown。
+    适配器自己下载远程图只有 5 秒超时，WEGFan 实测 4.7~9.1 秒，一超时整条
+    Markdown 就被降级成图文/纯文本。这里用 15 秒超时自己落盘。
     """
     source = safe_str(url).strip()
     if not source.startswith(('http://', 'https://')):
         return ''
     digest = hashlib.sha1(source.encode('utf-8')).hexdigest()
-    suffix = '.jpg' if '.png' not in source.lower() else '.png'
-    target_path = os.path.join(get_cover_cache_dir(), digest + suffix)
-    if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
-        return target_path
+    for suffix in ('.jpg', '.png'):
+        if os.path.isfile(os.path.join(get_cover_cache_dir(), digest + suffix)):
+            return 'CelestePlugin/covers/' + digest + suffix
     headers = {'User-Agent': config.bot_user_agent}
     for _attempt in range(2):
         try:
@@ -709,19 +716,27 @@ def prepare_local_image(url: str) -> str:
                 data = response.read(10 * 1024 * 1024 + 1)
             if not data or len(data) > 10 * 1024 * 1024:
                 continue
-            if data[:3] == b'\xff\xd8\xff':
-                suffix = '.jpg'
-            elif data[:8] == b'\x89PNG\r\n\x1a\n':
-                suffix = '.png'
-            else:
-                suffix = '.jpg'
-            target_path = os.path.join(get_cover_cache_dir(), digest + suffix)
-            with open(target_path, 'wb') as handle:
+            suffix = '.png' if data[:8] == b'\x89PNG\r\n\x1a\n' else '.jpg'
+            file_name = digest + suffix
+            with open(os.path.join(get_cover_cache_dir(), file_name), 'wb') as handle:
                 handle.write(data)
-            return target_path
+            return 'CelestePlugin/covers/' + file_name
         except Exception:
             continue
     return ''
+
+
+def release_local_image(resource: str) -> None:
+    """发送完成后删掉临时封面；相对路径与绝对路径都能处理。"""
+    path = safe_str(resource).strip()
+    if not path:
+        return
+    if not os.path.isabs(path):
+        path = os.path.join('data', 'images', path)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def can_send_markdown(plugin_event) -> bool:
@@ -757,7 +772,8 @@ def reply_markdown(plugin_event, markdown_text: str, keyboard=None, *, images=No
     chat_type, chat_id = get_chat_context(plugin_event)
     if not chat_type or not chat_id:
         return False
-    header = build_markdown_header(plugin_event)
+    # C2C 私聊不支持 qqbot-at-user（平台回 40034106），只在群里加引用头。
+    header = build_markdown_header(plugin_event) if chat_type == 'qq_group' else ''
     if header:
         content = f'{header}\n\n{content}'
     sender = plugin_event.indeAPI.create_markdown_message
@@ -795,12 +811,17 @@ def reply_markdown(plugin_event, markdown_text: str, keyboard=None, *, images=No
         payload['msg_id'] = message_id
     elif event_id:
         payload['event_id'] = event_id
+    local_resources = list((payload.get('local_images') or {}).values())
     try:
         result = sender(**payload)
     except Exception:
+        for resource in local_resources:
+            release_local_image(resource)
         return False
+    for resource in local_resources:
+        release_local_image(resource)
     if isinstance(result, dict) and not result.get('active', False):
-        debug_log(None, 'Markdown 发送失败：%s' % safe_str(result.get('data', {}).get('error', result)))
+        error_log(None, 'Markdown 发送失败：%s' % safe_str(result.get('data', {}).get('error', result)))
         return False
     return True
 

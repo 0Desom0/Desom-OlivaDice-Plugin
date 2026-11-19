@@ -237,6 +237,16 @@ def reply_detail(plugin_event, content: str, game_item: Dict[str, Any]) -> bool:
     return reply_markdown(plugin_event, text, detail_keyboard(game_item), images=images)
 
 
+def _release_images(payload: dict) -> None:
+    """发送结束后删掉本地临时封面（适配器在发送过程中已读完文件）。"""
+    for resource in (payload.get('local_images') or {}).values():
+        try:
+            from . import utils
+            utils.release_local_image(resource)
+        except Exception:
+            pass
+
+
 def reply_markdown(plugin_event, content: str, keyboard_dict=None, images=None) -> bool:
     """发送 Markdown 消息；调用方在返回 False 时回退纯文本。"""
     sender = getattr(getattr(plugin_event, 'indeAPI', None), 'create_markdown_message', None)
@@ -263,7 +273,8 @@ def reply_markdown(plugin_event, content: str, keyboard_dict=None, images=None) 
     if images:
         if not is_qq_chat:
             return False
-        # 适配器负责下载图片、上传素材库并回填真实尺寸
+        # 图片已由 prepare_local_image 落在 data/images/<ns>/covers 下，
+        # 这里只把相对路径交给适配器；发送完在 finally 里删掉临时文件。
         payload['local_images'] = images
     data = getattr(plugin_event, 'data', None)
     extend = getattr(data, 'extend', None)
@@ -286,6 +297,7 @@ def reply_markdown(plugin_event, content: str, keyboard_dict=None, images=None) 
             log_failure(f'indeAPI 调用抛错 {type(error).__name__}: {error}')
             result = None
         if isinstance(result, dict) and result.get('active', False):
+            _release_images(payload)
             return True
         if isinstance(result, dict):
             log_failure(f'indeAPI 发送未激活：{result.get("data")}')
@@ -296,7 +308,9 @@ def reply_markdown(plugin_event, content: str, keyboard_dict=None, images=None) 
         result = OlivOS.qqGuildv2SDK.event_action.create_markdown_message(target_event, **payload)
     except Exception as error:
         log_failure(f'适配器直调也失败 {type(error).__name__}: {error}')
+        _release_images(payload)
         return False
+    _release_images(payload)
     if isinstance(result, dict) and result.get('active', False):
         return True
     log_failure(f'适配器直调未激活：{result if not isinstance(result, dict) else result.get("data")}')
