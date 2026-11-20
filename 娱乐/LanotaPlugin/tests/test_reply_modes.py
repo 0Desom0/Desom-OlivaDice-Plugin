@@ -41,7 +41,7 @@ def test_quote_and_passive_credentials(event, group, kind):
     body = '**曲目**\n\n**曲师**：Art'
     if group:
         body = '> <qqbot-at-user id="user" />：' + '音' * 40 + '…\n\n' + body
-    assert payload == {'chat_type': kind, 'chat_id': group or 'user', 'event_id': 'event', 'msg_id': 'msg',
+    assert payload == {'chat_type': kind, 'chat_id': group or 'user', 'msg_id': 'msg',
                        'markdown': {'content': body}}
     event.reply.assert_not_called()
 

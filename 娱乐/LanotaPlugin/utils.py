@@ -930,12 +930,17 @@ def reply_markdown(plugin_event, text: str, *, images=None, keyboard=None) -> bo
     if keyboard:
         payload['keyboard'] = keyboard
     event_id = (getattr(data, 'extend', None) or {}).get('event_id')
-    if event_id:
-        payload['event_id'] = str(event_id)
     msg_id = str(getattr(data, 'message_id', '') or '').strip()
     is_click = (getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type') == 'button_click'
-    if msg_id and msg_id != '-1' and not is_click:
+    # 适配器要求 msg_id 与 event_id 互斥，两个都传会直接 inactive；
+    # 按钮回调只能用互动 id，普通消息优先用 msg_id。
+    if is_click:
+        if event_id:
+            payload['event_id'] = str(event_id)
+    elif msg_id and msg_id != '-1':
         payload['msg_id'] = msg_id
+    elif event_id:
+        payload['event_id'] = str(event_id)
     parts = [build_markdown_header(plugin_event), _markdown_body(text)]
     try:
         with ExitStack() as stack:
@@ -963,10 +968,22 @@ def reply_markdown(plugin_event, text: str, *, images=None, keyboard=None) -> bo
             payload['markdown'] = {'content': '\n\n'.join(filter(None, parts))}
             result = plugin_event.indeAPI.create_markdown_message(**payload)
     except Exception as exc:
-        error_log(None, f'Markdown 图文发送失败：{type(exc).__name__}: {exc}')
+        error_log(runtime_proc, f'Markdown 图文发送失败：{type(exc).__name__}: {exc}')
         return False
     if isinstance(result, dict) and not result.get('active', False):
-        error_log(None, 'Markdown 发送失败：适配器返回 inactive。')
+        detail = result.get('data') or {}
+        # 失败原因必须落日志：只写「inactive」等于把平台错误码吞掉。
+        error_log(
+            runtime_proc,
+            'Markdown 发送失败：error=%r http_status=%r error_code=%r payload=%r response=%r'
+            % (
+                detail.get('error'),
+                detail.get('http_status'),
+                detail.get('error_code'),
+                {key: value for key, value in payload.items() if key != 'markdown'},
+                str(detail.get('response'))[:500]
+            )
+        )
         return False
     return True
 
