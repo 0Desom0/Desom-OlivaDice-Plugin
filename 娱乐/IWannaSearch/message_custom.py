@@ -87,6 +87,8 @@ default_custom_message_dict = {
     'reply_page_info': '当前页数：{current_page}/{total_page}',
     'reply_result_limited_note': '找到{count}个 I Wanna，当前显示{available_count}个，可浏览{total_page}页。',
     'reply_paged_footer': '请输入对应序号查询对应的 I Wanna，或输入下一页/上一页/跳页[页数]进行翻页，或输入 end/结束 退出选择。',
+    # Markdown 列表页用短提示：长页脚会把消息撑高半屏，翻页已经交给按钮。
+    'reply_paged_footer_short': '输入序号查看详情，或点下方按钮翻页，输入跳页[页数]可直达，输入 end/结束 退出。',
     'reply_input_invalid': '请输入严格的数字序号，或输入 end/结束 退出选择。',
     'reply_paged_input_invalid': '请输入严格的数字序号，或者输入下一页/上一页/跳页[页数]进行翻页，或输入 end/结束 退出选择。',
     'reply_jump_page_empty': '请输入要跳转的页数，例如：跳页3。',
@@ -164,6 +166,7 @@ custom_message_note_dict = {
     'reply_page_info': '【分页页码】可用变量：{current_page} {total_page}',
     'reply_result_limited_note': '【API 返回限制提示】当 count 大于实际 results 数量时显示。可用变量：{count} {available_count} {total_page}',
     'reply_paged_footer': '【分页页脚】结果多于一页时的输入提示。可提示 end/结束 退出。',
+    'reply_paged_footer_short': '【分页页脚·短】Markdown 列表页用的紧凑提示，配合翻页按钮显示。',
     'reply_input_invalid': '【选择输入错误】非分页列表中输入非数字时回复。可提示 end/结束 退出。',
     'reply_paged_input_invalid': '【分页输入错误】分页列表中输入非数字且不是翻页词时回复。可提示 end/结束 退出。',
     'reply_jump_page_empty': '【跳页缺少页数】用户只输入跳页命令但没有页数时回复。',

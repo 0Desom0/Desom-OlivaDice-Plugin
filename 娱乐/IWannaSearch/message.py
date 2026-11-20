@@ -532,11 +532,11 @@ def render_result_list(plugin_event, session_data: Dict[str, Any], compact: bool
                     },
                 )
             )
-        # Markdown 页面用短提示，长页脚会把消息撑得半屏高。
-        footer_key = 'reply_paged_footer' if not compact else None
-        if footer_key:
-            line_list.append(render_custom_message(plugin_event, footer_key))
-    elif not compact:
+        # Markdown 页面用短提示，长页脚会把消息撑得半屏高；但「输入序号」这句必须留着，
+        # 否则列表只有按钮、没人知道还能直接敲序号。
+        footer_key = 'reply_paged_footer' if not compact else 'reply_paged_footer_short'
+        line_list.append(render_custom_message(plugin_event, footer_key))
+    else:
         line_list.append(render_custom_message(plugin_event, 'reply_multiple_footer'))
     return '\n'.join(line_list)
 
@@ -1175,7 +1175,8 @@ def handle_jump_page_input(plugin_event, session_data: Dict[str, Any], page_text
 
     session_data['page_index'] = target_page - 1
     session_data['updated_at'] = time.time()
-    utils.reply_message(plugin_event, render_result_list(plugin_event, session_data))
+    # 跳页后同样要有翻页按钮，别退回纯文本的一次性列表。
+    reply_result_page(plugin_event, session_data)
     return True
 
 
