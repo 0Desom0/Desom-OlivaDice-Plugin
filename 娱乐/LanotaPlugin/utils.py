@@ -4,12 +4,15 @@
 import copy
 import functools
 import hashlib
+import html
 import json
 import os
 import re
 import shutil
+import tempfile
 import threading
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -847,6 +850,127 @@ def build_image_message(image_path: str) -> str:
         return ''
 
 
+def get_reply_mode(plugin_event, bot_config=None) -> str:
+    if bot_config is None:
+        bot_config = load_bot_config(get_bot_hash_from_event(plugin_event))
+    if 'reply_mode' in bot_config:
+        mode = bot_config['reply_mode']
+        return mode if mode in ('markdown', 'image', 'text') else 'markdown'
+    return 'text' if bot_config.get('plain_text_mode') or not bot_config.get('send_as_image', True) else 'image'
+
+
+def _markdown_chat(plugin_event) -> tuple[str, str]:
+    data = plugin_event.data
+    extend = getattr(data, 'extend', None) or {}
+    platform = getattr(plugin_event, 'platform', {}) or {}
+    if platform.get('sdk') == 'onebot' or extend.get('flag_from_qq') is False:
+        return '', ''
+    if extend.get('chat_type'):
+        kind = extend['chat_type']
+        if kind not in ('qq_group', 'qq_private'):
+            return '', ''
+        return kind, str(extend.get('chat_id') or '')
+    if extend.get('host_group_id') or getattr(data, 'host_id', None):
+        return '', ''
+    group_id = get_group_id_from_event(plugin_event)
+    return ('qq_group', group_id) if group_id else ('qq_private', str(getattr(data, 'user_id', '') or ''))
+
+
+def can_send_markdown(plugin_event) -> bool:
+    sender = getattr(getattr(plugin_event, 'indeAPI', None), 'create_markdown_message', None)
+    return callable(sender) and bool(_markdown_chat(plugin_event)[1]) and load_global_config().get(
+        'markdown_enable_switch', True,
+    )
+
+
+def build_markdown_header(plugin_event) -> str:
+    if _markdown_chat(plugin_event)[0] != 'qq_group':
+        return ''
+    user = getattr(plugin_event.data, 'user_id', None)
+    if not user:
+        return ''
+    source = re.sub(r'\[OP:[^\]]*\]', '', get_message_text_from_event(plugin_event))
+    source = ' '.join(source.splitlines()).strip()
+    if len(source) > 40:
+        source = source[:40] + '…'
+    mention = f'> <qqbot-at-user id="{html.escape(str(user), quote=True)}" />'
+    return f'{mention}：{html.escape(source, quote=False)}' if source else mention
+
+
+def _markdown_body(text: str) -> str:
+    lines = []
+    previous_item = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            if lines and lines[-1]:
+                lines.append('')
+            continue
+        # 普通分页保留章节和 ID 的旧布局，Markdown 强调标题并避免 QQ 解析为有序列表。
+        line = re.sub(r'^(\d+\.) .+? - (.+) \(ID: ([^()]+)\)$', r'\1 [\3] \2', line)
+        item = bool(re.match(r'^\d+\.\s', line))
+        if item:
+            if previous_item and lines[-1] == '':
+                lines.pop()
+            line = f'**{line}**'
+        else:
+            line = re.sub(r'^·\s*([^：]+)：', r'**\1**：', line)
+            line = re.sub(r'【([^】]+)】', r'**\1**', line)
+        previous_item = item
+        lines.append(line)
+    return '\n'.join(lines).strip()
+
+
+def reply_markdown(plugin_event, text: str, *, images=None, keyboard=None) -> bool:
+    if not can_send_markdown(plugin_event):
+        return False
+    kind, chat_id = _markdown_chat(plugin_event)
+    data = plugin_event.data
+    payload = {'chat_type': kind, 'chat_id': chat_id}
+    if keyboard:
+        payload['keyboard'] = keyboard
+    event_id = (getattr(data, 'extend', None) or {}).get('event_id')
+    if event_id:
+        payload['event_id'] = str(event_id)
+    msg_id = str(getattr(data, 'message_id', '') or '').strip()
+    is_click = (getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type') == 'button_click'
+    if msg_id and msg_id != '-1' and not is_click:
+        payload['msg_id'] = msg_id
+    parts = [build_markdown_header(plugin_event), _markdown_body(text)]
+    try:
+        with ExitStack() as stack:
+            if images:
+                # 适配器同步读取 data/images 下的相对路径；请求结束即释放，不生成第二套永久缓存。
+                image_root = Path('data/images').resolve()
+                root = image_root / config.plugin_name
+                root.mkdir(parents=True, exist_ok=True)
+                folder = Path(stack.enter_context(tempfile.TemporaryDirectory(dir=root, ignore_cleanup_errors=True)))
+                local = {}
+                items = images.items() if isinstance(images, dict) else (
+                    (f'图片{i}', source) for i, source in enumerate(images, 1)
+                )
+                for index, (label, source) in enumerate(items, 1):
+                    dest = folder / f'{index}{Path(source).suffix}'
+                    try:
+                        os.link(source, dest)
+                    except OSError:
+                        shutil.copyfile(source, dest)
+                    local[label] = dest.relative_to(image_root).as_posix()
+                    marker = '{{' + label + '}}'
+                    if marker not in text:
+                        parts.append(marker)
+                payload['local_images'] = local
+            payload['markdown'] = {'content': '\n\n'.join(filter(None, parts))}
+            result = plugin_event.indeAPI.create_markdown_message(**payload)
+    except Exception as exc:
+        error_log(None, f'Markdown 图文发送失败：{type(exc).__name__}: {exc}')
+        return False
+    if isinstance(result, dict) and not result.get('active', False):
+        error_log(None, 'Markdown 发送失败：适配器返回 inactive。')
+        return False
+    return True
+
+
 def reply_image(plugin_event, image_path: str, fallback_text: str) -> Any:
     try:
         image_message = build_image_message(image_path)
@@ -858,7 +982,15 @@ def reply_image(plugin_event, image_path: str, fallback_text: str) -> Any:
 
 
 def reply_images_with_text(plugin_event, image_path_list: list[str], message_text: str = '') -> Any:
-    """逐张回复本地图片，确保平台拆分消息时每张图都保留引用。"""
+    if get_reply_mode(plugin_event) == 'markdown' and reply_markdown(
+        plugin_event, message_text, images=image_path_list,
+    ):
+        return True
+    return reply_image_segments(plugin_event, image_path_list, message_text)
+
+
+def reply_image_segments(plugin_event, image_path_list: list[str], message_text: str = '') -> Any:
+    """兼容发送：每张图片和文字各带一条原消息引用。"""
     segment_list = []
     for image_path in image_path_list:
         if not image_path or not os.path.isfile(image_path):

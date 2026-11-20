@@ -16,7 +16,7 @@ from . import config
 from . import utils
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    from PIL import Image, ImageDraw, ImageFont
 
     PIL_AVAILABLE = True
 except Exception:
@@ -719,6 +719,41 @@ def cleanup_image_cache() -> None:
         pass
 
 
+def _layout_basic_row(line, y, font, glyphs, kerning):
+    """BASIC 按相邻字距排版；只在本张图中复用重复的字模及其边界。"""
+    x = left = right = 0
+    top = bottom = None
+    previous = ''
+    placements = []
+    for char in line:
+        if char not in glyphs:
+            bounds = font.getbbox(char)
+            x0, y0, x1, y1 = bounds
+            tile = Image.new('RGB', (x1 - x0 + 2, y1 - y0 + 2))
+            # 一次原生描边绘制：红通道记录带描边的覆盖率，绿通道只记录笔画。
+            ImageDraw.Draw(tile).text((1 - x0, 1 - y0), char, font=font, fill=(255, 255, 0),
+                                      stroke_width=1, stroke_fill=(255, 0, 0))
+            masks = (tile.getchannel('R'), tile.getchannel('G')) if tile.getbbox() else None
+            glyphs[char] = (font.getlength(char), bounds, masks)
+        advance, (x0, y0, x1, y1), masks = glyphs[char]
+        if previous:
+            pair = previous + char
+            if pair not in kerning:
+                kerning[pair] = font.getlength(pair) - glyphs[previous][0] - advance
+            x += kerning[pair]
+            if not x.is_integer():
+                return None  # 亚像素定位交给 FreeType 整行光栅化。
+        left = min(left, int(x) + x0)
+        right = max(right, int(x) + x1)
+        top = y0 if top is None else min(top, y0)
+        bottom = y1 if bottom is None else max(bottom, y1)
+        if masks:
+            placements.append(((PADDING + int(x) + x0 - 1, y + y0 - 1), masks))
+        x += advance
+        previous = char
+    return right - left, bottom - top, placements
+
+
 def create_text_image(text: str, user_id: str = '', max_chars: int | None = None, bot_hash: Any = None) -> str | None:
     if not PIL_AVAILABLE:
         return None
@@ -730,11 +765,24 @@ def create_text_image(text: str, user_id: str = '', max_chars: int | None = None
     draw = ImageDraw.Draw(dummy)
     content_width = 0
     content_height = 0
+    text_rows = []
+    # RAQM 的连字、双向排版等必须整行塑形。短文本也不值得建立字模表。
+    basic = (hasattr(ImageFont, 'Layout') and getattr(font, 'layout_engine', None) == ImageFont.Layout.BASIC
+             and sum(map(len, lines)) >= config.text_image_min_chars)
+    glyphs = {}
+    kerning = {}
     for line in lines:
         if line == '\n':
             content_height += FONT_SIZE + LINE_SPACING
             continue
-        line_width, line_height = get_line_size(draw, line, font)
+        y = PADDING + content_height
+        row = _layout_basic_row(line, y, font, glyphs, kerning) if basic else None
+        if row is None:
+            line_width, line_height = get_line_size(draw, line, font)
+            text_rows.append((y, line, None))
+        else:
+            line_width, line_height, placements = row
+            text_rows.append((y, line, placements))
         content_width = max(content_width, line_width)
         content_height += line_height + LINE_SPACING
     canvas_width = content_width + PADDING * 2
@@ -743,45 +791,47 @@ def create_text_image(text: str, user_id: str = '', max_chars: int | None = None
     bg_color = get_user_bg_color(user_id, bot_hash)
     dark_mode = is_dark_color(bg_color)
     end_color = (0, 0, 0, 255) if dark_mode else (255, 255, 255, 255)
-    image = Image.new('RGBA', (canvas_width, canvas_height), end_color)
-    center_x, center_y = canvas_width // 2, canvas_height // 2
-    max_radius = math.sqrt(center_x**2 + center_y**2)
+    # 用缩小的画布绘制同心圆，保持原画布的长宽比和渐变方向。
+    small_width = max(1, round(canvas_width / 6))
+    small_height = max(1, round(canvas_height / 6))
+    image = Image.new('L', (small_width, small_height), 255)
+    draw = ImageDraw.Draw(image)
+    center_x, center_y = small_width // 2, small_height // 2
+    max_radius = math.hypot(center_x, center_y)
     for step in range(256, 0, -1):
         progress = cubic_bezier(step / 256, 0, 0.2, 0.8, 1.0)
         radius = int(max_radius * progress)
-        color = tuple(int(bg_color[i] + (end_color[i] - bg_color[i]) * progress) for i in range(3)) + (255,)
         if radius > 0:
-            ImageDraw.Draw(image).ellipse(
+            draw.ellipse(
                 (center_x - radius, center_y - radius, center_x + radius, center_y + radius),
-                fill=color,
+                fill=round(255 * progress),
             )
-    for _index in range(3):
-        image = image.filter(ImageFilter.GaussianBlur(radius=1))
+    image = image.resize((canvas_width, canvas_height), getattr(Image, 'Resampling', Image).LANCZOS)
+    image.putpalette([int(start + (end - start) * step / 255) for step in range(256)
+                      for start, end in zip(bg_color[:3], end_color[:3])])
+    image = image.convert('RGB')
 
+    text_color = (255, 255, 255) if dark_mode else (0, 0, 0)
+    outline_color = (0, 0, 0) if dark_mode else (255, 255, 255)
     draw = ImageDraw.Draw(image)
-    text_color = (255, 255, 255, 255) if dark_mode else (0, 0, 0, 255)
-    outline_color = (0, 0, 0, 255) if dark_mode else (255, 255, 255, 255)
-    y = PADDING
-    for line in lines:
-        if line == '\n':
-            y += FONT_SIZE + LINE_SPACING
-            continue
-        _line_width, line_height = get_line_size(draw, line, font)
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                if dx != 0 or dy != 0:
-                    draw.text((PADDING + dx, y + dy), line, font=font, fill=outline_color)
-        draw.text((PADDING, y), line, font=font, fill=text_color)
-        y += line_height + LINE_SPACING
+    for y, line, placements in text_rows:
+        if placements is None:
+            draw.text((PADDING, y), line, font=font, fill=text_color, stroke_width=1, stroke_fill=outline_color)
+        else:
+            # 整行先描边再填充，避免相邻字的描边盖住笔画。
+            for xy, (stroke, _) in placements:
+                image.paste(outline_color, xy, stroke)
+            for xy, (_, ink) in placements:
+                image.paste(text_color, xy, ink)
 
     output_dir = Path(utils.get_generate_image_dir())
     output_path = output_dir / f'lanota_{uuid.uuid4().hex[:10]}.webp'
     try:
-        image.convert('RGB').save(output_path, format='WEBP', quality=95, method=6)
+        image.save(output_path, format='WEBP', quality=90, method=0)
         return str(output_path)
     except Exception:
         fallback_path = output_path.with_suffix('.png')
-        image.convert('RGB').save(fallback_path, format='PNG', optimize=True)
+        image.save(fallback_path, format='PNG', optimize=True)
         return str(fallback_path)
 
 

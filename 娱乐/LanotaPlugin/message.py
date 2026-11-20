@@ -318,22 +318,24 @@ def handle_save(plugin_event, Proc) -> None:
 
 
 def is_plain_text_mode(plugin_event) -> bool:
-    bot_hash = utils.get_bot_hash_from_event(plugin_event)
-    bot_config = utils.load_bot_config(bot_hash)
-    return bool(bot_config.get('plain_text_mode', False)) or not bool(bot_config.get('send_as_image', True))
+    return utils.get_reply_mode(plugin_event) == 'text'
 
 
 def reply_text(plugin_event, text: str, max_chars: int | None = None) -> None:
-    bot_hash = utils.get_bot_hash_from_event(plugin_event)
-    bot_config = utils.load_bot_config(bot_hash)
-    user_id = utils.get_sender_id_from_event(plugin_event)
+    mode = utils.get_reply_mode(plugin_event)
+    if mode == 'markdown' and utils.reply_markdown(plugin_event, text):
+        return
+    _reply_legacy_text(plugin_event, text, max_chars, mode)
+
+
+def _reply_legacy_text(plugin_event, text: str, max_chars: int | None, mode: str) -> None:
     text_content = utils.safe_str(text)
     use_text_image = len(text_content.strip()) >= config.text_image_min_chars
-    if use_text_image and bot_config.get('send_as_image', True) and not is_plain_text_mode(plugin_event):
+    if use_text_image and mode != 'text':
         linked_bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
         image_path = function.create_text_image(
             text_content,
-            user_id=user_id,
+            user_id=utils.get_sender_id_from_event(plugin_event),
             max_chars=max_chars,
             bot_hash=linked_bot_hash,
         )
@@ -365,8 +367,11 @@ def reply_song_detail(plugin_event, header: str, song: dict[str, Any]) -> None:
         reply_text(plugin_event, message_text, max_chars=config.image_max_chars)
         return
 
-    if is_plain_text_mode(plugin_event):
-        utils.reply_images_with_text(plugin_event, cover_paths, message_text)
+    mode = utils.get_reply_mode(plugin_event)
+    if mode == 'markdown' and utils.reply_markdown(plugin_event, message_text, images=cover_paths):
+        return
+    if mode == 'text':
+        utils.reply_image_segments(plugin_event, cover_paths, message_text)
         return
     linked_bot_hash = utils.get_bot_hash_from_event(plugin_event, use_linked=True)
     text_image_path = function.create_text_image(
@@ -376,9 +381,9 @@ def reply_song_detail(plugin_event, header: str, song: dict[str, Any]) -> None:
         bot_hash=linked_bot_hash,
     )
     if text_image_path:
-        utils.reply_images_with_text(plugin_event, [*cover_paths, text_image_path])
+        utils.reply_image_segments(plugin_event, [*cover_paths, text_image_path])
     else:
-        utils.reply_images_with_text(plugin_event, cover_paths, message_text)
+        utils.reply_image_segments(plugin_event, cover_paths, message_text)
 
 
 def _add_calculated_info_ratings(
@@ -506,7 +511,7 @@ def reply_song_card(
     score_rows: list[dict[str, Any]] | None = None,
     notice: str = '',
 ) -> None:
-    """发送歌曲卡片；曲绘与 HTML 成绩卡片分开发送。"""
+    """发送歌曲卡片；Markdown 将文字、卡片和曲绘组合为一条消息。"""
     selected_region = portal.normalize_region(region or (player_data or {}).get('_portal_region', 'global'))
     player = {}
     if isinstance(player_data, dict):
@@ -524,11 +529,10 @@ def reply_song_card(
     )
 
     global_config = utils.load_global_config()
+    cover_paths = []
     if global_config.get('send_cover_art', True):
         try:
             cover_paths = crawler.ensure_song_covers(song)
-            if cover_paths:
-                utils.reply_images_with_text(plugin_event, cover_paths)
         except Exception as exception_object:
             utils.debug_log(None, f'歌曲曲绘发送失败：{type(exception_object).__name__}: {exception_object}')
 
@@ -550,18 +554,31 @@ def reply_song_card(
     }
     bot_config = utils.load_bot_config(utils.get_bot_hash_from_event(plugin_event))
     html_card_enabled = bool(bot_config.get('song_card_html_enable', True))
-    if is_plain_text_mode(plugin_event) or not html_card_enabled:
-        reply_text(plugin_event, fallback_text, max_chars=config.image_max_chars)
+    mode = utils.get_reply_mode(plugin_event, bot_config)
+    if mode == 'text' or not html_card_enabled:
+        _reply_card(plugin_event, mode, cover_paths, None, fallback_text)
         return
     try:
         image_path = portal.render_song_card(card_data)
     except Exception as exception_object:
         utils.debug_log(None, f'歌曲 HTML 卡片渲染失败：{type(exception_object).__name__}: {exception_object}')
         image_path = None
-    if image_path:
-        utils.reply_image(plugin_event, image_path, fallback_text)
-        return
-    reply_text(plugin_event, f'{fallback_text}\n\nHTML 卡片截图失败。\n{portal.render_status_text()}')
+    if not image_path:
+        fallback_text += f'\n\nHTML 卡片截图失败。\n{portal.render_status_text()}'
+    _reply_card(plugin_event, mode, cover_paths, image_path, fallback_text)
+
+
+def _reply_card(plugin_event, mode, covers, card, text) -> None:
+    if mode == 'markdown':
+        images = [card, *covers] if card else covers
+        if utils.reply_markdown(plugin_event, text, images=images):
+            return
+    if covers:
+        utils.reply_image_segments(plugin_event, covers)
+    if card:
+        utils.reply_image(plugin_event, card, text)
+    else:
+        _reply_legacy_text(plugin_event, text, config.image_max_chars, mode)
 
 
 def _prepare_song_for_query(song: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -795,15 +812,14 @@ def handle_labot(plugin_event, argument: str) -> None:
     bot_config = utils.load_bot_config(bot_hash)
     action, value = parse_action(
         argument,
-        ['status', 'master', 'image', 'songcard', 'card', '歌曲卡片', 'plain', 'text', '纯文本', 'off', 'on'],
+        ['status', 'master', 'mode', 'image', 'songcard', 'card', '歌曲卡片', 'plain', 'text', '纯文本', 'off', 'on'],
     )
     if action in ['', 'status']:
         reply_text(
             plugin_event,
             f'当前 Bot 开关：{"ON" if bot_config.get("bot_enable_switch", True) else "OFF"}\n'
-            f'图片回复：{"ON" if bot_config.get("send_as_image", True) and not bot_config.get("plain_text_mode", False) else "OFF"}\n'
-            f'歌曲 HTML 卡片：{"ON" if bot_config.get("song_card_html_enable", True) else "OFF"}\n'
-            f'纯文本模式：{"ON" if is_plain_text_mode(plugin_event) else "OFF"}',
+            f'回复模式：{utils.get_reply_mode(plugin_event, bot_config)}\n'
+            f'歌曲 HTML 卡片：{"ON" if bot_config.get("song_card_html_enable", True) else "OFF"}',
         )
         return
     if action == 'on':
@@ -816,12 +832,22 @@ def handle_labot(plugin_event, argument: str) -> None:
         utils.save_bot_config(bot_hash, bot_config)
         reply_text(plugin_event, '当前 Bot 已停用 LanotaPlugin。')
         return
+    if action == 'mode':
+        mode = value.lower()
+        if mode not in ('markdown', 'image', 'text'):
+            reply_text(plugin_event, '用法：.labot mode markdown/image/text')
+            return
+        bot_config['reply_mode'] = mode
+        utils.save_bot_config(bot_hash, bot_config)
+        reply_text(plugin_event, f'当前 Bot 回复模式：{mode}。')
+        return
     if action == 'image':
         if value.lower() not in ['on', 'off']:
             reply_text(plugin_event, '用法：.labot image on/off')
             return
         bot_config['send_as_image'] = value.lower() == 'on'
         bot_config['plain_text_mode'] = not bot_config['send_as_image']
+        bot_config['reply_mode'] = 'image' if bot_config['send_as_image'] else 'text'
         utils.save_bot_config(bot_hash, bot_config)
         reply_text(plugin_event, f'当前 Bot 图片回复已{"开启" if bot_config["send_as_image"] else "关闭"}。')
         return
@@ -840,6 +866,7 @@ def handle_labot(plugin_event, argument: str) -> None:
             return
         bot_config['plain_text_mode'] = value.lower() == 'on'
         bot_config['send_as_image'] = not bot_config['plain_text_mode']
+        bot_config['reply_mode'] = 'text' if bot_config['plain_text_mode'] else 'image'
         utils.save_bot_config(bot_hash, bot_config)
         reply_text(plugin_event, f'当前 Bot 纯文本模式已{"开启" if bot_config["plain_text_mode"] else "关闭"}。')
         return
@@ -864,7 +891,7 @@ def handle_labot(plugin_event, argument: str) -> None:
             return
     reply_text(
         plugin_event,
-        '用法：.labot status/on/off/image on/off/songcard on/off/plain on/off；'
+        '用法：.labot status/on/off、mode markdown/image/text、image on/off、songcard on/off、plain on/off；'
         '管理员请用 .laglobal master list/add/del [用户ID]',
     )
 
@@ -1660,7 +1687,7 @@ def handle_b30(plugin_event, argument: str) -> None:
         b30.attach_cover_urls(card_data)
         image_path = portal.render_b30_card(card_data)
         if image_path:
-            utils.reply_image(plugin_event, image_path, fallback_text)
+            _reply_card(plugin_event, utils.get_reply_mode(plugin_event), [], image_path, fallback_text)
             return
         reply_text(plugin_event, f'{fallback_text}\n\nHTML 截图失败。\n{portal.render_status_text()}')
     except Exception as exception_object:
@@ -1820,7 +1847,7 @@ def handle_user(plugin_event, argument: str) -> None:
         image_path = portal.render_player_card(player_data)
         fallback_text = portal.build_fallback_text(player_data)
         if image_path:
-            utils.reply_image(plugin_event, image_path, fallback_text)
+            _reply_card(plugin_event, utils.get_reply_mode(plugin_event), [], image_path, fallback_text)
             return
         reply_text(plugin_event, f'{fallback_text}\n\nHTML 截图失败。\n{portal.render_status_text()}')
     except Exception as exception_object:
@@ -2200,6 +2227,7 @@ help_categories = {
             '/la off - 在当前群关闭普通命令',
             '/la on - 在当前群开启普通命令',
             '/la bot status/on/off - 查看或修改当前 Bot 开关',
+            '/la bot mode markdown/image/text - 切换回复模式（默认 Markdown；不支持时自动回退）',
             '/la bot songcard on/off - 开关 song/info HTML 卡片（默认开启，关闭后使用兼容文本排版）',
             '/la global status/on/off - 查看或修改全局开关',
             '/la update - 更新本地曲库；发现新曲时自动下载并校正曲绘（仅骰主）',

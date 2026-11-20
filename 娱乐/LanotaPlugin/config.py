@@ -68,6 +68,7 @@ cover_download_workers = 6
 
 default_global_config = {
     'global_enable_switch': True,
+    'markdown_enable_switch': True,
     'global_debug_mode_switch': False,
     'configured_master_list': [],
     'alias_groups': [
@@ -90,6 +91,7 @@ default_global_config = {
 
 default_bot_config = {
     'bot_enable_switch': True,
+    'reply_mode': 'markdown',
     'send_as_image': True,
     'plain_text_mode': False,
     'song_card_html_enable': True,
