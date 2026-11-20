@@ -1951,10 +1951,29 @@ def handle_table(plugin_event, argument: str = '') -> None:
         reply_text(plugin_event, '该标级没有收录定数。可用标级：' + '、'.join(groups))
         return
     levels = [action] if action else list(groups)
-    caption = 'Lanota 民间定数表 · 标级 ' + '、'.join(levels[:3])
-    if len(levels) > 3:
-        caption += f'\n另有 {len(levels) - 3} 段：' + '、'.join(levels[3:]) + '。输入 .la table <标级> 查看。'
-    pages.send(plugin_event, 'table', caption, [pages.table_page(level, groups[level]) for level in levels[:3]])
+    # 按行数切页：高标级往往只有一两行，单独成页会留下大片空白，
+    # 攒够 ~30 行再出一张，最多 3 张。
+    batches, batch_rows, batch_levels = [], [], []
+    for level in levels:
+        batch_rows.extend(groups[level])
+        batch_levels.append(level)
+        if len(batch_rows) >= 30:
+            batches.append((batch_levels, batch_rows))
+            batch_rows, batch_levels = [], []
+    if batch_rows:
+        batches.append((batch_levels, batch_rows))
+    shown = batches[:3]
+    caption = 'Lanota 民间定数表 · 标级 ' + '、'.join(shown[0][0]) if shown else 'Lanota 民间定数表'
+    hidden = batches[3:]
+    if hidden:
+        hidden_levels = [level for batch in hidden for level in batch[0]]
+        caption += f'\n另有 {len(hidden_levels)} 档未画：' + '、'.join(hidden_levels) + '。输入 .la table <标级> 查看。'
+    pages.send(
+        plugin_event,
+        'table',
+        caption,
+        [pages.table_page('、'.join(level_list), rows) for level_list, rows in shown],
+    )
 
 
 help_categories = {

@@ -29,7 +29,7 @@ def event(tmp_path, monkeypatch):
                            plugin_info={'func_type': 'group_message'}, reply=Mock())
 
 
-def test_table_uses_shown_chart_level_not_floor_of_constant(event, monkeypatch):
+def test_table_batches_small_levels_and_uses_chart_level(event, monkeypatch):
     levels = ('14+', '15', '15+', '16')
     songs = [{'chapter': level, 'title': level, 'id': i, 'difficulty': {'master': level}}
              for i, level in enumerate(levels)]
@@ -39,8 +39,13 @@ def test_table_uses_shown_chart_level_not_floor_of_constant(event, monkeypatch):
     monkeypatch.setattr(pages, 'send', send)
     message.handle_table(event, '')
     _, kind, caption, segments = send.call_args.args
-    assert kind == 'table' and '另有 1 段：14+' in caption
-    assert [data['level'] for data, _ in segments] == ['16', '15+', '15']
+    # 每档只有一行时不再单独成页，攒成一张，避免出现大片空白的单行页。
+    assert kind == 'table'
+    [(page, text)] = segments
+    assert page['level'] == '16、15+、15、14+'
+    assert len(page['rows']) == 4
+    assert '中文' not in text
+    assert 'Master 15+' in text and 'Master 14+' in text
     message.handle_table(event, '15')
     [(page, text)] = send.call_args.args[-1]
     assert page['rows'] == [{'constant': '14.8~15.2', 'level': '15', 'difficulty': 'Master', 'id': 1, 'name': '15'}]

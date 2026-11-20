@@ -931,6 +931,8 @@ def _markdown_body(text: str) -> str:
                 lines.pop()
             line = f'**{line}**'
         else:
+            # QQ 客户端会把 `- ` 列表和紧跟的正文并成一段，帮助类文案统一换成间隔点。
+            line = re.sub(r'^[-*]\s+', '· ', line)
             line = re.sub(r'^·\s*([^：]+)：', r'**\1**：', line)
             line = re.sub(r'【([^】]+)】', r'**\1**', line)
         previous_item = item

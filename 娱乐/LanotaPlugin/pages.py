@@ -1,6 +1,7 @@
 """曲库长页的数据与纯文本表示；渲染与发送不访问外部服务。"""
 
 import re
+import time
 from pathlib import Path
 
 from . import function, portal, utils
@@ -89,7 +90,11 @@ def table_groups(songs, constants):
 
 def table_page(level, rows):
     lines = [f'Lanota 民间定数表 · 标级 {level}']
-    lines.extend(f'{r["constant"]} · {r["name"]}（{r["id"]}）· {r["difficulty"]} {level}' for r in rows)
+    # 合并小标级后，每行用自己那一档的标级，别一律套页面的 level。
+    lines.extend(
+        f'{r["constant"]} · {r["name"]}（{r["id"]}）· {r["difficulty"]} {r.get("level", level)}'
+        for r in rows
+    )
     return {'level': level, 'rows': rows}, '\n'.join(lines)
 
 
@@ -127,7 +132,12 @@ def send(event, kind, caption, pages):
         return
     stamps = version(kind)
     images = []
+    started = time.monotonic()
     for data, text in pages:
+        # 一条消息最多等 12 秒：超出的页直接走文字，别让群员干等三张冷渲染。
+        if images and time.monotonic() - started > 12.0:
+            caption += '\n\n' + text
+            continue
         image = portal.render_page(kind, data, stamps)
         if not image:
             image = function.create_text_image(text, user_id=utils.get_sender_id_from_event(event),

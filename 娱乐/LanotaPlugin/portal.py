@@ -43,7 +43,9 @@ compare_cache: dict[str, dict[str, Any]] = {}
 compare_cache_ttl_seconds = 60
 _PAGE_KINDS = ('time', 'table', 'notes', 'report')
 _PAGE_LIMIT = 60
-_PAGE_TIMEOUT = 4.0
+# 冷启动一次 headless 截图实测 2.5~3.4 秒、偶发尖峰超过 4 秒；预算太紧会让长页
+# 频繁回退成文字图。单页放到 9 秒，整体预算在 pages.send 里另算。
+_PAGE_TIMEOUT = 9.0
 _page_cache_lock = threading.Lock()
 _page_pending: dict[Path, Future] = {}
 CHINA_FALLBACK_NOTICE = '现已切换备用 API，部分字段暂无法获取；如需查询完整信息请联系管理员更新 Token。'
@@ -1180,7 +1182,7 @@ def render_page(kind: str, data: dict[str, Any], data_mtime: Any) -> str | None:
                 if not _render_card(data, kind, kind, page_path=pending, deadline=deadline):
                     raise RuntimeError(render_context.error)
                 if time.monotonic() >= deadline:
-                    raise TimeoutError('页面渲染超过 4 秒预算。')
+                    raise TimeoutError('页面渲染超过 %g 秒预算。' % _PAGE_TIMEOUT)
                 with _page_cache_lock:
                     cached = sorted(directory.glob('*.png'), key=lambda path: path.stat().st_mtime_ns)
                     for oldest in cached[:max(0, len(cached) + 1 - _PAGE_LIMIT)]:
