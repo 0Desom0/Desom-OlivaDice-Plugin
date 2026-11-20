@@ -595,13 +595,38 @@ def reply_song_card(
         image_path = None
     if not image_path:
         fallback_text += f'\n\nHTML 卡片截图失败。\n{portal.render_status_text()}'
-    _reply_card(plugin_event, mode, cover_paths, image_path, fallback_text, keyboard)
+    _reply_card(
+        plugin_event,
+        mode,
+        cover_paths,
+        image_path,
+        fallback_text,
+        keyboard,
+        caption=_song_caption(song),
+    )
 
 
-def _reply_card(plugin_event, mode, covers, card, text, keyboard=None) -> None:
+def _song_caption(song) -> str:
+    """Markdown 详情的一行摘要；完整字段由 HTML 卡片呈现。"""
+    difficulty = song.get('difficulty', {})
+    difficulty = difficulty if isinstance(difficulty, dict) else {}
+    master = difficulty.get('master') or difficulty.get('Master') or ''
+    parts = ['**%s**' % (song.get('title') or '未知曲名')]
+    if song.get('artist'):
+        parts.append(str(song['artist']))
+    if master:
+        parts.append('Master %s' % master)
+    if song.get('time'):
+        parts.append(str(song['time']))
+    return ' · '.join(parts)
+
+
+def _reply_card(plugin_event, mode, covers, card, text, keyboard=None, caption=None) -> None:
     if mode == 'markdown':
         images = [card, *covers] if card else covers
-        if utils.reply_markdown(plugin_event, text, images=images, keyboard=keyboard):
+        # 卡片本身就是 HTML 排版，正文只留一行摘要，别把整段字段再抄一遍。
+        body = caption if (caption and card) else text
+        if utils.reply_markdown(plugin_event, body, images=images, keyboard=keyboard):
             return
     if covers:
         utils.reply_image_segments(plugin_event, covers)

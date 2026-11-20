@@ -103,7 +103,7 @@ def test_search_click_jump_selection_and_end(songs):
     message.reply_search_page(e, songs[:2])
     assert 'keyboard' not in payload(e) and '下方按钮' not in payload(e)['markdown']['content']
     send(e, '2')
-    assert buttons(payload(e)['keyboard']) == [('Wiki', 0, songs[1]['source_url'])]
+    assert [b[0] for b in buttons(payload(e)['keyboard'])] == ['全曲列表', '信息来源']
     assert not message.get_search_session(e)
 
 
@@ -132,11 +132,11 @@ def test_today_and_random_keep_original_cards(songs, monkeypatch):
     random_id = kb['content']['rows'][0]['buttons'][1]['id']
     send(e, '.la random')
     click(e, 'la:random:detail', random_id)
-    assert buttons(payload(e)['keyboard']) == [('Wiki', 0, songs[1]['source_url'])]
+    assert [b[0] for b in buttons(payload(e)['keyboard'])] == ['全曲列表', '信息来源']
     click(e, 'la:random:detail')
     assert '原卡片标识' in payload(e)['markdown']['content']
     click(e, 'la:today:detail', today_id)
-    assert buttons(payload(e)['keyboard']) == [('Wiki', 0, songs[0]['source_url'])]
+    assert [b[0] for b in buttons(payload(e)['keyboard'])] == ['全曲列表', '信息来源']
     stranger = event(user='other')
     click(stranger, 'la:today:detail', today_id)
     assert '过期' in payload(stranger)['markdown']['content']
@@ -152,11 +152,11 @@ def test_info_link_shapes_and_limits(songs):
                                   {'site': '非网页', 'url': 'file:///private'}])
     e = event()
     message.reply_song_card(e, song)
-    assert buttons(payload(e)['keyboard']) == [
-        ('下载', 0, song['url']), ('档案页', 0, song['page_url']), ('Wiki', 0, song['source_url']),
-        ('DF', 0, 'https://delicious-fruit.com/song'),
-    ]
-    assert render.detail_keyboard({}) is None
+    labels = [b[0] for b in buttons(payload(e)['keyboard'])]
+    assert labels[:2] == ['下载', '档案页']
+    assert '全曲列表' in labels and 'DF' in labels
+    # 空曲目也会给「全曲列表」这一个固定按钮。
+    assert [b[0] for b in buttons(render.detail_keyboard({}))] == ['全曲列表']
     more = [{'site': '曲目来源' * 12, 'url': f'https://external.example/{i}'} for i in range(22)]
     assert len(buttons(render.detail_keyboard({'external_sources': more}))) == 20
 

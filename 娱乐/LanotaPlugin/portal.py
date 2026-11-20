@@ -1097,6 +1097,7 @@ def _render_card(
                 continue
             if result.returncode == 0 and output_path.exists() and output_path.stat().st_size >= 1000:
                 if page_path is not None:
+                    _trim_page_bottom(output_path)
                     return str(page_path)
                 if card_type == 'song':
                     _crop_song_card(output_path, scale_factor)
@@ -1122,6 +1123,40 @@ def _render_card(
             shutil.rmtree(browser_data_dir, ignore_errors=True)
         except Exception:
             pass
+
+
+def _trim_page_bottom(path: Path, padding: int = 24) -> None:
+    """截掉底部整片背景色：高度是估算出来的，内容短就会留下一大段空白。"""
+    try:
+        from PIL import Image
+    except Exception:
+        return
+    try:
+        with Image.open(path) as image:
+            rgb = image.convert('RGB')
+            width, height = rgb.size
+            if width < 8 or height < 8:
+                return
+            background = rgb.getpixel((width - 4, height - 4))
+            step = max(1, width // 64)
+            last = height - 1
+            while last > 0:
+                row_has_content = False
+                for x in range(0, width, step):
+                    pixel = rgb.getpixel((x, last))
+                    if (abs(pixel[0] - background[0]) > 8
+                            or abs(pixel[1] - background[1]) > 8
+                            or abs(pixel[2] - background[2]) > 8):
+                        row_has_content = True
+                        break
+                if row_has_content:
+                    break
+                last -= 1
+            bottom = min(height, last + 1 + padding)
+            if bottom < height - 4:
+                rgb.crop((0, 0, width, bottom)).save(path, format='PNG', optimize=True)
+    except Exception:
+        return
 
 
 def _page_height(kind: str, data: dict[str, Any]) -> int:
