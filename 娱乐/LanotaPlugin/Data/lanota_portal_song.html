@@ -116,7 +116,7 @@
       text('time', song.time);
       text('generated', new Date().toLocaleString('zh-CN', {hour12: false}));
 
-      const specMeta = [['分类', song.category], ['曲风', song.genre], ['歌手', song.vocals], ['谱师', song.chart_design]];
+      const specMeta = [['分类', song.category_name || song.category], ['曲风', song.genre], ['歌手', song.vocals], ['谱师', song.chart_design || '未知']];
       document.getElementById('spec-grid').innerHTML = specMeta.map(([label, value]) =>
         `<div class="spec"><div class="spec-label">${esc(label)}</div><div class="spec-value">${esc(value || '未记录')}</div></div>`
       ).join('');

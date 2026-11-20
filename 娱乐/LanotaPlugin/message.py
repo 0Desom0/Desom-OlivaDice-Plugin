@@ -587,6 +587,9 @@ def reply_song_card(
         _reply_card(plugin_event, mode, cover_paths, None, fallback_text, keyboard)
         return
     card_song = dict(song)
+    card_song['category_name'] = function.category_name_map.get(
+        song.get('category'), song.get('category')
+    )
     chapter_table = function.load_table_data().get(str(song.get('chapter', '')), {})
     if isinstance(chapter_table, dict):
         card_song['folk_constant'] = {
