@@ -373,7 +373,8 @@ def _callOcr(vc, image_url, trace_id=None):
             model=vc.get('model', ''),
             wire=vc.get('wire', 'openai'),
         )
-        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        r = requests.post(url, headers=headers, json=payload,
+                          timeout=float(vc.get('timeout_sec') or 60))
         if r.status_code != 200:
             OlivaAIAgent.conf.traceLog(
                 OlivaAIAgent.conf.gProc,

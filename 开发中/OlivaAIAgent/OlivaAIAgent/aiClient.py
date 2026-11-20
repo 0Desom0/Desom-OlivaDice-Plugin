@@ -138,6 +138,35 @@ def getAuxiliaryBackendConf(max_tokens=512, temperature=0.0):
     return bc
 
 
+def _retryAttempts(bc, force_no_stream):
+    '''一次模型调用的总尝试次数。流式请求不重试（响应流已开始消费）；
+    后端配置可用 retry_count 覆盖，默认重试 2 次（合计 3 次尝试）。'''
+    if bool(bc.get('stream', False)) and not force_no_stream:
+        return 1
+    try:
+        retries = int(bc.get('retry_count', 2))
+    except Exception:
+        retries = 2
+    return max(1, min(4, retries + 1))
+
+
+def _retryableError(error):
+    '''只有上游瞬时故障才重试：HTTP 5xx、超时、连接中断。4xx（鉴权/参数）重试没有意义。'''
+    text = str(error or '')
+    if not text:
+        return False
+    if '请求超时' in text:
+        return True
+    head = text[:12]
+    if head.startswith('HTTP 5'):
+        return True
+    return any(mark in text for mark in (
+        'ConnectionError', 'ConnectionResetError', 'Connection aborted',
+        'RemoteDisconnected', 'ReadTimeout', 'ConnectTimeout',
+        'ChunkedEncodingError', 'ProtocolError', 'SSLError',
+    ))
+
+
 def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
          response_json=False, thinking_off=False, timeout_override=None, trace_id=None, purpose=None):
     '''执行一次模型调用。
@@ -193,13 +222,38 @@ def chat(messages, tools=None, backend_conf=None, force_no_stream=False,
         if not str(bc.get('api_key', '')) and not str(bc.get('api_url', '')):
             result = {'ok': False, 'text': '', 'tool_calls': [], 'error': '未配置 api_url/api_key，请编辑配置文件'}
         else:
-            wire = bc.get('wire')
-            if wire == 'anthropic':
-                result = _chat_anthropic(bc, messages, tools, force_no_stream, opts)
-            elif wire == 'responses':
-                result = _chat_responses(bc, messages, tools, force_no_stream, opts)
-            else:
-                result = _chat_openai(bc, messages, tools, force_no_stream, opts)
+            max_attempts = _retryAttempts(bc, force_no_stream)
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    wire = bc.get('wire')
+                    if wire == 'anthropic':
+                        result = _chat_anthropic(bc, messages, tools, force_no_stream, opts)
+                    elif wire == 'responses':
+                        result = _chat_responses(bc, messages, tools, force_no_stream, opts)
+                    else:
+                        result = _chat_openai(bc, messages, tools, force_no_stream, opts)
+                except requests.exceptions.Timeout:
+                    result = {'ok': False, 'text': '', 'tool_calls': [], 'error': '请求超时'}
+                except Exception as e:
+                    result = {'ok': False, 'text': '', 'tool_calls': [], 'error': '%s: %s' % (type(e).__name__, e)}
+                if result.get('ok') or attempt >= max_attempts or not _retryableError(result.get('error')):
+                    break
+                if '请求超时' in str(result.get('error') or ''):
+                    # 超时重试代价大（可能再等一个完整 timeout），只允许补一次。
+                    max_attempts = min(max_attempts, attempt + 1)
+                delay = min(4.0, 0.8 * attempt)
+                OlivaAIAgent.conf.traceLog(
+                    OlivaAIAgent.conf.gProc,
+                    'ai.retry',
+                    log_id,
+                    attempt=attempt,
+                    delay=round(delay, 1),
+                    error=str(result.get('error') or '')[:160],
+                    purpose=purpose or '',
+                )
+                time.sleep(delay)
     except requests.exceptions.Timeout:
         result = {'ok': False, 'text': '', 'tool_calls': [], 'error': '请求超时'}
     except Exception as e:
