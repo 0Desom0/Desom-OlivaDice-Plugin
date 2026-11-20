@@ -8,8 +8,10 @@ import os
 import re
 import shutil
 import threading
+import time
 import traceback
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, wait
 from functools import wraps
 from typing import Any, Iterable
 
@@ -29,6 +31,13 @@ file_lock = threading.RLock()
 runtime_proc = None
 reply_segment_pattern = re.compile(r'^\[(?:OP|CQ):reply(?:,[^\]]*)?\]', re.IGNORECASE)
 at_segment_pattern = re.compile(r'^\[(?:OP|CQ):at,(?P<params>[^\]]*)\]', re.IGNORECASE)
+
+_COVER_WORKERS = 3
+_COVER_TIMEOUT = 8
+_COVER_BATCH_TIMEOUT = 12
+_COVER_MAX_BYTES = 10 * 1024 * 1024
+_cover_pool = ThreadPoolExecutor(max_workers=_COVER_WORKERS, thread_name_prefix='CelesteCover')
+_cover_write_lock = threading.Lock()
 
 
 def safe_str(value: Any, default_value: str = '') -> str:
@@ -754,44 +763,100 @@ def trim_cover_cache() -> int:
     return removed
 
 
-def prepare_local_image(url: str) -> str:
-    """取封面并返回适配器可读的相对资源路径；命中缓存不再重新下载。
-
-    适配器自己下载远程图只有 5 秒超时，WEGFan 实测 4.7~9.1 秒，一超时整条
-    Markdown 就被降级成图文/纯文本。这里用 15 秒超时自己落盘。
-    文件留在 data/images/CelestePlugin/covers 里复用（发送后不删），
-    超过 cover_cache_max_items（默认 100）张时淘汰最久未使用的。
-    """
-    source = safe_str(url).strip()
-    if not source.startswith(('http://', 'https://')):
-        return ''
-    digest = hashlib.sha1(source.encode('utf-8')).hexdigest()
+def _cached_cover(folder: str, digest: str) -> str:
     for suffix in ('.jpg', '.png'):
-        cached_path = os.path.join(get_cover_cache_dir(), digest + suffix)
-        if os.path.isfile(cached_path) and os.path.getsize(cached_path) > 0:
-            try:
-                # 命中即刷新使用时间，避免常发的图被新图挤掉。
-                os.utime(cached_path, None)
-            except OSError:
-                pass
-            return 'CelestePlugin/covers/' + digest + suffix
-    headers = {'User-Agent': config.bot_user_agent}
-    for _attempt in range(2):
+        path = os.path.join(folder, digest + suffix)
         try:
-            request = urllib.request.Request(source, headers=headers)
-            with urllib.request.urlopen(request, timeout=15) as response:
-                data = response.read(10 * 1024 * 1024 + 1)
-            if not data or len(data) > 10 * 1024 * 1024:
+            if os.path.getsize(path) <= 0:
                 continue
-            suffix = '.png' if data[:8] == b'\x89PNG\r\n\x1a\n' else '.jpg'
-            file_name = digest + suffix
-            with open(os.path.join(get_cover_cache_dir(), file_name), 'wb') as handle:
-                handle.write(data)
-            trim_cover_cache()
-            return 'CelestePlugin/covers/' + file_name
-        except Exception:
+        except OSError:
             continue
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+        return 'CelestePlugin/covers/' + digest + suffix
     return ''
+
+
+def _download_cover(source: str) -> bytearray | bytes:
+    deadline = time.monotonic() + _COVER_TIMEOUT
+    request = urllib.request.Request(source, headers={'User-Agent': config.bot_user_agent})
+    with urllib.request.urlopen(request, timeout=_COVER_TIMEOUT) as response:
+        # socket 超时只限制单次读；持续缓慢传输的封面也不能无限占用工作线程。
+        data = bytearray()
+        while time.monotonic() < deadline:
+            chunk = response.read1(min(64 * 1024, _COVER_MAX_BYTES + 1 - len(data)))
+            if not chunk:
+                return data if time.monotonic() < deadline else b''
+            data.extend(chunk)
+            if len(data) > _COVER_MAX_BYTES:
+                break
+    return b''
+
+
+def _store_cover(folder: str, digest: str, data: bytes | bytearray) -> str:
+    name = digest + ('.png' if data.startswith(b'\x89PNG\r\n\x1a\n') else '.jpg')
+    path = os.path.join(folder, name)
+    # 读缓存不加锁；原子替换确保别的消息只会读到完整的图。
+    temporary = path + '.tmp'
+    try:
+        with open(temporary, 'wb') as handle:
+            handle.write(data)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return 'CelestePlugin/covers/' + name
+
+
+def _prepare_local_images(images: dict[str, str]) -> dict[str, str]:
+    started = time.monotonic()
+    try:
+        folder = get_cover_cache_dir()
+    except OSError as exc:
+        error_log(runtime_proc, f'无法访问封面缓存：{exc}')
+        return {}
+    sources = {label: safe_str(url).strip() for label, url in images.items()}
+    paths = {}
+    pending = {}
+    for url in dict.fromkeys(sources.values()):
+        if not url.startswith(('http://', 'https://')):
+            continue
+        digest = hashlib.sha1(url.encode('utf-8')).hexdigest()
+        cached = _cached_cover(folder, digest)
+        if cached:
+            paths[url] = cached
+        else:
+            pending[_cover_pool.submit(_download_cover, url)] = (url, digest)
+    if pending:
+        # 共用工作池；到期只取已完成项，不能退出 with 等慢下载收尾。
+        budget = _COVER_TIMEOUT if len(pending) <= _COVER_WORKERS else _COVER_BATCH_TIMEOUT
+        done, unfinished = wait(pending, timeout=max(0, started + budget - time.monotonic()))
+        for future in unfinished:
+            future.cancel()
+        cached_count = len(paths)
+        with _cover_write_lock:
+            for future, (url, digest) in pending.items():
+                if future not in done:
+                    continue
+                try:
+                    data = future.result()
+                    if data:
+                        paths[url] = _store_cover(folder, digest, data)
+                except Exception as exc:
+                    error_log(runtime_proc, f'封面准备失败：{url}：{exc}')
+            if len(paths) > cached_count and trim_cover_cache():
+                # 缓存上限可能比本批图片数还低；不能把已淘汰的文件交给适配器。
+                paths = {url: path for url, path in paths.items() if os.path.isfile(
+                    os.path.join(folder, os.path.basename(path))
+                )}
+    return {label: paths[url] for label, url in sources.items() if url in paths}
+
+
+def prepare_local_image(url: str) -> str:
+    """取单张封面；与多图回复共用缓存、超时和并发上限。"""
+    return _prepare_local_images({'cover': url}).get('cover', '')
 
 
 def release_local_image(resource: str) -> None:
@@ -849,14 +914,14 @@ def reply_markdown(plugin_event, markdown_text: str, keyboard=None, *, images=No
     if images:
         if not is_qq_chat:
             return False
-        # 先自己把封面落到本地：适配器 5 秒下载超时会让整条 Markdown 回退成纯文本。
-        local_images = {}
-        for label, resource in images.items():
-            local_path = prepare_local_image(resource)
-            if local_path:
-                local_images[label] = local_path
+        local_images = _prepare_local_images(images)
         if local_images:
             payload['local_images'] = local_images
+            for label in images.keys() - local_images.keys():
+                # 仅移除失败封面的占位行，保留其他封面和正文原有的空行。
+                placeholder = re.escape('{{' + label + '}}')
+                content = re.sub(placeholder + r'\n*', '', content)
+            payload['markdown']['content'] = content
         else:
             # 封面全部拿不到时把占位符去掉，正文照常发 Markdown。
             payload['markdown']['content'] = re.sub(

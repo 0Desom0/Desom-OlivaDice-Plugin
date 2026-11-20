@@ -2,10 +2,14 @@
 """CelestePlugin 纯业务逻辑测试（WEGFan 单一数据源版本）。"""
 
 import copy
+import io
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import wait
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -719,6 +723,112 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertGreater(stat.st_mtime, old + 1)
         self.assertLess(abs(stat.st_mtime - time.time()), 120)
 
+    def test_cold_covers_overlap_and_failed_label_does_not_change_reply(self):
+        folder = self.temporary_dir.name
+        barrier = threading.Barrier(3)
+        png = b'\x89PNG\r\n\x1a\npixels'
+        jpg = b'\xff\xd8pixels'
+        images = {label: 'https://example.org/' + label for label in ('first', 'bad', 'last')}
+        images['repeat'] = images['first']
+
+        def open_cover(request, timeout):
+            barrier.wait(timeout=3)  # 串行实现无法让三个下载同时到达这里。
+            self.assertEqual(timeout, 8)
+            if request.full_url == images['bad']:
+                raise TimeoutError('unavailable')
+            return io.BytesIO(png if request.full_url == images['first'] else jpg)
+
+        sender = mock.Mock(return_value={'active': True})
+        event = SimpleNamespace(
+            data=SimpleNamespace(extend={'chat_type': 'qq_private', 'chat_id': 'here'}, message_id='42'),
+            indeAPI=SimpleNamespace(create_markdown_message=sender), plugin_info={'func_type': 'private_message'},
+        )
+        text = 'intro\n\n{{first}}\n\n{{bad}}\n\n{{last}}\n\n{{repeat}}\n\nfooter'
+        keyboard = {'content': {'rows': []}}
+        with (
+            mock.patch.object(utils, 'get_cover_cache_dir', return_value=folder),
+            mock.patch.object(utils, 'load_global_config', return_value={}),
+            mock.patch.object(utils.urllib.request, 'urlopen', side_effect=open_cover) as download,
+            mock.patch.object(utils, 'error_log') as log,
+        ):
+            self.assertTrue(utils.reply_markdown(event, text, keyboard, images=images))
+            self.assertEqual(download.call_count, 3)
+            log.assert_called_once()
+            payload = sender.call_args.kwargs
+            paths = payload['local_images']
+            self.assertEqual(list(paths), ['first', 'last', 'repeat'])
+            self.assertEqual(paths['first'], paths['repeat'])
+            self.assertEqual((Path(folder) / Path(paths['first']).name).read_bytes(), png)
+            self.assertEqual((Path(folder) / Path(paths['last']).name).read_bytes(), jpg)
+            self.assertEqual(payload['markdown']['content'], text.replace('{{bad}}\n\n', ''))
+            self.assertEqual(payload['msg_id'], '42')
+            self.assertEqual(payload['keyboard'], keyboard)
+            hot_images = {label: images[label] for label in paths}
+            with mock.patch.object(utils._cover_pool, 'submit') as submit, mock.patch.object(utils, 'wait') as join:
+                self.assertTrue(utils.reply_markdown(
+                    event, payload['markdown']['content'], keyboard, images=hot_images,
+                ))
+            submit.assert_not_called()
+            join.assert_not_called()
+            self.assertEqual(sender.call_args.kwargs, payload)
+
+    def test_reply_omits_covers_evicted_by_small_cache_limit(self):
+        folder = Path(self.temporary_dir.name)
+        images = {'a': 'https://example.org/a', 'b': 'https://example.org/b'}
+        with (
+            mock.patch.object(utils, 'get_cover_cache_dir', return_value=str(folder)),
+            mock.patch.object(utils, 'get_cover_cache_limit', return_value=1),
+            mock.patch.object(utils, '_download_cover', return_value=b'pixels'),
+        ):
+            paths = utils._prepare_local_images(images)
+        self.assertEqual(len(paths), 1)
+        self.assertEqual([path.name for path in folder.iterdir()], [Path(next(iter(paths.values()))).name])
+
+    def test_cover_batch_deadline_sends_without_waiting_for_running_downloads(self):
+        # 三个 worker 都阻塞时模拟整批到期。第四张仍在排队，不能拖延正文或在后台写缓存。
+        started = threading.Barrier(4)
+        release = threading.Event()
+        tasks = []
+
+        def blocked_download(url):
+            started.wait(timeout=3)
+            if not release.wait(timeout=5):
+                raise TimeoutError('reply waited for a download past its deadline')
+            return b'late'
+
+        def reach_deadline(futures, timeout):
+            self.assertEqual(timeout, 12)
+            tasks.extend(futures)
+            started.wait(timeout=3)
+            return wait(futures, timeout=0)
+
+        sender = mock.Mock(return_value={'active': True})
+        event = SimpleNamespace(
+            data=SimpleNamespace(extend={'chat_type': 'qq_private', 'chat_id': 'here'}),
+            indeAPI=SimpleNamespace(create_markdown_message=sender), plugin_info={'func_type': 'private_message'},
+        )
+        images = {str(n): f'https://example.org/{n}' for n in range(4)}
+        text = 'before\n\n' + ''.join('{{' + label + '}}\n\n' for label in images) + 'after'
+        try:
+            with (
+                mock.patch.object(utils, 'get_cover_cache_dir', return_value=self.temporary_dir.name),
+                mock.patch.object(utils, 'load_global_config', return_value={}),
+                mock.patch.object(utils, '_download_cover', side_effect=blocked_download),
+                mock.patch.object(utils, 'time', SimpleNamespace(monotonic=lambda: 100.0)),
+                mock.patch.object(utils, 'wait', side_effect=reach_deadline),
+            ):
+                self.assertTrue(utils.reply_markdown(event, text, images=images))
+                self.assertEqual(sender.call_args.kwargs['markdown']['content'], 'before\n\nafter')
+                self.assertNotIn('local_images', sender.call_args.kwargs)
+                self.assertEqual(sum(task.running() for task in tasks), 3)
+                self.assertTrue(tasks[-1].cancelled())
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.cancelled():
+                    task.result(timeout=3)
+        self.assertEqual(list(Path(self.temporary_dir.name).iterdir()), [])
+
     def test_render_random_summary_returns_images(self):
         items = [function.normalize_wegfan_item(sample_search_item())]
         text, keyboard, images = render.render_random_summary(items)
@@ -748,7 +858,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
 
         with (
             mock.patch.object(utils, 'load_global_config', return_value={}),
-            mock.patch.object(utils, 'prepare_local_image', return_value='/tmp/cover.jpg'),
+            mock.patch.object(utils, '_prepare_local_images', return_value={'地图封面': '/tmp/cover.jpg'}),
         ):
             ok = utils.reply_markdown(
                 FakeEvent(), 'body', {'content': {'rows': []}}, images={'地图封面': 'https://x/y.jpg'}
