@@ -153,7 +153,7 @@ def test_info_link_shapes_and_limits(songs):
     e = event()
     message.reply_song_card(e, song)
     labels = [b[0] for b in buttons(payload(e)['keyboard'])]
-    assert labels[:2] == ['下载', '档案页']
+    assert labels[:2] == ['档案页', '全曲列表']
     assert '全曲列表' in labels and 'DF' in labels
     # 空曲目也会给「全曲列表」这一个固定按钮。
     assert [b[0] for b in buttons(render.detail_keyboard({}))] == ['全曲列表']

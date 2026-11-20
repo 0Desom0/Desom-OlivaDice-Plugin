@@ -54,7 +54,6 @@ SONG_LIST_URL = 'https://lanota.fandom.com/wiki/Songs'
 
 def detail_keyboard(song):
     links = [
-        ('下载', song.get('download_url') or song.get('url')),
         ('档案页', song.get('page_url')),
         ('全曲列表', SONG_LIST_URL),
         ('信息来源', song.get('page_url') or song.get('source_url')),
