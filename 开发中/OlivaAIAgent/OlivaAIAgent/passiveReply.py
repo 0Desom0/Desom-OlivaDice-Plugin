@@ -5,7 +5,10 @@ import threading
 import time
 
 
-_TTL_SECONDS = 300.0
+# 2026-11-17 起群聊被动回复有效期由 5 分钟延长至 60 分钟，单聊本来就是 60 分钟。
+_TTL_SECONDS = 3600.0
+# 群聊条数上限按机器人在群里的角色浮动（普通成员 5 次、群主/管理员 50 次），
+# 实际取值走 OlivOS 的公开接口 get_qq_group_passive_limit。
 _MAX_USES = {
     'qq_group': 5,
     'qq_private': 4,
@@ -20,6 +23,20 @@ def _clean(value):
     if value in [None, '', '-1', -1]:
         return None
     return str(value)
+
+
+def _group_max_uses(plugin_event, group_id):
+    '''群消息被动回复上限：普通成员 5 次，机器人是群主/管理员 50 次。'''
+    try:
+        import OlivOS
+
+        bot_info = OlivOS.qqGuildv2SDK.get_SDK_bot_info_from_Plugin_bot_info(
+            plugin_event.bot_info
+        )
+        limit = OlivOS.qqGuildv2SDK.get_qq_group_passive_limit(bot_info, group_id)
+        return int(limit)
+    except Exception:
+        return _MAX_USES['qq_group']
 
 
 def _context(plugin_event):
@@ -54,7 +71,11 @@ def _context(plugin_event):
             'chat_type': chat_type,
             'chat_id': chat_id,
             'message_id': message_id,
-            'max_uses': _MAX_USES[chat_type],
+            'max_uses': (
+                _group_max_uses(plugin_event, chat_id)
+                if chat_type == 'qq_group'
+                else _MAX_USES[chat_type]
+            ),
         }
     except Exception:
         return None

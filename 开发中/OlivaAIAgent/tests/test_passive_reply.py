@@ -2,7 +2,9 @@
 
 import types
 import unittest
+import unittest.mock
 
+import OlivOS
 import OlivaAIAgent
 
 
@@ -92,7 +94,8 @@ class PassiveReplyTest(unittest.TestCase):
         old = FakeEvent('old')
         self._register(old)
         key = ('bot-hash', 'qq_group', 'group-1')
-        OlivaAIAgent.passiveReply._credentials[key]['old']['seen_at'] -= 301
+        # 群聊被动回复有效期 2026-11-17 起为 60 分钟，过期的判定线跟着后移。
+        OlivaAIAgent.passiveReply._credentials[key]['old']['seen_at'] -= 3601
         current = FakeEvent('current')
         self._register(current)
 
@@ -101,6 +104,33 @@ class PassiveReplyTest(unittest.TestCase):
 
         self.assertEqual(['current'] * 5, [item[1] for item in current.replies[:5]])
         self.assertEqual([('group', 'group-1', '正文')], current.sends)
+
+    def test_credential_survives_the_old_five_minute_window(self):
+        event = FakeEvent('long-lived')
+        self._register(event)
+        key = ('bot-hash', 'qq_group', 'group-1')
+        OlivaAIAgent.passiveReply._credentials[key]['long-lived']['seen_at'] -= 1800
+
+        event.reply('正文')
+
+        self.assertEqual([('正文', 'long-lived')], event.replies)
+        self.assertEqual([], event.sends)
+
+    def test_group_uses_fifty_replies_for_administrator(self):
+        with unittest.mock.patch.object(
+            OlivOS.qqGuildv2SDK, 'get_SDK_bot_info_from_Plugin_bot_info', lambda info: info
+        ), unittest.mock.patch.object(
+            OlivOS.qqGuildv2SDK, 'get_qq_group_passive_limit', lambda bot_info, group_id: 50
+        ):
+            event = FakeEvent('current')
+            self._register(event)
+            for _ in range(50):
+                event.reply('正文')
+            self.assertEqual([], event.sends)
+
+            event.reply('第 51 条')
+
+            self.assertEqual([('group', 'group-1', '第 51 条')], event.sends)
 
     def test_new_message_restores_passive_reply_after_active_fallback(self):
         current = FakeEvent('current')

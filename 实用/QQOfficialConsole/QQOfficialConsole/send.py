@@ -67,17 +67,23 @@ class Sender:
             allow_active_fallback=False,
         )
 
-    def _tokens(self, bot_hash, chat_type, chat_id, force):
+    def _tokens(self, bot_hash, chat_type, chat_id, force, limit=None):
         if force or self.pool is None:
             return []
-        return self.pool.candidates(bot_hash, chat_type, chat_id)
+        return self.pool.candidates(bot_hash, chat_type, chat_id, limit=limit)
 
     def _attempt(self, payload, make_api, stream=False, stream_parts=None):
         bot_hash = payload['bot_hash']
         chat_type, chat_id = payload['chat_type'], payload['chat_id']
         lock = self.pool.send_lock(bot_hash, chat_type, chat_id) if self.pool else nullcontext()
         with lock:
-            tokens = self._tokens(bot_hash, chat_type, chat_id, payload.get('force_active', False))
+            tokens = self._tokens(
+                bot_hash,
+                chat_type,
+                chat_id,
+                payload.get('force_active', False),
+                payload.get('passive_limit'),
+            )
             for token in [*tokens, None]:
                 api = make_api()
                 if token and not self.pool.mark_used(

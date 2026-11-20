@@ -3790,6 +3790,37 @@
             copy(m.platform_message_id || m.ref_idx || ""),
           ),
         );
+        // 群消息私聊回复（2026-11-17）：群消息的 msg_id 也能用于发单聊消息，
+        // 私聊回复这条消息的发送者；要求互为好友，次数与群内回复共用。
+        if (
+          state.chat?.chat_type === "qq_group" &&
+          m.direction === "in" &&
+          m.sender_id &&
+          !m.recalled
+        )
+          list.append(
+            actionItem("✉", "私聊回复", "用这条群消息作凭据，私聊回复发送者", async () => {
+              if (
+                !confirm(
+                  `切到与「${m.sender_name || m.sender_id}」的单聊？之后发的消息会用上面这条群消息作被动凭据。`,
+                )
+              )
+                return;
+              try {
+                const r = await api("PrivateReply", { ...ctx(), message_id: m.id });
+                closeDialog();
+                await loadChats();
+                const target = (state.chats || []).find(
+                  (c) => c.chat_type === "qq_private" && c.chat_id === r.chat_id,
+                );
+                if (!target) return notice("单聊会话还没就绪，请稍后重试");
+                await openChat(target);
+                notice("已切到单聊：回复会以这条群消息作被动凭据");
+              } catch (e) {
+                error(e);
+              }
+            }),
+          );
         const role = state.chat?.self_role,
           admin = role === "admin" || role === "owner",
           // 官方接口只给群聊提供撤回，单聊的消息菜单里不出现这一项。

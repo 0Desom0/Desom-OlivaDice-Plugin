@@ -843,7 +843,9 @@ class Store:
     @staticmethod
     def _insert_token(db, chat_type, token, created_at=None):
         created_at = int(token.get('created_at', created_at or time.time()))
-        ttl, maximum = (300, 5) if chat_type == 'qq_group' else (3600, 4)
+        # 2026-11-17 起群聊被动回复有效期同为 60 分钟；条数上限按机器人在群里的角色
+        # 在读取时收窄（普通成员 5 次、群主/管理员 50 次），库里先存平台允许的最大值。
+        ttl, maximum = (3600, 50) if chat_type == 'qq_group' else (3600, 4)
         if token['id_type'] not in ('msg_id', 'event_id'):
             raise ValueError('invalid token type')
         Store._prune_tokens(db)

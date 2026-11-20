@@ -578,6 +578,16 @@ class Bridge:
             chat = self.store.upsert_chat(bot, 'qq_group', chat_id, **fields)
         return result, chat
 
+    def _group_reply_limit(self, bot, chat_id):
+        """群消息被动回复上限：普通成员 5 次、群主/管理员 50 次（2026-11-17 起）。"""
+        chat = self.store.get_chat(bot, 'qq_group', chat_id) or {}
+        # 角色记录超过 10 分钟就补一次；打开群会话时也会刷新，常规路径不额外打接口。
+        if time.time() - (chat.get('role_updated_at') or 0) >= 600:
+            result, refreshed = self._role(self._event(bot), bot, chat_id)
+            if result['ok'] and refreshed:
+                chat = refreshed
+        return 50 if chat.get('self_role') in ('admin', 'owner') else 5
+
     def kick_group_member(self, bot_hash, group_openid, member_openid, blacklist=False):
         """把成员移出群聊，返回桥接结果。
 
@@ -945,7 +955,8 @@ class Bridge:
                 ),
             )
         if action == 'PassiveStatus':
-            return dict(ok, token=self.pool.status(bot, chat_type, chat_id))
+            limit = self._group_reply_limit(bot, chat_id) if chat_type == 'qq_group' else None
+            return dict(ok, token=self.pool.status(bot, chat_type, chat_id, limit=limit))
         if action == 'ListMembers' and not p.get('refresh'):
             return dict(ok, members=self.roster.list_members(bot, chat_type, chat_id, str(p.get('query') or '')))
         event = self._event(bot)
@@ -970,6 +981,9 @@ class Bridge:
                 isinstance(x, dict) and x.get('id') == 'all' for x in (p.get('at') or [])
             )
             payload = dict(p)
+            # 群聊被动回复条数按机器人在群里的角色封顶，普通成员 5 次、群主/管理员 50 次。
+            if chat_type == 'qq_group':
+                payload['passive_limit'] = self._group_reply_limit(bot, chat_id)
             sender = Sender(event, self.pool, self.media)
             if at_all:
                 denied = (
@@ -1020,6 +1034,55 @@ class Bridge:
             )
             result['images'] = sender.sent_images
             return result
+        if action == 'PrivateReply':
+            # 群消息私聊回复（2026-11-17）：群消息的 msg_id 也能用于发单聊消息，
+            # 私聊回复该消息的发送者；要求互为好友，有效期与次数按群消息规则算。
+            if chat_type != 'qq_group':
+                return errors.failure('仅群消息支持私聊回复')
+            try:
+                local_id = int(p.get('message_id'))
+            except (TypeError, ValueError):
+                raise ValueError()
+            with self.store.session(bot, chat_type, chat_id) as db:
+                row = db.execute('SELECT * FROM messages WHERE id=?', (local_id,)).fetchone()
+                row = dict(row) if row else None
+            if row is None or row['direction'] != 'in' or row['recalled']:
+                return errors.failure('消息不存在')
+            target = str(row['sender_id'] or '')
+            platform_id = str(row['platform_message_id'] or '')
+            if not target:
+                return errors.failure('这条消息没有发送者')
+            if not platform_id:
+                return errors.failure('这条消息没有可用的消息ID')
+            # 单聊会话按发送者 openid 建；列表里没有也能立刻出现。
+            self.store.upsert_chat(
+                bot,
+                'qq_private',
+                target,
+                display_name=row['sender_name'] or None,
+                last_message_at=int(time.time()),
+            )
+            # 同一个 msg_id 在群里已经用掉的次数要带过来，两边共用一个上限。
+            self.pool.import_from(
+                bot,
+                'qq_private',
+                target,
+                chat_type,
+                chat_id,
+                'msg_id',
+                platform_id,
+                created_at=row['created_at'],
+            )
+            token = self.pool.status(
+                bot, 'qq_private', target, limit=self._group_reply_limit(bot, chat_id)
+            )
+            return dict(
+                ok,
+                chat_type='qq_private',
+                chat_id=target,
+                display_name=row['sender_name'],
+                token=token,
+            )
         if action == 'Recall':
             # 官方接口只支持群聊消息撤回；单聊既不显示入口，这里也直接拒绝，不去打平台接口。
             if chat_type != 'qq_group':
