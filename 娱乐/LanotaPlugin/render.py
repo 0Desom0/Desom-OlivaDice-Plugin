@@ -80,13 +80,28 @@ def detail_keyboard(song):
     return keyboard(buttons)
 
 
-def selection_keyboard(entry, song_id, *, callbacks_for=None):
+def selection_keyboard(entry, song_id, *, callbacks_for=None, regions=None):
+    """详情入口按绑定区域生成：未绑定不给按钮，绑定两个服就给两个。"""
     today = entry == 'today'
-    label = '完整详情' if today else '查看详情'
     action = f'la:{entry}:detail'
-    if callbacks_for:
-        detail = button(label, action, kind=1, user_id=callbacks_for, button_id=f'{action}:{song_id}')
-    else:
-        detail = cmd_input(label, f'.la info {song_id}', enter=True)
+    regions = [region for region in (regions or []) if region][:2]
+    details = []
+    for region in regions:
+        label = '个人详情' + (f'·{REGION_LABELS.get(region, region)}' if len(regions) > 1 else '')
+        if callbacks_for:
+            details.append(button(
+                label,
+                action,
+                kind=1,
+                user_id=callbacks_for,
+                button_id=f'{action}:{song_id}:{region}',
+            ))
+        else:
+            command = f'.la info {song_id}' if region == 'global' else f'.la info {region} {song_id}'
+            details.append(cmd_input(label, command, enter=True))
     random = cmd_input('换一首随机' if today else '再来一首', '.la random', enter=True)
-    return keyboard([detail, random] if today else [random, detail])
+    row = ([*details, random] if today else [random, *details])
+    return keyboard(row)
+
+
+REGION_LABELS = {'global': '国际服', 'china': '国服'}

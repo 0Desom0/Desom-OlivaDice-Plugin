@@ -309,7 +309,7 @@ def handle_button_click(plugin_event, Proc) -> None:
             return
         selected = matches[0] if matches else None
     if selected:
-        _open_search_result(plugin_event, selected['song'], 'info')
+        _open_search_result(plugin_event, selected['song'], 'info', selected.get('region'))
     else:
         reply_text(plugin_event, '这张曲目卡已过期，请重新选曲。')
 
@@ -384,13 +384,22 @@ def reply_song_detail(plugin_event, header: str, song: dict[str, Any], *, entry:
     cover_paths = crawler.ensure_song_covers(song) if utils.load_global_config().get('send_cover_art', True) else []
     if mode == 'markdown':
         owner = utils.group_callback_user(plugin_event)
-        kb = render.selection_keyboard(entry, song['id'], callbacks_for=owner) if entry else None
+        bound_regions = _bound_regions(plugin_event)
+        kb = (
+            render.selection_keyboard(entry, song['id'], callbacks_for=owner, regions=bound_regions)
+            if entry else None
+        )
         if utils.reply_markdown(plugin_event, message_text, images=cover_paths, keyboard=kb):
             if entry and owner:
                 clear_expired_sessions()
                 key = build_session_key(plugin_event)
                 action = f'la:{entry}:detail'
-                selection_cards[key, action, f'{action}:{song["id"]}'] = {'song': song, 'updated_at': time.time()}
+                for region in bound_regions:
+                    selection_cards[key, action, f'{action}:{song["id"]}:{region}'] = {
+                        'song': song,
+                        'region': region,
+                        'updated_at': time.time(),
+                    }
             return
     if not cover_paths:
         _reply_legacy_text(plugin_event, message_text, config.image_max_chars, mode)
@@ -559,10 +568,11 @@ def reply_song_card(
     if mode == 'markdown' and utils.is_qq_channel(plugin_event):
         utils.reply_message(plugin_event, fallback_text)
         return
+    bound_regions = _bound_regions(plugin_event)
     keyboard = render.detail_keyboard(song) if mode == 'markdown' else None
     if mode == 'markdown' and entry:
         owner = utils.group_callback_user(plugin_event)
-        extra = render.selection_keyboard(entry, song.get('id'), callbacks_for=owner)
+        extra = render.selection_keyboard(entry, song.get('id'), callbacks_for=owner, regions=bound_regions)
         rows = list(extra['content']['rows'])
         if keyboard:
             rows += list(keyboard['content']['rows'])
@@ -571,7 +581,12 @@ def reply_song_card(
             clear_expired_sessions()
             key = build_session_key(plugin_event)
             action = f'la:{entry}:detail'
-            selection_cards[key, action, f'{action}:{song.get('id')}'] = {'song': song, 'updated_at': time.time()}
+            for region in bound_regions:
+                selection_cards[key, action, f'{action}:{song.get('id')}:{region}'] = {
+                    'song': song,
+                    'region': region,
+                    'updated_at': time.time(),
+                }
 
     global_config = utils.load_global_config()
     cover_paths = []
@@ -689,6 +704,11 @@ def _prepare_song_for_query(song: dict[str, Any]) -> tuple[dict[str, Any], str]:
     if error:
         return updated_song, f'已尝试从官方曲目目录补全 songId 和定数，但未成功：{error}'
     return updated_song, '官方曲目目录中暂未找到这首歌的 songId 和定数。'
+
+
+def _bound_regions(plugin_event) -> list[str]:
+    """已绑定的区域列表，按国际服、国服的顺序。"""
+    return [region for region in ('global', 'china') if portal.get_bound_nano_id(plugin_event, region)]
 
 
 def _has_info_binding(plugin_event, region: str | None) -> bool:

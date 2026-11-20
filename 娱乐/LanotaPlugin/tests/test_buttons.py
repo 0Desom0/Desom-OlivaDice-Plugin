@@ -123,15 +123,21 @@ def test_today_and_random_keep_original_cards(songs, monkeypatch):
     send(e, '.la today')
     kb = payload(e)['keyboard']
     labels = [b[0] for b in buttons(kb)]
-    assert labels[:2] == ['完整详情', '换一首随机']
+    # 未绑定玩家时不给「个人详情」，只留换一首和固定链接。
+    assert labels[0] == '换一首随机'
     assert '全曲列表' in labels
+    monkeypatch.setattr(message.portal, 'get_bound_nano_id', lambda _e, region: 'nano' if region == 'global' else '')
+    send(e, '.la today')
+    kb = payload(e)['keyboard']
+    labels = [b[0] for b in buttons(kb)]
+    assert labels[:2] == ['个人详情', '换一首随机']
     today_id = kb['content']['rows'][0]['buttons'][0]['id']
     picks = iter((1, 2))
     monkeypatch.setattr(function, 'random_index', lambda _: next(picks))
     send(e, '.la random')
     kb = payload(e)['keyboard']
     labels = [b[0] for b in buttons(kb)]
-    assert labels[:2] == ['再来一首', '查看详情']
+    assert labels[:2] == ['再来一首', '个人详情']
     assert '全曲列表' in labels
     random_id = kb['content']['rows'][0]['buttons'][1]['id']
     send(e, '.la random')
@@ -170,7 +176,7 @@ def test_private_commands_and_channel_body_only(songs):
     message.reply_search_page(e, songs)
     assert buttons(payload(e)['keyboard']) == [('下一页', 2, '.la 跳页 2'), ('跳页', 2, '.la 跳页 ')]
     message.reply_song_detail(e, '随机乐曲', songs[0], entry='random')
-    assert buttons(payload(e)['keyboard']) == [('再来一首', 2, '.la random'), ('查看详情', 2, '.la info 1')]
+    assert buttons(payload(e)['keyboard']) == [('再来一首', 2, '.la random')]
     channel = event(kind='guild_channel')
     message.reply_search_page(channel, songs)
     message.reply_song_detail(channel, '今日曲', songs[0], entry='today')
@@ -205,3 +211,19 @@ def test_click_fallback_uses_interaction_not_generic_reply():
         'qq_group', 'group', '搜索已结束或过期，请重新搜索。', event_id='interaction',
     )
     e.reply.assert_not_called()
+
+
+def test_personal_detail_splits_when_two_regions_bound(songs, monkeypatch):
+    e = event()
+    monkeypatch.setattr(function, 'get_user_today_song', lambda *_: songs[0])
+    monkeypatch.setattr(message.portal, 'get_bound_nano_id', lambda _e, region: f'nano-{region}')
+    send(e, '.la today')
+    kb = payload(e)['keyboard']
+    labels = [b[0] for b in buttons(kb)]
+    assert labels[:3] == ['个人详情·国际服', '个人详情·国服', '换一首随机']
+    ids = [row['buttons'][0].get('id') for row in kb['content']['rows'][:1]]
+    assert ids == ['la:today:detail:1:global']
+    row_buttons = kb['content']['rows'][0]['buttons']
+    assert [item.get('id') for item in row_buttons][:2] == [
+        'la:today:detail:1:global', 'la:today:detail:1:china',
+    ]
