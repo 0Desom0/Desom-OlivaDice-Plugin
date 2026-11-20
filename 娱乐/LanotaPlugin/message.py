@@ -535,6 +535,8 @@ def reply_song_card(
     player_data: dict[str, Any] | None = None,
     score_rows: list[dict[str, Any]] | None = None,
     notice: str = '',
+    header: str = '',
+    entry: str | None = None,
 ) -> None:
     """发送歌曲卡片；Markdown 将文字、卡片和曲绘组合为一条消息。"""
     selected_region = portal.normalize_region(region or (player_data or {}).get('_portal_region', 'global'))
@@ -558,6 +560,18 @@ def reply_song_card(
         utils.reply_message(plugin_event, fallback_text)
         return
     keyboard = render.detail_keyboard(song) if mode == 'markdown' else None
+    if mode == 'markdown' and entry:
+        owner = utils.group_callback_user(plugin_event)
+        extra = render.selection_keyboard(entry, song.get('id'), callbacks_for=owner)
+        rows = list(extra['content']['rows'])
+        if keyboard:
+            rows += list(keyboard['content']['rows'])
+        keyboard = {'content': {'rows': rows}}
+        if owner:
+            clear_expired_sessions()
+            key = build_session_key(plugin_event)
+            action = f'la:{entry}:detail'
+            selection_cards[key, action, f'{action}:{song.get('id')}'] = {'song': song, 'updated_at': time.time()}
 
     global_config = utils.load_global_config()
     cover_paths = []
@@ -602,8 +616,14 @@ def reply_song_card(
         image_path,
         fallback_text,
         keyboard,
-        caption=_song_caption(song),
+        caption=_card_caption(song, header),
     )
+
+
+def _card_caption(song, header: str = '') -> str:
+    caption = _song_caption(song)
+    header = str(header or '').strip()
+    return f'{header}\n{caption}' if header else caption
 
 
 def _song_caption(song) -> str:
@@ -1182,7 +1202,7 @@ def handle_today(plugin_event) -> None:
         reply_text(plugin_event, '今日乐曲获取失败，可能是乐曲数据未加载。')
         return
     nickname = utils.get_sender_name_from_event(plugin_event) or f'玩家{user_id}'
-    reply_song_detail(plugin_event, f'[{nickname}]的今日乐曲：', song, entry='today')
+    reply_song_card(plugin_event, song, header=f'[{nickname}]的今日乐曲：', entry='today')
 
 
 def handle_random(plugin_event, argument: str) -> None:
@@ -1223,7 +1243,7 @@ def handle_random(plugin_event, argument: str) -> None:
         reply_text(plugin_event, '没有找到符合条件的乐曲。')
         return
     selected = filtered_songs[function.random_index(len(filtered_songs) - 1)]
-    reply_song_detail(plugin_event, f'{title}:', selected, entry='random')
+    reply_song_card(plugin_event, selected, header=f'{title}：', entry='random')
 
 
 def _find_alias_target(search_term: str, songs: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -122,13 +122,17 @@ def test_today_and_random_keep_original_cards(songs, monkeypatch):
     monkeypatch.setattr(function, 'get_user_today_song', lambda *_: songs[0])
     send(e, '.la today')
     kb = payload(e)['keyboard']
-    assert buttons(kb) == [('完整详情', 1, 'la:today:detail'), ('换一首随机', 2, '.la random')]
+    labels = [b[0] for b in buttons(kb)]
+    assert labels[:2] == ['完整详情', '换一首随机']
+    assert '全曲列表' in labels
     today_id = kb['content']['rows'][0]['buttons'][0]['id']
     picks = iter((1, 2))
     monkeypatch.setattr(function, 'random_index', lambda _: next(picks))
     send(e, '.la random')
     kb = payload(e)['keyboard']
-    assert buttons(kb) == [('再来一首', 2, '.la random'), ('查看详情', 1, 'la:random:detail')]
+    labels = [b[0] for b in buttons(kb)]
+    assert labels[:2] == ['再来一首', '查看详情']
+    assert '全曲列表' in labels
     random_id = kb['content']['rows'][0]['buttons'][1]['id']
     send(e, '.la random')
     click(e, 'la:random:detail', random_id)
