@@ -12,12 +12,20 @@ from . import b30
 from . import config
 from . import crawler
 from . import function
+from . import pages
 from . import portal
+from . import render
 from . import score_overrides
 from . import utils
 
+try:
+    from . import wiki_sync
+except ImportError:
+    wiki_sync = None
+
 # 全局搜索结果会话管理（用于分页和序号选择）
 search_session_dict = {}
+selection_cards = {}
 
 management_command_name_set = {'laglobal', 'labot', 'lagroup', 'sync', 'cover'}
 b30_cooldown_lock = threading.RLock()
@@ -65,6 +73,8 @@ subcommand_alias_dict = {
     '歌曲': 'song',
     'info': 'info',
     '查分': 'info',
+    '查询': 'info',
+    '跳页': 'jump',
     'artist': 'artist',
     '曲师': 'artist',
     'help': 'help',
@@ -179,12 +189,10 @@ def clear_expired_sessions(force: bool = False) -> None:
     """清除过期的会话。"""
     now_time = time.time()
     timeout_seconds = config.selection_timeout_seconds
-    expired_keys = []
-    for session_key, session_data in search_session_dict.items():
-        if force or now_time - session_data.get('updated_at', now_time) > timeout_seconds:
-            expired_keys.append(session_key)
-    for session_key in expired_keys:
-        search_session_dict.pop(session_key, None)
+    for sessions in (search_session_dict, selection_cards):
+        for key, session in sessions.copy().items():
+            if force or now_time - session['updated_at'] > timeout_seconds:
+                sessions.pop(key, None)
 
 
 def get_current_page_range(session_data: dict[str, Any]) -> range:
@@ -194,7 +202,7 @@ def get_current_page_range(session_data: dict[str, Any]) -> range:
     page_index = session_data.get('page_index', 0)
     total_pages = max(1, math.ceil(len(results) / page_size))
     page_index = max(0, min(page_index, total_pages - 1))
-    
+
     start_idx = page_index * page_size + 1
     end_idx = min((page_index + 1) * page_size, len(results)) + 1
     return range(start_idx, end_idx)
@@ -202,13 +210,13 @@ def get_current_page_range(session_data: dict[str, Any]) -> range:
 
 def handle_search_session_input(plugin_event, input_text: str) -> bool:
     """处理搜索会话的后续输入（序号、分页命令等）。
-    
+
     返回True表示处理成功，False表示无有效会话或处理失败。
     """
     session_data = get_search_session(plugin_event)
     if not session_data:
         return False
-    
+
     stripped_text = utils.safe_str(input_text).strip()
     results = session_data.get('results', [])
     page_size = config.result_page_size
@@ -220,49 +228,28 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
         clear_search_session(plugin_event)
         reply_text(plugin_event, '已结束本次搜索选择。')
         return True
-    
-    # 处理分页命令：下一页/上一页/第X页
-    if stripped_text.lower() in ['下一页', 'next', 'down']:
-        if len(results) <= page_size:
-            reply_text(plugin_event, '只有一页，无法翻页。')
-            return True
-        if page_index >= total_pages - 1:
-            formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index, page_size)
-            reply_text(plugin_event, f'已是最后一页\n\n{formatted_results}', max_chars=config.search_image_max_chars)
-            return True
-        session_data['page_index'] = page_index + 1
-        session_data['updated_at'] = time.time()
-        formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index + 1, page_size)
-        reply_text(plugin_event, formatted_results, max_chars=config.search_image_max_chars)
+
+    target = None
+    notice = ''
+    if stripped_text.lower() in ('下一页', 'next', 'down'):
+        target = min(page_index + 1, total_pages - 1)
+        notice = '已是最后一页' if target == page_index else ''
+    elif stripped_text.lower() in ('上一页', 'prev', 'up'):
+        target = max(0, page_index - 1)
+        notice = '已是第一页' if target == page_index else ''
+    else:
+        jump = re.fullmatch(r'(?:第\s*(\d+)\s*页|跳页\s*(\d+))', stripped_text)
+        if jump:
+            page = (jump.group(1) or jump.group(2)).lstrip('0') or '0'
+            if len(page) > len(str(total_pages)) or not 1 <= int(page) <= total_pages:
+                reply_text(plugin_event, f'页码无效，总共 {total_pages} 页。')
+                return True
+            target = int(page) - 1
+    if target is not None:
+        session_data.update(page_index=target, updated_at=time.time())
+        reply_search_page(plugin_event, results, target, notice=notice)
         return True
-    
-    if stripped_text.lower() in ['上一页', 'prev', 'up']:
-        if len(results) <= page_size:
-            reply_text(plugin_event, '只有一页，无法翻页。')
-            return True
-        if page_index <= 0:
-            formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index, page_size)
-            reply_text(plugin_event, f'已是第一页\n\n{formatted_results}', max_chars=config.search_image_max_chars)
-            return True
-        session_data['page_index'] = page_index - 1
-        session_data['updated_at'] = time.time()
-        formatted_results, _, _ = function.format_search_results_with_pagination(results, page_index - 1, page_size)
-        reply_text(plugin_event, formatted_results, max_chars=config.search_image_max_chars)
-        return True
-    
-    # 处理"第X页"命令
-    page_match = re.match(r'^第(\d+)页$', stripped_text)
-    if page_match:
-        target_page = int(page_match.group(1))
-        if target_page < 1 or target_page > total_pages:
-            reply_text(plugin_event, f'页码无效，总共 {total_pages} 页。')
-            return True
-        session_data['page_index'] = target_page - 1
-        session_data['updated_at'] = time.time()
-        formatted_results, _, _ = function.format_search_results_with_pagination(results, target_page - 1, page_size)
-        reply_text(plugin_event, formatted_results, max_chars=config.search_image_max_chars)
-        return True
-    
+
     # 处理序号选择
     if re.match(r'^\d+$', stripped_text):
         selected_index = int(stripped_text)
@@ -270,28 +257,61 @@ def handle_search_session_input(plugin_event, input_text: str) -> bool:
         if selected_index not in current_range:
             reply_text(plugin_event, f'序号无效，当前页可用的序号为：{min(current_range)}-{max(current_range)}')
             return True
-        
+
         selected_song = results[selected_index - 1]
         clear_search_session(plugin_event)
-        session_region = session_data.get('region')
-        if session_data.get('view_mode') == 'info' and _has_info_binding(plugin_event, session_region):
-            selected_song, sync_notice = _prepare_song_for_query(selected_song)
-            reply_song_info(
-                plugin_event,
-                selected_song,
-                region=session_region,
-                notice_prefix=sync_notice,
-            )
-        else:
-            reply_song_card(plugin_event, selected_song)
+        _open_search_result(plugin_event, selected_song, session_data.get('view_mode'), session_data.get('region'))
         return True
-    
+
     # 如果输入不符合预期的格式
     if len(results) > page_size:
-        reply_text(plugin_event, '请输入序号、"下一页"、"上一页"、"第X页" 或 "结束"。')
+        reply_text(plugin_event, '请输入序号、下一页、上一页、跳页[页码] 或 end。')
         return True
     reply_text(plugin_event, '请输入序号或 "结束"。')
     return True
+
+
+def handle_jump(plugin_event, argument: str) -> None:
+    if not re.fullmatch(r'\d+', argument.strip()):
+        reply_text(plugin_event, '请在「跳页」后输入页码，例如 .la 跳页 2。')
+    elif not handle_search_session_input(plugin_event, f'跳页{argument.strip()}'):
+        reply_text(plugin_event, '搜索已结束或过期，请重新搜索。')
+
+
+@utils.log_exception('handle_button_click')
+def handle_button_click(plugin_event, Proc) -> None:
+    data = plugin_event.data
+    action = getattr(data, 'button_data', '')
+    if action not in ('la:pg:prev', 'la:pg:next', 'la:today:detail', 'la:random:detail'):
+        return
+    if not utils.group_callback_user(plugin_event):
+        return
+    bot_config = utils.load_bot_config(utils.get_bot_hash_from_event(plugin_event))
+    if not (bot_config.get('bot_enable_switch', True) and utils.load_global_config().get('global_enable_switch', True)
+            and utils.get_reply_mode(plugin_event, bot_config) == 'markdown' and utils.can_send_markdown(plugin_event)
+            and utils.check_core_group_enable(plugin_event) and not utils.is_group_disabled(plugin_event)):
+        return
+    if action.startswith('la:pg:'):
+        if not handle_search_session_input(plugin_event, action.rsplit(':', 1)[1]):
+            reply_text(plugin_event, '搜索已结束或过期，请重新搜索。')
+        return
+    clear_expired_sessions()
+    session_key = build_session_key(plugin_event)
+    card_id = getattr(data, 'button_id', None)
+    if card_id:
+        selected = selection_cards.get((session_key, action, card_id))
+    else:
+        # QQ 可能不回传按钮 ID；只在该会话内能唯一确定原曲时打开。
+        matches = [item for (key, route, _), item in selection_cards.copy().items()
+                   if key == session_key and route == action]
+        if len(matches) > 1:
+            reply_text(plugin_event, '未收到原卡片标识，请发送 .la info 曲目ID 查看详情。')
+            return
+        selected = matches[0] if matches else None
+    if selected:
+        _open_search_result(plugin_event, selected['song'], 'info')
+    else:
+        reply_text(plugin_event, '这张曲目卡已过期，请重新选曲。')
 
 
 # ============ 消息处理相关 ============
@@ -354,21 +374,26 @@ def reply_large_text(plugin_event, text: str) -> None:
     reply_text(plugin_event, text)
 
 
-def reply_song_detail(plugin_event, header: str, song: dict[str, Any]) -> None:
+def reply_song_detail(plugin_event, header: str, song: dict[str, Any], *, entry: str | None = None) -> None:
     """发送单曲详情，并在启用时附带本地缓存曲绘。"""
     message_text = f'{header}\n\n{function.format_song_info(song)}'
-    global_config = utils.load_global_config()
-    if not global_config.get('send_cover_art', True):
-        reply_text(plugin_event, message_text, max_chars=config.image_max_chars)
-        return
-
-    cover_paths = crawler.ensure_song_covers(song)
-    if not cover_paths:
-        reply_text(plugin_event, message_text, max_chars=config.image_max_chars)
-        return
-
     mode = utils.get_reply_mode(plugin_event)
-    if mode == 'markdown' and utils.reply_markdown(plugin_event, message_text, images=cover_paths):
+    if mode == 'markdown' and utils.is_qq_channel(plugin_event):
+        utils.reply_message(plugin_event, message_text)
+        return
+    cover_paths = crawler.ensure_song_covers(song) if utils.load_global_config().get('send_cover_art', True) else []
+    if mode == 'markdown':
+        owner = utils.group_callback_user(plugin_event)
+        kb = render.selection_keyboard(entry, song['id'], callbacks_for=owner) if entry else None
+        if utils.reply_markdown(plugin_event, message_text, images=cover_paths, keyboard=kb):
+            if entry and owner:
+                clear_expired_sessions()
+                key = build_session_key(plugin_event)
+                action = f'la:{entry}:detail'
+                selection_cards[key, action, f'{action}:{song["id"]}'] = {'song': song, 'updated_at': time.time()}
+            return
+    if not cover_paths:
+        _reply_legacy_text(plugin_event, message_text, config.image_max_chars, mode)
         return
     if mode == 'text':
         utils.reply_image_segments(plugin_event, cover_paths, message_text)
@@ -527,6 +552,12 @@ def reply_song_card(
         scores=score_rows,
         notice=notice,
     )
+    bot_config = utils.load_bot_config(utils.get_bot_hash_from_event(plugin_event))
+    mode = utils.get_reply_mode(plugin_event, bot_config)
+    if mode == 'markdown' and utils.is_qq_channel(plugin_event):
+        utils.reply_message(plugin_event, fallback_text)
+        return
+    keyboard = render.detail_keyboard(song) if mode == 'markdown' else None
 
     global_config = utils.load_global_config()
     cover_paths = []
@@ -536,6 +567,11 @@ def reply_song_card(
         except Exception as exception_object:
             utils.debug_log(None, f'歌曲曲绘发送失败：{type(exception_object).__name__}: {exception_object}')
 
+    # 曲绘、正文和键盘准备完毕；现有 HTML 卡片沿用独立的截图开关。
+    html_card_enabled = bool(bot_config.get('song_card_html_enable', True))
+    if mode == 'text' or not html_card_enabled:
+        _reply_card(plugin_event, mode, cover_paths, None, fallback_text, keyboard)
+        return
     card_song = dict(song)
     chapter_table = function.load_table_data().get(str(song.get('chapter', '')), {})
     if isinstance(chapter_table, dict):
@@ -552,12 +588,6 @@ def reply_song_card(
         'scores': score_rows or [],
         'notice': notice,
     }
-    bot_config = utils.load_bot_config(utils.get_bot_hash_from_event(plugin_event))
-    html_card_enabled = bool(bot_config.get('song_card_html_enable', True))
-    mode = utils.get_reply_mode(plugin_event, bot_config)
-    if mode == 'text' or not html_card_enabled:
-        _reply_card(plugin_event, mode, cover_paths, None, fallback_text)
-        return
     try:
         image_path = portal.render_song_card(card_data)
     except Exception as exception_object:
@@ -565,13 +595,13 @@ def reply_song_card(
         image_path = None
     if not image_path:
         fallback_text += f'\n\nHTML 卡片截图失败。\n{portal.render_status_text()}'
-    _reply_card(plugin_event, mode, cover_paths, image_path, fallback_text)
+    _reply_card(plugin_event, mode, cover_paths, image_path, fallback_text, keyboard)
 
 
-def _reply_card(plugin_event, mode, covers, card, text) -> None:
+def _reply_card(plugin_event, mode, covers, card, text, keyboard=None) -> None:
     if mode == 'markdown':
         images = [card, *covers] if card else covers
-        if utils.reply_markdown(plugin_event, text, images=images):
+        if utils.reply_markdown(plugin_event, text, images=images, keyboard=keyboard):
             return
     if covers:
         utils.reply_image_segments(plugin_event, covers)
@@ -925,7 +955,6 @@ def handle_lagroup(plugin_event, argument: str) -> None:
     reply_text(plugin_event, '用法：/la on 或 /la off')
 
 
-
 def handle_fullcheck(plugin_event, argument: str = '') -> None:
     """对本地曲库做包含新增歌曲在内的全量检测；仅 apply 时实际写入。"""
     if not utils.sender_has_master_permission(plugin_event):
@@ -945,10 +974,15 @@ def handle_fullcheck(plugin_event, argument: str = '') -> None:
         if not apply_edit
         else '开始对数据库全部歌曲进行全量覆盖写入（含新增歌曲补充），请稍候……',
     )
+    started = time.monotonic()
     try:
         result = crawler.run_full_check(apply=apply_edit)
         report = function.build_full_check_report(result)
-        reply_large_text(plugin_event, report)
+        title = '曲库全量覆盖报告' if apply_edit else '曲库全量检测报告'
+        rows = list(pages.fullcheck_rows(result))
+        caption = (f'{title} · 检测 {result.get("checked", 0)} 首 · 变化 {result.get("updated", 0)} 首'
+                   f' · 新增 {result.get("added", 0)} 首')
+        _reply_report(plugin_event, caption, title, rows, started, result.get('failed', 0), report)
     except Exception as exception_object:
         reply_text(
             plugin_event,
@@ -956,11 +990,20 @@ def handle_fullcheck(plugin_event, argument: str = '') -> None:
         )
 
 
+def _reply_report(event, caption, title, rows, started, errors, text):
+    data = {'title': title, 'elapsed': f'{time.monotonic() - started:.1f} s', 'errors': errors,
+            'total': len(rows), 'rows': rows[:40]}
+    pages.send(event, 'report', caption, [(data, text)])
+
+
 def handle_update(plugin_event, argument: str = '') -> None:
     if not utils.sender_has_master_permission(plugin_event):
         reply_text(plugin_event, '权限不足，只有 OlivaDiceCore 骰主或本插件配置管理员可以更新曲库。')
         return
     argument_text = str(argument or '').strip().lower()
+    if argument_text in {'preview', '预览'}:
+        handle_sync(plugin_event, '')
+        return
     fullcheck_action, fullcheck_argument = parse_action(argument_text, ['full', 'fullcheck', 'all', '全量', '全量检测'])
     if fullcheck_action in {'full', 'fullcheck', 'all', '全量', '全量检测'}:
         handle_fullcheck(plugin_event, fullcheck_argument)
@@ -994,9 +1037,10 @@ def handle_sync(plugin_event, argument: str) -> None:
 
     mode_text = '实际编辑' if apply_edit else '预览'
     reply_text(plugin_event, f'开始进行 Songs {mode_text}，请稍候……')
+    started = time.monotonic()
     try:
-        from . import wiki_sync
-
+        if wiki_sync is None:
+            raise RuntimeError('缺少 Wiki 同步依赖：requests 与 mwparserfromhell。')
         result = wiki_sync.run_sync(
             username=username,
             password=password,
@@ -1008,10 +1052,16 @@ def handle_sync(plugin_event, argument: str) -> None:
             output_dir=utils.get_plugin_data_dir(),
         )
         if not apply_edit:
-            reply_large_text(
-                plugin_event,
-                'Songs 同步预览（仅显示差异）：\n' + str(result.get('difference_text', '没有差异。')),
-            )
+            difference = str(result.get('difference_text') or '没有差异。')
+            rows = []
+            for line in difference.splitlines():
+                if line.startswith('  ') and rows:
+                    rows[-1] += '：' + line.strip()
+                elif line and line != '没有差异。':
+                    rows.append(line)
+            title = 'Songs 同步预览'
+            caption = f'{title} · 新增 {result["added"]} 首 · 变化 {result["changed"]} 首'
+            _reply_report(plugin_event, caption, title, rows, started, result['invalid'], difference)
         else:
             reply_text(
                 plugin_event,
@@ -1107,7 +1157,7 @@ def handle_today(plugin_event) -> None:
         reply_text(plugin_event, '今日乐曲获取失败，可能是乐曲数据未加载。')
         return
     nickname = utils.get_sender_name_from_event(plugin_event) or f'玩家{user_id}'
-    reply_song_detail(plugin_event, f'[{nickname}]的今日乐曲：', song)
+    reply_song_detail(plugin_event, f'[{nickname}]的今日乐曲：', song, entry='today')
 
 
 def handle_random(plugin_event, argument: str) -> None:
@@ -1125,11 +1175,15 @@ def handle_random(plugin_event, argument: str) -> None:
     if sub_command:
         sub_parts = sub_argument.split()
         if sub_command in ['except', 'exc'] and sub_argument:
-            exclude_categories = sorted({function.category_map[item] for item in sub_parts if item in function.category_map})
+            exclude_categories = sorted(
+                {function.category_map[item] for item in sub_parts if item in function.category_map}
+            )
             filtered_songs = [song for song in song_data if song.get('category') not in exclude_categories]
             title = f'随机乐曲(排除{", ".join(exclude_categories)})'
         elif sub_command in ['include', 'contain'] and sub_argument:
-            include_categories = sorted({function.category_map[item] for item in sub_parts if item in function.category_map})
+            include_categories = sorted(
+                {function.category_map[item] for item in sub_parts if item in function.category_map}
+            )
             filtered_songs = [song for song in song_data if song.get('category') in include_categories]
             title = f'随机乐曲(包含{", ".join(include_categories)})'
         elif sub_command == 'level' and sub_argument:
@@ -1144,7 +1198,7 @@ def handle_random(plugin_event, argument: str) -> None:
         reply_text(plugin_event, '没有找到符合条件的乐曲。')
         return
     selected = filtered_songs[function.random_index(len(filtered_songs) - 1)]
-    reply_song_detail(plugin_event, f'{title}:', selected)
+    reply_song_detail(plugin_event, f'{title}:', selected, entry='random')
 
 
 def _find_alias_target(search_term: str, songs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1241,7 +1295,9 @@ def handle_alias(plugin_event, argument: str) -> None:
         return
 
     if action == 'show':
-        matched_songs, _match_type, total_count = function.find_song_by_search_term(remaining.strip(), song_data, alias_data)
+        matched_songs, _match_type, total_count = function.find_song_by_search_term(
+            remaining.strip(), song_data, alias_data,
+        )
         if not matched_songs:
             reply_text(plugin_event, f'没有找到章节号、ID、别名或原名为[{remaining}]的乐曲。')
             return
@@ -1251,9 +1307,10 @@ def handle_alias(plugin_event, argument: str) -> None:
             if not aliases:
                 reply_text(plugin_event, f'乐曲[{std_name}]目前没有设置别名。')
             else:
-                reply_text(plugin_event, f'乐曲[{std_name}]的别名({len(aliases)}个):\n' + '\n'.join(f'{i + 1}. {a}' for i, a in enumerate(aliases)))
+                items = '\n'.join(f'{i + 1}. {a}' for i, a in enumerate(aliases))
+                reply_text(plugin_event, f'乐曲[{std_name}]的别名({len(aliases)}个):\n' + items)
             return
-        
+
         reply_text(
             plugin_event,
             render_song_list(
@@ -1273,7 +1330,32 @@ def render_song_list(header: str, songs: list[dict[str, Any]], start_index: int 
     return '\n'.join(lines)
 
 
-def _search_songs(plugin_event, search_term: str, view_mode: str) -> None:
+def reply_search_page(plugin_event, songs, page_index=0, *, notice='') -> None:
+    mode = utils.get_reply_mode(plugin_event)
+    if mode == 'markdown' and not utils.is_qq_channel(plugin_event):
+        text, kb = render.search_page(songs, page_index, config.result_page_size,
+                                      callbacks_for=utils.group_callback_user(plugin_event))
+        if utils.reply_markdown(plugin_event, f'{notice}\n{text}' if notice else text, keyboard=kb):
+            return
+    page, _, _ = function.format_search_results_with_pagination(songs, page_index, config.result_page_size)
+    text = f'找到匹配的乐曲（{len(songs)} 首）\n{page}'
+    if notice:
+        text = f'{notice}\n{text}'
+    if mode == 'markdown' and utils.is_qq_channel(plugin_event):
+        utils.reply_message(plugin_event, text)
+    else:
+        _reply_legacy_text(plugin_event, text, config.search_image_max_chars, mode)
+
+
+def _open_search_result(plugin_event, song, view_mode, region=None):
+    if view_mode == 'info' and _has_info_binding(plugin_event, region):
+        song, notice = _prepare_song_for_query(song)
+        reply_song_info(plugin_event, song, region=region, notice_prefix=notice)
+    else:
+        reply_song_card(plugin_event, song)
+
+
+def _search_songs(plugin_event, search_term: str, view_mode: str, region: str | None = None) -> None:
     """执行歌曲搜索，并根据 view_mode 打开歌曲或查分卡片。"""
     song_data = function.load_song_data()
     alias_data = function.load_alias_data()
@@ -1289,25 +1371,11 @@ def _search_songs(plugin_event, search_term: str, view_mode: str) -> None:
 
     if total_count == 1:
         clear_search_session(plugin_event)
-        if view_mode == 'info':
-            reply_song_info(plugin_event, matched_songs[0])
-        else:
-            reply_song_card(plugin_event, matched_songs[0])
+        _open_search_result(plugin_event, matched_songs[0], view_mode, region)
         return
 
-    save_search_session(plugin_event, matched_songs, match_type, view_mode=view_mode)
-    formatted_results, _total_pages, _page_index = function.format_search_results_with_pagination(
-        matched_songs,
-        0,
-        config.result_page_size,
-    )
-    action_name = '查分' if view_mode == 'info' else '查看歌曲信息'
-    header = (
-        # f'通过搜索词[{search_term}]进行[{match_type}]找到匹配的乐曲({total_count}首)，'
-        f'找到匹配的乐曲({total_count}首)，'
-        f'请输入序号{action_name}，或输入“结束”退出：\n'
-    )
-    reply_text(plugin_event, header + formatted_results, max_chars=config.search_image_max_chars)
+    save_search_session(plugin_event, matched_songs, match_type, view_mode=view_mode, region=region)
+    reply_search_page(plugin_event, matched_songs)
 
 
 def handle_song(plugin_event, argument: str) -> None:
@@ -1326,44 +1394,7 @@ def handle_info(plugin_event, argument: str) -> None:
     if not raw_arg:
         reply_text(plugin_event, '用法：/la info <搜索词>，或 /la info cn <搜索词>（查询国服成绩）')
         return
-    if not _has_info_binding(plugin_event, region):
-        _search_songs(plugin_event, raw_arg, 'song')
-        return
-
-    song_data = function.load_song_data()
-    alias_data = function.load_alias_data()
-    matched_songs, match_type, total_count = function.find_song_by_search_term(
-        raw_arg,
-        song_data,
-        alias_data,
-        len(song_data),
-    )
-    if not matched_songs:
-        reply_text(plugin_event, f'没有找到与[{raw_arg}]相关的乐曲。')
-        return
-    if total_count == 1:
-        clear_search_session(plugin_event)
-        matched_song, sync_notice = _prepare_song_for_query(matched_songs[0])
-        reply_song_info(
-            plugin_event,
-            matched_song,
-            region=region,
-            notice_prefix=sync_notice,
-        )
-        return
-
-    save_search_session(plugin_event, matched_songs, match_type, view_mode='info', region=region)
-    formatted_results, _total_pages, _page_index = function.format_search_results_with_pagination(
-        matched_songs,
-        0,
-        config.result_page_size,
-    )
-    region_hint = '国服' if region == 'china' else '绑定区域'
-    header = (
-        f'通过搜索词[{raw_arg}]进行[{match_type}]找到匹配的乐曲({total_count}首)，'
-        f'请输入序号查询{region_hint}成绩，或输入“结束”退出：\n'
-    )
-    reply_text(plugin_event, header + formatted_results, max_chars=config.search_image_max_chars)
+    _search_songs(plugin_event, raw_arg, 'info', region)
 
 
 def handle_artist(plugin_event, argument: str) -> None:
@@ -1372,12 +1403,15 @@ def handle_artist(plugin_event, argument: str) -> None:
         reply_text(plugin_event, '用法：/la artist <曲师名>')
         return
     song_data = function.load_song_data()
-    matched_artists, match_type, total_artists = function.find_artist_by_search_term(search_term, song_data, len(song_data))
+    matched_artists, match_type, total_artists = function.find_artist_by_search_term(
+        search_term, song_data, len(song_data),
+    )
     if not matched_artists:
         reply_text(plugin_event, f'没有找到与曲师[{search_term}]相关的结果。')
         return
     if total_artists > 1:
-        reply_text(plugin_event, f'通过曲师关键词[{search_term}]进行[{match_type}]，找到多个曲师({total_artists}个):\n' + '\n'.join(f'{i + 1}. {artist}' for i, artist in enumerate(matched_artists)))
+        items = '\n'.join(f'{i + 1}. {artist}' for i, artist in enumerate(matched_artists))
+        reply_text(plugin_event, f'通过曲师关键词[{search_term}]进行[{match_type}]，找到多个曲师({total_artists}个):\n' + items)
         return
     target_artist = matched_artists[0]
     artist_songs = [song for song in song_data if str(song.get('artist', '')).strip().lower() == target_artist.lower()]
@@ -1385,26 +1419,8 @@ def handle_artist(plugin_event, argument: str) -> None:
 
 
 def handle_time(plugin_event) -> None:
-    def parse_time_value(value: Any) -> int:
-        try:
-            minute, second = map(int, str(value).split(':'))
-            return minute * 60 + second
-        except Exception:
-            return 0
-
-    processed = []
-    for song in function.load_song_data():
-        seconds = parse_time_value(song.get('time', ''))
-        if seconds > 0:
-            processed.append({'song': song, 'seconds': seconds, 'time': song.get('time', '')})
-    long_songs = sorted([item for item in processed if item['seconds'] > 180], key=lambda item: -item['seconds'])
-    short_songs = sorted([item for item in processed if item['seconds'] < 120], key=lambda item: item['seconds'])
-    lines = ['时长统计：\n']
-    lines.append(f'长于3分钟的乐曲(共{len(long_songs)}首，时长降序):')
-    lines.extend(f'{i + 1}. {item["song"].get("title")} -|- {item["time"]} (Chapter: {item["song"].get("chapter")})' for i, item in enumerate(long_songs))
-    lines.append(f'\n短于2分钟的乐曲(共{len(short_songs)}首，时长升序):')
-    lines.extend(f'{i + 1}. {item["song"].get("title")} -|- {item["time"]} (Chapter: {item["song"].get("chapter")})' for i, item in enumerate(short_songs))
-    reply_large_text(plugin_event, '\n'.join(lines))
+    page = pages.time_page(function.load_song_data())
+    pages.send(plugin_event, 'time', 'Lanota 乐曲时长统计', [page])
 
 
 def handle_all(plugin_event) -> None:
@@ -1438,7 +1454,9 @@ def handle_cal(plugin_event, argument: str) -> None:
 
     if parts[3].lower() in ['whisper', 'acoustic', 'ultra', 'master']:
         difficulty_type = parts[3].lower()
-        matched_songs, _match_type, total_count = function.find_song_by_search_term(parts[4], function.load_song_data(), function.load_alias_data())
+        matched_songs, _match_type, total_count = function.find_song_by_search_term(
+            parts[4], function.load_song_data(), function.load_alias_data(),
+        )
         if not matched_songs:
             reply_text(plugin_event, f'没有找到与[{parts[4]}]相关的乐曲。')
             return
@@ -1517,22 +1535,11 @@ def handle_cal(plugin_event, argument: str) -> None:
 
 
 def handle_notes(plugin_event) -> None:
-    charts = []
-    for song in function.load_song_data():
-        for diff_type in ['whisper', 'acoustic', 'ultra', 'master']:
-            notes_value = song.get('notes', {}).get(diff_type, 0)
-            difficulty_value = song.get('difficulty', {}).get(diff_type, '未知')
-            try:
-                notes_int = int(notes_value)
-            except Exception:
-                continue
-            if difficulty_value != '未知':
-                charts.append((notes_int, song, diff_type.capitalize(), difficulty_value))
-    charts.sort(key=lambda item: -item[0])
-    lines = ['物量最高的前50个谱面:']
-    for index, (notes_value, song, difficulty, difficulty_value) in enumerate(charts[:50], 1):
-        lines.append(f'{index}. {song.get("title")} -|- 物量{notes_value} (难度: {difficulty} {difficulty_value}, Chapter: {song.get("chapter")})')
-    reply_large_text(plugin_event, '\n'.join(lines) if len(lines) > 1 else '没有找到有效的谱面数据。')
+    page = pages.notes_page(function.load_song_data())
+    if not page[0]['rows']:
+        reply_text(plugin_event, '没有找到有效的谱面数据。')
+        return
+    pages.send(plugin_event, 'notes', 'Lanota 谱面物量 Top 50', [page])
 
 
 def _consume_b30_cooldown(plugin_event, region: str) -> int:
@@ -1893,7 +1900,8 @@ def handle_category(plugin_event, argument: str) -> None:
         category = function.category_map[category_or_chapter]
         filtered = [song for song in song_data if song.get('category') == category]
     else:
-        filtered = [song for song in song_data if str(song.get('chapter', '')).split('-')[0].lower() == category_or_chapter]
+        filtered = [song for song in song_data
+                    if str(song.get('chapter', '')).split('-')[0].lower() == category_or_chapter]
     if not filtered:
         reply_text(plugin_event, f'没有找到分类或章节为[{category_or_chapter}]的列表。')
         return
@@ -1904,7 +1912,7 @@ def handle_category(plugin_event, argument: str) -> None:
     max_val = min(max_val, total, min_val + 99)
     lines = [f'分类/章节: {category_or_chapter} (显示 {min_val}-{max_val}/{total} 首)']
     current_prefix = None
-    for index, song in enumerate(filtered[min_val - 1 : max_val], min_val):
+    for index, song in enumerate(filtered[min_val - 1:max_val], min_val):
         chapter_prefix = str(song.get('chapter', '')).split('-')[0]
         if chapter_prefix != current_prefix:
             lines.append('')
@@ -1926,8 +1934,9 @@ def handle_table(plugin_event, argument: str = '') -> None:
             except Exception as exception_object:
                 reply_text(plugin_event, f'导入 Excel 定数表失败：{type(exception_object).__name__}: {exception_object}')
             return
-        reply_text(plugin_event, '用法：/la table 或 /la table update')
-        return
+        if _value or (not pages.LEVEL.fullmatch(action) and action != '未知'):
+            reply_text(plugin_event, '用法：.la table [标级]（例如 15、15+）或 .la table update')
+            return
 
     song_data = function.load_song_data()
     table_data = function.load_table_data()
@@ -1937,53 +1946,15 @@ def handle_table(plugin_event, argument: str = '') -> None:
     if not table_data:
         reply_text(plugin_event, '未找到精确定数表，请检查定数表文件。')
         return
-    song_by_chapter = {str(song.get('chapter')): song for song in song_data}
-    charts = []
-    for chapter, difficulties in table_data.items():
-        if not isinstance(difficulties, dict):
-            continue
-        for difficulty_name, rating_value in difficulties.items():
-            diff_type = str(difficulty_name).lower()
-            if diff_type not in ['whisper', 'acoustic', 'ultra', 'master']:
-                continue
-            song = song_by_chapter.get(str(chapter), {'chapter': chapter, 'title': f'未找到歌曲 ({chapter})', 'id': 'Unknown', 'difficulty': {}})
-            level_text = str(rating_value)
-            values = []
-            if '~' in level_text:
-                try:
-                    start, end = [float(item) for item in level_text.split('~', 1)]
-                    current = start
-                    while current <= end + 0.05:
-                        values.append((current, current >= end - 0.05, level_text))
-                        current = round(current + 0.1, 1)
-                except Exception:
-                    values = []
-            if not values:
-                try:
-                    sort_value = float(level_text.rstrip('+')) + (0.5 if level_text.endswith('+') else 0)
-                    values = [(sort_value, False, None)]
-                except Exception:
-                    continue
-            for sort_value, is_range, original_range in values:
-                charts.append((sort_value, original_range is not None, song, diff_type.capitalize(), rating_value, is_range, original_range))
-    charts.sort(key=lambda item: (-item[0], item[1]))
-    lines = ['Lanota 民间定数表']
-    current_group = None
-    current_exact = None
-    for sort_value, _has_range, song, diff_type, rating_value, is_range, original_range in charts:
-        base_level = int(sort_value)
-        level_group = f'标级：{base_level}'
-        if current_group != level_group:
-            lines.extend(['', '==============', level_group, '=============='])
-            current_group = level_group
-            current_exact = None
-        if current_exact != sort_value:
-            lines.append(f'\n定数 {function.format_table_constant(sort_value)}：')
-            current_exact = sort_value
-        song_difficulty = song.get('difficulty', {}).get(diff_type.lower(), '未知')
-        range_tag = f' [范围定数: {original_range}]' if is_range else ''
-        lines.append(f'{song.get("chapter")} -|- {song.get("title")} (ID: {song.get("id")}) [{diff_type} {song_difficulty}]{range_tag}')
-    reply_large_text(plugin_event, '\n'.join(lines))
+    groups = pages.table_groups(song_data, table_data)
+    if not groups or (action and action not in groups):
+        reply_text(plugin_event, '该标级没有收录定数。可用标级：' + '、'.join(groups))
+        return
+    levels = [action] if action else list(groups)
+    caption = 'Lanota 民间定数表 · 标级 ' + '、'.join(levels[:3])
+    if len(levels) > 3:
+        caption += f'\n另有 {len(levels) - 3} 段：' + '、'.join(levels[3:]) + '。输入 .la table <标级> 查看。'
+    pages.send(plugin_event, 'table', caption, [pages.table_page(level, groups[level]) for level in levels[:3]])
 
 
 help_categories = {
@@ -2189,7 +2160,7 @@ help_categories = {
         'name': '定数表',
         'aliases': ['table', '定数表'],
         'commands': [
-            '/la table - 按定数从高到低显示所有谱面',
+            '/la table [标级] - 按谱面标级查看民间定数；默认展示最高三段，15 和 15+ 分开查询',
             '/la 定数表 - 同上',
             '/la table update - 从 Excel 生成定数表 JSON（仅骰主/插件管理员）',
         ],
@@ -2231,6 +2202,7 @@ help_categories = {
             '/la bot songcard on/off - 开关 song/info HTML 卡片（默认开启，关闭后使用兼容文本排版）',
             '/la global status/on/off - 查看或修改全局开关',
             '/la update - 更新本地曲库；发现新曲时自动下载并校正曲绘（仅骰主）',
+            '/la update preview - 仅预览 Wiki Songs 差异，不写入；报告最多展示 40 条明细',
             '/la fullcheck - 全量检测 Fandom 与本地差异及新增歌曲（不写入，仅骰主）',
             '/la fullcheck apply - 全量覆盖 Fandom 数据（仅骰主）',
             '/la sync - 预览 Wiki Songs 页面同步（仅骰主）',
@@ -2337,7 +2309,10 @@ def handle_ritmo(plugin_event) -> None:
     months = 0
     while True:
         try:
-            next_month = datetime.date(current.year + (1 if current.month == 12 else 0), 1 if current.month == 12 else current.month + 1, current.day)
+            next_month = datetime.date(
+                current.year + (1 if current.month == 12 else 0),
+                1 if current.month == 12 else current.month + 1, current.day,
+            )
         except ValueError:
             break
         if next_month <= today:
@@ -2346,7 +2321,9 @@ def handle_ritmo(plugin_event) -> None:
         else:
             break
     days = (today - current).days
-    reply_text(plugin_event, f'【里莫绝赞昏睡时间】\n\n昏睡日期: 2021年9月7日\n今天日期: {today.year}年{today.month}月{today.day}日\n\n已经过去:\n{years}年{months}月{days}日\n总共: {total_days}天\n让我们看看可爱的小里莫\n什么时候才能睡醒吧~')
+    reply_text(plugin_event, f'【里莫绝赞昏睡时间】\n\n昏睡日期: 2021年9月7日\n'
+               f'今天日期: {today.year}年{today.month}月{today.day}日\n\n已经过去:\n{years}年{months}月{days}日\n'
+               f'总共: {total_days}天\n让我们看看可爱的小里莫\n什么时候才能睡醒吧~')
 
 
 def handle_color(plugin_event, argument: str) -> None:
@@ -2410,6 +2387,7 @@ command_handler_dict = {
     'alias': handle_alias,
     'song': handle_song,
     'info': handle_info,
+    'jump': handle_jump,
     'artist': handle_artist,
     'help': handle_help,
     'time': lambda event, arg: handle_time(event),
@@ -2443,7 +2421,8 @@ command_handler_dict = {
 
 @utils.log_exception('handle_message')
 def handle_message(plugin_event, Proc) -> None:
-    utils.initialize_plugin(Proc)
+    if not utils.initialized:
+        utils.initialize_plugin(Proc)
     if not utils.check_core_group_enable(plugin_event):
         return
     message_text = utils.strip_reply_segment(utils.get_message_text_from_event(plugin_event))
@@ -2451,18 +2430,19 @@ def handle_message(plugin_event, Proc) -> None:
     if at_list and not utils.is_force_reply_to_current_bot(at_list, plugin_event):
         return
     prefix, remaining_text = utils.parse_prefix(remaining_after_at)
-    
+
     # 如果没有前缀，先尝试处理搜索会话的输入
     if not prefix:
         bot_hash = utils.get_bot_hash_from_event(plugin_event)
         bot_config = utils.load_bot_config(bot_hash)
         global_config = utils.load_global_config()
-        
-        if global_config.get('global_enable_switch', True) and bot_config.get('bot_enable_switch', True):
+
+        if (global_config.get('global_enable_switch', True) and bot_config.get('bot_enable_switch', True)
+                and not utils.is_group_disabled(plugin_event)):
             if handle_search_session_input(plugin_event, remaining_after_at):
                 return
         return
-    
+
     command_name, argument = match_command(remaining_text)
     if not command_name:
         return

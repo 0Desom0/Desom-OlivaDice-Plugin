@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Lanota · 谱面定数表</title><style>/*__PAGE_STYLE__*/</style></head>
+<body style="--accent:var(--master)">
+<main>
+  <header>
+    <div><div class="kicker">LANOTA / CHART CONSTANTS</div><h1>谱面定数表</h1></div>
+    <div class="metrics" id="summary"></div>
+  </header>
+  <div class="register" id="tables"></div>
+  <footer id="footer">定数索引</footer>
+</main>
+<template id="grid"><section class="panel"><table class="sheet">
+  <colgroup><col style="width:100px"><col><col style="width:112px"></colgroup>
+  <thead><tr><th>定数</th><th>曲名（ID）</th><th class="num">难度标级</th></tr></thead><tbody></tbody>
+</table></section></template>
+<script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
+<script>
+  byId('summary').append(metric(data.level, '标级'), metric(data.rows.length, '谱面数'));
+  const columns = byId('tables');
+  const groups = [data.rows];
+  if (data.rows.length > 24) {
+    const half = Math.ceil(data.rows.length / 2);
+    groups.splice(0, 1, data.rows.slice(0, half), data.rows.slice(half));
+    columns.classList.add('pair');
+    byId('footer').textContent = '定数索引 · 先读左栏，再读右栏';
+  }
+  for (const group of groups) {
+    const grid = byId('grid').content.cloneNode(true);
+    const body = grid.querySelector('tbody');
+    for (const row of group) {
+      const tr = el('tr');
+      tr.append(cell(String(row.constant), 'score'), cell(song(row)), cell(difficulty(row), 'num'));
+      body.append(tr);
+    }
+    columns.append(grid);
+  }
+  fitPage();
+</script>
+</body></html>

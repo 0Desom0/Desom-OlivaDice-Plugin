@@ -18,7 +18,9 @@ try:
     import mwparserfromhell
     import requests
 except ImportError as exc:  # pragma: no cover - 仅用于给最终用户更友好的报错
-    raise SystemExit('缺少依赖。请先运行：python -m pip install requests mwparserfromhell') from exc
+    if __name__ == '__main__':
+        raise SystemExit('缺少依赖。请先运行：python -m pip install requests mwparserfromhell') from exc
+    raise
 
 
 API_URL = 'https://lanota.fandom.com/api.php'
@@ -178,7 +180,7 @@ class MediaWikiClient:
         title_list = list(titles)
         total_batches = (len(title_list) + 49) // 50
         for offset in range(0, len(title_list), 50):
-            batch = title_list[offset : offset + 50]
+            batch = title_list[offset:offset + 50]
             batch_number = offset // 50 + 1
             print(f'  获取歌曲详情批次：{batch_number}/{total_batches}', end='\r', flush=True)
             data = self.request(
@@ -230,7 +232,7 @@ class MediaWikiClient:
         title_list = list(dict.fromkeys(titles))
         total_batches = (len(title_list) + 49) // 50
         for offset in range(0, len(title_list), 50):
-            batch = title_list[offset : offset + 50]
+            batch = title_list[offset:offset + 50]
             batch_number = offset // 50 + 1
             print(f'  解析链接重定向批次：{batch_number}/{total_batches}', end='\r', flush=True)
             data = self.request(

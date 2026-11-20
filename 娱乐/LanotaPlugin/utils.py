@@ -241,12 +241,8 @@ def get_storage_dir(bot_hash: Any = None) -> str:
     return ensure_folder(os.path.join(get_runtime_bot_dir(bot_hash or 'default'), 'storage'))
 
 
-
 def get_user_data_path(bot_hash: Any = None) -> str:
     return os.path.join(get_storage_dir(bot_hash), config.user_data_file_name)
-
-
-
 
 
 def ensure_user_data_file(bot_hash: Any = None) -> str:
@@ -541,7 +537,7 @@ def strip_reply_segment(message_text: str) -> str:
         match = reply_segment_pattern.match(remaining)
         if not match:
             return remaining
-        remaining = remaining[match.end() :]
+        remaining = remaining[match.end():]
 
 
 def parse_message_segment_params(param_text: str) -> dict[str, str]:
@@ -564,7 +560,7 @@ def parse_at_segments(message_text: str):
         param_dict = parse_message_segment_params(match.group('params'))
         target_id = param_dict.get('id') or param_dict.get('qq') or ''
         at_list.append({'id': safe_str(target_id).strip(), 'raw': match.group(0)})
-        remaining = remaining[match.end() :]
+        remaining = remaining[match.end():]
     return at_list, remaining.lstrip()
 
 
@@ -579,7 +575,7 @@ def parse_prefix(message_text: str, prefix_list: list[str] | None = None):
     real_prefix_list = config.allowed_prefix_list if prefix_list is None else prefix_list
     for prefix in real_prefix_list:
         if source.startswith(prefix):
-            return prefix, source[len(prefix) :].lstrip()
+            return prefix, source[len(prefix):].lstrip()
     return '', source
 
 
@@ -635,7 +631,7 @@ def parse_command(
         for raw_name, compare_name in sorted(normalized_list, key=lambda item: len(item[0]), reverse=True):
             if compare_source.startswith(compare_name):
                 command_text = raw_name
-                command_argument = command_source[len(raw_name) :].lstrip()
+                command_argument = command_source[len(raw_name):].lstrip()
                 break
 
     return {
@@ -822,9 +818,18 @@ def add_reply_quote(plugin_event, message_text: str) -> str:
     return f'{build_reply_quote_segment(plugin_event)}{source}'
 
 
+def _send_reply(plugin_event, message_text: str):
+    if (getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type') == 'button_click':
+        # OlivOS 已安排互动 ACK；reply() 不支持按钮事件，业务回复只使用 event_id。
+        kind, chat_id = _markdown_chat(plugin_event)
+        event_id = (getattr(plugin_event.data, 'extend', None) or {}).get('event_id')
+        return plugin_event.indeAPI.send_message(kind, chat_id, message_text, event_id=event_id)
+    return plugin_event.reply(add_reply_quote(plugin_event, message_text))
+
+
 def reply_message(plugin_event, message_text: str) -> Any:
     try:
-        return plugin_event.reply(add_reply_quote(plugin_event, message_text))
+        return _send_reply(plugin_event, message_text)
     except Exception:
         return None
 
@@ -859,21 +864,33 @@ def get_reply_mode(plugin_event, bot_config=None) -> str:
     return 'text' if bot_config.get('plain_text_mode') or not bot_config.get('send_as_image', True) else 'image'
 
 
+def is_qq_channel(plugin_event) -> bool:
+    data = getattr(plugin_event, 'data', None)
+    extend = getattr(data, 'extend', None) or {}
+    return bool(extend.get('chat_type') in ('guild_channel', 'guild_private') or extend.get('host_group_id')
+                or getattr(data, 'host_id', None) or extend.get('flag_from_qq') is False)
+
+
 def _markdown_chat(plugin_event) -> tuple[str, str]:
-    data = plugin_event.data
+    data = getattr(plugin_event, 'data', None)
     extend = getattr(data, 'extend', None) or {}
     platform = getattr(plugin_event, 'platform', {}) or {}
-    if platform.get('sdk') == 'onebot' or extend.get('flag_from_qq') is False:
+    if platform.get('sdk') not in (None, 'qqGuildv2_link') or is_qq_channel(plugin_event):
         return '', ''
     if extend.get('chat_type'):
         kind = extend['chat_type']
         if kind not in ('qq_group', 'qq_private'):
             return '', ''
         return kind, str(extend.get('chat_id') or '')
-    if extend.get('host_group_id') or getattr(data, 'host_id', None):
-        return '', ''
     group_id = get_group_id_from_event(plugin_event)
     return ('qq_group', group_id) if group_id else ('qq_private', str(getattr(data, 'user_id', '') or ''))
+
+
+def group_callback_user(plugin_event) -> str:
+    kind, chat_id = _markdown_chat(plugin_event)
+    if kind != 'qq_group' or not chat_id:
+        return ''
+    return str(getattr(plugin_event.data, 'user_id', '') or '')
 
 
 def can_send_markdown(plugin_event) -> bool:
@@ -993,7 +1010,7 @@ def reply_image(plugin_event, image_path: str, fallback_text: str) -> Any:
         image_message = build_image_message(image_path)
         if not image_message:
             raise ValueError('图片路径无效。')
-        return plugin_event.reply(add_reply_quote(plugin_event, image_message))
+        return _send_reply(plugin_event, image_message)
     except Exception:
         return reply_message(plugin_event, fallback_text)
 
@@ -1021,7 +1038,7 @@ def reply_image_segments(plugin_event, image_path_list: list[str], message_text:
     try:
         reply_result = None
         for segment in segment_list:
-            reply_result = plugin_event.reply(add_reply_quote(plugin_event, segment))
+            reply_result = _send_reply(plugin_event, segment)
         return reply_result
     except Exception:
         return reply_message(plugin_event, message_text)
@@ -1049,7 +1066,7 @@ def split_text_by_line(message_text: str, max_chars: int = 1000) -> list[str]:
                 current_lines = []
                 current_length = 0
             for start in range(0, len(line), max_chars):
-                chunk_list.append(line[start : start + max_chars])
+                chunk_list.append(line[start:start + max_chars])
             continue
         current_lines.append(line)
         current_length += line_length
@@ -1075,7 +1092,8 @@ def send_forward_messages(plugin_event, message_list: list[str]) -> bool:
     if get_platform_from_event(plugin_event).lower() != 'qq':
         return False
 
-    forward_messages = [create_forward_node(plugin_event, message_text) for message_text in message_list if message_text]
+    forward_messages = [create_forward_node(plugin_event, message_text)
+                        for message_text in message_list if message_text]
     if not forward_messages:
         return False
 

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Lanota · 曲目时长</title><style>/*__PAGE_STYLE__*/</style></head>
+<body>
+<main>
+  <header>
+    <div><div class="kicker">LANOTA / PLAY TIME</div><h1>曲目时长</h1></div>
+    <div class="metrics" id="summary"></div>
+  </header>
+  <div class="register pair" id="lists"></div>
+  <footer>曲库统计 · 长曲按时长降序，短曲按时长升序</footer>
+</main>
+<script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
+<script>
+  byId('summary').append(metric(data.total, '总曲数'), metric(data.long_count, '长曲'),
+    metric(data.short_count, '短曲'), metric(data.average, '平均时长'));
+  for (const [key, title, accent] of [['long', '长于 3 分钟', 'gold'], ['short', '短于 2 分钟', 'whisper']]) {
+    const count = data[key + '_count'];
+    const list = el('section', null, 'panel');
+    list.style.setProperty('--accent', `var(--${accent})`);
+    const head = el('div', null, 'section-head');
+    head.append(el('h2', title), el('span', `共 ${count} 首` + (count > 30 ? '，仅显示前 30' : ''), 'sub'));
+    list.append(head);
+    data[key].slice(0, 30).forEach((row, i) => {
+      const track = el('div', null, 'track');
+      const detail = el('div');
+      detail.append(song(row), chapter(row.chapter));
+      track.append(el('span', String(i + 1).padStart(2, '0'), 'index'), detail, el('span', row.duration, 'number'));
+      list.append(track);
+    });
+    if (!count) list.append(el('p', '暂无符合时长的曲目', 'empty'));
+    byId('lists').append(list);
+  }
+  fitPage();
+</script>
+</body></html>

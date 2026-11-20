@@ -286,7 +286,9 @@ def _build_stats(records: list[dict[str, Any]], *, records_available: bool) -> d
     }
 
 
-def _build_player_data(profile: dict[str, Any], records: list[dict[str, Any]], *, records_available: bool) -> dict[str, Any]:
+def _build_player_data(
+    profile: dict[str, Any], records: list[dict[str, Any]], *, records_available: bool,
+) -> dict[str, Any]:
     nano_id = str(profile.get('nanoId', '') or '')
     raw_rating = profile.get('rating')
     player = {

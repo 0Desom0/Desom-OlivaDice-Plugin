@@ -448,12 +448,12 @@ def find_song_by_search_term(
     if not matched_songs:
         # 改进：使用打分制的模糊搜索，而不是简单的字符串包含
         scored_songs = []
-        
+
         # 为每首歌计算标题和别名的最佳匹配分数
         for song in song_data:
             best_score = 10001
             search_source = None
-            
+
             # 检查标题匹配
             title = str(song.get('title', '')).strip()
             if title:
@@ -461,7 +461,7 @@ def find_song_by_search_term(
                 if title_score < best_score:
                     best_score = title_score
                     search_source = f'曲名({title})'
-            
+
             # 检查别名匹配
             aliases = alias_data.get(str(song.get('title')), [])
             for alias in aliases:
@@ -469,10 +469,10 @@ def find_song_by_search_term(
                 if alias_score < best_score:
                     best_score = alias_score
                     search_source = f'别名({alias})'
-            
+
             if best_score <= 450:
                 scored_songs.append((best_score, song, search_source))
-        
+
         scored_songs.sort(key=lambda x: x[0])
         if scored_songs:
             score_limit = min(450, scored_songs[0][0] + 150)
@@ -488,7 +488,7 @@ def find_artist_by_search_term(search_term: str, song_data: list[dict[str, Any]]
     search_lower = str(search_term).strip().lower()
     if not search_lower:
         return [], None, 0
-    
+
     # 构建不重复的曲师列表
     artist_map = {}
     for song in song_data:
@@ -496,11 +496,11 @@ def find_artist_by_search_term(search_term: str, song_data: list[dict[str, Any]]
         if artist:
             artist_map.setdefault(artist.lower(), artist)
     artists = list(artist_map.values())
-    
+
     # 尝试精确匹配
     matched = [artist for artist in artists if artist.lower() == search_lower]
     match_type = '曲师精确匹配' if matched else None
-    
+
     # 如果精确匹配失败，使用打分制模糊搜索
     if not matched:
         scored_artists = []
@@ -508,14 +508,14 @@ def find_artist_by_search_term(search_term: str, song_data: list[dict[str, Any]]
             score = calculate_search_score(search_term, artist)
             if score <= 450:
                 scored_artists.append((score, artist))
-        
+
         scored_artists.sort(key=lambda x: x[0])
         if scored_artists:
             score_limit = min(450, scored_artists[0][0] + 150)
             scored_artists = [item for item in scored_artists if item[0] <= score_limit]
         matched = [artist for _, artist in scored_artists]
         match_type = '曲师打分制模糊匹配' if matched else None
-    
+
     return matched[:max_display], match_type, len(matched)
 
 
@@ -539,7 +539,7 @@ def parse_color(value: str):
     color_text = str(value).strip().lstrip('#')
     if not re.match(r'^[0-9a-fA-F]{6}$', color_text):
         return None
-    return tuple(int(color_text[index : index + 2], 16) for index in (0, 2, 4)) + (255,)
+    return tuple(int(color_text[index:index + 2], 16) for index in (0, 2, 4)) + (255,)
 
 
 def get_user_bg_color(user_id: str, bot_hash: Any = None):
@@ -584,7 +584,7 @@ def wrap_text(text: str, max_chars: int = 20) -> list[str]:
         last_end = 0
         for match in token_pattern.finditer(paragraph):
             if match.start() > last_end:
-                token_list.extend(list(paragraph[last_end : match.start()]))
+                token_list.extend(list(paragraph[last_end:match.start()]))
             token_list.append(match.group())
             last_end = match.end()
         if last_end < len(paragraph):
@@ -666,35 +666,37 @@ def get_page_items(items: list[Any], page_index: int, page_size: int) -> list[An
     return items[start_index:end_index]
 
 
-def format_search_results_with_pagination(results: list[dict[str, Any]], page_index: int, page_size: int) -> tuple[str, int, int]:
+def format_search_results_with_pagination(
+    results: list[dict[str, Any]], page_index: int, page_size: int,
+) -> tuple[str, int, int]:
     """格式化搜索结果为可显示的文本，包含序号。
-    
+
     返回：(格式化文本, 总页数, 当前页索引)
     """
     total_count = len(results)
     total_pages = max(1, math.ceil(total_count / page_size))
     page_index = max(0, min(page_index, total_pages - 1))
-    
+
     page_results = get_page_items(results, page_index, page_size)
     start_index = page_index * page_size
-    
+
     result_text = f'第 {page_index + 1}/{total_pages} 页：\n'
-    
+
     for idx, song in enumerate(page_results):
         display_index = start_index + idx + 1
         chapter = song.get('chapter', '?')
         title = song.get('title', '未知')
         song_id = song.get('id', '?')
-        
+
         result_text += f'{display_index}. {chapter} - {title} (ID: {song_id})\n'
-    
+
     result_text = result_text.rstrip('\n')
-    
+
     if total_count > page_size:
         result_text += '\n\n【输入序号查看详情 | 下一页/上一页/第X页 | 结束】'
     else:
         result_text += '\n\n【输入序号查看详情 | 结束】'
-    
+
     return result_text, total_pages, page_index
 
 

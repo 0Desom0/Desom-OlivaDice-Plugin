@@ -819,7 +819,7 @@ def fetch_image_info(session, file_title_list: list[str]) -> dict[str, dict[str,
             'action': 'query',
             'prop': 'imageinfo',
             'iiprop': 'url|mime|size',
-            'titles': '|'.join(unique_titles[offset : offset + 50]),
+            'titles': '|'.join(unique_titles[offset:offset + 50]),
             'format': 'json',
             'formatversion': 2,
         }
@@ -837,7 +837,7 @@ def fetch_image_info(session, file_title_list: list[str]) -> dict[str, dict[str,
             if image_info_list:
                 batch_info[str(page.get('title', ''))] = image_info_list[0]
                 result[str(page.get('title', '')).casefold()] = image_info_list[0]
-        for original_title in unique_titles[offset : offset + 50]:
+        for original_title in unique_titles[offset:offset + 50]:
             target_title = original_title
             visited = set()
             while target_title in edges and target_title not in visited:
@@ -1115,7 +1115,7 @@ def fetch_cover_file_map(session, songs: list[dict[str, Any]]) -> dict[str, list
         params = {
             'action': 'query',
             'prop': 'revisions',
-            'titles': '|'.join(page_names[offset : offset + 50]),
+            'titles': '|'.join(page_names[offset:offset + 50]),
             'rvprop': 'content',
             'rvslots': 'main',
             'redirects': 1,
@@ -1131,7 +1131,7 @@ def fetch_cover_file_map(session, songs: list[dict[str, Any]]) -> dict[str, list
         for item in query.get('redirects') or []:
             edges[str(item.get('from', ''))] = str(item.get('to', ''))
         pages_by_title = {str(page.get('title', '')): page for page in query.get('pages') or []}
-        for original_title in page_names[offset : offset + 50]:
+        for original_title in page_names[offset:offset + 50]:
             target_title = original_title
             visited = set()
             while target_title in edges and target_title not in visited:
@@ -1300,7 +1300,6 @@ def update_existing_song_from_wiki(
     after_missing = set(check_missing_fields(merged))
     updated_fields = sorted(before_missing - after_missing)
     return merged, updated_fields
-
 
 
 PRESERVE_ON_FULL_CHECK = {'id', 'chapter', 'chart_design'}
@@ -1633,7 +1632,6 @@ def run_full_check(apply: bool = False) -> dict[str, Any]:
         'total': len(data),
         'projected_total': len(data) if apply else original_count + len(added_songs),
     }
-
 
 
 def run_update() -> dict[str, Any]:

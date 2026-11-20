@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import math
 import os
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -39,6 +41,11 @@ render_context = threading.local()
 compare_cache_lock = threading.RLock()
 compare_cache: dict[str, dict[str, Any]] = {}
 compare_cache_ttl_seconds = 60
+_PAGE_KINDS = ('time', 'table', 'notes', 'report')
+_PAGE_LIMIT = 60
+_PAGE_TIMEOUT = 4.0
+_page_cache_lock = threading.Lock()
+_page_pending: dict[Path, Future] = {}
 CHINA_FALLBACK_NOTICE = '现已切换备用 API，部分字段暂无法获取；如需查询完整信息请联系管理员更新 Token。'
 
 REGION_ALIAS_MAP = {
@@ -92,6 +99,29 @@ def _template_path(region: str = 'global', card_type: str = 'user') -> Path:
     raise FileNotFoundError(
         f'未找到 Lanota {region_display_name(normalized_region)} HTML 卡片模板，已检查：\n{checked_paths}'
     )
+
+
+def _load_page_templates() -> dict[str, str]:
+    # OPK 在 init 后会清理解包目录；小型模板和共用样式/脚本在导入时一次读入。
+    assets = config.asset_data_dir
+    templates = {}
+    try:
+        css = (assets / 'lanota_portal_pages.css').read_text(encoding='utf-8')
+        js = (assets / 'lanota_portal_pages.js').read_text(encoding='utf-8')
+    except OSError as exc:
+        utils.error_log(None, f'载入 Lanota 页面公共资源失败：{exc}')
+        return templates
+    for kind in _PAGE_KINDS:
+        try:
+            template = (assets / f'lanota_portal_{kind}.html').read_text(encoding='utf-8')
+        except OSError as exc:
+            utils.error_log(None, f'载入 Lanota {kind} 页面失败：{exc}')
+            continue
+        templates[kind] = template.replace('/*__PAGE_STYLE__*/', css).replace('/*__PAGE_SCRIPT__*/', js)
+    return templates
+
+
+_page_templates = _load_page_templates()
 
 
 def _request_headers(token: str) -> dict[str, str]:
@@ -259,7 +289,7 @@ def split_region_argument(argument: Any, greedy: bool = False) -> tuple[str | No
         compare_source = source.casefold()
         for alias in sorted(REGION_ALIAS_MAP, key=len, reverse=True):
             if compare_source.startswith(alias):
-                return REGION_ALIAS_MAP[alias], source[len(alias) :].lstrip()
+                return REGION_ALIAS_MAP[alias], source[len(alias):].lstrip()
     return None, source
 
 
@@ -589,7 +619,8 @@ def get_compare_data_cached(
     nano_id = get_bound_nano_id(plugin_event, selected_region)
     if not nano_id:
         region_name = region_display_name(selected_region)
-        raise RuntimeError(f'尚未绑定 Lanota {region_name}好友码，请先使用 .la bind {"cn " if selected_region == "china" else ""}<好友码>。')
+        prefix = 'cn ' if selected_region == 'china' else ''
+        raise RuntimeError(f'尚未绑定 Lanota {region_name}好友码，请先使用 .la bind {prefix}<好友码>。')
 
     cache_key = f'{selected_region}|{nano_id.casefold()}'
     now_time = time.time()
@@ -689,7 +720,7 @@ def find_compare_song_scores(
 
 
 def _escape_json(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
+    return json.dumps(data, ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c')
 
 
 def _registry_browser_paths() -> list[str]:
@@ -739,6 +770,11 @@ def _browser_candidates() -> list[str]:
         os.environ.get('EDGE_PATH', ''),
         os.environ.get('CHROME_PATH', ''),
     ]
+    # 已指定可执行文件时无需扫描 PATH、注册表和所有 Playwright 目录。
+    for candidate in raw_candidates:
+        for path in _expand_browser_candidate(candidate):
+            if os.path.isfile(path):
+                return [path]
     for executable_name in [
         'msedge',
         'msedge.exe',
@@ -930,7 +966,12 @@ def _compress_rendered_card(path: Path) -> Path:
 
 def _template_html(data: dict[str, Any], card_type: str = 'user') -> str:
     normalized_region = normalize_region(data.get('_portal_region', 'global'))
-    template = _template_path(normalized_region, card_type).read_text(encoding='utf-8')
+    if card_type in _PAGE_KINDS:
+        if card_type not in _page_templates:
+            raise FileNotFoundError(f'缺少 lanota_portal_{card_type}.html 或共用页面资源。')
+        template = _page_templates[card_type]
+    else:
+        template = _template_path(normalized_region, card_type).read_text(encoding='utf-8')
     placeholder = '/*__LANOTA_DATA__*/'
     if placeholder not in template:
         raise RuntimeError('Lanota HTML 卡片模板缺少数据占位符。')
@@ -966,24 +1007,33 @@ def _template_html(data: dict[str, Any], card_type: str = 'user') -> str:
     return template.replace(placeholder, f'window.__LANOTA_DATA__ = {_escape_json(template_data)};', 1)
 
 
-def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> str | None:
-    """使用固定 HTML 模板截图，用户卡片与歌曲卡片共用浏览器渲染流程。"""
+def _render_card(
+    data: dict[str, Any], card_type: str, output_prefix: str, *, page_path: Path | None = None,
+    deadline: float | None = None,
+) -> str | None:
+    """共享 Chromium 截图流程；静态长页的临时目标和总时限由缓存层提供。"""
     _set_render_error('')
     browser = _find_browser()
     if not browser:
         _set_render_error('未找到可用的 Chromium 浏览器。')
         return None
-    function.cleanup_image_cache()
-    output_dir = Path(utils.get_generate_image_dir()).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f'{output_prefix}_{uuid.uuid4().hex[:12]}.png'
+    if page_path is None:
+        function.cleanup_image_cache()
+        output_dir = Path(utils.get_generate_image_dir()).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f'{output_prefix}_{uuid.uuid4().hex[:12]}.png'
+    else:
+        output_path = page_path
     html_path = Path(tempfile.gettempdir()) / f'lanota_portal_{uuid.uuid4().hex[:12]}.html'
     browser_data_dir = Path(tempfile.gettempdir()) / f'lanota_portal_browser_{uuid.uuid4().hex[:12]}'
     try:
         html_path.write_text(_template_html(data, card_type), encoding='utf-8')
         browser_data_dir.mkdir(parents=True, exist_ok=True)
-        scale_factor = _device_scale_factor()
-        if card_type == 'song':
+        # 长页用原生像素并直接保留 PNG，避免对几百万像素的文字图做高成本 WebP 编码。
+        scale_factor = _device_scale_factor() if page_path is None else 1.0
+        if page_path is not None:
+            screenshot_height = _page_height(card_type, data)
+        elif card_type == 'song':
             screenshot_height = config.lanota_portal_song_screenshot_height
         elif card_type == 'b30':
             screenshot_height = _b30_screenshot_height(data)
@@ -997,6 +1047,9 @@ def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> st
         last_error = ''
         for headless_mode in ['--headless=new', '--headless']:
             output_path.unlink(missing_ok=True)
+            timeout = 45.0 if deadline is None else deadline - time.monotonic() - 0.12
+            if timeout <= 0:
+                raise TimeoutError('页面渲染超过 4 秒预算。')
             command = [
                 browser,
                 headless_mode,
@@ -1012,28 +1065,37 @@ def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> st
                 '--disable-background-networking',
                 '--allow-file-access-from-files',
                 '--run-all-compositor-stages-before-draw',
-                '--virtual-time-budget=8000',
+                '--virtual-time-budget=500' if deadline is not None else '--virtual-time-budget=8000',
                 f'--window-size={screenshot_width},{screenshot_height}',
                 f'--user-data-dir={browser_data_dir}',
                 f'--screenshot={output_path}',
                 html_path.resolve().as_uri(),
             ]
+            if deadline is not None:
+                command[2:2] = ['--disable-component-update', '--disable-sync', '--disable-crash-reporter',
+                                '--disable-features=msEdgeOnRampFRE,msEdgeFirstRunExperience,Translate']
             try:
                 result = subprocess.run(
                     command,
-                    capture_output=True,
+                    # Windows 超时后 communicate() 会等持有继承管道的 Chromium 子进程，可能多等十几秒。
+                    stdout=subprocess.DEVNULL if deadline is not None else subprocess.PIPE,
+                    stderr=subprocess.DEVNULL if deadline is not None else subprocess.PIPE,
                     text=True,
                     errors='replace',
-                    timeout=45,
+                    timeout=timeout,
                     check=False,
                 )
             except subprocess.TimeoutExpired:
+                if deadline is not None:
+                    raise TimeoutError(f'{headless_mode} 截图未能在 4 秒预算内完成。') from None
                 last_error = f'{headless_mode} 启动超过 45 秒，已终止。'
                 continue
             except Exception as exception_object:
                 last_error = f'{headless_mode} 启动异常：{type(exception_object).__name__}: {exception_object}'
                 continue
             if result.returncode == 0 and output_path.exists() and output_path.stat().st_size >= 1000:
+                if page_path is not None:
+                    return str(page_path)
                 if card_type == 'song':
                     _crop_song_card(output_path, scale_factor)
                 return str(_compress_rendered_card(output_path))
@@ -1058,6 +1120,83 @@ def _render_card(data: dict[str, Any], card_type: str, output_prefix: str) -> st
             shutil.rmtree(browser_data_dir, ignore_errors=True)
         except Exception:
             pass
+
+
+def _page_height(kind: str, data: dict[str, Any]) -> int:
+    # 1200px 画布；长定数表分两栏，按 CSS 的行高和可能折行的文本预留空间。
+    def lines(value, width):
+        return sum(max(1, math.ceil(sum(1 if ord(char) < 768 else 2 for char in line) / (2 * width)))
+                   for line in str(value).split('\n'))
+
+    rows = data.get('rows', [])
+    if kind == 'time':
+        def time_height(entries):
+            return sum(50 + 22 * (lines(row['name'], 22) - 1) + 16 * (lines(row['chapter'], 29) - 1)
+                       for row in entries[:30])
+
+        height = 268 + max(time_height(data['long']), time_height(data['short']))
+    elif kind == 'table':
+        half = math.ceil(len(rows) / 2) if len(rows) > 24 else len(rows)
+        width = 16 if len(rows) > 24 else 44
+
+        def column_height(entries):
+            return sum(37 + 22 * (lines(row['name'], width) - 1) for row in entries)
+
+        height = 221 + max(column_height(rows[:half]), column_height(rows[half:]))
+    elif kind == 'notes':
+        height = 221 + sum(37 + 22 * (max(lines(row['name'], 29), lines(row['chapter'], 13)) - 1)
+                           for row in rows[:50])
+    else:
+        height = 225 + 45 * (lines(data['title'], 16) - 1) + sum(37 + 22 * (lines(row, 61) - 1) for row in rows[:40])
+    return max(320, min(12000, height))
+
+
+def render_page(kind: str, data: dict[str, Any], data_mtime: Any) -> str | None:
+    """返回已完整写入的 PNG 绝对路径；失败返回 None，由调用方生成原文字图。"""
+    deadline = time.monotonic() + _PAGE_TIMEOUT
+    if kind not in _PAGE_KINDS:
+        raise ValueError(f'未知页面类型：{kind}')
+    try:
+        key = json.dumps([kind, data, data_mtime], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        digest = hashlib.blake2b(key.encode('utf-8'), digest_size=20).hexdigest()
+        directory = Path(utils.get_plugin_data_dir()).resolve() / 'portal_cache'
+        target = directory / f'{kind}_{digest}.png'
+        with _page_cache_lock:
+            try:
+                os.utime(target, None)  # mtime 记录最近使用时间，进程重启后仍可按 LRU 淘汰。
+                return str(target)
+            except FileNotFoundError:
+                pass
+            flight = _page_pending.get(target)
+            if flight is None:
+                _page_pending[target] = Future()
+        if flight is not None:
+            return flight.result(timeout=max(0, deadline - time.monotonic()))
+        result = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=directory) as staging:
+                pending = Path(staging) / 'page.png'
+                if not _render_card(data, kind, kind, page_path=pending, deadline=deadline):
+                    raise RuntimeError(render_context.error)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('页面渲染超过 4 秒预算。')
+                with _page_cache_lock:
+                    cached = sorted(directory.glob('*.png'), key=lambda path: path.stat().st_mtime_ns)
+                    for oldest in cached[:max(0, len(cached) + 1 - _PAGE_LIMIT)]:
+                        oldest.unlink()
+                    os.utime(pending, None)
+                    pending.replace(target)
+                    result = str(target)
+            return result
+        finally:
+            with _page_cache_lock:
+                _page_pending.pop(target).set_result(result)
+    except Exception as exc:
+        reason = str(exc) or type(exc).__name__
+        _set_render_error(reason)
+        utils.error_log(utils.runtime_proc, f'lanota_portal_{kind} 页面失败，回退文字图：{reason}')
+        return None
 
 
 def render_player_card(data: dict[str, Any]) -> str | None:

@@ -238,7 +238,8 @@ def _chart_from_song(
         difficulty_map = song.get('difficulty', {})
         notes_map = song.get('notes', {})
         constant_map = song.get('official_constant', {})
-        level_text = str(difficulty_map.get(difficulty_key, '') or '').strip() if isinstance(difficulty_map, dict) else ''
+        level_text = (str(difficulty_map.get(difficulty_key, '') or '').strip()
+                      if isinstance(difficulty_map, dict) else '')
         total = _safe_int(notes_map.get(difficulty_key)) if isinstance(notes_map, dict) else None
         constant = _safe_float(constant_map.get(difficulty_key)) if isinstance(constant_map, dict) else None
         chapter_constants = table_data.get(chapter, {})

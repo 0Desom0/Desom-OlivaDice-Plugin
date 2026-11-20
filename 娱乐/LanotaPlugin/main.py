@@ -26,7 +26,9 @@ class Event(object):
         """群聊消息入口。"""
         message.handle_group_message(plugin_event, Proc)
 
+    def button_click(plugin_event, Proc):
+        message.handle_button_click(plugin_event, Proc)
+
     def save(plugin_event, Proc):
         """保存事件入口。"""
         message.handle_save(plugin_event, Proc)
-

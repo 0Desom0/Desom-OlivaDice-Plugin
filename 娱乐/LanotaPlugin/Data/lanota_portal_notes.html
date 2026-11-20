@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Lanota · 谱面物量榜</title>
+<style>/*__PAGE_STYLE__*/
+  .rank { display:inline-grid; place-items:center; min-width:32px; font-variant-numeric:tabular-nums; }
+  tbody tr:nth-child(-n+3) .rank { border-radius:10px; font-weight:700; }
+  tbody tr:nth-child(1) .rank { color:#f7d28a; background:#51412c; }
+  tbody tr:nth-child(2) .rank { color:#e1e4f1; background:#3f424f; }
+  tbody tr:nth-child(3) .rank { color:#efb593; background:#4b3530; }
+</style></head>
+<body style="--accent:var(--whisper)">
+<main>
+  <header>
+    <div><div class="kicker">LANOTA / NOTE RANKING</div><h1>谱面物量榜</h1></div>
+    <div class="metrics"><div class="metric"><b>TOP 50</b><small>按物量降序排列</small></div></div>
+  </header>
+  <section class="register panel"><table class="sheet">
+    <colgroup><col style="width:74px"><col><col style="width:135px"><col style="width:118px"><col style="width:190px"></colgroup>
+    <thead><tr><th>名次</th><th>曲名（ID）</th><th>难度</th><th class="num">物量</th><th>章节</th></tr></thead>
+    <tbody id="ranking"></tbody>
+  </table></section>
+  <footer id="footer"></footer>
+</main>
+<script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
+<script>
+  const rows = data.rows.slice(0, 50);
+  rows.forEach((row, i) => {
+    const tr = el('tr');
+    tr.append(cell(el('span', String(i + 1).padStart(2, '0'), 'rank')), cell(song(row)),
+      cell(difficulty(row)), cell(String(row.notes), 'score num'), cell(chapter(row.chapter)));
+    byId('ranking').append(tr);
+  });
+  byId('footer').textContent = `物量排行 · 共列出 ${rows.length} 张谱面`;
+  fitPage();
+</script>
+</body></html>

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Lanota · 曲库报告</title>
+<style>/*__PAGE_STYLE__*/
+  td:last-child { white-space:pre-wrap; }
+</style></head>
+<body style="--accent:var(--acoustic)">
+<main>
+  <header>
+    <div><div class="kicker">LANOTA / LIBRARY REPORT</div><h1 id="title"></h1></div>
+    <div class="metrics" id="summary"></div>
+  </header>
+  <section class="register panel"><table class="sheet">
+    <colgroup><col style="width:74px"><col></colgroup>
+    <thead><tr><th>序号</th><th>报告明细</th></tr></thead><tbody id="details"></tbody>
+  </table><p class="empty" id="empty" hidden>没有明细记录</p></section>
+  <footer id="footer"></footer>
+</main>
+<script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
+<script>
+  byId('title').textContent = data.title;
+  byId('summary').append(metric(data.total, '明细总数'), metric(data.elapsed, '耗时'),
+    metric(data.errors, '错误数', data.errors > 0));
+  const rows = data.rows.slice(0, 40);
+  rows.forEach((detail, i) => {
+    const tr = el('tr');
+    tr.append(cell(String(i + 1).padStart(2, '0'), 'index'), cell(detail));
+    byId('details').append(tr);
+  });
+  byId('empty').hidden = rows.length > 0;
+  byId('footer').textContent = `共 ${data.total} 条明细` + (data.total > rows.length ? `，仅显示前 ${rows.length} 条` : '');
+  fitPage();
+</script>
+</body></html>

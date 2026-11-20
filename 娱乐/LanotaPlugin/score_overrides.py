@@ -850,7 +850,8 @@ def _ocr_difficulty(lines: list[str]) -> int | None:
             continue
         if letters.startswith('ma'):
             return 3
-        best_name = max(DIFFICULTY_NAMES, key=lambda name: difflib.SequenceMatcher(None, letters, name.casefold()).ratio())
+        best_name = max(DIFFICULTY_NAMES,
+                        key=lambda name: difflib.SequenceMatcher(None, letters, name.casefold()).ratio())
         if difflib.SequenceMatcher(None, letters, best_name.casefold()).ratio() >= 0.65:
             return DIFFICULTY_NAMES.index(best_name)
     return None
@@ -1289,7 +1290,8 @@ def _parse_ocr(text: str, songs: list[dict[str, Any]], region: str) -> tuple[dic
     for line in lines:
         if re.fullmatch(r'(?i)lanota(?:\s+portal)?|portal', line):
             continue
-        if re.search(r'(?i)rank|score|rating|combo|notes|harmony|tune|fail|master|ultra|acoustic|whisper|\d+%|\d{3},\d{3}', line):
+        if re.search(r'(?i)rank|score|rating|combo|notes|harmony|tune|fail|master|ultra|acoustic|whisper|'
+                     r'\d+%|\d{3},\d{3}', line):
             continue
         if re.fullmatch(r'[\d\s,，.]+', line) or len(line) < 2:
             continue
@@ -1803,7 +1805,9 @@ def merge_into_entries(
         used += 1
         remaining.append(override)
     merged = list(by_key.values())
-    merged.sort(key=lambda item: (-float(item.get('_singleRatingExact', 0)), -int(item.get('score', 0)), str(item.get('title', '')).casefold()))
+    merged.sort(key=lambda item: (
+        -float(item.get('_singleRatingExact', 0)), -int(item.get('score', 0)), str(item.get('title', '')).casefold(),
+    ))
     for rank, item in enumerate(merged[:b30.B30_ENTRY_COUNT + b30.OVERFLOW_ENTRY_COUNT], 1):
         item['rank'] = rank
         item['overflow'] = rank > b30.B30_ENTRY_COUNT
@@ -1971,7 +1975,9 @@ def reconcile_official_scores(
     return removed
 
 
-def apply_to_card(plugin_event, card_data: dict[str, Any], catalog: dict[tuple[str, int], dict[str, Any]], region: str) -> dict[str, Any]:
+def apply_to_card(
+    plugin_event, card_data: dict[str, Any], catalog: dict[tuple[str, int], dict[str, Any]], region: str,
+) -> dict[str, Any]:
     """把玩家档案中的成绩覆盖到一次 B30 查询结果。"""
     try:
         rows = load_overrides(plugin_event)
