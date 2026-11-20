@@ -201,15 +201,32 @@ def _iter_object_callables(target, prefix, scope, current_adapter=False):
             yield _entry('%s.%s' % (prefix, name), value, scope, current_adapter=current_adapter)
 
 
+def _in_module_tree(module_name, candidate):
+    """同一模块，或该模块名下的兄弟子模块（如 qqGuildv2SDKCommon）。
+
+    OlivOS 把 SDK 方法拆进了 qqGuildv2SDKCommon / qqGuildv2SDKGroup 等子模块，
+    再让 event_action 这类类继承过来；只比较模块全等会把继承来的方法全部漏掉。
+    """
+    if not candidate:
+        return False
+    return candidate == module_name or candidate.startswith(module_name)
+
+
 def _iter_class_callables(cls, prefix, module_name, current_adapter, depth=0):
     if depth > 3:
         return
-    for name, raw_value in sorted(vars(cls).items()):
+    # 沿 MRO 收集：OlivOS 现在把方法拆在 qqGuildv2SDKCommon 等基类里，
+    # 只看 vars(cls) 会漏掉 event_action 继承来的那些。
+    members = {}
+    for base in getattr(cls, '__mro__', (cls,)):
+        for name, raw_value in vars(base).items():
+            members.setdefault(name, raw_value)
+    for name, raw_value in sorted(members.items()):
         if not _is_visible(name):
             continue
         path = '%s.%s' % (prefix, name)
         if inspect.isclass(raw_value):
-            if getattr(raw_value, '__module__', '') == module_name:
+            if _in_module_tree(module_name, getattr(raw_value, '__module__', '')):
                 yield from _iter_class_callables(
                     raw_value,
                     path,
@@ -221,7 +238,9 @@ def _iter_class_callables(cls, prefix, module_name, current_adapter, depth=0):
 
         is_bound_descriptor = isinstance(raw_value, (staticmethod, classmethod))
         function = raw_value.__func__ if is_bound_descriptor else raw_value
-        if not inspect.isfunction(function) or getattr(function, '__module__', '') != module_name:
+        if not inspect.isfunction(function) or not _in_module_tree(
+            module_name, getattr(function, '__module__', '')
+        ):
             continue
         if not is_bound_descriptor:
             try:
@@ -245,9 +264,9 @@ def _iter_sdk_callables(root_name, module, current_adapter):
         if not _is_visible(name):
             continue
         path = '%s.%s' % (prefix, name)
-        if inspect.isfunction(value) and getattr(value, '__module__', '') == module_name:
+        if inspect.isfunction(value) and _in_module_tree(module_name, getattr(value, '__module__', '')):
             yield _entry(path, value, 'sdk', current_adapter=current_adapter)
-        elif inspect.isclass(value) and getattr(value, '__module__', '') == module_name:
+        elif inspect.isclass(value) and _in_module_tree(module_name, getattr(value, '__module__', '')):
             yield from _iter_class_callables(value, path, module_name, current_adapter)
 
 

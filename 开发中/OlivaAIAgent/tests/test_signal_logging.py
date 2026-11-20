@@ -163,7 +163,7 @@ class SignalLoggingTest(unittest.TestCase):
             messages=2,
         )
         message = self.proc.records[-1][1]
-        self.assertIn('本轮对话决定', message)
+        self.assertIn('接话决定', message)
         self.assertIn('决定=回复', message)
         self.assertIn('结果=["第一句", "第二句"]', message)
         self.assertIn('消息数=2', message)

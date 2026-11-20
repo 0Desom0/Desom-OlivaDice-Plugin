@@ -286,9 +286,11 @@ class MediaRecognitionTest(unittest.TestCase):
 
         parsed = OlivaAIAgent.msgReply.parseMessage(event)
 
-        self.assertEqual([wav_url, file_url], parsed['audio_urls'])
-        self.assertEqual(['只有 QQ 语音采用官方结果', ''], parsed['audio_official_texts'])
-        self.assertEqual(['wav', ''], parsed['audio_format_hints'])
+        # 顺序按消息体出现顺序（先 OP:file 再语音附件）；关键是官方识别结果
+        # 必须和 QQ 语音那一条对齐，别错位挂到别的音频上。
+        self.assertEqual([file_url, wav_url], parsed['audio_urls'])
+        self.assertEqual(['', '只有 QQ 语音采用官方结果'], parsed['audio_official_texts'])
+        self.assertEqual(['', 'wav'], parsed['audio_format_hints'])
 
     def test_qqguild_audio_attachment_uses_official_asr(self):
         event = FakeEvent()
