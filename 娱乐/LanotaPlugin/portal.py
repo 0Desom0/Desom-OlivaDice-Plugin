@@ -1167,10 +1167,18 @@ def _trim_page_bottom(path: Path, padding: int = 24) -> None:
 _PAGE_WIDTHS = {'time': 700, 'table': 560, 'notes': 760, 'ritmo': 520, 'report': 1180}
 
 
+def _table_columns(row_count: int) -> int:
+    if row_count > 80:
+        return 3
+    if row_count > 40:
+        return 2
+    return 1
+
+
 def _page_width(kind: str, data: dict[str, Any]) -> int:
-    if kind == 'table' and len(data.get('rows') or []) > 40:
-        # 长定数页左右分栏，画布要跟着加宽。
-        return 820
+    if kind == 'table':
+        # 定数页按栏数加宽：一栏 560、两栏 820、三栏 1120。
+        return {1: 560, 2: 820, 3: 1120}[_table_columns(len(data.get('rows') or []))]
     return int(_PAGE_WIDTHS.get(kind, config.lanota_portal_screenshot_width))
 
 
@@ -1192,10 +1200,10 @@ def _page_height(kind: str, data: dict[str, Any]) -> int:
 
             height = 246 + max(time_height(data['long']), time_height(data['short']))
     elif kind == 'table':
-        # 每行约 27px、每个分隔头约 44px；超过 40 行就走左右两栏，高度减半。
-        body = sum(27 + 21 * (lines(row['name'], 26) - 1) for row in rows)
-        heads = 44 * max(1, len(data.get('tiers') or []))
-        height = 196 + (body + heads) // (2 if len(rows) > 40 else 1)
+        # 每行约 26px、每个分隔头约 46px；按栏数摊平高度。
+        body = sum(26 + 20 * (lines(row['name'], 24) - 1) for row in rows)
+        heads = 46 * max(1, len(data.get('tiers') or []))
+        height = 190 + (body + heads) // _table_columns(len(rows))
     elif kind == 'ritmo':
         height = 620
     elif kind == 'notes':

@@ -20,7 +20,6 @@
   </header>
   <div class="register pair" id="lists"></div>
   <div class="register" id="all"></div>
-  <footer id="footer">曲库统计 · 长曲按时长降序，短曲按时长升序</footer>
 </main>
 <script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
 <script>
@@ -38,8 +37,6 @@
     document.body.style.setProperty('--accent', `var(--${ascending ? 'whisper' : 'gold'})`);
     byId('summary').append(metric(data.total, '本榜曲目'), metric(data.page + '/' + data.pages, '页'),
       metric(data.average, '平均时长'));
-    byId('footer').textContent = `第 ${data.page} / ${data.pages} 页 · ${
-      ascending ? '短曲按时长升序' : '长曲按时长降序'}`;
     const wrap = el('section', null, 'panel all-list');
     const head = el('div', null, 'section-head');
     head.append(el('h2', data.panelLabel), el('span', `共 ${data.total} 首`, 'sub'));

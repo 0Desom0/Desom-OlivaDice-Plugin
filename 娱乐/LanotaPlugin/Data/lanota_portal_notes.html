@@ -27,7 +27,6 @@
       <span class="sub">名次 · 曲名（ID）· 难度标级 · 物量 · 章节</span></div>
     <div class="rank-list" id="ranking"></div>
   </section>
-  <footer id="footer"></footer>
 </main>
 <script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
 <script>
@@ -41,7 +40,6 @@
       difficulty(row), el('span', String(row.notes), 'number'));
     byId('ranking').append(node);
   });
-  byId('footer').textContent = `物量排行 · 共列出 ${rows.length} 张谱面`;
   fitPage();
 </script>
 </body></html>

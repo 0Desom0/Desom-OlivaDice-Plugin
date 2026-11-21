@@ -32,14 +32,13 @@
     <div class="metrics" id="summary"></div>
   </header>
   <div id="tiers"></div>
-  <footer id="footer">定数索引</footer>
 </main>
 <script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
 <script>
   const constantMode = data.groupBy !== 'level';
   const tiers = (data.tiers && data.tiers.length)
     ? data.tiers : [{level: data.level, rows: data.rows, count: data.rows.length}];
-  const twoColumn = data.rows.length > 40;
+  const columnCount = data.rows.length > 80 ? 3 : (data.rows.length > 40 ? 2 : 1);
   byId('title').textContent = (constantMode ? '谱面定数表 · ' : '谱面定数表 · 标级 ') + (data.span || data.level);
   byId('summary').append(metric(tiers.length, constantMode ? '定数档' : '标级'),
     metric(data.rows.length, '谱面'));
@@ -68,31 +67,49 @@
   };
 
   const holder = byId('tiers');
-  if (twoColumn) {
-    // 每档高度 ≈ 行数 × 行高 + 档头；在所有档位边界里挑左右最接近的一个切分。
-    const tierHeight = tier => tier.count * 26 + 46;
-    const heights = tiers.map(tierHeight);
+  if (columnCount > 1) {
+    // 每档高度 ≈ 行数 × 26 + 档头 46；在档位边界上穷举切分点，
+    // 让最高的那一栏尽量矮（档位仍然整档不拆）。
+    const heights = tiers.map(tier => tier.count * 26 + 46);
     const total = heights.reduce((sum, value) => sum + value, 0);
-    let acc = 0;
-    let split = tiers.length;
-    let best = Infinity;
-    for (let i = 0; i < tiers.length - 1; i += 1) {
-      acc += heights[i];
-      const diff = Math.abs(acc - (total - acc));
-      if (diff < best) { best = diff; split = i + 1; }
+    const cum = [];
+    let running = 0;
+    for (const height of heights) { running += height; cum.push(running); }
+    const columnHeight = cuts => {
+      let previous = 0;
+      let tallest = 0;
+      for (const cut of [...cuts, tiers.length]) {
+        tallest = Math.max(tallest, cum[cut - 1] - previous);
+        previous = cum[cut - 1];
+      }
+      return tallest;
+    };
+    let bestCuts = [];
+    if (columnCount === 2) {
+      for (let a = 1; a < tiers.length; a += 1) {
+        if (!bestCuts.length || columnHeight([a]) < columnHeight(bestCuts)) bestCuts = [a];
+      }
+    } else {
+      let bestScore = Infinity;
+      for (let a = 1; a < tiers.length - 1; a += 1) {
+        for (let b = a + 1; b < tiers.length; b += 1) {
+          const score = columnHeight([a, b]);
+          if (score < bestScore) { bestScore = score; bestCuts = [a, b]; }
+        }
+      }
     }
+    const bounds = [0, ...bestCuts, tiers.length];
     const columns = el('div', null, 'columns');
-    for (const group of [tiers.slice(0, split), tiers.slice(split)]) {
+    columns.style.gridTemplateColumns = `repeat(${columnCount}, minmax(0,1fr))`;
+    for (let i = 0; i < bounds.length - 1; i += 1) {
       const column = el('div');
-      group.forEach(tier => column.append(renderTier(tier)));
+      tiers.slice(bounds[i], bounds[i + 1]).forEach(tier => column.append(renderTier(tier)));
       columns.append(column);
     }
     holder.append(columns);
   } else {
     tiers.forEach(tier => holder.append(renderTier(tier)));
   }
-  byId('footer').textContent = constantMode ? '定数索引 · 按定数分级，数值高的在前'
-    : '定数索引 · 仅显示指定标级';
   fitPage();
 </script>
 </body></html>
