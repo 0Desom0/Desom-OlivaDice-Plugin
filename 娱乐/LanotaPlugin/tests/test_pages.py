@@ -171,14 +171,18 @@ def test_time_all_pages_cover_long_and_short_lists():
     short_songs = [{'title': f'S{i}', 'id': f's{i}', 'chapter': 'Inf-1', 'time': f'1:{i:02d}'} for i in range(40)]
     middle = {'title': 'M', 'id': 'm', 'chapter': 'Inf-1', 'time': '2:30'}
     result = pages.time_all_pages(long_songs + short_songs + [middle])
-    # 一张图，不再分页
-    assert len(result) == 1
-    data, text = result[0]
-    assert data['mode'] == 'all'
-    assert len(data['long']) == 40 and len(data['short']) == 40
-    assert data['longCount'] == 40 and data['shortCount'] == 40
-    long_seconds = [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1]) for r in data['long']]
-    short_seconds = [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1]) for r in data['short']]
+    # 长榜、短榜各一张图，各自全量
+    assert len(result) == 2
+    long_data, long_text = result[0]
+    short_data, short_text = result[1]
+    assert long_data['panel'] == 'long' and short_data['panel'] == 'short'
+    assert len(long_data['rows']) == 40 and len(short_data['rows']) == 40
+
+    def seconds(rows):
+        return [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1]) for r in rows]
+
+    long_seconds = seconds(long_data['rows'])
+    short_seconds = seconds(short_data['rows'])
     assert long_seconds == sorted(long_seconds, reverse=True)
     assert short_seconds == sorted(short_seconds)
-    assert '2:30' not in text
+    assert '2:30' not in long_text and '2:30' not in short_text

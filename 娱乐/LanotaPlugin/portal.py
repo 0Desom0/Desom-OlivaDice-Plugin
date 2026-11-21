@@ -1191,10 +1191,8 @@ def _page_height(kind: str, data: dict[str, Any]) -> int:
     rows = data.get('rows', [])
     if kind == 'time':
         if data.get('mode') == 'all':
-            # 两个榜单各自内部两栏，高度按较长的一半算。
-            long_rows = data.get('long') or []
-            short_rows = data.get('short') or []
-            height = 250 + 27 * ((len(long_rows) + 1) // 2) + 60 + 27 * ((len(short_rows) + 1) // 2)
+            # 单个榜单一张图，内部两栏。
+            height = 250 + 27 * ((len(rows) + 1) // 2)
         else:
             def time_height(entries):
                 # 单行显示（曲名与章节同行），每行约 26px，长名折行再补。

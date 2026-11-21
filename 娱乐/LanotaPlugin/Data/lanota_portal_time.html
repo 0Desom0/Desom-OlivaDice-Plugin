@@ -32,25 +32,20 @@
     return node;
   };
   if (data.mode === 'all') {
-    byId('title').textContent = '全部曲目时长';
+    const ascending = data.panel === 'short';
+    byId('title').textContent = data.panelLabel + ' · 全部';
     byId('lists').hidden = true;
-    const longCount = data.longCount || 0;
-    const shortCount = data.shortCount || 0;
-    byId('summary').append(metric(longCount, '长于 3 分钟'), metric(shortCount, '短于 2 分钟'),
-      metric(data.average, '平均时长'));
-    for (const [rows, label, accent, ascending] of [[data.long, '长于 3 分钟', 'gold', false],
-                                                    [data.short, '短于 2 分钟', 'whisper', true]]) {
-      const panel = el('section', null, 'panel');
-      panel.style.setProperty('--accent', `var(--${accent})`);
-      const head = el('div', null, 'section-head');
-      head.append(el('h2', label), el('span', `共 ${rows.length} 首`, 'sub'));
-      panel.append(head);
-      const grid = el('div', null, 'two-col');
-      rows.forEach((row, i) => grid.append(track(row, i + 1)));
-      panel.append(grid);
-      if (!rows.length) panel.append(el('p', '暂无符合时长的曲目', 'empty'));
-      byId('all').append(panel);
-    }
+    document.body.style.setProperty('--accent', `var(--${ascending ? 'whisper' : 'gold'})`);
+    byId('summary').append(metric(data.total, '本榜曲目'), metric(data.average, '平均时长'));
+    const panel = el('section', null, 'panel');
+    const head = el('div', null, 'section-head');
+    head.append(el('h2', data.panelLabel), el('span', `共 ${data.total} 首`, 'sub'));
+    panel.append(head);
+    const grid = el('div', null, 'two-col');
+    data.rows.forEach((row, i) => grid.append(track(row, i + 1)));
+    panel.append(grid);
+    if (!data.rows.length) panel.append(el('p', '暂无符合时长的曲目', 'empty'));
+    byId('all').append(panel);
   } else {
     byId('summary').append(metric(data.total, '总曲数'), metric(data.long_count, '长曲'),
       metric(data.short_count, '短曲'), metric(data.average, '平均时长'));

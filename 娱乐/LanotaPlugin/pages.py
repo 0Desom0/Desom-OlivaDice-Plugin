@@ -106,26 +106,26 @@ def _duration_rows(songs, descending=True):
 
 
 def time_all_pages(songs):
-    """.la time all：一张图列出「全部长于 3 分钟」和「全部短于 2 分钟」，不截断不分页。"""
+    """.la time all：长榜单、短榜单各出一张图，各自全量列出，不截断也不拆图。"""
     dated, average, entry = _duration_rows(songs)
     average_text = f'{average // 60}:{average % 60:02}' if average else '—'
     long_rows = [entry(song) for seconds, song in dated if seconds > 180]
     short_rows = [entry(song) for seconds, song in reversed(dated) if seconds < 120]
-    data = {
-        'mode': 'all',
-        'long': long_rows,
-        'short': short_rows,
-        'longCount': len(long_rows),
-        'shortCount': len(short_rows),
-        'average': average_text,
-    }
-    lines = [f'长于 3 分钟（共 {len(long_rows)} 首）',
-             *[f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
-               for i, row in enumerate(long_rows, 1)],
-             f'短于 2 分钟（共 {len(short_rows)} 首）',
-             *[f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
-               for i, row in enumerate(short_rows, 1)]]
-    return [(data, '\n'.join(lines))]
+    result = []
+    for key, label, rows in (('long', '长于 3 分钟', long_rows), ('short', '短于 2 分钟', short_rows)):
+        data = {
+            'mode': 'all',
+            'panel': key,
+            'panelLabel': label,
+            'rows': rows,
+            'total': len(rows),
+            'average': average_text,
+        }
+        lines = [f'{label}（共 {len(rows)} 首）']
+        lines.extend(f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
+                     for i, row in enumerate(rows, 1))
+        result.append((data, '\n'.join(lines)))
+    return result
 
 
 def time_page(songs):
