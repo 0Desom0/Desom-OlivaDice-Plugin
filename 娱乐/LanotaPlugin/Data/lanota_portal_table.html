@@ -2,18 +2,25 @@
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>Lanota · 谱面定数表</title><style>/*__PAGE_STYLE__*/</style>
 <style>
-  main { padding: 18px 24px 14px; }
-  .sheet th, .sheet td { padding: 5px 12px; }
-  .sheet td { line-height: 21px; }
-  .tier { margin-top: 13px; }
-  .tier-head { display: flex; align-items: baseline; gap: 12px; padding: 7px 16px; border-radius: 12px;
+  main { padding: 16px 22px 12px; }
+  .tier { margin-top: 11px; }
+  .tier-head { display: flex; align-items: baseline; gap: 10px; padding: 6px 14px; border-radius: 11px;
                border: 1px solid var(--line); border-left: 5px solid var(--accent);
                background: linear-gradient(96deg,#332844 0%,#20192f 64%); }
-  .tier-head b { font-size: 27px; line-height: 1.1; color: var(--accent);
+  .tier-head b { font-size: 25px; line-height: 1.1; color: var(--accent);
                  font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
   .tier-head span { color: var(--muted); font-size: 14px; }
   .tier-head em { margin-left: auto; color: var(--muted); font-style: normal; font-size: 13px; }
-  .tier .panel { margin-top: 7px; }
+  .rows { margin-top: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+  .trow { display: flex; align-items: baseline; gap: 8px; padding: 3px 12px; }
+  .trow + .trow { border-top: 1px solid #ffffff10; }
+  .trow .idx { flex: none; width: 24px; color: var(--muted); font-size: 14px;
+               font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
+  .trow .const { flex: none; width: 68px; color: var(--gold); font-weight: 700; font-size: 16px;
+                 font-family: Kawoszeh,'Segoe UI',sans-serif; }
+  .trow .name { flex: 0 1 auto; overflow-wrap: anywhere; line-height: 21px; }
+  .trow .sid { flex: none; margin-left: 5px; color: var(--muted); font-size: 13px; }
+  .trow .badge { flex: none; margin-left: 9px; font-size: 14px; }
 </style></head>
 <body style="--accent:var(--master)">
 <main>
@@ -24,36 +31,36 @@
   <div id="tiers"></div>
   <footer id="footer">定数索引</footer>
 </main>
-<template id="grid"><section class="panel"><table class="sheet">
-  <colgroup><col style="width:104px"><col><col style="width:134px"></colgroup>
-  <thead><tr><th>定数</th><th>曲名（ID）</th><th class="num">难度标级</th></tr></thead><tbody></tbody>
-</table></section></template>
 <script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
 <script>
+  const constantMode = data.groupBy !== 'level';
   const tiers = (data.tiers && data.tiers.length)
     ? data.tiers : [{level: data.level, rows: data.rows, count: data.rows.length}];
-  byId('title').textContent = '谱面定数表 · ' + (data.span || data.level);
-  byId('summary').append(metric(tiers.length, '标级'), metric(data.rows.length, '谱面'));
+  byId('title').textContent = (constantMode ? '谱面定数表 · ' : '谱面定数表 · 标级 ') + (data.span || data.level);
+  byId('summary').append(metric(tiers.length, constantMode ? '定数档' : '标级'),
+    metric(data.rows.length, '谱面'));
   const holder = byId('tiers');
   for (const tier of tiers) {
     const wrap = el('div', null, 'tier');
     const head = el('div', null, 'tier-head');
-    head.append(el('b', tier.level), el('span', '共 ' + tier.count + ' 张谱面'));
-    if (tiers.length > 1) head.append(el('em', '低难度在前 · 高难度在后'));
+    head.append(el('b', (constantMode ? '定数 ' : '标级 ') + tier.level), el('span', '共 ' + tier.count + ' 张'));
+    if (tiers.length > 1) head.append(el('em', '定数从高到低'));
     wrap.append(head);
-    const grid = byId('grid').content.cloneNode(true);
-    const body = grid.querySelector('tbody');
-    for (const row of tier.rows) {
-      const tr = el('tr');
-      tr.append(cell(String(row.constant), 'score'), cell(song(row)), cell(difficulty(row), 'num'));
-      body.append(tr);
-    }
-    wrap.append(grid);
+    const box = el('div', null, 'rows');
+    tier.rows.forEach((row, i) => {
+      const line = el('div', null, 'trow');
+      line.append(el('span', String(i + 1).padStart(2, '0'), 'idx'));
+      if (!constantMode) line.append(el('span', String(row.constant), 'const'));
+      const name = el('span', row.name, 'name');
+      name.append(el('span', '#' + row.id, 'sid'));
+      line.append(name, difficulty(row));
+      box.append(line);
+    });
+    wrap.append(box);
     holder.append(wrap);
   }
-  byId('footer').textContent = tiers.length > 1
-    ? '定数索引 · 难度区间 ' + tiers.map(t => t.level).join(' / ')
-    : '定数索引';
+  byId('footer').textContent = constantMode ? '定数索引 · 按定数分级，数值高的在前'
+    : '定数索引 · 仅显示指定标级';
   fitPage();
 </script>
 </body></html>

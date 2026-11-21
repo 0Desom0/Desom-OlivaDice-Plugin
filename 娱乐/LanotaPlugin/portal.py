@@ -1168,8 +1168,8 @@ def _page_height(kind: str, data: dict[str, Any]) -> int:
     rows = data.get('rows', [])
     if kind == 'time':
         if data.get('mode') == 'all':
-            # all 模式是双栏全曲列表，按一半行数算高度。
-            height = 250 + 30 * ((len(rows) + 1) // 2)
+            # all 模式是双栏榜单，按一半行数算高度（另加一档表头）。
+            height = 290 + 27 * ((len(rows) + 1) // 2)
         else:
             def time_height(entries):
                 # 单行显示（曲名与章节同行），每行约 26px，长名折行再补。
@@ -1177,9 +1177,9 @@ def _page_height(kind: str, data: dict[str, Any]) -> int:
 
             height = 246 + max(time_height(data['long']), time_height(data['short']))
     elif kind == 'table':
-        # 单栏 + 每个标级一个分隔头（约 46px）：省掉两栏就能把行压得更短。
-        height = 208 + 46 * max(1, len(data.get('tiers') or [])) + sum(
-            34 + 20 * (lines(row['name'], 40) - 1) for row in rows
+        # 单栏 flex 行：每行约 27px，每个定数/标级分隔头约 44px。
+        height = 196 + 44 * max(1, len(data.get('tiers') or [])) + sum(
+            27 + 21 * (lines(row['name'], 26) - 1) for row in rows
         )
     elif kind == 'ritmo':
         height = 620

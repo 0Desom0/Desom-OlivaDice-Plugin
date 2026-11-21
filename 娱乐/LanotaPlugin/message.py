@@ -2022,43 +2022,49 @@ def handle_table(plugin_event, argument: str = '') -> None:
     if not groups or (action and action not in groups):
         reply_text(plugin_event, '该标级没有收录定数。可用标级：' + '、'.join(groups))
         return
-    levels = [action] if action else list(groups)
-    # 按行数切页：一页约 34 行，同一档谱面太多就拆到下一页（档位标题会在新页重复）。
-    # 高标级往往只有一两行，攒进同一页就不留大片空白。
-    per_page = 34
-    batches, current_rows, current_levels = [], [], []
-    for level in levels:
-        level_rows = groups[level]
-        cursor = 0
-        while cursor < len(level_rows):
-            space = per_page - len(current_rows)
-            if space <= 0:
-                batches.append((current_levels, current_rows))
-                current_rows, current_levels = [], []
-                continue
-            chunk = level_rows[cursor:cursor + space]
-            current_rows.extend(chunk)
-            cursor += len(chunk)
-            if level not in current_levels:
-                current_levels.append(level)
-            if len(current_rows) >= per_page:
-                batches.append((current_levels, current_rows))
-                current_rows, current_levels = [], []
-    if current_rows:
-        batches.append((current_levels, current_rows))
-    shown = batches[:3]
-    rendered = [pages.table_page('、'.join(level_list), rows) for level_list, rows in shown]
-    caption = 'Lanota 民间定数表'
+    if action:
+        # 16 / 15 / 15+：不带 + 的档位把同名 + 档一起取出（16 含 16+）；
+        # 带 + 的只出这一档。定数比同名高的情况也照实展示。
+        wanted = {action} if action.endswith('+') else {action, action + '+'}
+        rows = [row for level in groups if level in wanted for row in groups[level]]
+        rows.sort(key=lambda row: pages.constant_order(row['constant']), reverse=True)
+        if not rows:
+            reply_text(plugin_event, f'标级 {action} 没有收录定数。可用标级：' + '、'.join(groups))
+            return
+        group_by = 'constant'
+    else:
+        rows = [row for level in groups for row in groups[level]]
+        rows.sort(key=lambda row: (pages.constant_order(row['constant']), row['name']), reverse=True)
+        group_by = 'constant'
+    # 行已按定数排好，直接按 ~46 行切页；同一档跨页时页首会再出一次分隔条。
+    per_page = 65
+    batches = []
+    for start in range(0, len(rows), per_page):
+        chunk = rows[start:start + per_page]
+        labels = []
+        for row in chunk:
+            key = row['constant'] if group_by == 'constant' else row['level']
+            if key not in labels:
+                labels.append(key)
+        batches.append((labels, chunk))
+    shown = batches[:4]
+    rendered = [pages.table_page('、'.join(level_list), page_rows, group_by=group_by)
+                for level_list, page_rows in shown]
+    scope = f'标级 {action}' if action else '全部定数（按定数分级）'
+    caption = f'Lanota 民间定数表 · {scope}'
     if rendered:
-        caption += ' · 标级 ' + '、'.join(page[0]['span'] for page in rendered)
-    hidden = batches[3:]
+        caption += ' · ' + ' / '.join(page[0]['span'] for page in rendered[:3])
+        if len(rendered) > 3:
+            caption += ' …'
+    hidden = batches[4:]
     if hidden:
         hidden_levels = []
         for batch in hidden:
             for level in batch[0]:
                 if level not in hidden_levels:
                     hidden_levels.append(level)
-        caption += f'\n另有 {len(hidden_levels)} 档未画：' + '、'.join(hidden_levels) + '。输入 .la table <标级> 查看。'
+        caption += f'\n另有 {sum(len(batch[1]) for batch in hidden)} 张谱面未画（定数 ' + \
+                   '、'.join(hidden_levels[:6]) + '…）。输入 .la table <标级> 收窄范围。'
     pages.send(plugin_event, 'table', caption, rendered)
 
 

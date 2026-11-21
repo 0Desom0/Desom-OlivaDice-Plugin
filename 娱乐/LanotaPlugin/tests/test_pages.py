@@ -30,27 +30,51 @@ def event(tmp_path, monkeypatch):
                            plugin_info={'func_type': 'group_message'}, reply=Mock())
 
 
-def test_table_batches_small_levels_and_uses_chart_level(event, monkeypatch):
+def test_table_default_groups_by_constant_desc(event, monkeypatch):
     levels = ('14+', '15', '15+', '16')
     songs = [{'chapter': level, 'title': level, 'id': i, 'difficulty': {'master': level}}
              for i, level in enumerate(levels)]
+    constants = {'14+': '14.8', '15': '15.0', '15+': '15.3', '16': '16.2'}
     monkeypatch.setattr(function, 'load_song_data', lambda: songs)
-    monkeypatch.setattr(function, 'load_table_data', lambda: {level: {'Master': '14.8~15.2'} for level in levels})
+    monkeypatch.setattr(function, 'load_table_data',
+                        lambda: {level: {'Master': constants[level]} for level in levels})
     send = Mock()
     monkeypatch.setattr(pages, 'send', send)
+
     message.handle_table(event, '')
     _, kind, caption, segments = send.call_args.args
-    # 每档只有一行时不再单独成页，攒成一张，避免出现大片空白的单行页。
     assert kind == 'table'
     [(page, text)] = segments
-    assert page['level'] == '16、15+、15、14+'
+    # 默认全部：按定数分级，数值高的排在前面。
+    assert page['groupBy'] == 'constant'
+    assert [tier['level'] for tier in page['tiers']] == ['16.2', '15.3', '15.0', '14.8']
     assert len(page['rows']) == 4
-    assert '中文' not in text
+    assert '全部定数' in caption
     assert 'Master 15+' in text and 'Master 14+' in text
-    message.handle_table(event, '15')
-    [(page, text)] = send.call_args.args[-1]
-    assert page['rows'] == [{'constant': '14.8~15.2', 'level': '15', 'difficulty': 'Master', 'id': 1, 'name': '15'}]
-    assert 'Master 15' in text
+
+    # .la table 16 会把 16+ 一起带上
+    message.handle_table(event, '16')
+    [(page, _text)] = send.call_args.args[-1]
+    assert {tier['level'] for tier in page['tiers']} == {'16.2'}
+    assert {row['level'] for row in page['rows']} == {'16'}
+
+    # .la table 15+ 只出 15+
+    message.handle_table(event, '15+')
+    [(page, _text)] = send.call_args.args[-1]
+    assert {row['level'] for row in page['rows']} == {'15+'}
+
+
+def test_table_plus_level_includes_plain_level(event, monkeypatch):
+    songs = [{'chapter': 'a', 'title': 'A', 'id': 1, 'difficulty': {'master': '16'}},
+             {'chapter': 'b', 'title': 'B', 'id': 2, 'difficulty': {'master': '16+'}}]
+    monkeypatch.setattr(function, 'load_song_data', lambda: songs)
+    monkeypatch.setattr(function, 'load_table_data',
+                        lambda: {'a': {'Master': '16.2'}, 'b': {'Master': '16.4'}})
+    send = Mock()
+    monkeypatch.setattr(pages, 'send', send)
+    message.handle_table(event, '16')
+    [(page, _text)] = send.call_args.args[-1]
+    assert {row['level'] for row in page['rows']} == {'16', '16+'}
 
 
 def test_report_counts_untruncated_differences(event, monkeypatch):
@@ -129,27 +153,34 @@ def test_ritmo_template_and_kind_registered():
     assert 'ritmo' in portal._PAGE_KINDS
 
 
-def test_table_page_splits_tiers_low_to_high():
+def test_table_page_tiers_sorted_by_constant():
     rows = [
-        {'constant': '16.2', 'level': '16', 'difficulty': 'Master', 'id': 'a', 'name': 'A'},
         {'constant': '15.9', 'level': '15.9', 'difficulty': 'Master', 'id': 'b', 'name': 'B'},
+        {'constant': '16.2', 'level': '16', 'difficulty': 'Master', 'id': 'a', 'name': 'A'},
         {'constant': '16.0', 'level': '16', 'difficulty': 'Master', 'id': 'c', 'name': 'C'},
     ]
-    data, text = pages.table_page('16、15.9', rows)
-    assert [tier['level'] for tier in data['tiers']] == ['15.9', '16']
-    assert data['level'] == '16、15.9'
-    assert data['span'] == '15.9 ~ 16'
-    assert [tier['count'] for tier in data['tiers']] == [1, 2]
-    assert '标级 15.9 ~ 16' in text
+    data, text = pages.table_page('', rows, group_by='constant')
+    assert [tier['level'] for tier in data['tiers']] == ['16.2', '16.0', '15.9']
+    assert data['groupBy'] == 'constant'
+    assert data['span'] == '16.2 → 15.9'
+    assert '定数 16.2 → 15.9' in text
 
 
-def test_time_all_pages_cover_every_song():
-    songs = [{'title': f'S{i}', 'id': str(i), 'chapter': 'Inf-1',
-              'time': f'{2 + i // 60}:{i % 60:02d}'} for i in range(130)]
-    result = pages.time_all_pages(songs)
-    assert len(result) == 3
-    assert len(result[0][0]['rows']) == 60
-    assert sum(len(data['rows']) for data, _ in result) == 130
-    durations = [row['duration'] for data, _ in result for row in data['rows']]
-    seconds = [int(d.split(':')[0]) * 60 + int(d.split(':')[1]) for d in durations]
-    assert seconds == sorted(seconds, reverse=True)
+def test_time_all_pages_cover_long_and_short_lists():
+    long_songs = [{'title': f'L{i}', 'id': f'l{i}', 'chapter': 'Inf-1', 'time': f'4:{i:02d}'} for i in range(40)]
+    short_songs = [{'title': f'S{i}', 'id': f's{i}', 'chapter': 'Inf-1', 'time': f'1:{i:02d}'} for i in range(40)]
+    middle = {'title': 'M', 'id': 'm', 'chapter': 'Inf-1', 'time': '2:30'}
+    result = pages.time_all_pages(long_songs + short_songs + [middle], per_page=30)
+    long_pages = [data for data, _ in result if data['panel'] == 'long']
+    short_pages = [data for data, _ in result if data['panel'] == 'short']
+    assert sum(len(data['rows']) for data in long_pages) == 40
+    assert sum(len(data['rows']) for data in short_pages) == 40
+    assert all(data['total'] == 40 for data in long_pages + short_pages)
+    assert all(data['panelLabel'] == '长于 3 分钟' for data in long_pages)
+    # 长曲时长递减，短曲时长递增
+    long_seconds = [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1])
+                    for data in long_pages for r in data['rows']]
+    short_seconds = [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1])
+                     for data in short_pages for r in data['rows']]
+    assert long_seconds == sorted(long_seconds, reverse=True)
+    assert short_seconds == sorted(short_seconds)

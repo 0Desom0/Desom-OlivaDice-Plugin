@@ -106,25 +106,32 @@ def _duration_rows(songs, descending=True):
 
 
 def time_all_pages(songs, per_page=60):
-    """.la time all：全部曲目按时长降序分页，每页都带完整标题与时长。"""
+    """.la time all：把「所有长于 3 分钟」和「所有短于 2 分钟」的曲目都列出来。
+
+    与 .la time 的区别只是不再截断到 30 首，两个榜单各自按原顺序分页。
+    """
     dated, average, entry = _duration_rows(songs)
-    rows = [entry(song) for _, song in dated]
-    total = len(rows)
-    pages = [rows[i:i + per_page] for i in range(0, total, per_page)] or [[]]
+    average_text = f'{average // 60}:{average % 60:02}' if average else '—'
+    long_rows = [entry(song) for seconds, song in dated if seconds > 180]
+    short_rows = [entry(song) for seconds, song in reversed(dated) if seconds < 120]
     result = []
-    for index, chunk in enumerate(pages, 1):
-        data = {
-            'mode': 'all',
-            'rows': chunk,
-            'total': total,
-            'page': index,
-            'pages': len(pages),
-            'average': f'{average // 60}:{average % 60:02}' if total else '—',
-        }
-        lines = [f'全部曲目时长（共 {total} 首）· 第 {index}/{len(pages)} 页']
-        lines.extend(f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
-                     for i, row in enumerate(chunk, (index - 1) * per_page + 1))
-        result.append((data, '\n'.join(lines)))
+    for key, label, rows in (('long', '长于 3 分钟', long_rows), ('short', '短于 2 分钟', short_rows)):
+        chunks = [rows[i:i + per_page] for i in range(0, len(rows), per_page)] or [[]]
+        for index, chunk in enumerate(chunks, 1):
+            data = {
+                'mode': 'all',
+                'panel': key,
+                'panelLabel': label,
+                'rows': chunk,
+                'total': len(rows),
+                'page': index,
+                'pages': len(chunks),
+                'average': average_text,
+            }
+            lines = [f'{label}（共 {len(rows)} 首）· 第 {index}/{len(chunks)} 页']
+            lines.extend(f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
+                         for i, row in enumerate(chunk, (index - 1) * per_page + 1))
+            result.append((data, '\n'.join(lines)))
     return result
 
 
@@ -212,28 +219,44 @@ def _tier_order(level):
     return (float(match.group(1)), 1 if match.group(2) else 0)
 
 
-def table_page(level, rows):
+def constant_order(value):
+    """定数字符串的排序值：15.9、16、15+、15.9~16.0 都能量化。"""
+    text = str(value).strip().split('~', 1)[0].strip()
+    plus = text.endswith('+')
+    if plus:
+        text = text[:-1]
+    try:
+        number = float(text)
+    except ValueError:
+        return (-1.0, 0)
+    return (number, 1 if plus else 0)
+
+
+def table_page(level, rows, group_by='constant'):
     buckets = {}
     for row in rows:
-        row_level = str(row.get('level') or level).strip()
-        buckets.setdefault(row_level, []).append(row)
-    tiers = [{'level': row_level, 'rows': buckets[row_level]} for row_level in buckets]
-    tiers.sort(key=lambda tier: _tier_order(tier['level']))
+        key = str(row.get('constant') if group_by == 'constant' else row.get('level') or level).strip()
+        buckets.setdefault(key, []).append(row)
+    tiers = [{'level': key, 'rows': buckets[key]} for key in buckets]
+    if group_by == 'constant':
+        tiers.sort(key=lambda tier: constant_order(tier['level']), reverse=True)
+    else:
+        tiers.sort(key=lambda tier: _tier_order(tier['level']), reverse=True)
     for tier in tiers:
         tier['count'] = len(tier['rows'])
     span = '、'.join(tier['level'] for tier in tiers)
-    # level 保留调用方给的原始标级串（用例与按钮都依赖它），
-    # 区间只在 span 里表达，页面标题优先用 span。
     page_level = level
     if len(tiers) > 1:
-        span = f'{tiers[0]["level"]} ~ {tiers[-1]["level"]}'
-    lines = [f'Lanota 民间定数表 · 标级 {span}']
+        span = f'{tiers[0]["level"]} → {tiers[-1]["level"]}'
+    head = '定数' if group_by == 'constant' else '标级'
+    lines = [f'Lanota 民间定数表 · {head} {span}']
     # 合并小标级后，每行用自己那一档的标级，别一律套页面的 level。
     lines.extend(
         f'{r["constant"]} · {r["name"]}（{r["id"]}）· {r["difficulty"]} {r.get("level", level)}'
         for r in rows
     )
-    return {'level': page_level, 'span': span, 'tiers': tiers, 'rows': rows}, '\n'.join(lines)
+    return {'level': page_level, 'span': span, 'head': head, 'groupBy': group_by,
+            'tiers': tiers, 'rows': rows}, '\n'.join(lines)
 
 
 def fullcheck_rows(result):
