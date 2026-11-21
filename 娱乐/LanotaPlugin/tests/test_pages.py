@@ -47,7 +47,7 @@ def test_table_default_groups_by_constant_desc(event, monkeypatch):
     [(page, text)] = segments
     # 默认全部：按定数分级，数值高的排在前面。
     assert page['groupBy'] == 'constant'
-    assert [tier['level'] for tier in page['tiers']] == ['16.2', '15.3', '15.0', '14.8']
+    assert [tier['level'] for tier in page['tiers']] == ['16.2', '15.3', '15', '14.8']
     assert len(page['rows']) == 4
     assert '全部定数' in caption
     assert 'Master 15+' in text and 'Master 14+' in text
@@ -160,7 +160,7 @@ def test_table_page_tiers_sorted_by_constant():
         {'constant': '16.0', 'level': '16', 'difficulty': 'Master', 'id': 'c', 'name': 'C'},
     ]
     data, text = pages.table_page('', rows, group_by='constant')
-    assert [tier['level'] for tier in data['tiers']] == ['16.2', '16.0', '15.9']
+    assert [tier['level'] for tier in data['tiers']] == ['16.2', '16', '15.9']
     assert data['groupBy'] == 'constant'
     assert data['span'] == '16.2 → 15.9'
     assert '定数 16.2 → 15.9' in text
@@ -170,17 +170,15 @@ def test_time_all_pages_cover_long_and_short_lists():
     long_songs = [{'title': f'L{i}', 'id': f'l{i}', 'chapter': 'Inf-1', 'time': f'4:{i:02d}'} for i in range(40)]
     short_songs = [{'title': f'S{i}', 'id': f's{i}', 'chapter': 'Inf-1', 'time': f'1:{i:02d}'} for i in range(40)]
     middle = {'title': 'M', 'id': 'm', 'chapter': 'Inf-1', 'time': '2:30'}
-    result = pages.time_all_pages(long_songs + short_songs + [middle], per_page=30)
-    long_pages = [data for data, _ in result if data['panel'] == 'long']
-    short_pages = [data for data, _ in result if data['panel'] == 'short']
-    assert sum(len(data['rows']) for data in long_pages) == 40
-    assert sum(len(data['rows']) for data in short_pages) == 40
-    assert all(data['total'] == 40 for data in long_pages + short_pages)
-    assert all(data['panelLabel'] == '长于 3 分钟' for data in long_pages)
-    # 长曲时长递减，短曲时长递增
-    long_seconds = [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1])
-                    for data in long_pages for r in data['rows']]
-    short_seconds = [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1])
-                     for data in short_pages for r in data['rows']]
+    result = pages.time_all_pages(long_songs + short_songs + [middle])
+    # 一张图，不再分页
+    assert len(result) == 1
+    data, text = result[0]
+    assert data['mode'] == 'all'
+    assert len(data['long']) == 40 and len(data['short']) == 40
+    assert data['longCount'] == 40 and data['shortCount'] == 40
+    long_seconds = [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1]) for r in data['long']]
+    short_seconds = [int(r['duration'].split(':')[0]) * 60 + int(r['duration'].split(':')[1]) for r in data['short']]
     assert long_seconds == sorted(long_seconds, reverse=True)
     assert short_seconds == sorted(short_seconds)
+    assert '2:30' not in text

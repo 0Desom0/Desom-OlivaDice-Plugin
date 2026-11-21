@@ -105,34 +105,27 @@ def _duration_rows(songs, descending=True):
     return dated, average, entry
 
 
-def time_all_pages(songs, per_page=60):
-    """.la time all：把「所有长于 3 分钟」和「所有短于 2 分钟」的曲目都列出来。
-
-    与 .la time 的区别只是不再截断到 30 首，两个榜单各自按原顺序分页。
-    """
+def time_all_pages(songs):
+    """.la time all：一张图列出「全部长于 3 分钟」和「全部短于 2 分钟」，不截断不分页。"""
     dated, average, entry = _duration_rows(songs)
     average_text = f'{average // 60}:{average % 60:02}' if average else '—'
     long_rows = [entry(song) for seconds, song in dated if seconds > 180]
     short_rows = [entry(song) for seconds, song in reversed(dated) if seconds < 120]
-    result = []
-    for key, label, rows in (('long', '长于 3 分钟', long_rows), ('short', '短于 2 分钟', short_rows)):
-        chunks = [rows[i:i + per_page] for i in range(0, len(rows), per_page)] or [[]]
-        for index, chunk in enumerate(chunks, 1):
-            data = {
-                'mode': 'all',
-                'panel': key,
-                'panelLabel': label,
-                'rows': chunk,
-                'total': len(rows),
-                'page': index,
-                'pages': len(chunks),
-                'average': average_text,
-            }
-            lines = [f'{label}（共 {len(rows)} 首）· 第 {index}/{len(chunks)} 页']
-            lines.extend(f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
-                         for i, row in enumerate(chunk, (index - 1) * per_page + 1))
-            result.append((data, '\n'.join(lines)))
-    return result
+    data = {
+        'mode': 'all',
+        'long': long_rows,
+        'short': short_rows,
+        'longCount': len(long_rows),
+        'shortCount': len(short_rows),
+        'average': average_text,
+    }
+    lines = [f'长于 3 分钟（共 {len(long_rows)} 首）',
+             *[f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
+               for i, row in enumerate(long_rows, 1)],
+             f'短于 2 分钟（共 {len(short_rows)} 首）',
+             *[f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
+               for i, row in enumerate(short_rows, 1)]]
+    return [(data, '\n'.join(lines))]
 
 
 def time_page(songs):
@@ -194,11 +187,10 @@ def table_groups(songs, constants):
             if diff not in DIFFICULTIES:
                 continue
             constant = str(value).strip()
-            try:
-                lower = constant.split('~', 1)[0]
-                order = float(lower.rstrip('+')) + (0.5 if lower.endswith('+') else 0)
-            except ValueError:
+            order, plus = constant_order(constant)
+            if order < 0:
                 continue
+            order += 0.05 if plus else 0
             level = str(song.get('difficulty', {}).get(diff, '未知'))
             row = {'constant': constant, 'level': level, 'difficulty': diff.title(),
                    'id': song.get('id', '—'), 'name': song.get('title') or f'未找到歌曲 ({chapter})'}
@@ -219,23 +211,57 @@ def _tier_order(level):
     return (float(match.group(1)), 1 if match.group(2) else 0)
 
 
-def constant_order(value):
-    """定数字符串的排序值：15.9、16、15+、15.9~16.0 都能量化。"""
-    text = str(value).strip().split('~', 1)[0].strip()
+RANGE_SPLIT = re.compile(r'\s*(?:~|-|–|—)\s*')
+
+
+def _trim_number(text):
+    """去掉多余的零：15.0 → 15、15.90 → 15.9，保留结尾的 +。"""
+    text = str(text).strip().replace('＋', '+')
     plus = text.endswith('+')
-    if plus:
-        text = text[:-1]
-    try:
-        number = float(text)
-    except ValueError:
+    body = text[:-1] if plus else text
+    if '.' in body:
+        body = body.rstrip('0').rstrip('.')
+    return body + ('+' if plus else '')
+
+
+def constant_label(value):
+    """定数显示名：合并 15 与 15.0，把 15.8-15.9 写成 15.8 ~ 15.9。"""
+    text = str(value).strip()
+    parts = [part for part in RANGE_SPLIT.split(text) if part]
+    if len(parts) == 2:
+        return '%s ~ %s' % (_trim_number(parts[0]), _trim_number(parts[1]))
+    return _trim_number(text)
+
+
+def constant_order(value):
+    """定数字符串的排序值：15.9、16、15+、15.8-15.9 都能量化（区间取中点）。"""
+    text = str(value).strip()
+    parts = [part for part in RANGE_SPLIT.split(text) if part]
+    numbers = []
+    plus = False
+    for part in parts[:2]:
+        part = part.strip()
+        if part.endswith('+'):
+            plus = True
+            part = part[:-1]
+        try:
+            numbers.append(float(part))
+        except ValueError:
+            return (-1.0, 0)
+    if not numbers:
         return (-1.0, 0)
-    return (number, 1 if plus else 0)
+    return (sum(numbers) / len(numbers), 1 if plus else 0)
 
 
 def table_page(level, rows, group_by='constant'):
+    # 行的定数统一成显示名（15.0 → 15，15.8-15.9 → 15.8 ~ 15.9）。
+    rows = [dict(row, constant=constant_label(row.get('constant'))) for row in rows]
     buckets = {}
     for row in rows:
-        key = str(row.get('constant') if group_by == 'constant' else row.get('level') or level).strip()
+        if group_by == 'constant':
+            key = constant_label(row.get('constant'))
+        else:
+            key = str(row.get('level') or level).strip()
         buckets.setdefault(key, []).append(row)
     tiers = [{'level': key, 'rows': buckets[key]} for key in buckets]
     if group_by == 'constant':
