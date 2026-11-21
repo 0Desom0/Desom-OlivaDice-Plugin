@@ -1,4 +1,5 @@
 """排名边界、定数分段、报告截断、截图失败与缓存失效。"""
+import datetime
 import os
 import sys
 from pathlib import Path
@@ -109,3 +110,20 @@ def test_file_cache_canonicalization_and_lru(event, monkeypatch):
     newest = Path(portal.render_page('notes', {'rows': []}, 60))
     assert renderer.call_count == 61 and newest.is_file() and a.is_file() and not b.exists()
     assert newest.parent.name == 'portal_cache' and len(list(newest.parent.glob('*.png'))) == 60
+
+
+def test_ritmo_page_wraps_years_months_days():
+    today = datetime.date(2026, 11, 21)
+    data, text = pages.ritmo_page(today=today)
+    total = (today - datetime.date(2021, 9, 7)).days
+    assert data['total'] == total
+    assert (data['years'], data['months'], data['days']) == (5, 2, 14)
+    assert data['elapsed'] == '5年2月14日'
+    assert data['image'].startswith('data:image/webp;base64,')
+    assert f'总共: {total}天' in text
+
+
+def test_ritmo_template_and_kind_registered():
+    template = Path(pages.__file__).parent / 'Data' / 'lanota_portal_ritmo.html'
+    assert template.exists()
+    assert 'ritmo' in portal._PAGE_KINDS

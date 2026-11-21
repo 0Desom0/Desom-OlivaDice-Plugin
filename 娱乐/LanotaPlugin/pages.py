@@ -1,5 +1,7 @@
 """曲库长页的数据与纯文本表示；渲染与发送不访问外部服务。"""
 
+import base64
+import datetime
 import re
 import time
 from pathlib import Path
@@ -8,6 +10,77 @@ from . import function, portal, utils
 
 
 DIFFICULTIES = ('whisper', 'acoustic', 'ultra', 'master')
+RITMO_START = datetime.date(2021, 9, 7)
+_RITMO_IMAGE = None
+
+
+def _ritmo_image() -> str:
+    """里莫立绘内联成 data URI：无头浏览器截图时不需要额外读文件。"""
+    global _RITMO_IMAGE
+    if _RITMO_IMAGE is None:
+        path = Path(__file__).parent / 'Data' / 'ritmo.webp'
+        try:
+            payload = base64.b64encode(path.read_bytes()).decode('ascii')
+            _RITMO_IMAGE = 'data:image/webp;base64,' + payload
+        except OSError:
+            _RITMO_IMAGE = ''
+    return _RITMO_IMAGE
+
+
+def _split_years_months_days(start, today):
+    current = start
+    years = 0
+    while True:
+        try:
+            next_year = datetime.date(current.year + 1, current.month, current.day)
+        except ValueError:
+            next_year = datetime.date(current.year + 1, 2, 28)
+        if next_year <= today:
+            years += 1
+            current = next_year
+        else:
+            break
+    months = 0
+    while True:
+        try:
+            next_month = datetime.date(
+                current.year + (1 if current.month == 12 else 0),
+                1 if current.month == 12 else current.month + 1, current.day,
+            )
+        except ValueError:
+            break
+        if next_month <= today:
+            months += 1
+            current = next_month
+        else:
+            break
+    return years, months, (today - current).days
+
+
+def ritmo_page(start=RITMO_START, today=None):
+    """里莫昏睡计时页面；返回 (data, 纯文本回退)。"""
+    today = today or datetime.date.today()
+    years, months, days = _split_years_months_days(start, today)
+    total_days = (today - start).days
+    elapsed = f'{years}年{months}月{days}日'
+    data = {
+        'start': f'{start.year}年{start.month}月{start.day}日',
+        'today': f'{today.year}年{today.month}月{today.day}日',
+        'elapsed': elapsed,
+        'years': years,
+        'months': months,
+        'days': days,
+        'total': total_days,
+        'image': _ritmo_image(),
+    }
+    text = (
+        f'【里莫绝赞昏睡时间】\n\n昏睡日期: {data["start"]}\n'
+        f'今天日期: {data["today"]}\n\n已经过去:\n{elapsed}\n'
+        f'总共: {total_days}天\n让我们看看可爱的小里莫\n什么时候才能睡醒吧~'
+    )
+    return data, text
+
+
 LEVEL = re.compile(r'(\d{1,2})(\+?)')
 
 

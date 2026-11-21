@@ -1,7 +1,6 @@
 ﻿# -*- encoding: utf-8 -*-
 """LanotaPlugin 消息解析与命令处理。"""
 
-import datetime
 import math
 import re
 import threading
@@ -2378,39 +2377,9 @@ def handle_help(plugin_event, argument: str) -> None:
 
 
 def handle_ritmo(plugin_event) -> None:
-    start_date = datetime.date(2021, 9, 7)
-    today = datetime.date.today()
-    total_days = (today - start_date).days
-    current = start_date
-    years = 0
-    while True:
-        try:
-            next_year = datetime.date(current.year + 1, current.month, current.day)
-        except ValueError:
-            next_year = datetime.date(current.year + 1, 2, 28)
-        if next_year <= today:
-            years += 1
-            current = next_year
-        else:
-            break
-    months = 0
-    while True:
-        try:
-            next_month = datetime.date(
-                current.year + (1 if current.month == 12 else 0),
-                1 if current.month == 12 else current.month + 1, current.day,
-            )
-        except ValueError:
-            break
-        if next_month <= today:
-            months += 1
-            current = next_month
-        else:
-            break
-    days = (today - current).days
-    reply_text(plugin_event, f'【里莫绝赞昏睡时间】\n\n昏睡日期: 2021年9月7日\n'
-               f'今天日期: {today.year}年{today.month}月{today.day}日\n\n已经过去:\n{years}年{months}月{days}日\n'
-               f'总共: {total_days}天\n让我们看看可爱的小里莫\n什么时候才能睡醒吧~')
+    # 计时逻辑在 pages.ritmo_page，这里只负责把页面和回退文本发出去。
+    page = pages.ritmo_page()
+    pages.send(plugin_event, 'ritmo', '【里莫绝赞昏睡时间】', [page])
 
 
 def handle_color(plugin_event, argument: str) -> None:

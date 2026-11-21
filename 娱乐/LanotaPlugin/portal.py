@@ -41,7 +41,7 @@ render_context = threading.local()
 compare_cache_lock = threading.RLock()
 compare_cache: dict[str, dict[str, Any]] = {}
 compare_cache_ttl_seconds = 60
-_PAGE_KINDS = ('time', 'table', 'notes', 'report')
+_PAGE_KINDS = ('time', 'table', 'notes', 'report', 'ritmo')
 _PAGE_LIMIT = 60
 # 冷启动一次 headless 截图实测 2.5~3.4 秒、偶发尖峰超过 4 秒；预算太紧会让长页
 # 频繁回退成文字图。单页放到 9 秒，整体预算在 pages.send 里另算。
@@ -1180,6 +1180,8 @@ def _page_height(kind: str, data: dict[str, Any]) -> int:
             return sum(37 + 22 * (lines(row['name'], width) - 1) for row in entries)
 
         height = 221 + max(column_height(rows[:half]), column_height(rows[half:]))
+    elif kind == 'ritmo':
+        height = 760
     elif kind == 'notes':
         height = 221 + sum(37 + 22 * (max(lines(row['name'], 29), lines(row['chapter'], 13)) - 1)
                            for row in rows[:50])

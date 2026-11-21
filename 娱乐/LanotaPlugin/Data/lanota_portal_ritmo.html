@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Lanota · 里莫昏睡计时</title><style>/*__PAGE_STYLE__*/</style>
+<style>
+  body { --accent: var(--acoustic); }
+  .sleep { margin-top: 16px; display: grid; grid-template-columns: 372px minmax(0,1fr); gap: 18px; align-items: stretch; }
+  .figure { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 16px;
+            background: radial-gradient(120% 90% at 50% 8%, #2c3f33 0%, #1d2430 58%, #191627 100%);
+            display: flex; align-items: flex-end; justify-content: center; padding: 14px 6px 0; }
+  .figure::before { content: ''; position: absolute; width: 250px; height: 250px; left: 50%; top: 12%;
+                    transform: translateX(-50%); border-radius: 50%;
+                    background: radial-gradient(circle, #7ee0a455 0%, #7ee0a400 70%); }
+  .figure img { position: relative; max-height: 486px; width: auto; filter: drop-shadow(0 16px 30px #0009); }
+  .sleep-badge { position: absolute; left: 14px; top: 14px; padding: 5px 11px; border: 1px solid #7ee0a455;
+                 border-radius: 999px; background: #101a15cc; color: var(--accent); font-size: 12px; letter-spacing: .16em; }
+  .figure figcaption { position: absolute; left: 14px; bottom: 12px; color: var(--muted); font-size: 13px; letter-spacing: .08em; }
+  .facts { display: flex; flex-direction: column; gap: 12px; }
+  .total { border: 1px solid var(--line); border-radius: 16px; padding: 20px 24px;
+           background: linear-gradient(120deg, #232f2a 0%, #1d2130 62%, #23212e 100%); }
+  .total small { display: block; color: var(--muted); font-size: 14px; letter-spacing: .12em; }
+  .total b { display: inline-block; margin-top: 6px; color: var(--accent); font-size: 82px; line-height: 1.02;
+             font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
+  .total span { color: var(--muted); font-size: 21px; margin-left: 10px; }
+  .rows { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 6px 0; }
+  .row { display: flex; justify-content: space-between; gap: 16px; padding: 11px 22px; }
+  .row + .row { border-top: 1px solid #ffffff10; }
+  .row em { color: var(--muted); font-style: normal; font-size: 15px; }
+  .row strong { font-weight: 400; text-align: right; }
+  .row strong.num { font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
+  footer { margin-top: 16px; color: var(--muted); font-size: 15px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="kicker">LANOTA / RITMO SLEEP TIMER</div>
+      <h1>里莫绝赞昏睡时间</h1>
+      <div class="sub">从 2021 年 9 月 7 日那天起，Starlight Shooter 就再没醒过。</div>
+    </div>
+    <div class="metrics" id="summary"></div>
+  </header>
+  <div class="sleep">
+    <figure class="figure">
+      <div class="sleep-badge">昏 睡 中 · SLEEPING</div>
+      <img id="ritmo" alt="Ritmo">
+      <figcaption>RITMO · STARLIGHT SHOOTER</figcaption>
+    </figure>
+    <div class="facts">
+      <div class="total">
+        <small>已 经 过 去</small>
+        <b id="total-days"></b><span>天</span>
+      </div>
+      <div class="rows" id="rows"></div>
+    </div>
+  </div>
+  <footer>让我们看看可爱的小里莫，什么时候才能睡醒吧~</footer>
+</main>
+<script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
+<script>
+  byId('ritmo').src = data.image;
+  byId('total-days').textContent = data.total;
+  byId('summary').append(metric(data.years + '年' + data.months + '月', '已过去'));
+  const rows = [
+    ['昏睡日期', data.start, false],
+    ['今天日期', data.today, false],
+    ['已经过去', data.elapsed, true],
+    ['总共', data.total + ' 天', true],
+  ];
+  const box = byId('rows');
+  for (const [label, value, numeric] of rows) {
+    const row = el('div', null, 'row');
+    row.append(el('em', label), el('strong', value, numeric ? 'num' : null));
+    box.append(row);
+  }
+  fitPage();
+</script>
+</body></html>
