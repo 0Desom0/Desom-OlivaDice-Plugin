@@ -69,13 +69,17 @@
 
   const holder = byId('tiers');
   if (twoColumn) {
-    // 按行数找最接近一半的档位切分，左右两栏高度基本持平。
-    const total = tiers.reduce((sum, tier) => sum + tier.count, 0);
+    // 每档高度 ≈ 行数 × 行高 + 档头；在所有档位边界里挑左右最接近的一个切分。
+    const tierHeight = tier => tier.count * 26 + 46;
+    const heights = tiers.map(tierHeight);
+    const total = heights.reduce((sum, value) => sum + value, 0);
     let acc = 0;
     let split = tiers.length;
+    let best = Infinity;
     for (let i = 0; i < tiers.length - 1; i += 1) {
-      acc += tiers[i].count;
-      if (acc >= total / 2) { split = i + 1; break; }
+      acc += heights[i];
+      const diff = Math.abs(acc - (total - acc));
+      if (diff < best) { best = diff; split = i + 1; }
     }
     const columns = el('div', null, 'columns');
     for (const group of [tiers.slice(0, split), tiers.slice(split)]) {

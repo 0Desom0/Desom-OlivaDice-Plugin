@@ -2036,51 +2036,16 @@ def handle_table(plugin_event, argument: str = '') -> None:
         rows = [row for level in groups for row in groups[level]]
         rows.sort(key=lambda row: (pages.constant_order(row['constant']), row['name']), reverse=True)
         group_by = 'constant'
-    # 先按档分组，再整档装页：同一档绝不被切到两页（除非它自己就装不下一页）。
-    tiers = []
+    # 一张图装下全部：不切页，靠两栏把高度压住；档位仍然整档排布。
+    labels = []
     for row in rows:
         key = row['constant'] if group_by == 'constant' else row['level']
-        if not tiers or tiers[-1][0] != key:
-            tiers.append((key, []))
-        tiers[-1][1].append(row)
-    # 一页约 92 行（两栏 × 46 行）；整档装不下才另起一页。
-    per_page = 92
-    batches, current_rows, current_labels = [], [], []
-    for key, tier_rows in tiers:
-        remaining = list(tier_rows)
-        if current_rows and len(current_rows) + len(remaining) > per_page:
-            batches.append((current_labels, current_rows))
-            current_rows, current_labels = [], []
-        while remaining:
-            space = per_page - len(current_rows)
-            chunk, remaining = remaining[:space], remaining[space:]
-            current_rows.extend(chunk)
-            if key not in current_labels:
-                current_labels.append(key)
-            if len(current_rows) >= per_page:
-                batches.append((current_labels, current_rows))
-                current_rows, current_labels = [], []
-    if current_rows:
-        batches.append((current_labels, current_rows))
-    shown = batches[:4]
-    rendered = [pages.table_page('、'.join(level_list), page_rows, group_by=group_by)
-                for level_list, page_rows in shown]
+        if key not in labels:
+            labels.append(key)
+    page = pages.table_page('、'.join(labels), rows, group_by=group_by)
     scope = f'标级 {action}' if action else '全部定数（按定数分级）'
-    caption = f'Lanota 民间定数表 · {scope}'
-    if rendered:
-        caption += ' · ' + ' / '.join(page[0]['span'] for page in rendered[:3])
-        if len(rendered) > 3:
-            caption += ' …'
-    hidden = batches[4:]
-    if hidden:
-        hidden_levels = []
-        for batch in hidden:
-            for level in batch[0]:
-                if level not in hidden_levels:
-                    hidden_levels.append(level)
-        caption += f'\n另有 {sum(len(batch[1]) for batch in hidden)} 张谱面未画（定数 ' + \
-                   '、'.join(hidden_levels[:6]) + '…）。输入 .la table <标级> 收窄范围。'
-    pages.send(plugin_event, 'table', caption, rendered)
+    caption = f'Lanota 民间定数表 · {scope} · 共 {len(rows)} 张 · {page[0]["span"]}'
+    pages.send(plugin_event, 'table', caption, [page])
 
 
 help_categories = {
