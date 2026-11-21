@@ -4,8 +4,8 @@
   "namespace": "LanotaPlugin",
   "message_mode": "olivos_string",
   "info": "Lanota 曲库查询、官网 B30、成绩截图 OCR 覆盖、玩家绑定与曲绘缓存插件",
-  "version": "1.10.11",
-  "svn": 30,
+  "version": "1.10.12",
+  "svn": 31,
   "compatible_svn": 190,
   "priority": 30000,
   "support": [

@@ -3,24 +3,27 @@
 <head><meta charset="utf-8"><title>Lanota · 谱面定数表</title><style>/*__PAGE_STYLE__*/</style>
 <style>
   main { padding: 16px 22px 12px; }
-  .tier { margin-top: 11px; }
-  .tier-head { display: flex; align-items: baseline; gap: 10px; padding: 6px 14px; border-radius: 11px;
+  .tier { margin-top: 10px; break-inside: avoid; page-break-inside: avoid; }
+  .tier:first-child { margin-top: 0; }
+  .tier-head { display: flex; align-items: baseline; gap: 10px; padding: 5px 13px; border-radius: 10px;
                border: 1px solid var(--line); border-left: 5px solid var(--accent);
                background: linear-gradient(96deg,#332844 0%,#20192f 64%); }
-  .tier-head b { font-size: 25px; line-height: 1.1; color: var(--accent);
+  .tier-head b { font-size: 22px; line-height: 1.15; color: var(--accent);
                  font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
-  .tier-head span { color: var(--muted); font-size: 14px; }
-  .tier-head em { margin-left: auto; color: var(--muted); font-style: normal; font-size: 13px; }
-  .rows { margin-top: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-  .trow { display: flex; align-items: baseline; gap: 8px; padding: 3px 12px; }
+  .tier-head span { color: var(--muted); font-size: 13px; }
+  .rows { margin-top: 5px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+  .trow { display: flex; align-items: baseline; gap: 8px; padding: 2px 11px; }
   .trow + .trow { border-top: 1px solid #ffffff10; }
-  .trow .idx { flex: none; width: 24px; color: var(--muted); font-size: 14px;
+  .trow .idx { flex: none; width: 22px; color: var(--muted); font-size: 13px;
                font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
-  .trow .const { flex: none; width: 68px; color: var(--gold); font-weight: 700; font-size: 16px;
+  .trow .const { flex: none; width: 62px; color: var(--gold); font-weight: 700; font-size: 15px;
                  font-family: Kawoszeh,'Segoe UI',sans-serif; }
-  .trow .name { flex: 0 1 auto; overflow-wrap: anywhere; line-height: 21px; }
-  .trow .sid { flex: none; margin-left: 5px; color: var(--muted); font-size: 13px; }
-  .trow .badge { flex: none; margin-left: auto; padding-left: 9px; font-size: 14px; }
+  .trow .name { flex: 0 1 auto; overflow-wrap: anywhere; line-height: 20px; }
+  .trow .sid { flex: none; margin-left: 5px; color: var(--muted); font-size: 12px; }
+  .trow .badge { flex: none; margin-left: auto; padding-left: 9px; font-size: 13px; white-space: nowrap; }
+  .columns { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; align-items: start; }
+  .range-chip { margin-right: 14px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px;
+                color: var(--gold); font-size: 12px; letter-spacing: .04em; }
 </style></head>
 <body style="--accent:var(--master)">
 <main>
@@ -36,15 +39,19 @@
   const constantMode = data.groupBy !== 'level';
   const tiers = (data.tiers && data.tiers.length)
     ? data.tiers : [{level: data.level, rows: data.rows, count: data.rows.length}];
+  const twoColumn = data.rows.length > 40;
   byId('title').textContent = (constantMode ? '谱面定数表 · ' : '谱面定数表 · 标级 ') + (data.span || data.level);
   byId('summary').append(metric(tiers.length, constantMode ? '定数档' : '标级'),
     metric(data.rows.length, '谱面'));
-  const holder = byId('tiers');
-  for (const tier of tiers) {
+  if (tiers.length > 1) {
+    const chip = el('span', '区间 ' + tiers[0].level + ' → ' + tiers[tiers.length - 1].level, 'range-chip');
+    byId('summary').prepend(chip);
+  }
+
+  const renderTier = tier => {
     const wrap = el('div', null, 'tier');
     const head = el('div', null, 'tier-head');
     head.append(el('b', (constantMode ? '定数 ' : '标级 ') + tier.level), el('span', '共 ' + tier.count + ' 张'));
-
     wrap.append(head);
     const box = el('div', null, 'rows');
     tier.rows.forEach((row, i) => {
@@ -57,7 +64,28 @@
       box.append(line);
     });
     wrap.append(box);
-    holder.append(wrap);
+    return wrap;
+  };
+
+  const holder = byId('tiers');
+  if (twoColumn) {
+    // 按行数找最接近一半的档位切分，左右两栏高度基本持平。
+    const total = tiers.reduce((sum, tier) => sum + tier.count, 0);
+    let acc = 0;
+    let split = tiers.length;
+    for (let i = 0; i < tiers.length - 1; i += 1) {
+      acc += tiers[i].count;
+      if (acc >= total / 2) { split = i + 1; break; }
+    }
+    const columns = el('div', null, 'columns');
+    for (const group of [tiers.slice(0, split), tiers.slice(split)]) {
+      const column = el('div');
+      group.forEach(tier => column.append(renderTier(tier)));
+      columns.append(column);
+    }
+    holder.append(columns);
+  } else {
+    tiers.forEach(tier => holder.append(renderTier(tier)));
   }
   byId('footer').textContent = constantMode ? '定数索引 · 按定数分级，数值高的在前'
     : '定数索引 · 仅显示指定标级';

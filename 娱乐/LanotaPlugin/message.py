@@ -2036,17 +2036,32 @@ def handle_table(plugin_event, argument: str = '') -> None:
         rows = [row for level in groups for row in groups[level]]
         rows.sort(key=lambda row: (pages.constant_order(row['constant']), row['name']), reverse=True)
         group_by = 'constant'
-    # 行已按定数排好，直接按 ~46 行切页；同一档跨页时页首会再出一次分隔条。
-    per_page = 65
-    batches = []
-    for start in range(0, len(rows), per_page):
-        chunk = rows[start:start + per_page]
-        labels = []
-        for row in chunk:
-            key = row['constant'] if group_by == 'constant' else row['level']
-            if key not in labels:
-                labels.append(key)
-        batches.append((labels, chunk))
+    # 先按档分组，再整档装页：同一档绝不被切到两页（除非它自己就装不下一页）。
+    tiers = []
+    for row in rows:
+        key = row['constant'] if group_by == 'constant' else row['level']
+        if not tiers or tiers[-1][0] != key:
+            tiers.append((key, []))
+        tiers[-1][1].append(row)
+    # 一页约 92 行（两栏 × 46 行）；整档装不下才另起一页。
+    per_page = 92
+    batches, current_rows, current_labels = [], [], []
+    for key, tier_rows in tiers:
+        remaining = list(tier_rows)
+        if current_rows and len(current_rows) + len(remaining) > per_page:
+            batches.append((current_labels, current_rows))
+            current_rows, current_labels = [], []
+        while remaining:
+            space = per_page - len(current_rows)
+            chunk, remaining = remaining[:space], remaining[space:]
+            current_rows.extend(chunk)
+            if key not in current_labels:
+                current_labels.append(key)
+            if len(current_rows) >= per_page:
+                batches.append((current_labels, current_rows))
+                current_rows, current_labels = [], []
+    if current_rows:
+        batches.append((current_labels, current_rows))
     shown = batches[:4]
     rendered = [pages.table_page('、'.join(level_list), page_rows, group_by=group_by)
                 for level_list, page_rows in shown]

@@ -1032,7 +1032,8 @@ def _render_card(
         html_path.write_text(_template_html(data, card_type), encoding='utf-8')
         browser_data_dir.mkdir(parents=True, exist_ok=True)
         # 长页用原生像素并直接保留 PNG，避免对几百万像素的文字图做高成本 WebP 编码。
-        scale_factor = _device_scale_factor() if page_path is None else 1.0
+        # 长页也用 2x 光栅化：CSS 宽度不变，像素翻倍，手机上看不糊。
+        scale_factor = _device_scale_factor()
         if page_path is not None:
             screenshot_height = _page_height(card_type, data)
         elif card_type == 'song':
@@ -1167,6 +1168,9 @@ _PAGE_WIDTHS = {'time': 700, 'table': 560, 'notes': 760, 'ritmo': 520, 'report':
 
 
 def _page_width(kind: str, data: dict[str, Any]) -> int:
+    if kind == 'table' and len(data.get('rows') or []) > 40:
+        # 长定数页左右分栏，画布要跟着加宽。
+        return 820
     return int(_PAGE_WIDTHS.get(kind, config.lanota_portal_screenshot_width))
 
 
@@ -1188,10 +1192,10 @@ def _page_height(kind: str, data: dict[str, Any]) -> int:
 
             height = 246 + max(time_height(data['long']), time_height(data['short']))
     elif kind == 'table':
-        # 单栏 flex 行：每行约 27px，每个定数/标级分隔头约 44px。
-        height = 196 + 44 * max(1, len(data.get('tiers') or [])) + sum(
-            27 + 21 * (lines(row['name'], 26) - 1) for row in rows
-        )
+        # 每行约 27px、每个分隔头约 44px；超过 40 行就走左右两栏，高度减半。
+        body = sum(27 + 21 * (lines(row['name'], 26) - 1) for row in rows)
+        heads = 44 * max(1, len(data.get('tiers') or []))
+        height = 196 + (body + heads) // (2 if len(rows) > 40 else 1)
     elif kind == 'ritmo':
         height = 620
     elif kind == 'notes':

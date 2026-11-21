@@ -3,84 +3,78 @@
 <head><meta charset="utf-8"><title>Lanota · 里莫昏睡计时</title><style>/*__PAGE_STYLE__*/</style>
 <style>
   body { --accent: var(--acoustic); }
-  main { padding: 16px 20px 10px; }
-  .sleep { margin-top: 9px; display: grid; grid-template-columns: 232px minmax(0,1fr); gap: 10px; align-items: start; }
+  main { padding: 18px 20px 14px; }
+  header { min-height: 84px; padding: 14px 18px; }
+  .since { flex: none; text-align: right; color: var(--muted); font-size: 10px; letter-spacing: .16em; line-height: 1.7; }
+  .since b { display: block; color: var(--gold); font-size: 15px; letter-spacing: .08em;
+             font-family: Kawoszeh,'Segoe UI',sans-serif; }
+  h1 { font-size: 30px; }
+  .sleep { margin-top: 12px; display: grid; grid-template-columns: 214px minmax(0,1fr); gap: 14px; align-items: stretch; }
   .figure { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 14px;
-            background: radial-gradient(120% 90% at 50% 8%, #2c3f33 0%, #1d2430 58%, #191627 100%);
-            display: flex; align-items: flex-end; justify-content: center; padding: 14px 6px 0; }
-  .figure::before { content: ''; position: absolute; width: 250px; height: 250px; left: 50%; top: 12%;
-                    transform: translateX(-50%); border-radius: 50%;
-                    background: radial-gradient(circle, #7ee0a455 0%, #7ee0a400 70%); }
-  .figure img { position: relative; max-height: 356px; width: 100%; object-fit: contain;
-                 object-position: bottom center; filter: drop-shadow(0 14px 26px #0009); }
-  .sleep-badge { position: absolute; left: 50%; transform: translateX(-50%); top: 8px; padding: 3px 9px;
-                 border: 1px solid #7ee0a455; border-radius: 999px; background: #101a15cc; color: var(--accent);
-                 font-size: 11px; letter-spacing: .08em; white-space: nowrap; }
-  .figure figcaption { position: absolute; left: 6px; right: 6px; bottom: 6px; padding: 2px 4px; border-radius: 8px;
-                       background: #0c1712eb; border: 1px solid #7ee0a466; color: #ffffff; text-align: center;
-                       font-size: 10px; font-weight: 700; letter-spacing: 0; line-height: 1.25;
-                       text-shadow: 0 1px 6px #000c; }
-  .facts { display: flex; flex-direction: column; gap: 0; }
-  .total { border: 1px solid var(--line); border-radius: 14px; padding: 9px 14px;
-           background: linear-gradient(120deg, #232f2a 0%, #1d2130 62%, #23212e 100%); }
-  .total .range { display: block; margin-top: 1px; color: var(--muted); font-size: 12px; letter-spacing: .04em; }
-  .total small { display: block; color: var(--muted); font-size: 14px; letter-spacing: .12em; }
-  .total b { display: inline-block; margin-top: 1px; color: var(--accent); font-size: 56px; line-height: .96;
-             font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
-  .total span { color: var(--muted); font-size: 21px; margin-left: 10px; }
-  .rows { margin-top: 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 3px 0; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 13px; }
-  .row em, .row strong { white-space: nowrap; }
-  .row + .row { border-top: 1px solid #ffffff10; }
-  .row em { color: var(--muted); font-style: normal; font-size: 15px; line-height: 22px; }
-  .row strong { font-weight: 400; font-size: 15px; text-align: right; line-height: 22px; }
-  .row strong.num { font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
-  footer { margin-top: 9px; color: var(--muted); font-size: 15px; text-align: center; }
-</style>
-</head>
+            background: radial-gradient(120% 90% at 50% 6%, #2c3f33 0%, #1d2430 60%, #191627 100%);
+            padding: 8px 4px 0; }
+  .figure img { display: block; width: 100%; max-height: 312px; object-fit: contain;
+                object-position: bottom center; filter: drop-shadow(0 10px 20px #0009); }
+  .figure figcaption { display: block; margin: 4px -4px 0; padding: 3px 0 4px; text-align: center;
+                       color: #ffffff; font-size: 9px; font-weight: 700; letter-spacing: 0; white-space: nowrap;
+                       border-top: 1px solid #ffffff14; background: #0c1712b3; }
+  .side { display: flex; flex-direction: column; justify-content: center; gap: 0; padding: 14px 18px; border: 1px solid var(--line);
+          border-radius: 14px; background: linear-gradient(120deg, #232f2a 0%, #1d2130 62%, #23212e 100%); }
+  .side .label { color: var(--muted); font-size: 12px; letter-spacing: .14em; }
+  .side .count { margin-top: 2px; }
+  .side .count b { color: var(--accent); font-size: 62px; line-height: 1;
+                   font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
+  .side .count span { margin-left: 8px; color: var(--muted); font-size: 18px; }
+  .side .elapsed { margin-top: 6px; font-size: 22px; }
+  .side .range { margin-top: 4px; color: var(--muted); font-size: 12px; letter-spacing: .05em;
+                 font-family: Kawoszeh,'Segoe UI',sans-serif; }
+  .progress { margin-top: 16px; }
+  .progress .bar { height: 8px; border-radius: 99px; background: #ffffff12; overflow: hidden; }
+  .progress .bar i { display: block; height: 100%; border-radius: 99px;
+                     background: linear-gradient(90deg, #7ee0a4, #4fbf86); }
+  .progress span { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
+  .progress b { color: var(--accent); font-weight: 700; }
+  .side .wish { margin: auto 0 0; padding-top: 10px; border-top: 1px solid #ffffff12;
+                color: var(--muted); font-size: 13px; line-height: 1.5; }
+</style></head>
 <body>
 <main>
   <header>
     <div>
       <div class="kicker">LANOTA / RITMO SLEEP TIMER</div>
       <h1>里莫绝赞昏睡时间</h1>
-      <div class="sub">从 2021 年 9 月 7 日那天起，Starlight Shooter 就再没醒过。</div>
+      <div class="sub">2021 年 9 月 7 日起，里莫就再没醒过。</div>
     </div>
-    <div class="metrics" id="summary"></div>
+    <div class="since">SLEEPING SINCE<b id="since"></b></div>
   </header>
   <div class="sleep">
     <figure class="figure">
       <img id="ritmo" alt="Ritmo">
       <figcaption>RITMO · STARLIGHT SHOOTER</figcaption>
     </figure>
-    <div class="facts">
-      <div class="total">
-        <small>已 经 过 去</small><b id="total-days"></b><span>天</span>
-        <span class="range" id="range"></span>
+    <div class="side">
+      <div class="label">已 经 过 去</div>
+      <div class="count"><b id="total-days"></b><span>天</span></div>
+      <div class="elapsed" id="elapsed"></div>
+      <div class="range" id="range"></div>
+      <div class="progress">
+        <div class="bar"><i id="bar"></i></div>
+        <span id="milestone"></span>
       </div>
-      <div class="rows" id="rows"></div>
+      <p class="wish">让我们看看可爱的小里莫，什么时候才能睡醒吧~</p>
     </div>
   </div>
-  <footer>让我们看看可爱的小里莫，什么时候才能睡醒吧~</footer>
 </main>
 <script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
 <script>
   byId('ritmo').src = data.image;
   byId('total-days').textContent = data.total;
-  byId('summary').append(metric(data.years + '年' + data.months + '月', '已过去'));
+  byId('elapsed').textContent = data.years + ' 年 ' + data.months + ' 个月 ' + data.days + ' 天';
   byId('range').textContent = data.range;
-  const rows = [
-    ['昏睡日期', data.start, false],
-    ['今天日期', data.today, false],
-    ['已经过去', data.elapsed, true],
-    ['总共', data.total + ' 天', true],
-  ];
-  const box = byId('rows');
-  for (const [label, value, numeric] of rows) {
-    const row = el('div', null, 'row');
-    row.append(el('em', label), el('strong', value, numeric ? 'num' : null));
-    box.append(row);
-  }
+  byId('since').textContent = '2021.09.07';
+  const goal = Math.ceil((data.total + 1) / 1000) * 1000;
+  byId('bar').style.width = Math.min(100, data.total / goal * 100).toFixed(1) + '%';
+  byId('milestone').innerHTML = '距 <b>' + goal + '</b> 天还剩 <b>' + (goal - data.total) + '</b> 天';
   fitPage();
 </script>
 </body></html>
