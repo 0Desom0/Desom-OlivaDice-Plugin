@@ -1041,11 +1041,14 @@ def _render_card(
             screenshot_height = _b30_screenshot_height(data)
         else:
             screenshot_height = config.lanota_portal_screenshot_height
-        screenshot_width = (
-            config.lanota_portal_b30_screenshot_width
-            if card_type == 'b30'
-            else config.lanota_portal_screenshot_width
-        )
+        if page_path is not None:
+            screenshot_width = _page_width(card_type, data)
+        else:
+            screenshot_width = (
+                config.lanota_portal_b30_screenshot_width
+                if card_type == 'b30'
+                else config.lanota_portal_screenshot_width
+            )
         last_error = ''
         for headless_mode in ['--headless=new', '--headless']:
             output_path.unlink(missing_ok=True)
@@ -1157,6 +1160,14 @@ def _trim_page_bottom(path: Path, padding: int = 24) -> None:
                 rgb.crop((0, 0, width, bottom)).save(path, format='PNG', optimize=True)
     except Exception:
         return
+
+
+# 长页按内容收紧画布宽度：1200 会把行拉散，看起来空。
+_PAGE_WIDTHS = {'time': 940, 'table': 900, 'notes': 900, 'ritmo': 720, 'report': 1180}
+
+
+def _page_width(kind: str, data: dict[str, Any]) -> int:
+    return int(_PAGE_WIDTHS.get(kind, config.lanota_portal_screenshot_width))
 
 
 def _page_height(kind: str, data: dict[str, Any]) -> int:
