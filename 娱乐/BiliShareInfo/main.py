@@ -198,6 +198,14 @@ BILI_DYNAMIC_DETAIL_API = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/det
 BILI_ARTICLE_VIEW_API = 'https://api.bilibili.com/x/article/view'
 NON_VIDEO_PREVIEW_SUMMARY_MAX_LENGTH = 120
 NON_VIDEO_PREVIEW_IMAGE_LIMIT = 3
+# qqGuildv2 适配器标识与图片消息段匹配：
+# 低版本 QQ 客户端查看 Markdown 卡片时会丢掉全部格式和图片，还可能重复显示被引用内容，
+# 因此插件侧对 qqGuildv2 的图文回复做特判，强制走普通图文发送（不改 OlivOS 核心）。
+QQGUILDV2_SDK = 'qqGuildv2_link'
+IMAGE_SEGMENT_PATTERN = re.compile(
+    r'\[(?:OP|CQ):image(?:,[^\]]*)?\]',
+    re.IGNORECASE,
+)
 
 
 def _safe_text(value):
@@ -405,6 +413,62 @@ def message_object_has_leading_reply(message_object: Any) -> bool:
     return False
 
 
+def is_qqguildv2_event(plugin_event) -> bool:
+    """判断当前事件是否来自 qqGuildv2 适配器。"""
+    try:
+        return _safe_text(plugin_event.platform.get('sdk', '')).strip() == QQGUILDV2_SDK
+    except Exception:
+        return False
+
+
+def message_has_image_segment(text: str) -> bool:
+    """判断消息文本中是否包含 [OP:image...] 或 [CQ:image...] 图片消息段。"""
+    if not text:
+        return False
+    return bool(IMAGE_SEGMENT_PATTERN.search(_safe_text(text)))
+
+
+def reply_qqguildv2_plain(plugin_event, final_message):
+    """在 qqGuildv2 下以普通图文（关闭 Markdown 卡片）发送带原生引用的回复。
+
+    低版本 QQ 客户端无法正常渲染 Markdown 卡片（会丢格式、丢图，还可能重复显示
+    被引用内容）。这里作为插件侧兼容，在不改 OlivOS 核心的前提下，显式传入
+    allow_markdown=False，既保留原生引用（message_reference），又强制走普通图文。
+    任一环节不可用或发送异常时返回 None，让调用方回落到标准 reply。
+    """
+    try:
+        # 延迟导入，避免增加模块导入期对 OlivOS 的硬依赖
+        import OlivOS
+
+        event_action = getattr(getattr(OlivOS, 'qqGuildv2SDK', None), 'event_action', None)
+        if event_action is None:
+            return None
+
+        message_obj = event_action._normalize_outgoing_message(plugin_event, final_message)
+        if not getattr(message_obj, 'active', False):
+            return None
+
+        func_type = plugin_event.plugin_info.get('func_type')
+        if func_type == 'group_message':
+            return event_action.send_qq_msg(
+                plugin_event,
+                plugin_event.data.group_id,
+                message_obj,
+                allow_markdown=False,
+            )
+        if func_type == 'private_message':
+            return event_action.send_qq_msg(
+                plugin_event,
+                plugin_event.data.user_id,
+                message_obj,
+                flag_direct=True,
+                allow_markdown=False,
+            )
+        return None
+    except Exception:
+        return None
+
+
 def reply_message(plugin_event, message):
     final_message = _safe_text(message)
     try:
@@ -414,6 +478,21 @@ def reply_message(plugin_event, message):
             final_message = f'[OP:reply,id={_op_escape(message_id)}]{final_message}'
     except Exception:
         pass
+    # qqGuildv2 图文回复特判：低版本 QQ 客户端看 Markdown 卡片会丢格式/丢图/重复引用内容，
+    # 因此强制走普通图文发送；这是插件侧兼容，不改 OlivOS 核心。
+    # 纯文本回复和其它平台（onebot 等）保持走 plugin_event.reply，不改变原有行为。
+    if is_qqguildv2_event(plugin_event) and message_has_image_segment(final_message):
+        plain_result = reply_qqguildv2_plain(plugin_event, final_message)
+        if plain_result is not None:
+            try:
+                # 事件对象没有 log 方法，走它自带的 log_func（插件进程里是 gProc.log）。
+                plugin_event.log_func(
+                    1,
+                    'qqGuildv2 图文回复已强制走普通图文发送（不走 Markdown 卡片）',
+                )
+            except Exception:
+                pass
+            return plain_result
     return plugin_event.reply(final_message)
 
 
