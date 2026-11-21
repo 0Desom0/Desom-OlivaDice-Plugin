@@ -3,31 +3,37 @@
 <head><meta charset="utf-8"><title>Lanota · 里莫昏睡计时</title><style>/*__PAGE_STYLE__*/</style>
 <style>
   body { --accent: var(--acoustic); }
-  .sleep { margin-top: 16px; display: grid; grid-template-columns: 372px minmax(0,1fr); gap: 18px; align-items: stretch; }
+  main { padding: 18px 24px 12px; }
+  .sleep { margin-top: 11px; display: grid; grid-template-columns: 340px minmax(0,1fr); gap: 14px; align-items: stretch; }
   .figure { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 16px;
             background: radial-gradient(120% 90% at 50% 8%, #2c3f33 0%, #1d2430 58%, #191627 100%);
             display: flex; align-items: flex-end; justify-content: center; padding: 14px 6px 0; }
   .figure::before { content: ''; position: absolute; width: 250px; height: 250px; left: 50%; top: 12%;
                     transform: translateX(-50%); border-radius: 50%;
                     background: radial-gradient(circle, #7ee0a455 0%, #7ee0a400 70%); }
-  .figure img { position: relative; max-height: 486px; width: auto; filter: drop-shadow(0 16px 30px #0009); }
+  .figure img { position: relative; max-height: 418px; width: auto; filter: drop-shadow(0 16px 30px #0009); }
   .sleep-badge { position: absolute; left: 14px; top: 14px; padding: 5px 11px; border: 1px solid #7ee0a455;
                  border-radius: 999px; background: #101a15cc; color: var(--accent); font-size: 12px; letter-spacing: .16em; }
-  .figure figcaption { position: absolute; left: 14px; bottom: 12px; color: var(--muted); font-size: 13px; letter-spacing: .08em; }
+  .figure figcaption { position: absolute; left: 10px; right: 10px; bottom: 9px; padding: 4px 8px; border-radius: 10px;
+                       background: #0c1712e6; border: 1px solid #7ee0a466; color: #ffffff; text-align: center;
+                       font-size: 15px; font-weight: 700; letter-spacing: .04em; white-space: nowrap;
+                       text-shadow: 0 1px 6px #000c; }
   .facts { display: flex; flex-direction: column; gap: 12px; }
-  .total { border: 1px solid var(--line); border-radius: 16px; padding: 20px 24px;
+  .total { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+           border: 1px solid var(--line); border-radius: 16px; padding: 13px 20px;
            background: linear-gradient(120deg, #232f2a 0%, #1d2130 62%, #23212e 100%); }
+  .total .range { color: var(--muted); font-size: 14px; letter-spacing: .06em; padding-bottom: 12px; }
   .total small { display: block; color: var(--muted); font-size: 14px; letter-spacing: .12em; }
-  .total b { display: inline-block; margin-top: 6px; color: var(--accent); font-size: 82px; line-height: 1.02;
+  .total b { display: inline-block; margin-top: 2px; color: var(--accent); font-size: 72px; line-height: 1.02;
              font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
   .total span { color: var(--muted); font-size: 21px; margin-left: 10px; }
   .rows { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 6px 0; }
-  .row { display: flex; justify-content: space-between; gap: 16px; padding: 11px 22px; }
+  .row { display: flex; justify-content: space-between; gap: 16px; padding: 7px 20px; }
   .row + .row { border-top: 1px solid #ffffff10; }
   .row em { color: var(--muted); font-style: normal; font-size: 15px; }
   .row strong { font-weight: 400; text-align: right; }
   .row strong.num { font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
-  footer { margin-top: 16px; color: var(--muted); font-size: 15px; text-align: center; }
+  footer { margin-top: 9px; color: var(--muted); font-size: 15px; text-align: center; }
 </style>
 </head>
 <body>
@@ -48,8 +54,8 @@
     </figure>
     <div class="facts">
       <div class="total">
-        <small>已 经 过 去</small>
-        <b id="total-days"></b><span>天</span>
+        <div><small>已 经 过 去</small><b id="total-days"></b><span>天</span></div>
+        <div class="range" id="range"></div>
       </div>
       <div class="rows" id="rows"></div>
     </div>
@@ -61,6 +67,7 @@
   byId('ritmo').src = data.image;
   byId('total-days').textContent = data.total;
   byId('summary').append(metric(data.years + '年' + data.months + '月', '已过去'));
+  byId('range').textContent = data.range;
   const rows = [
     ['昏睡日期', data.start, false],
     ['今天日期', data.today, false],

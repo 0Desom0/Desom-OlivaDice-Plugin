@@ -1167,24 +1167,26 @@ def _page_height(kind: str, data: dict[str, Any]) -> int:
 
     rows = data.get('rows', [])
     if kind == 'time':
-        def time_height(entries):
-            return sum(50 + 22 * (lines(row['name'], 22) - 1) + 16 * (lines(row['chapter'], 29) - 1)
-                       for row in entries[:30])
+        if data.get('mode') == 'all':
+            # all 模式是双栏全曲列表，按一半行数算高度。
+            height = 250 + 30 * ((len(rows) + 1) // 2)
+        else:
+            def time_height(entries):
+                # 单行显示（曲名与章节同行），每行约 26px，长名折行再补。
+                return sum(26 + 22 * (lines(row['name'], 26) - 1) for row in entries[:30])
 
-        height = 268 + max(time_height(data['long']), time_height(data['short']))
+            height = 246 + max(time_height(data['long']), time_height(data['short']))
     elif kind == 'table':
-        half = math.ceil(len(rows) / 2) if len(rows) > 24 else len(rows)
-        width = 16 if len(rows) > 24 else 44
-
-        def column_height(entries):
-            return sum(37 + 22 * (lines(row['name'], width) - 1) for row in entries)
-
-        height = 221 + max(column_height(rows[:half]), column_height(rows[half:]))
+        # 单栏 + 每个标级一个分隔头（约 46px）：省掉两栏就能把行压得更短。
+        height = 208 + 46 * max(1, len(data.get('tiers') or [])) + sum(
+            34 + 20 * (lines(row['name'], 40) - 1) for row in rows
+        )
     elif kind == 'ritmo':
-        height = 760
+        height = 620
     elif kind == 'notes':
-        height = 221 + sum(37 + 22 * (max(lines(row['name'], 29), lines(row['chapter'], 13)) - 1)
-                           for row in rows[:50])
+        # 双栏单行列表，按一半行数算高度。
+        count = len(rows[:50])
+        height = 210 + 26 * ((count + 1) // 2)
     else:
         height = 225 + 45 * (lines(data['title'], 16) - 1) + sum(37 + 22 * (lines(row, 61) - 1) for row in rows[:40])
     return max(320, min(12000, height))

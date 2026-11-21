@@ -1485,8 +1485,13 @@ def handle_artist(plugin_event, argument: str) -> None:
     reply_text(plugin_event, render_song_list(f'曲师[{target_artist}]的歌曲列表（共{len(artist_songs)}首）：', artist_songs))
 
 
-def handle_time(plugin_event) -> None:
-    page = pages.time_page(function.load_song_data())
+def handle_time(plugin_event, argument: str = '') -> None:
+    song_data = function.load_song_data()
+    if argument.strip().lower() in ('all', '全部', '所有'):
+        pages.send(plugin_event, 'time', 'Lanota 全部曲目时长（按时长降序）',
+                   pages.time_all_pages(song_data))
+        return
+    page = pages.time_page(song_data)
     pages.send(plugin_event, 'time', 'Lanota 乐曲时长统计', [page])
 
 
@@ -2018,29 +2023,43 @@ def handle_table(plugin_event, argument: str = '') -> None:
         reply_text(plugin_event, '该标级没有收录定数。可用标级：' + '、'.join(groups))
         return
     levels = [action] if action else list(groups)
-    # 按行数切页：高标级往往只有一两行，单独成页会留下大片空白，
-    # 攒够 ~30 行再出一张，最多 3 张。
-    batches, batch_rows, batch_levels = [], [], []
+    # 按行数切页：一页约 34 行，同一档谱面太多就拆到下一页（档位标题会在新页重复）。
+    # 高标级往往只有一两行，攒进同一页就不留大片空白。
+    per_page = 34
+    batches, current_rows, current_levels = [], [], []
     for level in levels:
-        batch_rows.extend(groups[level])
-        batch_levels.append(level)
-        if len(batch_rows) >= 30:
-            batches.append((batch_levels, batch_rows))
-            batch_rows, batch_levels = [], []
-    if batch_rows:
-        batches.append((batch_levels, batch_rows))
+        level_rows = groups[level]
+        cursor = 0
+        while cursor < len(level_rows):
+            space = per_page - len(current_rows)
+            if space <= 0:
+                batches.append((current_levels, current_rows))
+                current_rows, current_levels = [], []
+                continue
+            chunk = level_rows[cursor:cursor + space]
+            current_rows.extend(chunk)
+            cursor += len(chunk)
+            if level not in current_levels:
+                current_levels.append(level)
+            if len(current_rows) >= per_page:
+                batches.append((current_levels, current_rows))
+                current_rows, current_levels = [], []
+    if current_rows:
+        batches.append((current_levels, current_rows))
     shown = batches[:3]
-    caption = 'Lanota 民间定数表 · 标级 ' + '、'.join(shown[0][0]) if shown else 'Lanota 民间定数表'
+    rendered = [pages.table_page('、'.join(level_list), rows) for level_list, rows in shown]
+    caption = 'Lanota 民间定数表'
+    if rendered:
+        caption += ' · 标级 ' + '、'.join(page[0]['span'] for page in rendered)
     hidden = batches[3:]
     if hidden:
-        hidden_levels = [level for batch in hidden for level in batch[0]]
+        hidden_levels = []
+        for batch in hidden:
+            for level in batch[0]:
+                if level not in hidden_levels:
+                    hidden_levels.append(level)
         caption += f'\n另有 {len(hidden_levels)} 档未画：' + '、'.join(hidden_levels) + '。输入 .la table <标级> 查看。'
-    pages.send(
-        plugin_event,
-        'table',
-        caption,
-        [pages.table_page('、'.join(level_list), rows) for level_list, rows in shown],
-    )
+    pages.send(plugin_event, 'table', caption, rendered)
 
 
 help_categories = {
@@ -2446,7 +2465,7 @@ command_handler_dict = {
     'jump': handle_jump,
     'artist': handle_artist,
     'help': handle_help,
-    'time': lambda event, arg: handle_time(event),
+    'time': lambda event, arg: handle_time(event, arg),
     'all': lambda event, arg: handle_all(event),
     'update': handle_update,
     'fullcheck': handle_fullcheck,

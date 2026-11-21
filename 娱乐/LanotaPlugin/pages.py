@@ -71,6 +71,7 @@ def ritmo_page(start=RITMO_START, today=None):
         'months': months,
         'days': days,
         'total': total_days,
+        'range': f'{start:%Y.%m.%d} → {today:%Y.%m.%d}',
         'image': _ritmo_image(),
     }
     text = (
@@ -82,6 +83,49 @@ def ritmo_page(start=RITMO_START, today=None):
 
 
 LEVEL = re.compile(r'(\d{1,2})(\+?)')
+
+
+def _duration_rows(songs, descending=True):
+    dated = []
+    for song in songs:
+        match = re.fullmatch(r'(\d+):([0-5]\d)', str(song.get('time', '')).strip())
+        if match:
+            minutes, seconds = map(int, match.groups())
+            if minutes or seconds:
+                dated.append((minutes * 60 + seconds, song))
+    dated.sort(key=lambda entry: entry[0], reverse=descending)
+    average = round(sum(seconds for seconds, _ in dated) / len(dated)) if dated else 0
+
+    def entry(song):
+        return {'name': song.get('title'), 'id': song.get('id'), 'chapter': song.get('chapter'),
+                'duration': song.get('time'), 'artist': song.get('artist'),
+                'difficulty': 'Master', 'level': song.get('difficulty', {}).get('master', ''),
+                'notes_count': None}
+
+    return dated, average, entry
+
+
+def time_all_pages(songs, per_page=60):
+    """.la time all：全部曲目按时长降序分页，每页都带完整标题与时长。"""
+    dated, average, entry = _duration_rows(songs)
+    rows = [entry(song) for _, song in dated]
+    total = len(rows)
+    pages = [rows[i:i + per_page] for i in range(0, total, per_page)] or [[]]
+    result = []
+    for index, chunk in enumerate(pages, 1):
+        data = {
+            'mode': 'all',
+            'rows': chunk,
+            'total': total,
+            'page': index,
+            'pages': len(pages),
+            'average': f'{average // 60}:{average % 60:02}' if total else '—',
+        }
+        lines = [f'全部曲目时长（共 {total} 首）· 第 {index}/{len(pages)} 页']
+        lines.extend(f'{i}. {row["name"]} · {row["duration"]} · {row["chapter"]}'
+                     for i, row in enumerate(chunk, (index - 1) * per_page + 1))
+        result.append((data, '\n'.join(lines)))
+    return result
 
 
 def time_page(songs):
@@ -122,7 +166,7 @@ def notes_page(songs):
                 continue
             if count > 0 and level not in (None, '', '未知'):
                 rows.append({'name': song.get('title'), 'id': song.get('id'), 'chapter': song.get('chapter'),
-                             'difficulty': f'{difficulty.title()} {level}', 'notes': count})
+                             'difficulty': difficulty.title(), 'level': level, 'notes': count})
     rows.sort(key=lambda row: -row['notes'])
     top = rows[:50]
     lines = ['物量最高的前 50 个谱面']
@@ -161,14 +205,35 @@ def table_groups(songs, constants):
             for level in sorted(groups, key=level_order, reverse=True)}
 
 
+def _tier_order(level):
+    match = LEVEL.fullmatch(str(level).strip())
+    if not match:
+        return (0.0, 0)
+    return (float(match.group(1)), 1 if match.group(2) else 0)
+
+
 def table_page(level, rows):
-    lines = [f'Lanota 民间定数表 · 标级 {level}']
+    buckets = {}
+    for row in rows:
+        row_level = str(row.get('level') or level).strip()
+        buckets.setdefault(row_level, []).append(row)
+    tiers = [{'level': row_level, 'rows': buckets[row_level]} for row_level in buckets]
+    tiers.sort(key=lambda tier: _tier_order(tier['level']))
+    for tier in tiers:
+        tier['count'] = len(tier['rows'])
+    span = '、'.join(tier['level'] for tier in tiers)
+    # level 保留调用方给的原始标级串（用例与按钮都依赖它），
+    # 区间只在 span 里表达，页面标题优先用 span。
+    page_level = level
+    if len(tiers) > 1:
+        span = f'{tiers[0]["level"]} ~ {tiers[-1]["level"]}'
+    lines = [f'Lanota 民间定数表 · 标级 {span}']
     # 合并小标级后，每行用自己那一档的标级，别一律套页面的 level。
     lines.extend(
         f'{r["constant"]} · {r["name"]}（{r["id"]}）· {r["difficulty"]} {r.get("level", level)}'
         for r in rows
     )
-    return {'level': level, 'rows': rows}, '\n'.join(lines)
+    return {'level': page_level, 'span': span, 'tiers': tiers, 'rows': rows}, '\n'.join(lines)
 
 
 def fullcheck_rows(result):

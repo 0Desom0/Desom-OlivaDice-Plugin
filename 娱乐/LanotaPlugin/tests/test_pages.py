@@ -127,3 +127,29 @@ def test_ritmo_template_and_kind_registered():
     template = Path(pages.__file__).parent / 'Data' / 'lanota_portal_ritmo.html'
     assert template.exists()
     assert 'ritmo' in portal._PAGE_KINDS
+
+
+def test_table_page_splits_tiers_low_to_high():
+    rows = [
+        {'constant': '16.2', 'level': '16', 'difficulty': 'Master', 'id': 'a', 'name': 'A'},
+        {'constant': '15.9', 'level': '15.9', 'difficulty': 'Master', 'id': 'b', 'name': 'B'},
+        {'constant': '16.0', 'level': '16', 'difficulty': 'Master', 'id': 'c', 'name': 'C'},
+    ]
+    data, text = pages.table_page('16、15.9', rows)
+    assert [tier['level'] for tier in data['tiers']] == ['15.9', '16']
+    assert data['level'] == '16、15.9'
+    assert data['span'] == '15.9 ~ 16'
+    assert [tier['count'] for tier in data['tiers']] == [1, 2]
+    assert '标级 15.9 ~ 16' in text
+
+
+def test_time_all_pages_cover_every_song():
+    songs = [{'title': f'S{i}', 'id': str(i), 'chapter': 'Inf-1',
+              'time': f'{2 + i // 60}:{i % 60:02d}'} for i in range(130)]
+    result = pages.time_all_pages(songs)
+    assert len(result) == 3
+    assert len(result[0][0]['rows']) == 60
+    assert sum(len(data['rows']) for data, _ in result) == 130
+    durations = [row['duration'] for data, _ in result for row in data['rows']]
+    seconds = [int(d.split(':')[0]) * 60 + int(d.split(':')[1]) for d in durations]
+    assert seconds == sorted(seconds, reverse=True)

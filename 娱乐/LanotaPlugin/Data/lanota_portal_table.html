@@ -1,40 +1,59 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>Lanota · 谱面定数表</title><style>/*__PAGE_STYLE__*/</style></head>
+<head><meta charset="utf-8"><title>Lanota · 谱面定数表</title><style>/*__PAGE_STYLE__*/</style>
+<style>
+  main { padding: 18px 24px 14px; }
+  .sheet th, .sheet td { padding: 5px 12px; }
+  .sheet td { line-height: 21px; }
+  .tier { margin-top: 13px; }
+  .tier-head { display: flex; align-items: baseline; gap: 12px; padding: 7px 16px; border-radius: 12px;
+               border: 1px solid var(--line); border-left: 5px solid var(--accent);
+               background: linear-gradient(96deg,#332844 0%,#20192f 64%); }
+  .tier-head b { font-size: 27px; line-height: 1.1; color: var(--accent);
+                 font-family: Kawoszeh,'Segoe UI',sans-serif; font-variant-numeric: tabular-nums; }
+  .tier-head span { color: var(--muted); font-size: 14px; }
+  .tier-head em { margin-left: auto; color: var(--muted); font-style: normal; font-size: 13px; }
+  .tier .panel { margin-top: 7px; }
+</style></head>
 <body style="--accent:var(--master)">
 <main>
   <header>
-    <div><div class="kicker">LANOTA / CHART CONSTANTS</div><h1>谱面定数表</h1></div>
+    <div><div class="kicker">LANOTA / CHART CONSTANTS</div><h1 id="title">谱面定数表</h1></div>
     <div class="metrics" id="summary"></div>
   </header>
-  <div class="register" id="tables"></div>
+  <div id="tiers"></div>
   <footer id="footer">定数索引</footer>
 </main>
 <template id="grid"><section class="panel"><table class="sheet">
-  <colgroup><col style="width:100px"><col><col style="width:112px"></colgroup>
+  <colgroup><col style="width:104px"><col><col style="width:134px"></colgroup>
   <thead><tr><th>定数</th><th>曲名（ID）</th><th class="num">难度标级</th></tr></thead><tbody></tbody>
 </table></section></template>
 <script>/*__LANOTA_DATA__*/</script><script>/*__PAGE_SCRIPT__*/</script>
 <script>
-  byId('summary').append(metric(data.level, '标级'), metric(data.rows.length, '谱面数'));
-  const columns = byId('tables');
-  const groups = [data.rows];
-  if (data.rows.length > 24) {
-    const half = Math.ceil(data.rows.length / 2);
-    groups.splice(0, 1, data.rows.slice(0, half), data.rows.slice(half));
-    columns.classList.add('pair');
-    byId('footer').textContent = '定数索引 · 先读左栏，再读右栏';
-  }
-  for (const group of groups) {
+  const tiers = (data.tiers && data.tiers.length)
+    ? data.tiers : [{level: data.level, rows: data.rows, count: data.rows.length}];
+  byId('title').textContent = '谱面定数表 · ' + (data.span || data.level);
+  byId('summary').append(metric(tiers.length, '标级'), metric(data.rows.length, '谱面'));
+  const holder = byId('tiers');
+  for (const tier of tiers) {
+    const wrap = el('div', null, 'tier');
+    const head = el('div', null, 'tier-head');
+    head.append(el('b', tier.level), el('span', '共 ' + tier.count + ' 张谱面'));
+    if (tiers.length > 1) head.append(el('em', '低难度在前 · 高难度在后'));
+    wrap.append(head);
     const grid = byId('grid').content.cloneNode(true);
     const body = grid.querySelector('tbody');
-    for (const row of group) {
+    for (const row of tier.rows) {
       const tr = el('tr');
       tr.append(cell(String(row.constant), 'score'), cell(song(row)), cell(difficulty(row), 'num'));
       body.append(tr);
     }
-    columns.append(grid);
+    wrap.append(grid);
+    holder.append(wrap);
   }
+  byId('footer').textContent = tiers.length > 1
+    ? '定数索引 · 难度区间 ' + tiers.map(t => t.level).join(' / ')
+    : '定数索引';
   fitPage();
 </script>
 </body></html>
