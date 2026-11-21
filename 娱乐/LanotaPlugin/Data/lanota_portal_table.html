@@ -20,7 +20,7 @@
                  font-family: Kawoszeh,'Segoe UI',sans-serif; }
   .trow .name { flex: 0 1 auto; overflow-wrap: anywhere; line-height: 21px; }
   .trow .sid { flex: none; margin-left: 5px; color: var(--muted); font-size: 13px; }
-  .trow .badge { flex: none; margin-left: 9px; font-size: 14px; }
+  .trow .badge { flex: none; margin-left: auto; padding-left: 9px; font-size: 14px; }
 </style></head>
 <body style="--accent:var(--master)">
 <main>
@@ -44,7 +44,7 @@
     const wrap = el('div', null, 'tier');
     const head = el('div', null, 'tier-head');
     head.append(el('b', (constantMode ? '定数 ' : '标级 ') + tier.level), el('span', '共 ' + tier.count + ' 张'));
-    if (tiers.length > 1) head.append(el('em', '定数从高到低'));
+
     wrap.append(head);
     const box = el('div', null, 'rows');
     tier.rows.forEach((row, i) => {

@@ -1163,7 +1163,7 @@ def _trim_page_bottom(path: Path, padding: int = 24) -> None:
 
 
 # 长页按内容收紧画布宽度：1200 会把行拉散，看起来空。
-_PAGE_WIDTHS = {'time': 940, 'table': 900, 'notes': 900, 'ritmo': 720, 'report': 1180}
+_PAGE_WIDTHS = {'time': 700, 'table': 560, 'notes': 760, 'ritmo': 520, 'report': 1180}
 
 
 def _page_width(kind: str, data: dict[str, Any]) -> int:
