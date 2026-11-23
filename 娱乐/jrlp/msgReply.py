@@ -165,6 +165,24 @@ def get_pure_love_candidate_list(group_member_list_data, today_wife_records, use
         res.append(member)
     return res
 
+def build_avatar_url(plugin_event, user_id):
+    """按平台生成头像地址：官方机器人用 AppID+OpenID，其余沿用 QQ 号接口。"""
+    target_id = str(user_id).strip()
+    try:
+        sdk = str(plugin_event.platform.get('sdk', '')).strip().lower()
+    except Exception:
+        sdk = ''
+    if sdk == 'qqguildv2_link':
+        try:
+            appid = str(plugin_event.bot_info.id).strip()
+        except Exception:
+            appid = ''
+        # 官方机器人下 user_id 即 openid，AppID 为纯数字；任一缺失则回退旧接口
+        if appid.isdecimal() and target_id != '':
+            return f'https://q.qlogo.cn/qqapp/{appid}/{target_id}/0'
+    return f'https://q1.qlogo.cn/g?b=qq&nk={target_id}&s=640'
+
+
 def reply_today_wife_result(plugin_event, replyMsg, dictStrCustom, dictTValue, wife_qq, wife_name, is_repeat = False):
     dictTValue['qq'] = str(wife_qq)
     dictTValue['name'] = wife_name
@@ -175,7 +193,7 @@ def reply_today_wife_result(plugin_event, replyMsg, dictStrCustom, dictTValue, w
             replyMsg(plugin_event, tmp_reply_str)
         return
 
-    url = f"https://q1.qlogo.cn/g?b=qq&nk={wife_qq}&s=640"
+    url = build_avatar_url(plugin_event, wife_qq)
     if str(wife_qq) == str(plugin_event.base_info['self_id']):
         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['jrlpRobot'], dictTValue)
     elif str(wife_qq) == str(plugin_event.data.user_id):
