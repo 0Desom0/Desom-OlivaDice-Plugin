@@ -108,6 +108,8 @@ def render_help() -> tuple[str, dict[str, Any] | None]:
         [
             button('随机一张', 'clst:rnd:1', style=1, callback=True),
             button('随机 3 张', 'clst:rnd:3', callback=True),
+        ],
+        [
             button('热门一张', 'clst:hot:1', callback=True),
             button('今日 Mod', 'clst:today', callback=True),
         ],
@@ -260,7 +262,9 @@ def render_detail(
         # 指令型：点一下只把命令填进输入框，让其他人也能抽自己那份。
         controls.append(button('我也要抽取', '.clst today'))
     if controls:
-        rows = rows[:MAX_ROWS - 1] + [controls]
+        # 一行最多 2 个按钮，否则客户端把标签截成「随机 3…」。
+        control_rows = [controls[index : index + 2] for index in range(0, len(controls), 2)]
+        rows = rows[: MAX_ROWS - len(control_rows)] + control_rows
     return '\n'.join(lines), keyboard(rows), images
 
 
@@ -294,8 +298,8 @@ def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, A
         [
             button('再来一张', 'clst:rnd:1', style=1, callback=True),
             button('随机 3 张', 'clst:rnd:3', callback=True),
-            button('今日 Mod', 'clst:today', callback=True),
-        ]
+        ],
+        [button('今日 Mod', 'clst:today', callback=True)],
     ]
     return '\n'.join(lines), keyboard(rows), images
 
@@ -336,8 +340,8 @@ def render_hot_summary(
         [
             button('再来一张', 'clst:hot:1', style=1, callback=True),
             button('热门 3 张', 'clst:hot:3', callback=True),
-            button('今日 Mod', 'clst:today', callback=True),
-        ]
+        ],
+        [button('今日 Mod', 'clst:today', callback=True)],
     ]
     return '\n'.join(lines), keyboard(rows), images
 
@@ -366,26 +370,52 @@ def render_endless(
         page_url = utils.safe_str(current_map.get('page_url'))
         if page_url:
             lines.append(f'[查看地图页面]({page_url})')
-    rows = [
+    pending = state.get('status') == 'pending'
+    rows: list[list[dict[str, Any]]] = []
+    if pending:
+        rows.append(
+            [
+                button('继续抽下一图', 'clst:en:continue', style=1, callback=True),
+                button('状态', 'clst:en:status', callback=True),
+            ]
+        )
+    rows.extend(
         [
-            button('通关', 'clst:en:clear', style=1, callback=True),
-            button('全收集', 'clst:en:full_clear', callback=True),
-            button('跳过', 'clst:en:skip', callback=True),
-            button('坏图重抽', 'clst:en:reroll', callback=True),
-        ],
-        [
-            button('撤销', 'clst:en:undo', callback=True),
-            button('放弃', 'clst:en:give_up', callback=True),
-            button('状态', 'clst:en:status', callback=True),
-            button('记录', 'clst:en:record', callback=True),
-        ],
-        [
-            button('结束挑战', 'clst:en:end', callback=True),
-            button('查看详情', 'clst:en:detail', callback=True),
-        ],
-    ]
-    if state.get('status') == 'pending':
-        rows.insert(0, [button('继续抽下一图', 'clst:en:continue', style=1, callback=True)])
+            [
+                button('通关', 'clst:en:clear', style=1, callback=True),
+                button('全收集', 'clst:en:full_clear', callback=True),
+            ],
+            [
+                button('跳过', 'clst:en:skip', callback=True),
+                button('坏图重抽', 'clst:en:reroll', callback=True),
+            ],
+            [
+                button('撤销', 'clst:en:undo', callback=True),
+                button('放弃', 'clst:en:give_up', callback=True),
+            ],
+        ]
+    )
+    if pending:
+        # 等待抽下一图时没有当前地图，查看详情没有意义，正好省一行。
+        rows.append(
+            [
+                button('记录', 'clst:en:record', callback=True),
+                button('结束挑战', 'clst:en:end', callback=True),
+            ]
+        )
+    else:
+        rows.append(
+            [
+                button('状态', 'clst:en:status', callback=True),
+                button('记录', 'clst:en:record', callback=True),
+            ]
+        )
+        rows.append(
+            [
+                button('结束挑战', 'clst:en:end', callback=True),
+                button('查看详情', 'clst:en:detail', callback=True),
+            ]
+        )
     return '\n'.join(lines), keyboard(rows), images
 
 
@@ -416,9 +446,11 @@ def render_endless_help() -> tuple[str, dict[str, Any] | None]:
         [
             button('开始挑战', 'clst:en:start', style=1, callback=True),
             button('状态', 'clst:en:status', callback=True),
-            button('记录', 'clst:en:record', callback=True),
         ],
-        [button('返回帮助', 'clst:help', callback=True)],
+        [
+            button('记录', 'clst:en:record', callback=True),
+            button('返回帮助', 'clst:help', callback=True),
+        ],
     ]
     return text, keyboard(rows)
 

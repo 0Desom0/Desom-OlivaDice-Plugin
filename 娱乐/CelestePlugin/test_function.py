@@ -1056,6 +1056,43 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertEqual(payloads, ['clst:hot:1', 'clst:hot:3', 'clst:today'])
         self.assertTrue(all(item['action']['type'] == 1 for item in buttons))
 
+    def test_help_buttons_show_full_labels_two_per_row(self):
+        text, kb = render.render_help()
+        self.assertIn('.clst 热门 [1-10]', text)
+        rows = kb['content']['rows']
+        self.assertLessEqual(len(rows), render.MAX_ROWS)
+        labels = []
+        for row in rows:
+            # 一行超过 2 个时客户端会把标签截成「热门…」
+            self.assertLessEqual(len(row['buttons']), 2)
+            labels.extend(item['render_data']['label'] for item in row['buttons'])
+        self.assertIn('热门一张', labels)
+        self.assertIn('今日 Mod', labels)
+        # 半宽按钮放得下 6 个字，超过就有可能被截断
+        for label in labels:
+            self.assertLessEqual(len(label), 6, label)
+
+    def test_keyboards_use_two_buttons_per_row(self):
+        detail = function.normalize_wegfan_item(sample_search_item())
+        pages = {
+            'help': render.render_help()[1],
+            'hot_summary': render.render_hot_summary([detail], 533, 1000)[1],
+            'random_summary': render.render_random_summary([detail])[1],
+            'detail_hot': render.render_detail(detail, show_hot=True)[1],
+            'detail_rnd_endless': render.render_detail(
+                detail, show_random=True, show_endless=True
+            )[1],
+            'detail_today': render.render_detail(detail, show_today=True)[1],
+            'endless': render.render_endless({'status': 'active', 'current_map': {}})[1],
+            'endless_pending': render.render_endless({'status': 'pending', 'current_map': {}})[1],
+            'endless_help': render.render_endless_help()[1],
+        }
+        for page_name, page_keyboard in pages.items():
+            rows = page_keyboard['content']['rows']
+            self.assertLessEqual(len(rows), render.MAX_ROWS, page_name)
+            for row in rows:
+                self.assertLessEqual(len(row['buttons']), 2, page_name)
+
     def test_render_detail_hot_controls(self):
         detail = function.normalize_wegfan_item(sample_search_item())
         text, keyboard, _ = render.render_detail(
