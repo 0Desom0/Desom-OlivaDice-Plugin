@@ -18,7 +18,7 @@
                * 看门狗线程：数据超过 FRESH_HOURS 就补更新。老核心没有
                  scheduleAPI 时由它兜底，新核心上也能兜住某天定时任务失败。
 
-               回退：写入前先按时间戳备份旧文件（backup/ 下保留 BACKUP_KEEP 份），
+               回退：写入前先按时间戳备份旧文件（与主数据同目录，保留 BACKUP_KEEP 份），
                新文件写完会回读校验，不通过就自动恢复上一份备份。
 '''
 
@@ -56,7 +56,6 @@ HTTP_TIMEOUT = (10, 180)
 CHUNK_SIZE = 256 * 1024
 LOG_KEEP_LINES = 200
 
-BACKUP_DIR_NAME = 'backup'
 BACKUP_PREFIX = 'emojiData_'
 BACKUP_KEEP = 3
 
@@ -80,10 +79,6 @@ def data_dir():
 
 def target_path():
     return os.path.join(data_dir(), emojiData.DATA_FILE_NAME)
-
-
-def backup_dir():
-    return os.path.join(data_dir(), BACKUP_DIR_NAME)
 
 
 def _log_path():
@@ -127,7 +122,8 @@ def _is_fresh(path, hours=FRESH_HOURS):
 # ---------------------------------------------------------------- 备份与回退
 
 def _list_backups():
-    directory = backup_dir()
+    '''备份和主数据放在同一个目录，按文件名前缀区分。'''
+    directory = data_dir()
     if not os.path.isdir(directory):
         return []
     items = []
@@ -139,7 +135,7 @@ def _list_backups():
             items.append((path, os.path.getmtime(path)))
         except OSError:
             continue
-    items.sort(key=lambda item: item[1], reverse=True)
+    items.sort(key=lambda item: os.path.basename(item[0]), reverse=True)
     return items
 
 
@@ -156,14 +152,14 @@ def _prune_backups(keep=BACKUP_KEEP):
 
 
 def _backup_current(target):
-    '''把当前数据复制成 backup/emojiData_YYYY-mm-dd_HH-MM-SS.json。'''
+    '''把当前数据复制成同目录下的 emojiData_YYYY-mm-dd_HH-MM-SS.json。'''
     if not os.path.isfile(target):
         return None
     try:
-        os.makedirs(backup_dir(), exist_ok=True)
         name = BACKUP_PREFIX + datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '.json'
-        destination = os.path.join(backup_dir(), name)
-        shutil.copy2(target, destination)
+        destination = os.path.join(data_dir(), name)
+        # copyfile 不继承源文件 mtime，备份时间就是落盘时间
+        shutil.copyfile(target, destination)
         _prune_backups()
         return destination
     except Exception:

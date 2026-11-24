@@ -3,8 +3,8 @@
     "author": "lunzhiPenxil",
     "namespace": "OlivaEmojiKitchen",
     "message_mode": "olivos_string",
-    "version": "0.3.0",
-    "svn": 12,
+    "version": "0.3.1",
+    "svn": 13,
     "compatible_svn": 101,
     "priority": 40000,
     "support": [
