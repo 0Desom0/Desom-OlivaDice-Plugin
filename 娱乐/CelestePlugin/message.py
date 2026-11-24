@@ -39,6 +39,10 @@ subcommand_alias_dict = {
     'random': 'random',
     'rand': 'random',
     '随机': 'random',
+    'hot': 'hot',
+    'popular': 'hot',
+    '热门': 'hot',
+    '热榜': 'hot',
     'today': 'today',
     '每日': 'today',
     '今日': 'today',
@@ -183,6 +187,9 @@ def process_button_data(plugin_event, button_data: str) -> bool:
         return True
     if action == 'rnd':
         handle_random(plugin_event, argument)
+        return True
+    if action == 'hot':
+        handle_hot(plugin_event, argument)
         return True
     if action == 'today':
         handle_today(plugin_event)
@@ -342,6 +349,7 @@ def reply_detail_data(
     show_random: bool = False,
     show_endless: bool = False,
     show_today: bool = False,
+    show_hot: bool = False,
 ) -> None:
     """用已拿到的详情直接发页面：优先 Markdown + 按钮，失败才回退纯文本。"""
     if utils.can_send_markdown(plugin_event):
@@ -352,6 +360,7 @@ def reply_detail_data(
             show_random=show_random,
             show_endless=show_endless,
             show_today=show_today,
+            show_hot=show_hot,
         )
         if utils.reply_markdown(plugin_event, text, keyboard, images=images):
             return
@@ -526,18 +535,22 @@ def handle_id(plugin_event, argument: str) -> None:
     reply_detail_data(plugin_event, result['data'])
 
 
-def parse_random_count(argument: str) -> tuple[bool, int, str]:
-    text = argument.strip()
+def parse_count_argument(argument: str, label: str = '随机') -> tuple[bool, int, str]:
+    text = utils.safe_str(argument).strip()
     if not text:
         return True, 1, ''
     matched = re.fullmatch(r'(\d+)', text)
     if not matched:
-        return False, 0, '随机数量应为整数，例如 .clst 随机 5'
+        return False, 0, f'{label}数量应为整数，例如 .clst {label} 5'
     count = int(matched.group(1))
     max_count = int(utils.load_global_config().get('random_max_count', 10))
     if count < 1 or count > max_count:
-        return False, 0, f'随机数量范围为 1 至 {max_count}。'
+        return False, 0, f'{label}数量范围为 1 至 {max_count}。'
     return True, count, ''
+
+
+def parse_random_count(argument: str) -> tuple[bool, int, str]:
+    return parse_count_argument(argument, '随机')
 
 
 def handle_page_turn(plugin_event, direction: int) -> None:
@@ -611,6 +624,43 @@ def handle_random(plugin_event, argument: str) -> None:
         detail_texts.append(function.format_detail(item, compact=True, heading=heading))
     if not detail_texts:
         utils.reply_message(plugin_event, '随机到了候选条目，但详情暂时无法获取。')
+        return
+    utils.reply_long_text(plugin_event, '\n\n──────────\n\n'.join(detail_texts))
+
+
+def handle_hot(plugin_event, argument: str) -> None:
+    """热门池抽取：下载数超过阈值的地图里随机出 1~N 张，页面结构与随机一致。"""
+    valid, count, error = parse_count_argument(argument, '热门')
+    if not valid:
+        utils.reply_message(plugin_event, error)
+        return
+    hot_result = function.hot_mods(count)
+    if not hot_result.get('ok'):
+        utils.reply_message(plugin_event, f'热门抽取失败：{hot_result.get("error", "未知错误")}')
+        return
+    results = hot_result.get('results', [])
+    heading = function.format_hot_heading(
+        hot_result.get('pool_size', 0),
+        hot_result.get('threshold', 0),
+    )
+    if count == 1 and results:
+        # 单张仍展示完整简介，并带继续抽热门/热门 3 张的回调。
+        reply_detail_data(plugin_event, results[0], heading=heading, show_hot=True)
+        return
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard, images = render.render_hot_summary(
+            results,
+            hot_result.get('pool_size', 0),
+            hot_result.get('threshold', 0),
+        )
+        if utils.reply_markdown(plugin_event, text, keyboard, images=images):
+            return
+    detail_texts = []
+    for index, item in enumerate(results, start=1):
+        heading = f'【热门 {index}/{count}】'
+        detail_texts.append(function.format_detail(item, compact=True, heading=heading))
+    if not detail_texts:
+        utils.reply_message(plugin_event, '热门池抽到了候选条目，但详情暂时无法获取。')
         return
     utils.reply_long_text(plugin_event, '\n\n──────────\n\n'.join(detail_texts))
 
@@ -963,6 +1013,9 @@ def dispatch_clst_command(plugin_event, command_argument: str) -> None:
         return
     if subcommand == 'random':
         handle_random(plugin_event, sub_argument)
+        return
+    if subcommand == 'hot':
+        handle_hot(plugin_event, sub_argument)
         return
     if subcommand == 'today':
         handle_today(plugin_event)

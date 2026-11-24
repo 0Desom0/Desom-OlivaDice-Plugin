@@ -400,6 +400,134 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertTrue(result['ok'])
         detail_mock.assert_called_once_with(5, 'Mod', True, weg_id='abc')
 
+    # ---------- 热门池 ----------
+
+    def hot_index_items(self):
+        return {
+            'ok': True,
+            'data': {
+                'items': [
+                    {'id': 1, 'item_type': 'Mod', 'category': 'Maps', 'downloads': 1200, 'name': 'Hot 1'},
+                    {'id': 2, 'item_type': 'Mod', 'category': 'Maps', 'downloads': 1000, 'name': 'On The Line'},
+                    {'id': 3, 'item_type': 'Mod', 'category': 'Maps', 'downloads': 5000, 'name': 'Hot 3'},
+                    {'id': 4, 'item_type': 'Mod', 'category': 'Skins', 'downloads': 9000, 'name': 'Skin'},
+                    {'id': 5, 'item_type': 'Tool', 'category': 'Maps', 'downloads': 9000, 'name': 'Tool'},
+                ]
+            },
+        }
+
+    def test_build_hot_pool_only_maps_strictly_above_threshold(self):
+        with mock.patch.object(function, 'load_index', return_value=self.hot_index_items()):
+            result = function.build_hot_pool()
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['threshold'], 1000)
+        # 只取 Mod + Maps，且下载数必须大于阈值（等于阈值不算）
+        self.assertEqual([item['id'] for item in result['pool']], [1, 3])
+
+    def test_build_hot_pool_uses_configured_threshold(self):
+        index_payload = self.hot_index_items()
+        with (
+            mock.patch.object(function, 'load_index', return_value=index_payload),
+            mock.patch.object(
+                function.utils,
+                'load_global_config',
+                return_value={'hot_download_threshold': 3000},
+            ),
+        ):
+            result = function.build_hot_pool()
+        self.assertEqual(result['threshold'], 3000)
+        self.assertEqual([item['id'] for item in result['pool']], [3])
+
+    def test_build_hot_pool_empty_reports_error(self):
+        with mock.patch.object(function, 'load_index', return_value=self.hot_index_items()):
+            result = function.build_hot_pool(threshold=99999)
+        self.assertFalse(result['ok'])
+        self.assertIn('热门池为空', result['error'])
+
+    def test_build_hot_pool_reports_index_failure(self):
+        with mock.patch.object(
+            function, 'load_index', return_value={'ok': False, 'error': '索引不可用'}
+        ):
+            result = function.build_hot_pool()
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error'], '索引不可用')
+
+    def test_hot_mods_returns_pool_size_and_details(self):
+        pool_result = {
+            'ok': True,
+            'pool': [
+                {'id': 1, 'weg_id': 'w1', 'item_type': 'Mod'},
+                {'id': 2, 'weg_id': 'w2', 'item_type': 'Mod'},
+            ],
+            'threshold': 1000,
+        }
+        details = [
+            {'ok': True, 'data': {'id': 1, 'name': 'A'}, 'error': ''},
+            {'ok': True, 'data': {'id': 2, 'name': 'B'}, 'error': ''},
+        ]
+        with (
+            mock.patch.object(function, 'build_hot_pool', return_value=pool_result),
+            mock.patch.object(function, 'get_item_by_id', side_effect=details) as detail_mock,
+        ):
+            result = function.hot_mods(2)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['pool_size'], 2)
+        self.assertEqual(result['threshold'], 1000)
+        self.assertEqual(detail_mock.call_count, 2)
+        requested = [call_args[0][0] for call_args in detail_mock.call_args_list]
+        self.assertEqual(sorted(requested), [1, 2])
+        self.assertEqual({item['id'] for item in result['results']}, {1, 2})
+
+    def test_hot_mods_skips_failed_detail_and_reports_error(self):
+        pool_result = {
+            'ok': True,
+            'pool': [
+                {'id': 1, 'weg_id': 'w1', 'item_type': 'Mod'},
+                {'id': 2, 'weg_id': 'w2', 'item_type': 'Mod'},
+                {'id': 3, 'weg_id': 'w3', 'item_type': 'Mod'},
+            ],
+            'threshold': 1000,
+        }
+        with (
+            mock.patch.object(function, 'build_hot_pool', return_value=pool_result),
+            mock.patch.object(
+                function,
+                'get_item_by_id',
+                side_effect=[
+                    {'ok': False, 'data': {}, 'error': '详情 404'},
+                    {'ok': True, 'data': {'id': 2, 'name': 'B'}, 'error': ''},
+                    {'ok': True, 'data': {'id': 3, 'name': 'C'}, 'error': ''},
+                ],
+            ),
+        ):
+            result = function.hot_mods(2)
+        self.assertTrue(result['ok'])
+        self.assertEqual(len(result['results']), 2)
+
+        with (
+            mock.patch.object(function, 'build_hot_pool', return_value=pool_result),
+            mock.patch.object(
+                function,
+                'get_item_by_id',
+                return_value={'ok': False, 'data': {}, 'error': '详情 500'},
+            ),
+        ):
+            failed = function.hot_mods(1)
+        self.assertFalse(failed['ok'])
+        self.assertEqual(failed['error'], '详情 500')
+        self.assertEqual(failed['threshold'], 1000)
+
+    def test_hot_mods_pool_unavailable(self):
+        with mock.patch.object(
+            function,
+            'build_hot_pool',
+            return_value={'ok': False, 'pool': [], 'threshold': 1000, 'error': '热门池为空'},
+        ):
+            result = function.hot_mods(1)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error'], '热门池为空')
+        self.assertEqual(result['results'], [])
+
     # ---------- Endless ----------
 
     def test_endless_state_machine(self):
@@ -493,6 +621,85 @@ class CelestePluginFunctionTest(unittest.TestCase):
             message.dispatch_clst_command(object(), '更新')
             message.dispatch_clst_command(object(), 'update')
         self.assertEqual(refresh_mock.call_count, 2)
+
+    def test_hot_subcommand_dispatches(self):
+        with mock.patch.object(message, 'handle_hot') as hot_mock:
+            message.dispatch_clst_command(object(), '热门')
+            message.dispatch_clst_command(object(), '热门 3')
+            message.dispatch_clst_command(object(), 'hot 2')
+        self.assertEqual(hot_mock.call_count, 3)
+        self.assertEqual([item[0][1] for item in hot_mock.call_args_list], ['', '3', '2'])
+
+    def test_parse_count_argument_labels_hot(self):
+        with mock.patch.object(
+            message.utils, 'load_global_config', return_value={'random_max_count': 10}
+        ):
+            self.assertEqual(message.parse_count_argument('', '热门'), (True, 1, ''))
+            self.assertEqual(message.parse_count_argument('3', '热门'), (True, 3, ''))
+            valid, _count, error = message.parse_count_argument('abc', '热门')
+            self.assertFalse(valid)
+            self.assertIn('.clst 热门 5', error)
+            valid, _count, error = message.parse_count_argument('11', '热门')
+            self.assertFalse(valid)
+            self.assertIn('1 至 10', error)
+
+    def test_handle_hot_single_uses_detail_page(self):
+        hot_result = {
+            'ok': True,
+            'results': [{'id': 1, 'name': 'A'}],
+            'pool_size': 533,
+            'threshold': 1000,
+            'error': '',
+        }
+        with (
+            mock.patch.object(message.function, 'hot_mods', return_value=hot_result),
+            mock.patch.object(message, 'reply_detail_data') as detail_mock,
+        ):
+            message.handle_hot(object(), '')
+        detail_mock.assert_called_once()
+        self.assertTrue(detail_mock.call_args.kwargs['show_hot'])
+        self.assertEqual(
+            detail_mock.call_args.kwargs['heading'],
+            '热门池 · 下载 > 1,000 · 池内 533 张',
+        )
+
+    def test_handle_hot_multiple_uses_summary(self):
+        hot_result = {
+            'ok': True,
+            'results': [{'id': 1, 'name': 'A'}, {'id': 2, 'name': 'B'}],
+            'pool_size': 533,
+            'threshold': 1000,
+            'error': '',
+        }
+        with (
+            mock.patch.object(message.function, 'hot_mods', return_value=hot_result),
+            mock.patch.object(message.utils, 'can_send_markdown', return_value=True),
+            mock.patch.object(message.utils, 'reply_markdown', return_value=True) as markdown_mock,
+        ):
+            message.handle_hot(object(), '2')
+        markdown_mock.assert_called_once()
+        text = markdown_mock.call_args[0][1]
+        self.assertIn('热门池 · 下载 > 1,000 · 池内 533 张', text)
+        self.assertIn('**2. B**', text)
+
+    def test_handle_hot_reports_pool_error(self):
+        with (
+            mock.patch.object(
+                message.function,
+                'hot_mods',
+                return_value={
+                    'ok': False,
+                    'results': [],
+                    'pool_size': 0,
+                    'threshold': 1000,
+                    'error': '本地索引不可用',
+                },
+            ),
+            mock.patch.object(message.utils, 'reply_message') as reply_mock,
+        ):
+            message.handle_hot(object(), '')
+        self.assertIn('热门抽取失败', reply_mock.call_args[0][1])
+        self.assertIn('本地索引不可用', reply_mock.call_args[0][1])
 
     def test_refresh_command_is_master_only(self):
         event = object()
@@ -835,6 +1042,32 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertEqual(list(images), ['地图封面 1'])
         self.assertIn('{{地图封面 1}}', text)
         self.assertTrue(keyboard['content']['rows'])
+
+    def test_render_hot_summary_heading_and_buttons(self):
+        items = [function.normalize_wegfan_item(sample_search_item())]
+        text, keyboard, images = render.render_hot_summary(items, 533, 1000)
+        self.assertIn('**热门池 · 下载 > 1,000 · 池内 533 张**', text)
+        # 条目带下载数与蓝字精确查询入口
+        self.assertIn('下载 157', text)
+        self.assertIn('<qqbot-cmd-input', text)
+        self.assertEqual(list(images), ['地图封面 1'])
+        buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
+        payloads = [item['action']['data'] for item in buttons]
+        self.assertEqual(payloads, ['clst:hot:1', 'clst:hot:3', 'clst:today'])
+        self.assertTrue(all(item['action']['type'] == 1 for item in buttons))
+
+    def test_render_detail_hot_controls(self):
+        detail = function.normalize_wegfan_item(sample_search_item())
+        text, keyboard, _ = render.render_detail(
+            detail, heading='热门池 · 下载 > 1,000 · 池内 533 张', show_hot=True
+        )
+        self.assertIn('热门池 · 下载 > 1,000 · 池内 533 张', text)
+        buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
+        controls = [item for item in buttons if item['action']['type'] != 0]
+        self.assertEqual(
+            {item['action']['data'] for item in controls}, {'clst:hot:1', 'clst:hot:3'}
+        )
+        self.assertLessEqual(len(keyboard['content']['rows']), 5)
 
     def test_reply_markdown_uses_event_id_on_button_click(self):
         class Data(object):

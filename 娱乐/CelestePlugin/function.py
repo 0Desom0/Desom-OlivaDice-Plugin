@@ -1096,6 +1096,106 @@ def random_mods(count: int, excluded_ids: set[int] | None = None) -> dict[str, A
     return {'ok': True, 'results': results, 'error': ''}
 
 
+# ---------------------------------------------------------------------------
+# 热门池：本地索引里 Maps 分类、下载数超过阈值的条目
+# ---------------------------------------------------------------------------
+
+
+def get_hot_download_threshold() -> int:
+    value = utils.load_global_config().get('hot_download_threshold', 1000)
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 1000
+
+
+def build_hot_pool(threshold: int | None = None) -> dict[str, Any]:
+    """热门池：Maps 分类里下载数大于阈值的条目，池子只依赖本地索引。"""
+    limit = get_hot_download_threshold() if threshold is None else max(0, int(threshold))
+    index_result = load_index()
+    if not index_result.get('ok'):
+        return {
+            'ok': False,
+            'pool': [],
+            'threshold': limit,
+            'error': index_result.get('error') or 'WEGFan 本地索引不可用',
+        }
+    items = index_result['data'].get('items', [])
+    map_items = [
+        item
+        for item in items
+        if utils.safe_str(item.get('item_type'), '').casefold() == 'mod'
+        and utils.safe_str(item.get('category'), '').casefold() == 'maps'
+    ]
+    base_items = map_items or [
+        item for item in items if utils.safe_str(item.get('item_type'), '').casefold() == 'mod'
+    ]
+    pool = [item for item in base_items if safe_int(item.get('downloads')) > limit]
+    if not pool:
+        return {
+            'ok': False,
+            'pool': [],
+            'threshold': limit,
+            'error': f'热门池为空（当前还没有下载数超过 {limit:,} 的地图）',
+        }
+    return {'ok': True, 'pool': pool, 'threshold': limit, 'error': ''}
+
+
+def format_hot_heading(pool_size: int, threshold: int) -> str:
+    return f'热门池 · 下载 > {max(0, int(threshold)):,} · 池内 {max(0, int(pool_size)):,} 张'
+
+
+def hot_mods(count: int, threshold: int | None = None) -> dict[str, Any]:
+    """从热门池里随机抽 count 张（不重复），连池规模与阈值一起返回给页面标题用。"""
+    target_count = max(1, int(count))
+    pool_result = build_hot_pool(threshold)
+    pool = list(pool_result.get('pool', []))
+    hot_threshold = int(pool_result.get('threshold', get_hot_download_threshold()))
+    if not pool_result.get('ok'):
+        return {
+            'ok': False,
+            'results': [],
+            'pool_size': len(pool),
+            'threshold': hot_threshold,
+            'error': pool_result.get('error', '热门池不可用'),
+        }
+    random.shuffle(pool)
+    wanted = min(target_count, len(pool))
+    results: list[dict[str, Any]] = []
+    last_error = ''
+    attempts = 0
+    max_attempts = max(3, wanted * 3)
+    for item in pool:
+        if len(results) >= wanted or attempts >= max_attempts:
+            break
+        attempts += 1
+        detail_result = get_item_by_id(
+            safe_int(item.get('id')),
+            'Mod',
+            target_count == 1,
+            weg_id=utils.safe_str(item.get('weg_id')),
+        )
+        if not detail_result.get('ok'):
+            last_error = detail_result.get('error', '')
+            continue
+        results.append(detail_result.get('data', {}))
+    if not results:
+        return {
+            'ok': False,
+            'results': [],
+            'pool_size': len(pool),
+            'threshold': hot_threshold,
+            'error': last_error or '热门地图详情获取失败',
+        }
+    return {
+        'ok': True,
+        'results': results,
+        'pool_size': len(pool),
+        'threshold': hot_threshold,
+        'error': '',
+    }
+
+
 def get_hong_kong_date() -> str:
     return datetime.datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y-%m-%d')
 

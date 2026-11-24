@@ -96,6 +96,7 @@ def render_help() -> tuple[str, dict[str, Any] | None]:
             '',
             '**推荐**',
             '- `.clst 随机 [1-10]` 随机地图',
+            '- `.clst 热门 [1-10]` 下载榜热门地图（池内随机）',
             '- `.clst today` 今日 Mod（每人每天一张，当天固定）',
             '- `.clst 更新` 骰主手动重建索引',
             '',
@@ -107,6 +108,7 @@ def render_help() -> tuple[str, dict[str, Any] | None]:
         [
             button('随机一张', 'clst:rnd:1', style=1, callback=True),
             button('随机 3 张', 'clst:rnd:3', callback=True),
+            button('热门一张', 'clst:hot:1', callback=True),
             button('今日 Mod', 'clst:today', callback=True),
         ],
         [
@@ -170,6 +172,7 @@ def render_detail(
     show_random: bool = False,
     show_endless: bool = False,
     show_today: bool = False,
+    show_hot: bool = False,
 ) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
     config = utils.load_global_config()
     description = function.truncate_text(
@@ -246,6 +249,11 @@ def render_detail(
             button('再来一张', 'clst:rnd:1', callback=True),
             button('随机 3 张', 'clst:rnd:3', callback=True),
         ])
+    if show_hot:
+        controls.extend([
+            button('再来一张', 'clst:hot:1', callback=True),
+            button('热门 3 张', 'clst:hot:3', callback=True),
+        ])
     if show_endless:
         controls.append(button('返回无尽', 'clst:en:status', callback=True))
     if show_today:
@@ -286,6 +294,48 @@ def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, A
         [
             button('再来一张', 'clst:rnd:1', style=1, callback=True),
             button('随机 3 张', 'clst:rnd:3', callback=True),
+            button('今日 Mod', 'clst:today', callback=True),
+        ]
+    ]
+    return '\n'.join(lines), keyboard(rows), images
+
+
+def render_hot_summary(
+    items: list[dict[str, Any]],
+    pool_size: int,
+    threshold: int,
+) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
+    """热门池多张概要：标题带池规模与下载门槛，条目结构与随机一致。"""
+    lines = [f'**{function.format_hot_heading(pool_size, threshold)}**', '']
+    images: dict[str, str] = {}
+    show_cover = utils.load_global_config().get('show_cover_image_switch', True)
+    for index, item in enumerate(items, start=1):
+        category = ' / '.join(
+            value for value in [item.get('category', ''), item.get('subcategory', '')] if value
+        )
+        meta = utils.safe_str(item.get('author', '未知作者'))
+        if category:
+            meta = f'{meta} · {category}'
+        downloads = int(item.get('downloads', 0) or 0)
+        if downloads > 0:
+            meta = f'{meta} · 下载 {downloads:,}'
+        lines.append(f'**{index}. {item.get("name", "未知地图")}**')
+        lines.append(meta)
+        page_url = utils.safe_str(item.get('page_url'))
+        links = f'[查看详情]({page_url})' if page_url else ''
+        id_text = int(item.get('id', 0) or 0)
+        if id_text > 0:
+            detail_cmd = cmd_input(f'.clst id {id_text}', '精确查询')
+            links = f'{links} · {detail_cmd}' if links else detail_cmd
+        if links:
+            lines.append(links)
+        lines.append('')
+        if show_cover:
+            add_cover(lines, images, item, f'地图封面 {index}')
+    rows = [
+        [
+            button('再来一张', 'clst:hot:1', style=1, callback=True),
+            button('热门 3 张', 'clst:hot:3', callback=True),
             button('今日 Mod', 'clst:today', callback=True),
         ]
     ]

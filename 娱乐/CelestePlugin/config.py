@@ -87,6 +87,7 @@ default_global_config = {
     'markdown_enable_switch': True,
     'reply_quote_switch': True,
     'random_max_count': 10,
+    'hot_download_threshold': 1000,
     'detail_download_component_limit': 6,
     'long_reply_chunk_size': 1800,
     'cover_cache_max_items': 100,
