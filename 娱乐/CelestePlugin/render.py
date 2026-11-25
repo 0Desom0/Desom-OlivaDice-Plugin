@@ -320,7 +320,7 @@ def render_pool_home(
     lines.extend(
         [
             '',
-            '点下面的按钮直接抽 1 张；要一次多张就发 `.clst 新图 3`（把「新图」换成本页任意池名）。',
+            '点下面的按钮直接抽 1 张；要一次多张就发 `.clst 新图 3`（换成本页任意池名，英文 new / old / hot / cold / good / bad 也可以）。',
         ]
     )
     rows: list[list[dict[str, Any]]] = []

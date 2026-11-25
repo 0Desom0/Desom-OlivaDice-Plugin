@@ -44,17 +44,28 @@ subcommand_alias_dict = {
     '热门': 'hot',
     '热榜': 'hot',
     'new': 'new',
+    'latest': 'new',
+    'recent': 'new',
     '新图': 'new',
     'old': 'old',
+    'classic': 'old',
+    'vintage': 'old',
     '老图': 'old',
+    'top': 'hot',
     'cold': 'cold',
+    'niche': 'cold',
+    'obscure': 'cold',
     '冷门': 'cold',
     'good': 'good',
+    'best': 'good',
     '好图': 'good',
     'bad': 'bad',
+    'worst': 'bad',
     '烂图': 'bad',
     'pools': 'pools',
+    'pool': 'pools',
     'explore': 'pools',
+    'discover': 'pools',
     '发现': 'pools',
     '图池': 'pools',
     'today': 'today',
@@ -528,6 +539,37 @@ def handle_selection_input(plugin_event, message_text: str) -> bool:
         selection_session_dict.pop(build_selection_key(plugin_event), None)
     reply_detail(plugin_event, selected_item)
     return True
+
+
+# 英文池名同时是常见英文单词，`.clst old times` 应该当标题搜索而不是「老图池 + 参数 times」。
+english_pool_alias_set = {
+    'new',
+    'latest',
+    'recent',
+    'old',
+    'classic',
+    'vintage',
+    'hot',
+    'popular',
+    'top',
+    'cold',
+    'niche',
+    'obscure',
+    'good',
+    'best',
+    'bad',
+    'worst',
+}
+
+
+def looks_like_english_pool_search(command_argument: str, pool_argument: str) -> bool:
+    """英文池名后面跟的不是纯数字时，按标题搜索处理。"""
+    tokens = utils.safe_str(command_argument).split(None, 1)
+    first = tokens[0].lower() if tokens else ''
+    if first not in english_pool_alias_set:
+        return False
+    tail = utils.safe_str(pool_argument).strip()
+    return bool(tail) and not tail.isdigit()
 
 
 def parse_subcommand(command_argument: str) -> tuple[str, str]:
@@ -1061,8 +1103,9 @@ def dispatch_clst_command(plugin_event, command_argument: str) -> None:
         handle_random(plugin_event, sub_argument)
         return
     if subcommand in function.POOL_META:
-        handle_pool(plugin_event, subcommand, sub_argument)
-        return
+        if not looks_like_english_pool_search(argument, sub_argument):
+            handle_pool(plugin_event, subcommand, sub_argument)
+            return
     if subcommand == 'pools':
         handle_pools(plugin_event)
         return

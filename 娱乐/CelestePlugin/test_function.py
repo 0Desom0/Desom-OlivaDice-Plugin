@@ -701,6 +701,47 @@ class CelestePluginFunctionTest(unittest.TestCase):
         )
         pools_mock.assert_called_once()
 
+    def test_pool_english_aliases_dispatch(self):
+        cases = [
+            ('new', 'new'), ('latest', 'new'), ('recent', 'new'),
+            ('old', 'old'), ('classic', 'old'), ('vintage', 'old'),
+            ('hot', 'hot'), ('popular', 'hot'), ('top', 'hot'),
+            ('cold', 'cold'), ('niche', 'cold'), ('obscure', 'cold'),
+            ('good', 'good'), ('best', 'good'),
+            ('bad', 'bad'), ('worst', 'bad'),
+        ]
+        with mock.patch.object(message, 'handle_pool') as pool_mock:
+            for alias, _expected in cases:
+                message.dispatch_clst_command(object(), f'{alias} 2')
+        self.assertEqual(
+            [call[0][1] for call in pool_mock.call_args_list],
+            [expected for _alias, expected in cases],
+        )
+        self.assertTrue(all(call[0][2] == '2' for call in pool_mock.call_args_list))
+
+    def test_english_pool_word_falls_back_to_title_search(self):
+        # `.clst old times` 是搜索标题，不是老图池 + 非法参数
+        with (
+            mock.patch.object(message, 'handle_pool') as pool_mock,
+            mock.patch.object(message.function, 'search_title', return_value={'ok': True, 'results': [], 'count': 0}) as search_mock,
+            mock.patch.object(message, 'reply_search_result'),
+        ):
+            message.dispatch_clst_command(object(), 'old times')
+            message.dispatch_clst_command(object(), 'new beginning')
+            message.dispatch_clst_command(object(), 'best ever')
+        pool_mock.assert_not_called()
+        self.assertEqual(search_mock.call_count, 3)
+        self.assertEqual(
+            [call[0][0] for call in search_mock.call_args_list],
+            ['old times', 'new beginning', 'best ever'],
+        )
+
+    def test_looks_like_english_pool_search(self):
+        self.assertTrue(message.looks_like_english_pool_search('old times', 'times'))
+        self.assertFalse(message.looks_like_english_pool_search('old 3', '3'))
+        self.assertFalse(message.looks_like_english_pool_search('old', ''))
+        self.assertFalse(message.looks_like_english_pool_search('老图 times', 'times'))
+
     def test_parse_count_argument_labels_pool(self):
         with mock.patch.object(
             message.utils, 'load_global_config', return_value={'random_max_count': 10}
