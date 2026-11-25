@@ -96,7 +96,7 @@ def render_help() -> tuple[str, dict[str, Any] | None]:
             '',
             '**推荐**',
             '- `.clst 随机 [1-10]` 随机地图',
-            '- `.clst 热门 [1-10]` 下载榜热门地图（池内随机）',
+            '- `.clst 发现` 六个挑图池：新图/老图、热门/冷门、好图/烂图',
             '- `.clst today` 今日 Mod（每人每天一张，当天固定）',
             '- `.clst 更新` 骰主手动重建索引',
             '',
@@ -106,11 +106,11 @@ def render_help() -> tuple[str, dict[str, Any] | None]:
     )
     rows = [
         [
-            button('随机一张', 'clst:rnd:1', style=1, callback=True),
-            button('随机 3 张', 'clst:rnd:3', callback=True),
+            button('发现', 'clst:pools', style=1, callback=True),
+            button('随机一张', 'clst:rnd:1', callback=True),
         ],
         [
-            button('热门一张', 'clst:hot:1', callback=True),
+            button('随机 3 张', 'clst:rnd:3', callback=True),
             button('今日 Mod', 'clst:today', callback=True),
         ],
         [
@@ -174,7 +174,7 @@ def render_detail(
     show_random: bool = False,
     show_endless: bool = False,
     show_today: bool = False,
-    show_hot: bool = False,
+    show_pool: str = '',
 ) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
     config = utils.load_global_config()
     description = function.truncate_text(
@@ -251,11 +251,8 @@ def render_detail(
             button('再来一张', 'clst:rnd:1', callback=True),
             button('随机 3 张', 'clst:rnd:3', callback=True),
         ])
-    if show_hot:
-        controls.extend([
-            button('再来一张', 'clst:hot:1', callback=True),
-            button('热门 3 张', 'clst:hot:3', callback=True),
-        ])
+    if show_pool:
+        controls.extend(_pool_controls(show_pool))
     if show_endless:
         controls.append(button('返回无尽', 'clst:en:status', callback=True))
     if show_today:
@@ -304,13 +301,62 @@ def render_random_summary(items: list[dict[str, Any]]) -> tuple[str, dict[str, A
     return '\n'.join(lines), keyboard(rows), images
 
 
-def render_hot_summary(
+def render_pool_home(
+    pools: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any] | None]:
+    """发现页：六个池子的口径与池内张数，按钮点一下直接抽 1 张。"""
+    lines = [
+        '## 挑图池',
+        '> 池子按本地索引现算，张数随收录变化',
+        '',
+    ]
+    for pool in pools:
+        label = utils.safe_str(pool.get('label'), '池子')
+        rule = utils.safe_str(pool.get('rule'), '—')
+        size = int(pool.get('pool_size', 0) or 0)
+        lines.append(
+            f'- **{label}** · {rule} · 池内 {size:,} 张' if size else f'- **{label}** · {rule} · 池内 0 张（暂时抽不了）'
+        )
+    lines.extend(
+        [
+            '',
+            '点下面的按钮直接抽 1 张；要一次多张就发 `.clst 新图 3`（把「新图」换成本页任意池名）。',
+        ]
+    )
+    rows: list[list[dict[str, Any]]] = []
+    row: list[dict[str, Any]] = []
+    for index, pool in enumerate(pools):
+        key = utils.safe_str(pool.get('key'))
+        short = utils.safe_str(pool.get('short')) or utils.safe_str(pool.get('label'), '池子')
+        # 有货的池子用高亮样式，空池子仍可点（点了会明确说池子是空的）。
+        row.append(
+            button(
+                short,
+                f'clst:pool:{key}:1',
+                style=1 if index == 0 and pool.get('pool_size') else 0,
+                callback=True,
+            )
+        )
+        if len(row) >= 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([button('返回帮助', 'clst:help', callback=True)])
+    return '\n'.join(lines), keyboard(rows)
+
+
+def render_pool_summary(
     items: list[dict[str, Any]],
-    pool_size: int,
-    threshold: int,
+    heading: str,
+    pool_key: str,
+    notice: str = '',
 ) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
-    """热门池多张概要：标题带池规模与下载门槛，条目结构与随机一致。"""
-    lines = [f'**{function.format_hot_heading(pool_size, threshold)}**', '']
+    """池内多张概要：标题带池口径与规模，条目结构与随机一致。"""
+    lines = [f'**{heading}**', '']
+    if notice:
+        lines.append(f'提示：{notice}')
+        lines.append('')
     images: dict[str, str] = {}
     show_cover = utils.load_global_config().get('show_cover_image_switch', True)
     for index, item in enumerate(items, start=1):
@@ -322,7 +368,8 @@ def render_hot_summary(
             meta = f'{meta} · {category}'
         downloads = int(item.get('downloads', 0) or 0)
         if downloads > 0:
-            meta = f'{meta} · 下载 {downloads:,}'
+            likes = int(item.get('likes', 0) or 0)
+            meta = f'{meta} · 下载 {downloads:,} · 赞 {likes:,}'
         lines.append(f'**{index}. {item.get("name", "未知地图")}**')
         lines.append(meta)
         page_url = utils.safe_str(item.get('page_url'))
@@ -338,12 +385,20 @@ def render_hot_summary(
             add_cover(lines, images, item, f'地图封面 {index}')
     rows = [
         [
-            button('再来一张', 'clst:hot:1', style=1, callback=True),
-            button('热门 3 张', 'clst:hot:3', callback=True),
+            button('再来一张', f'clst:pool:{pool_key}:1', style=1, callback=True),
+            button('再来 3 张', f'clst:pool:{pool_key}:3', callback=True),
         ],
-        [button('今日 Mod', 'clst:today', callback=True)],
+        [button('换个池', 'clst:pools', callback=True)],
     ]
     return '\n'.join(lines), keyboard(rows), images
+
+
+def _pool_controls(pool_key: str) -> list[dict[str, Any]]:
+    return [
+        button('再来一张', f'clst:pool:{pool_key}:1', style=1, callback=True),
+        button('再来 3 张', f'clst:pool:{pool_key}:3', callback=True),
+        button('换个池', 'clst:pools', callback=True),
+    ]
 
 
 def render_endless(

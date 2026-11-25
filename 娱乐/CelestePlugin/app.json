@@ -3,9 +3,9 @@
   "author": "Desom-fu",
   "namespace": "CelestePlugin",
   "message_mode": "olivos_string",
-  "info": "Celeste Mod 查询、随机、热门、今日 Mod 与无尽挑战插件（WEGFan 镜像 · Markdown 按钮界面）",
-  "version": "1.7.1",
-  "svn": 39,
+  "info": "Celeste Mod 查询、随机、挑图池（新/老·热门/冷门·好/烂）、今日 Mod 与无尽挑战插件（WEGFan 镜像 · Markdown 按钮界面）",
+  "version": "1.8.0",
+  "svn": 40,
   "compatible_svn": 190,
   "priority": 30000,
   "support": [

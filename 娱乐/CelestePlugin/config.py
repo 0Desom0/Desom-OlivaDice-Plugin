@@ -88,6 +88,13 @@ default_global_config = {
     'reply_quote_switch': True,
     'random_max_count': 10,
     'hot_download_threshold': 1000,
+    # 挑图池口径（.clst 发现）：发布天数、冷门下载上限、好/烂图的 赞/下载 百分比
+    'pool_new_days': 30,
+    'pool_old_days': 365,
+    'pool_cold_max_downloads': 10,
+    'pool_ratio_min_downloads': 508,
+    'pool_good_min_ratio': 2.0,
+    'pool_bad_max_ratio': 0.3,
     'detail_download_component_limit': 6,
     'long_reply_chunk_size': 1800,
     'cover_cache_max_items': 100,

@@ -43,6 +43,20 @@ subcommand_alias_dict = {
     'popular': 'hot',
     '热门': 'hot',
     '热榜': 'hot',
+    'new': 'new',
+    '新图': 'new',
+    'old': 'old',
+    '老图': 'old',
+    'cold': 'cold',
+    '冷门': 'cold',
+    'good': 'good',
+    '好图': 'good',
+    'bad': 'bad',
+    '烂图': 'bad',
+    'pools': 'pools',
+    'explore': 'pools',
+    '发现': 'pools',
+    '图池': 'pools',
     'today': 'today',
     '每日': 'today',
     '今日': 'today',
@@ -189,7 +203,15 @@ def process_button_data(plugin_event, button_data: str) -> bool:
         handle_random(plugin_event, argument)
         return True
     if action == 'hot':
-        handle_hot(plugin_event, argument)
+        # 1.7.x 的旧卡片里是 clst:hot:N，继续保持可用。
+        handle_pool(plugin_event, 'hot', argument)
+        return True
+    if action == 'pool':
+        pool_key, _, pool_count = argument.partition(':')
+        handle_pool(plugin_event, pool_key, pool_count)
+        return True
+    if action == 'pools':
+        handle_pools(plugin_event)
         return True
     if action == 'today':
         handle_today(plugin_event)
@@ -349,7 +371,7 @@ def reply_detail_data(
     show_random: bool = False,
     show_endless: bool = False,
     show_today: bool = False,
-    show_hot: bool = False,
+    show_pool: str = '',
 ) -> None:
     """用已拿到的详情直接发页面：优先 Markdown + 按钮，失败才回退纯文本。"""
     if utils.can_send_markdown(plugin_event):
@@ -360,7 +382,7 @@ def reply_detail_data(
             show_random=show_random,
             show_endless=show_endless,
             show_today=show_today,
-            show_hot=show_hot,
+            show_pool=show_pool,
         )
         if utils.reply_markdown(plugin_event, text, keyboard, images=images):
             return
@@ -628,39 +650,63 @@ def handle_random(plugin_event, argument: str) -> None:
     utils.reply_long_text(plugin_event, '\n\n──────────\n\n'.join(detail_texts))
 
 
-def handle_hot(plugin_event, argument: str) -> None:
-    """热门池抽取：下载数超过阈值的地图里随机出 1~N 张，页面结构与随机一致。"""
-    valid, count, error = parse_count_argument(argument, '热门')
+def handle_pools(plugin_event) -> None:
+    """发现页：六个挑图池的口径与池内张数，按钮点一下直接抽一张。"""
+    pools = function.build_all_pools()
+    if not any(int(pool.get('pool_size', 0) or 0) for pool in pools):
+        utils.reply_message(plugin_event, '所有池子现在都是空的，可能是本地索引还没建好，稍后再试。')
+        return
+    if utils.can_send_markdown(plugin_event):
+        text, keyboard = render.render_pool_home(pools)
+        if utils.reply_markdown(plugin_event, text, keyboard):
+            return
+    lines = ['【挑图池】']
+    for pool in pools:
+        lines.append(
+            f"{pool.get('label', '池子')} · {pool.get('rule', '')} · "
+            f"池内 {int(pool.get('pool_size', 0) or 0):,} 张"
+        )
+    lines.append('发送 .clst 新图 / 老图 / 热门 / 冷门 / 好图 / 烂图 [张数] 抽取。')
+    utils.reply_long_text(plugin_event, '\n'.join(lines))
+
+
+def handle_pool(plugin_event, key: str, argument: str) -> None:
+    """按池子抽图：单张走详情页，多张走概要页；页面结构与随机一致。"""
+    pool_key = utils.safe_str(key).strip().lower()
+    meta = function.POOL_META.get(pool_key)
+    if not meta:
+        utils.reply_message(plugin_event, '没有这个池子，发 .clst 发现 看看都有哪些。')
+        return
+    label = meta[1]
+    valid, count, error = parse_count_argument(argument, label)
     if not valid:
         utils.reply_message(plugin_event, error)
         return
-    hot_result = function.hot_mods(count)
-    if not hot_result.get('ok'):
-        utils.reply_message(plugin_event, f'热门抽取失败：{hot_result.get("error", "未知错误")}')
+    pool_result = function.pool_mods(pool_key, count)
+    if not pool_result.get('ok'):
+        utils.reply_message(plugin_event, f"{meta[0]}抽不出来：{pool_result.get('error', '未知错误')}")
         return
-    results = hot_result.get('results', [])
-    heading = function.format_hot_heading(
-        hot_result.get('pool_size', 0),
-        hot_result.get('threshold', 0),
-    )
+    results = pool_result.get('results', [])
+    heading = utils.safe_str(pool_result.get('heading'))
+    notices = []
+    if len(results) < count:
+        notices.append(f'池里只有 {int(pool_result.get("pool_size", 0) or 0)} 张，这次全给你了。')
+    if pool_key == 'bad':
+        notices.append('喜欢数只是参考，很多冷门神图根本没人点喜欢。')
+    notice = ' '.join(notices)
     if count == 1 and results:
-        # 单张仍展示完整简介，并带继续抽热门/热门 3 张的回调。
-        reply_detail_data(plugin_event, results[0], heading=heading, show_hot=True)
+        reply_detail_data(plugin_event, results[0], heading=heading, show_pool=pool_key)
         return
     if utils.can_send_markdown(plugin_event):
-        text, keyboard, images = render.render_hot_summary(
-            results,
-            hot_result.get('pool_size', 0),
-            hot_result.get('threshold', 0),
-        )
+        text, keyboard, images = render.render_pool_summary(results, heading, pool_key, notice)
         if utils.reply_markdown(plugin_event, text, keyboard, images=images):
             return
     detail_texts = []
     for index, item in enumerate(results, start=1):
-        heading = f'【热门 {index}/{count}】'
-        detail_texts.append(function.format_detail(item, compact=True, heading=heading))
+        heading_text = f'【{label} {index}/{len(results)}】'
+        detail_texts.append(function.format_detail(item, compact=True, heading=heading_text))
     if not detail_texts:
-        utils.reply_message(plugin_event, '热门池抽到了候选条目，但详情暂时无法获取。')
+        utils.reply_message(plugin_event, '池里抽到了候选条目，但详情暂时无法获取。')
         return
     utils.reply_long_text(plugin_event, '\n\n──────────\n\n'.join(detail_texts))
 
@@ -1014,8 +1060,11 @@ def dispatch_clst_command(plugin_event, command_argument: str) -> None:
     if subcommand == 'random':
         handle_random(plugin_event, sub_argument)
         return
-    if subcommand == 'hot':
-        handle_hot(plugin_event, sub_argument)
+    if subcommand in function.POOL_META:
+        handle_pool(plugin_event, subcommand, sub_argument)
+        return
+    if subcommand == 'pools':
+        handle_pools(plugin_event)
         return
     if subcommand == 'today':
         handle_today(plugin_event)

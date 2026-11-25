@@ -1097,27 +1097,80 @@ def random_mods(count: int, excluded_ids: set[int] | None = None) -> dict[str, A
 
 
 # ---------------------------------------------------------------------------
-# 热门池：本地索引里 Maps 分类、下载数超过阈值的条目
+# 挑图池：本地索引里的 Maps 按口径切成六个池子（新/老、热门/冷门、好/烂）
 # ---------------------------------------------------------------------------
+
+POOL_META: dict[str, tuple[str, str]] = {
+    'new': ('新图池', '新图'),
+    'old': ('老图池', '老图'),
+    'hot': ('热门池', '热门'),
+    'cold': ('冷门池', '冷门'),
+    'good': ('好图池', '好图'),
+    'bad': ('烂图池', '烂图'),
+}
+POOL_ORDER = ['new', 'old', 'hot', 'cold', 'good', 'bad']
+DAY_SECONDS = 86400
+
+
+def get_pool_settings() -> dict[str, Any]:
+    """六个池子的口径全部来自 global_config，改阈值不用动代码。"""
+    config_dict = utils.load_global_config()
+
+    def int_value(key: str, fallback: int) -> int:
+        try:
+            return max(0, int(config_dict.get(key, fallback)))
+        except Exception:
+            return fallback
+
+    def float_value(key: str, fallback: float) -> float:
+        try:
+            return max(0.0, float(config_dict.get(key, fallback)))
+        except Exception:
+            return fallback
+
+    return {
+        'new_days': max(1, int_value('pool_new_days', 30)),
+        'old_days': max(1, int_value('pool_old_days', 365)),
+        'hot_min_downloads': int_value('hot_download_threshold', 1000),
+        'cold_max_downloads': int_value('pool_cold_max_downloads', 10),
+        'ratio_min_downloads': int_value('pool_ratio_min_downloads', 508),
+        'good_min_ratio': float_value('pool_good_min_ratio', 2.0),
+        'bad_max_ratio': float_value('pool_bad_max_ratio', 0.3),
+    }
 
 
 def get_hot_download_threshold() -> int:
-    value = utils.load_global_config().get('hot_download_threshold', 1000)
-    try:
-        return max(0, int(value))
-    except Exception:
-        return 1000
+    return int(get_pool_settings()['hot_min_downloads'])
 
 
-def build_hot_pool(threshold: int | None = None) -> dict[str, Any]:
-    """热门池：Maps 分类里下载数大于阈值的条目，池子只依赖本地索引。"""
-    limit = get_hot_download_threshold() if threshold is None else max(0, int(threshold))
+def build_pool(key: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """按池子口径过滤本地索引里的 Maps；只读索引，不发网络请求。"""
+    pool_key = utils.safe_str(key).strip().lower()
+    if pool_key not in POOL_META:
+        return {
+            'ok': False,
+            'key': pool_key,
+            'label': '',
+            'short': '',
+            'pool': [],
+            'pool_size': 0,
+            'rule': '',
+            'heading': '',
+            'error': '没有这个池子',
+        }
+    label, short = POOL_META[pool_key]
+    settings = settings or get_pool_settings()
     index_result = load_index()
     if not index_result.get('ok'):
         return {
             'ok': False,
+            'key': pool_key,
+            'label': label,
+            'short': short,
             'pool': [],
-            'threshold': limit,
+            'pool_size': 0,
+            'rule': '',
+            'heading': '',
             'error': index_result.get('error') or 'WEGFan 本地索引不可用',
         }
     items = index_result['data'].get('items', [])
@@ -1130,35 +1183,76 @@ def build_hot_pool(threshold: int | None = None) -> dict[str, Any]:
     base_items = map_items or [
         item for item in items if utils.safe_str(item.get('item_type'), '').casefold() == 'mod'
     ]
-    pool = [item for item in base_items if safe_int(item.get('downloads')) > limit]
-    if not pool:
-        return {
-            'ok': False,
-            'pool': [],
-            'threshold': limit,
-            'error': f'热门池为空（当前还没有下载数超过 {limit:,} 的地图）',
-        }
-    return {'ok': True, 'pool': pool, 'threshold': limit, 'error': ''}
+    now = int(time.time())
+    if pool_key == 'new':
+        days = int(settings['new_days'])
+        pool = [
+            item
+            for item in base_items
+            if 0 < safe_int(item.get('created_at'))
+            and now - safe_int(item.get('created_at')) <= days * DAY_SECONDS
+        ]
+        rule = f'发布 < {days} 天'
+    elif pool_key == 'old':
+        days = int(settings['old_days'])
+        pool = [
+            item
+            for item in base_items
+            if 0 < safe_int(item.get('created_at'))
+            and now - safe_int(item.get('created_at')) >= days * DAY_SECONDS
+        ]
+        rule = f'发布 > {days} 天'
+    elif pool_key == 'hot':
+        limit = int(settings['hot_min_downloads'])
+        pool = [item for item in base_items if safe_int(item.get('downloads')) > limit]
+        rule = f'下载 > {limit:,}'
+    elif pool_key == 'cold':
+        limit = int(settings['cold_max_downloads'])
+        pool = [item for item in base_items if safe_int(item.get('downloads')) < limit]
+        rule = f'下载 < {limit:,}'
+    else:
+        min_downloads = int(settings['ratio_min_downloads'])
+        ratio_limit = float(
+            settings['good_min_ratio'] if pool_key == 'good' else settings['bad_max_ratio']
+        )
+        eligible = [
+            item for item in base_items if safe_int(item.get('downloads')) >= min_downloads
+        ]
+
+        def like_ratio(item: dict[str, Any]) -> float:
+            downloads = safe_int(item.get('downloads'))
+            return (safe_int(item.get('likes')) * 100.0 / downloads) if downloads > 0 else 0.0
+
+        if pool_key == 'good':
+            pool = [item for item in eligible if like_ratio(item) >= ratio_limit]
+            rule = f'赞/下载 ≥ {ratio_limit:g}% · 下载 ≥ {min_downloads:,}'
+        else:
+            pool = [item for item in eligible if like_ratio(item) <= ratio_limit]
+            rule = f'赞/下载 ≤ {ratio_limit:g}% · 下载 ≥ {min_downloads:,}'
+    heading = f'{label} · {rule} · 池内 {len(pool):,} 张'
+    return {
+        'ok': bool(pool),
+        'key': pool_key,
+        'label': label,
+        'short': short,
+        'pool': pool,
+        'pool_size': len(pool),
+        'rule': rule,
+        'heading': heading,
+        'error': '' if pool else f'{label}现在是空的（{rule}）',
+    }
 
 
-def format_hot_heading(pool_size: int, threshold: int) -> str:
-    return f'热门池 · 下载 > {max(0, int(threshold)):,} · 池内 {max(0, int(pool_size)):,} 张'
+def build_all_pools() -> list[dict[str, Any]]:
+    """发现页用：六个池子一次算完，共享同一份索引与配置。"""
+    settings = get_pool_settings()
+    return [build_pool(key, settings) for key in POOL_ORDER]
 
 
-def hot_mods(count: int, threshold: int | None = None) -> dict[str, Any]:
-    """从热门池里随机抽 count 张（不重复），连池规模与阈值一起返回给页面标题用。"""
-    target_count = max(1, int(count))
-    pool_result = build_hot_pool(threshold)
-    pool = list(pool_result.get('pool', []))
-    hot_threshold = int(pool_result.get('threshold', get_hot_download_threshold()))
-    if not pool_result.get('ok'):
-        return {
-            'ok': False,
-            'results': [],
-            'pool_size': len(pool),
-            'threshold': hot_threshold,
-            'error': pool_result.get('error', '热门池不可用'),
-        }
+def _draw_from_pool(
+    pool: list[dict[str, Any]], target_count: int
+) -> tuple[list[dict[str, Any]], str]:
+    """池内随机抽 count 张（不重复），逐条取详情；详情失败就换池内下一条。"""
     random.shuffle(pool)
     wanted = min(target_count, len(pool))
     results: list[dict[str, Any]] = []
@@ -1179,21 +1273,29 @@ def hot_mods(count: int, threshold: int | None = None) -> dict[str, Any]:
             last_error = detail_result.get('error', '')
             continue
         results.append(detail_result.get('data', {}))
-    if not results:
-        return {
-            'ok': False,
-            'results': [],
-            'pool_size': len(pool),
-            'threshold': hot_threshold,
-            'error': last_error or '热门地图详情获取失败',
-        }
-    return {
-        'ok': True,
-        'results': results,
+    return results, last_error
+
+
+def pool_mods(key: str, count: int) -> dict[str, Any]:
+    """从指定池子随机抽 count 张，连池规模与标题一起返回给页面用。"""
+    target_count = max(1, int(count))
+    pool_result = build_pool(key)
+    pool = list(pool_result.get('pool', []))
+    base = {
+        'key': pool_result.get('key', ''),
+        'label': pool_result.get('label', ''),
+        'short': pool_result.get('short', ''),
         'pool_size': len(pool),
-        'threshold': hot_threshold,
-        'error': '',
+        'heading': pool_result.get('heading', ''),
+        'rule': pool_result.get('rule', ''),
+        'count': target_count,
     }
+    if not pool:
+        return dict(base, ok=False, results=[], error=pool_result.get('error', '池子不可用'))
+    results, last_error = _draw_from_pool(pool, target_count)
+    if not results:
+        return dict(base, ok=False, results=[], error=last_error or '池内地图详情获取失败')
+    return dict(base, ok=True, results=results, error='')
 
 
 def get_hong_kong_date() -> str:

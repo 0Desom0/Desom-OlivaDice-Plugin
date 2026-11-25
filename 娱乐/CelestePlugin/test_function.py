@@ -6,6 +6,7 @@ import io
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import wait
 from pathlib import Path
@@ -400,96 +401,133 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertTrue(result['ok'])
         detail_mock.assert_called_once_with(5, 'Mod', True, weg_id='abc')
 
-    # ---------- 热门池 ----------
+    # ---------- 挑图池 ----------
 
-    def hot_index_items(self):
+    def pool_index_item(self, item_id, category='Maps', downloads=1200, likes=20, age_days=100, item_type='Mod'):
+        return {
+            'id': item_id,
+            'weg_id': f'w{item_id}',
+            'item_type': item_type,
+            'category': category,
+            'downloads': downloads,
+            'likes': likes,
+            'created_at': int(time.time()) - age_days * 86400,
+        }
+
+    def pool_index_items(self):
         return {
             'ok': True,
             'data': {
                 'items': [
-                    {'id': 1, 'item_type': 'Mod', 'category': 'Maps', 'downloads': 1200, 'name': 'Hot 1'},
-                    {'id': 2, 'item_type': 'Mod', 'category': 'Maps', 'downloads': 1000, 'name': 'On The Line'},
-                    {'id': 3, 'item_type': 'Mod', 'category': 'Maps', 'downloads': 5000, 'name': 'Hot 3'},
-                    {'id': 4, 'item_type': 'Mod', 'category': 'Skins', 'downloads': 9000, 'name': 'Skin'},
-                    {'id': 5, 'item_type': 'Tool', 'category': 'Maps', 'downloads': 9000, 'name': 'Tool'},
+                    # 新（3 天）+ 热门（1200）+ 好图（2.0%）
+                    self.pool_index_item(1, downloads=1200, likes=24, age_days=3),
+                    # 老（400 天）；下载正好 1000 不算热门；比例 1.0%
+                    self.pool_index_item(2, downloads=1000, likes=10, age_days=400),
+                    self.pool_index_item(3, downloads=5000, likes=50, age_days=800),
+                    # 不是 Maps / 不是 Mod，六个池子都不该收
+                    self.pool_index_item(4, category='Skins', downloads=9000, likes=900, age_days=2),
+                    self.pool_index_item(5, item_type='Tool', downloads=9000, likes=900, age_days=2),
+                    # 冷门（下载 5）
+                    self.pool_index_item(6, downloads=5, likes=0, age_days=900),
+                    # 烂图（0%），下载 >= 508
+                    self.pool_index_item(7, downloads=600, likes=0, age_days=900),
+                    # 下载 < 508，不参与好/烂
+                    self.pool_index_item(8, downloads=400, likes=0, age_days=900),
                 ]
             },
         }
 
-    def test_build_hot_pool_only_maps_strictly_above_threshold(self):
-        with mock.patch.object(function, 'load_index', return_value=self.hot_index_items()):
-            result = function.build_hot_pool()
-        self.assertTrue(result['ok'])
-        self.assertEqual(result['threshold'], 1000)
-        # 只取 Mod + Maps，且下载数必须大于阈值（等于阈值不算）
-        self.assertEqual([item['id'] for item in result['pool']], [1, 3])
+    def test_build_pool_new_and_old_split_by_age(self):
+        with mock.patch.object(function, 'load_index', return_value=self.pool_index_items()):
+            new_pool = function.build_pool('new')
+            old_pool = function.build_pool('old')
+        self.assertEqual([item['id'] for item in new_pool['pool']], [1])
+        self.assertEqual(new_pool['rule'], '发布 < 30 天')
+        self.assertTrue(new_pool['heading'].startswith('新图池 · 发布 < 30 天 · 池内 1 张'))
+        self.assertEqual([item['id'] for item in old_pool['pool']], [2, 3, 6, 7, 8])
+        self.assertEqual(old_pool['rule'], '发布 > 365 天')
 
-    def test_build_hot_pool_uses_configured_threshold(self):
-        index_payload = self.hot_index_items()
+    def test_build_pool_hot_cold_and_ratio_pools(self):
+        with mock.patch.object(function, 'load_index', return_value=self.pool_index_items()):
+            hot_pool = function.build_pool('hot')
+            cold_pool = function.build_pool('cold')
+            good_pool = function.build_pool('good')
+            bad_pool = function.build_pool('bad')
+        # 下载必须严格大于 1000；下载 < 10 才算冷门
+        self.assertEqual([item['id'] for item in hot_pool['pool']], [1, 3])
+        self.assertEqual([item['id'] for item in cold_pool['pool']], [6])
+        # 好图：下载 >= 508 且 赞/下载 >= 2%
+        self.assertEqual([item['id'] for item in good_pool['pool']], [1])
+        # 烂图：下载 >= 508 且 赞/下载 <= 0.3%
+        self.assertEqual([item['id'] for item in bad_pool['pool']], [7])
+        self.assertIn('赞/下载 ≥ 2%', good_pool['rule'])
+        self.assertIn('赞/下载 ≤ 0.3%', bad_pool['rule'])
+
+    def test_build_pool_uses_settings_and_reports_empty(self):
         with (
-            mock.patch.object(function, 'load_index', return_value=index_payload),
-            mock.patch.object(
-                function.utils,
-                'load_global_config',
-                return_value={'hot_download_threshold': 3000},
-            ),
+            mock.patch.object(function, 'load_index', return_value=self.pool_index_items()),
+            mock.patch.object(function, 'get_pool_settings', return_value={
+                'new_days': 30,
+                'old_days': 365,
+                'hot_min_downloads': 3000,
+                'cold_max_downloads': 10,
+                'ratio_min_downloads': 508,
+                'good_min_ratio': 1.0,
+                'bad_max_ratio': 0.9,
+            }),
         ):
-            result = function.build_hot_pool()
-        self.assertEqual(result['threshold'], 3000)
-        self.assertEqual([item['id'] for item in result['pool']], [3])
+            hot_pool = function.build_pool('hot')
+            # 阈值提到 3000，只剩 5000 那张
+            self.assertEqual([item['id'] for item in hot_pool['pool']], [3])
+            empty_pool = function.build_pool('cold', {
+                'new_days': 30,
+                'old_days': 365,
+                'hot_min_downloads': 1000,
+                'cold_max_downloads': 1,
+                'ratio_min_downloads': 508,
+                'good_min_ratio': 2.0,
+                'bad_max_ratio': 0.3,
+            })
+        self.assertFalse(empty_pool['ok'])
+        self.assertIn('冷门池现在是空的', empty_pool['error'])
 
-    def test_build_hot_pool_empty_reports_error(self):
-        with mock.patch.object(function, 'load_index', return_value=self.hot_index_items()):
-            result = function.build_hot_pool(threshold=99999)
-        self.assertFalse(result['ok'])
-        self.assertIn('热门池为空', result['error'])
-
-    def test_build_hot_pool_reports_index_failure(self):
-        with mock.patch.object(
-            function, 'load_index', return_value={'ok': False, 'error': '索引不可用'}
-        ):
-            result = function.build_hot_pool()
+    def test_build_pool_rejects_unknown_key_and_index_failure(self):
+        with mock.patch.object(function, 'load_index', return_value={'ok': False, 'error': '索引不可用'}):
+            result = function.build_pool('hot')
         self.assertFalse(result['ok'])
         self.assertEqual(result['error'], '索引不可用')
+        unknown = function.build_pool('nope')
+        self.assertFalse(unknown['ok'])
+        self.assertEqual(unknown['error'], '没有这个池子')
 
-    def test_hot_mods_returns_pool_size_and_details(self):
-        pool_result = {
-            'ok': True,
-            'pool': [
-                {'id': 1, 'weg_id': 'w1', 'item_type': 'Mod'},
-                {'id': 2, 'weg_id': 'w2', 'item_type': 'Mod'},
-            ],
-            'threshold': 1000,
-        }
-        details = [
-            {'ok': True, 'data': {'id': 1, 'name': 'A'}, 'error': ''},
-            {'ok': True, 'data': {'id': 2, 'name': 'B'}, 'error': ''},
-        ]
+    def test_build_all_pools_returns_six_in_order(self):
+        with mock.patch.object(function, 'load_index', return_value=self.pool_index_items()):
+            pools = function.build_all_pools()
+        self.assertEqual([pool['key'] for pool in pools], ['new', 'old', 'hot', 'cold', 'good', 'bad'])
+        self.assertEqual([pool['short'] for pool in pools], ['新图', '老图', '热门', '冷门', '好图', '烂图'])
+        self.assertTrue(all(pool['heading'] for pool in pools))
+
+    def test_pool_mods_returns_pool_size_and_details(self):
         with (
-            mock.patch.object(function, 'build_hot_pool', return_value=pool_result),
-            mock.patch.object(function, 'get_item_by_id', side_effect=details) as detail_mock,
+            mock.patch.object(function, 'load_index', return_value=self.pool_index_items()),
+            mock.patch.object(
+                function,
+                'get_item_by_id',
+                side_effect=lambda item_id, *args, **kwargs: {
+                    'ok': True, 'data': {'id': item_id, 'name': f'M{item_id}'}, 'error': ''
+                },
+            ) as detail_mock,
         ):
-            result = function.hot_mods(2)
+            result = function.pool_mods('new', 1)
         self.assertTrue(result['ok'])
-        self.assertEqual(result['pool_size'], 2)
-        self.assertEqual(result['threshold'], 1000)
-        self.assertEqual(detail_mock.call_count, 2)
-        requested = [call_args[0][0] for call_args in detail_mock.call_args_list]
-        self.assertEqual(sorted(requested), [1, 2])
-        self.assertEqual({item['id'] for item in result['results']}, {1, 2})
+        self.assertEqual(result['pool_size'], 1)
+        self.assertTrue(result['heading'].startswith('新图池 · 发布 < 30 天'))
+        self.assertEqual(result['results'][0]['id'], 1)
+        self.assertEqual(detail_mock.call_count, 1)
 
-    def test_hot_mods_skips_failed_detail_and_reports_error(self):
-        pool_result = {
-            'ok': True,
-            'pool': [
-                {'id': 1, 'weg_id': 'w1', 'item_type': 'Mod'},
-                {'id': 2, 'weg_id': 'w2', 'item_type': 'Mod'},
-                {'id': 3, 'weg_id': 'w3', 'item_type': 'Mod'},
-            ],
-            'threshold': 1000,
-        }
+    def test_pool_mods_clamps_count_and_skips_failed_detail(self):
         with (
-            mock.patch.object(function, 'build_hot_pool', return_value=pool_result),
+            mock.patch.object(function, 'load_index', return_value=self.pool_index_items()),
             mock.patch.object(
                 function,
                 'get_item_by_id',
@@ -497,37 +535,60 @@ class CelestePluginFunctionTest(unittest.TestCase):
                     {'ok': False, 'data': {}, 'error': '详情 404'},
                     {'ok': True, 'data': {'id': 2, 'name': 'B'}, 'error': ''},
                     {'ok': True, 'data': {'id': 3, 'name': 'C'}, 'error': ''},
+                    {'ok': True, 'data': {'id': 6, 'name': 'D'}, 'error': ''},
                 ],
-            ),
+            ) as detail_mock,
         ):
-            result = function.hot_mods(2)
+            result = function.pool_mods('old', 3)
+        # 第一条详情失败，换成池内下一条；总数仍是 3
         self.assertTrue(result['ok'])
-        self.assertEqual(len(result['results']), 2)
+        self.assertEqual(len(result['results']), 3)
+        self.assertEqual(detail_mock.call_count, 4)
 
         with (
-            mock.patch.object(function, 'build_hot_pool', return_value=pool_result),
+            mock.patch.object(function, 'load_index', return_value=self.pool_index_items()),
+            mock.patch.object(
+                function,
+                'get_item_by_id',
+                return_value={'ok': True, 'data': {'id': 6, 'name': 'D'}, 'error': ''},
+            ),
+        ):
+            clamped = function.pool_mods('cold', 10)
+        # 冷门池只有 1 张，要 10 张也只给 1 张
+        self.assertTrue(clamped['ok'])
+        self.assertEqual(len(clamped['results']), 1)
+
+    def test_pool_mods_reports_empty_and_detail_failure(self):
+        empty_pool = {
+            'ok': False,
+            'key': 'cold',
+            'label': '冷门池',
+            'short': '冷门',
+            'pool': [],
+            'pool_size': 0,
+            'rule': '下载 < 10',
+            'heading': '冷门池 · 下载 < 10 · 池内 0 张',
+            'error': '冷门池现在是空的（下载 < 10）',
+        }
+        with mock.patch.object(function, 'build_pool', return_value=empty_pool):
+            empty = function.pool_mods('cold', 1)
+        self.assertFalse(empty['ok'])
+        self.assertEqual(empty['results'], [])
+        self.assertIn('冷门池', empty['error'])
+
+        with (
+            mock.patch.object(function, 'load_index', return_value=self.pool_index_items()),
             mock.patch.object(
                 function,
                 'get_item_by_id',
                 return_value={'ok': False, 'data': {}, 'error': '详情 500'},
             ),
         ):
-            failed = function.hot_mods(1)
+            failed = function.pool_mods('new', 1)
         self.assertFalse(failed['ok'])
         self.assertEqual(failed['error'], '详情 500')
-        self.assertEqual(failed['threshold'], 1000)
 
-    def test_hot_mods_pool_unavailable(self):
-        with mock.patch.object(
-            function,
-            'build_hot_pool',
-            return_value={'ok': False, 'pool': [], 'threshold': 1000, 'error': '热门池为空'},
-        ):
-            result = function.hot_mods(1)
-        self.assertFalse(result['ok'])
-        self.assertEqual(result['error'], '热门池为空')
-        self.assertEqual(result['results'], [])
-
+    # ---------- Endless ----------
     # ---------- Endless ----------
 
     def test_endless_state_machine(self):
@@ -622,84 +683,129 @@ class CelestePluginFunctionTest(unittest.TestCase):
             message.dispatch_clst_command(object(), 'update')
         self.assertEqual(refresh_mock.call_count, 2)
 
-    def test_hot_subcommand_dispatches(self):
-        with mock.patch.object(message, 'handle_hot') as hot_mock:
+    def test_pool_subcommands_dispatch(self):
+        with (
+            mock.patch.object(message, 'handle_pool') as pool_mock,
+            mock.patch.object(message, 'handle_pools') as pools_mock,
+        ):
+            message.dispatch_clst_command(object(), '新图')
+            message.dispatch_clst_command(object(), '老图 2')
             message.dispatch_clst_command(object(), '热门')
-            message.dispatch_clst_command(object(), '热门 3')
-            message.dispatch_clst_command(object(), 'hot 2')
-        self.assertEqual(hot_mock.call_count, 3)
-        self.assertEqual([item[0][1] for item in hot_mock.call_args_list], ['', '3', '2'])
+            message.dispatch_clst_command(object(), '冷门 3')
+            message.dispatch_clst_command(object(), '好图')
+            message.dispatch_clst_command(object(), '烂图 5')
+            message.dispatch_clst_command(object(), '发现')
+        self.assertEqual(
+            [call[0][1:] for call in pool_mock.call_args_list],
+            [('new', ''), ('old', '2'), ('hot', ''), ('cold', '3'), ('good', ''), ('bad', '5')],
+        )
+        pools_mock.assert_called_once()
 
-    def test_parse_count_argument_labels_hot(self):
+    def test_parse_count_argument_labels_pool(self):
         with mock.patch.object(
             message.utils, 'load_global_config', return_value={'random_max_count': 10}
         ):
-            self.assertEqual(message.parse_count_argument('', '热门'), (True, 1, ''))
-            self.assertEqual(message.parse_count_argument('3', '热门'), (True, 3, ''))
-            valid, _count, error = message.parse_count_argument('abc', '热门')
+            self.assertEqual(message.parse_count_argument('', '新图'), (True, 1, ''))
+            self.assertEqual(message.parse_count_argument('3', '新图'), (True, 3, ''))
+            valid, _count, error = message.parse_count_argument('abc', '新图')
             self.assertFalse(valid)
-            self.assertIn('.clst 热门 5', error)
-            valid, _count, error = message.parse_count_argument('11', '热门')
+            self.assertIn('.clst 新图 5', error)
+            valid, _count, error = message.parse_count_argument('11', '新图')
             self.assertFalse(valid)
             self.assertIn('1 至 10', error)
 
-    def test_handle_hot_single_uses_detail_page(self):
-        hot_result = {
+    def test_handle_pool_single_uses_detail_page(self):
+        heading = '新图池 · 发布 < 30 天 · 池内 79 张'
+        pool_result = {
             'ok': True,
             'results': [{'id': 1, 'name': 'A'}],
-            'pool_size': 533,
-            'threshold': 1000,
+            'pool_size': 79,
+            'heading': heading,
+            'count': 1,
             'error': '',
         }
         with (
-            mock.patch.object(message.function, 'hot_mods', return_value=hot_result),
+            mock.patch.object(message.function, 'pool_mods', return_value=pool_result),
             mock.patch.object(message, 'reply_detail_data') as detail_mock,
         ):
-            message.handle_hot(object(), '')
+            message.handle_pool(object(), 'new', '')
         detail_mock.assert_called_once()
-        self.assertTrue(detail_mock.call_args.kwargs['show_hot'])
-        self.assertEqual(
-            detail_mock.call_args.kwargs['heading'],
-            '热门池 · 下载 > 1,000 · 池内 533 张',
-        )
+        self.assertEqual(detail_mock.call_args.kwargs['show_pool'], 'new')
+        self.assertEqual(detail_mock.call_args.kwargs['heading'], heading)
 
-    def test_handle_hot_multiple_uses_summary(self):
-        hot_result = {
+    def test_handle_pool_multiple_uses_summary(self):
+        heading = '新图池 · 发布 < 30 天 · 池内 79 张'
+        pool_result = {
             'ok': True,
             'results': [{'id': 1, 'name': 'A'}, {'id': 2, 'name': 'B'}],
-            'pool_size': 533,
-            'threshold': 1000,
+            'pool_size': 79,
+            'heading': heading,
+            'count': 2,
             'error': '',
         }
         with (
-            mock.patch.object(message.function, 'hot_mods', return_value=hot_result),
+            mock.patch.object(message.function, 'pool_mods', return_value=pool_result),
             mock.patch.object(message.utils, 'can_send_markdown', return_value=True),
             mock.patch.object(message.utils, 'reply_markdown', return_value=True) as markdown_mock,
         ):
-            message.handle_hot(object(), '2')
+            message.handle_pool(object(), 'new', '2')
         markdown_mock.assert_called_once()
         text = markdown_mock.call_args[0][1]
-        self.assertIn('热门池 · 下载 > 1,000 · 池内 533 张', text)
+        self.assertIn(heading, text)
         self.assertIn('**2. B**', text)
 
-    def test_handle_hot_reports_pool_error(self):
+    def test_handle_pool_reports_empty_pool_and_unknown_key(self):
         with (
             mock.patch.object(
                 message.function,
-                'hot_mods',
+                'pool_mods',
                 return_value={
                     'ok': False,
                     'results': [],
                     'pool_size': 0,
-                    'threshold': 1000,
-                    'error': '本地索引不可用',
+                    'heading': '冷门池 · 下载 < 10 · 池内 0 张',
+                    'count': 1,
+                    'error': '冷门池现在是空的（下载 < 10）',
                 },
             ),
             mock.patch.object(message.utils, 'reply_message') as reply_mock,
         ):
-            message.handle_hot(object(), '')
-        self.assertIn('热门抽取失败', reply_mock.call_args[0][1])
-        self.assertIn('本地索引不可用', reply_mock.call_args[0][1])
+            message.handle_pool(object(), 'cold', '')
+        self.assertIn('冷门池抽不出来', reply_mock.call_args[0][1])
+        self.assertIn('冷门池现在是空的', reply_mock.call_args[0][1])
+
+        with mock.patch.object(message.utils, 'reply_message') as reply_mock:
+            message.handle_pool(object(), 'nope', '')
+        self.assertIn('没有这个池子', reply_mock.call_args[0][1])
+
+    def test_handle_pools_renders_home_and_handles_all_empty(self):
+        pools = [
+            {
+                'key': 'new',
+                'label': '新图池',
+                'short': '新图',
+                'rule': '发布 < 30 天',
+                'pool_size': 79,
+                'heading': '新图池 · 发布 < 30 天 · 池内 79 张',
+            }
+        ]
+        with (
+            mock.patch.object(message.function, 'build_all_pools', return_value=pools),
+            mock.patch.object(message.utils, 'can_send_markdown', return_value=True),
+            mock.patch.object(message.utils, 'reply_markdown', return_value=True) as markdown_mock,
+        ):
+            message.handle_pools(object())
+        home_text = markdown_mock.call_args[0][1]
+        self.assertIn('新图池', home_text)
+        self.assertIn('池内 79 张', home_text)
+
+        empty = [dict(pool, pool_size=0) for pool in pools]
+        with (
+            mock.patch.object(message.function, 'build_all_pools', return_value=empty),
+            mock.patch.object(message.utils, 'reply_message') as reply_mock,
+        ):
+            message.handle_pools(object())
+        self.assertIn('都是空的', reply_mock.call_args[0][1])
 
     def test_refresh_command_is_master_only(self):
         event = object()
@@ -1043,22 +1149,68 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertIn('{{地图封面 1}}', text)
         self.assertTrue(keyboard['content']['rows'])
 
-    def test_render_hot_summary_heading_and_buttons(self):
+    def test_render_pool_summary_heading_and_buttons(self):
         items = [function.normalize_wegfan_item(sample_search_item())]
-        text, keyboard, images = render.render_hot_summary(items, 533, 1000)
-        self.assertIn('**热门池 · 下载 > 1,000 · 池内 533 张**', text)
-        # 条目带下载数与蓝字精确查询入口
+        heading = '新图池 · 发布 < 30 天 · 池内 79 张'
+        text, keyboard, images = render.render_pool_summary(items, heading, 'new')
+        self.assertIn(f'**{heading}**', text)
+        # 条目带下载数、赞数与蓝字精确查询入口
         self.assertIn('下载 157', text)
+        self.assertIn('赞 16', text)
         self.assertIn('<qqbot-cmd-input', text)
         self.assertEqual(list(images), ['地图封面 1'])
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
-        payloads = [item['action']['data'] for item in buttons]
-        self.assertEqual(payloads, ['clst:hot:1', 'clst:hot:3', 'clst:today'])
+        self.assertEqual(
+            [item['action']['data'] for item in buttons],
+            ['clst:pool:new:1', 'clst:pool:new:3', 'clst:pools'],
+        )
         self.assertTrue(all(item['action']['type'] == 1 for item in buttons))
+
+    def test_render_pool_summary_shows_notice(self):
+        items = [function.normalize_wegfan_item(sample_search_item())]
+        text, _keyboard, _images = render.render_pool_summary(
+            items, '冷门池 · 下载 < 10 · 池内 4 张', 'cold', notice='池里只有 4 张，这次全给你了。'
+        )
+        self.assertIn('提示：池里只有 4 张，这次全给你了。', text)
+
+    def test_render_pool_home_lists_six_pools(self):
+        pools = function.POOL_ORDER  # 顺序参考
+        payloads = []
+        pool_list = []
+        for key in pools:
+            label, short = function.POOL_META[key]
+            pool_list.append({
+                'key': key,
+                'label': label,
+                'short': short,
+                'rule': '规则',
+                'pool_size': 10,
+                'heading': f'{label} · 规则 · 池内 10 张',
+            })
+        text, keyboard = render.render_pool_home(pool_list)
+        self.assertIn('## 挑图池', text)
+        for key in pools:
+            label = function.POOL_META[key][0]
+            self.assertIn(f'**{label}** · 规则 · 池内 10 张', text)
+            payloads.append(f'clst:pool:{key}:1')
+        buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
+        self.assertEqual([item['action']['data'] for item in buttons], payloads + ['clst:help'])
+        self.assertEqual(
+            [item['render_data']['label'] for item in buttons],
+            ['新图', '老图', '热门', '冷门', '好图', '烂图', '返回帮助'],
+        )
+
+    def test_render_pool_home_marks_empty_pool(self):
+        pool_list = [
+            {'key': 'cold', 'label': '冷门池', 'short': '冷门', 'rule': '下载 < 10', 'pool_size': 0, 'heading': ''},
+        ]
+        text, _keyboard = render.render_pool_home(pool_list)
+        self.assertIn('池内 0 张（暂时抽不了）', text)
 
     def test_help_buttons_show_full_labels_two_per_row(self):
         text, kb = render.render_help()
-        self.assertIn('.clst 热门 [1-10]', text)
+        self.assertIn('.clst 发现', text)
+        self.assertNotIn('.clst 热门', text)
         rows = kb['content']['rows']
         self.assertLessEqual(len(rows), render.MAX_ROWS)
         labels = []
@@ -1066,7 +1218,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
             # 一行超过 2 个时客户端会把标签截成「热门…」
             self.assertLessEqual(len(row['buttons']), 2)
             labels.extend(item['render_data']['label'] for item in row['buttons'])
-        self.assertIn('热门一张', labels)
+        self.assertIn('发现', labels)
         self.assertIn('今日 Mod', labels)
         # 半宽按钮放得下 6 个字，超过就有可能被截断
         for label in labels:
@@ -1074,11 +1226,17 @@ class CelestePluginFunctionTest(unittest.TestCase):
 
     def test_keyboards_use_two_buttons_per_row(self):
         detail = function.normalize_wegfan_item(sample_search_item())
+        pool_list = [
+            {'key': key, 'label': function.POOL_META[key][0], 'short': function.POOL_META[key][1],
+             'rule': '规则', 'pool_size': 10, 'heading': '标题'}
+            for key in function.POOL_ORDER
+        ]
         pages = {
             'help': render.render_help()[1],
-            'hot_summary': render.render_hot_summary([detail], 533, 1000)[1],
+            'pool_home': render.render_pool_home(pool_list)[1],
+            'pool_summary': render.render_pool_summary([detail], '标题', 'new')[1],
             'random_summary': render.render_random_summary([detail])[1],
-            'detail_hot': render.render_detail(detail, show_hot=True)[1],
+            'detail_pool': render.render_detail(detail, show_pool='hot')[1],
             'detail_rnd_endless': render.render_detail(
                 detail, show_random=True, show_endless=True
             )[1],
@@ -1093,16 +1251,16 @@ class CelestePluginFunctionTest(unittest.TestCase):
             for row in rows:
                 self.assertLessEqual(len(row['buttons']), 2, page_name)
 
-    def test_render_detail_hot_controls(self):
+    def test_render_detail_pool_controls(self):
         detail = function.normalize_wegfan_item(sample_search_item())
-        text, keyboard, _ = render.render_detail(
-            detail, heading='热门池 · 下载 > 1,000 · 池内 533 张', show_hot=True
-        )
-        self.assertIn('热门池 · 下载 > 1,000 · 池内 533 张', text)
+        heading = '热门池 · 下载 > 1,000 · 池内 533 张'
+        text, keyboard, _ = render.render_detail(detail, heading=heading, show_pool='hot')
+        self.assertIn(heading, text)
         buttons = [item for row in keyboard['content']['rows'] for item in row.get('buttons', [])]
         controls = [item for item in buttons if item['action']['type'] != 0]
         self.assertEqual(
-            {item['action']['data'] for item in controls}, {'clst:hot:1', 'clst:hot:3'}
+            [item['action']['data'] for item in controls],
+            ['clst:pool:hot:1', 'clst:pool:hot:3', 'clst:pools'],
         )
         self.assertLessEqual(len(keyboard['content']['rows']), 5)
 
