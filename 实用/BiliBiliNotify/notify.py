@@ -7,7 +7,7 @@ from random import uniform
 from threading import Condition, Event, Lock, Thread
 from time import sleep, time
 
-from . import bili_api, config, function, sender, store
+from . import bili_api, config, function, livesocket, sender, store
 from .message_custom import TEXT
 
 _QUEUE_LIMIT = 256
@@ -18,6 +18,7 @@ _NOTICE_COOLDOWN = 6 * 60 * 60
 _DETAIL_COOLDOWN = 600
 _SEEN_LIMIT = 32
 _KINDS = config.KINDS
+_WATCHER_SYNC_SECONDS = 30
 _IDS = {'dynamic': 'id_str', 'video': 'bvid'}
 _LAST_IDS = {'dynamic': 'last_id', 'video': 'last_bvid'}
 _NAV_KEYS = {'dynamic': 'opus', 'video': 'video'}
@@ -298,6 +299,10 @@ class _Engine:
         self.polls = deque()
         self.results = deque()
         self.applies = deque()
+        self.watchers = {}
+        self.watcher_sync_at = 0.0
+        self.follow_seen = {}
+        self.follow_sync_at = {}
         # 三个阶段共享容量；查完但未落盘或发完的任务仍占槽与去重名额。
         self.pending = set()
         self.running = 0
@@ -306,6 +311,7 @@ class _Engine:
         self.dispatcher.start()
 
     def close(self):
+        self._close_watchers()
         with self.condition:
             self.closed.set()
             self.polls.clear()
@@ -338,6 +344,102 @@ class _Engine:
                 if account.limit and len(self.pending) < _QUEUE_LIMIT:
                     self._enqueue(bot, account, settings, store.rooms(bot)['rooms'], now)
             self.order.rotate(-1)
+            self._sync_watchers()
+            self._sync_follow(now)
+            self.condition.notify()
+
+    def _watch_log(self, message):
+        store.log(self.proc, message, 3)
+
+    def _sync_watchers(self):
+        """补齐/回收直播间长连接。调用方持 self.condition，30 秒最多跑一次。"""
+        now = time()
+        if now - self.watcher_sync_at < _WATCHER_SYNC_SECONDS:
+            return
+        self.watcher_sync_at = now
+        limit = 0
+        wanted = {}
+        for bot in self.order:
+            settings = store.bot_config(bot)
+            if not settings.get('enable', True):
+                continue
+            limit = max(limit, _int(settings['poll'].get('max_sockets'),
+                                    config.BOT_DEFAULT['poll'].get('max_sockets', 0)))
+            for uid, room in (store.rooms(bot)['rooms'] or {}).items():
+                if not room.get('room_id') or not (room.get('live') or {}).get('enabled'):
+                    continue
+                # 只有真的会推送的直播间才值得占一条长连接。
+                if not any(target.get('live') for target in (room.get('targets') or {}).values()):
+                    continue
+                wanted[(bot, uid)] = str(room['room_id'])
+        for key in [key for key in self.follow_seen if key[0] not in self.accounts]:
+            self.follow_seen.pop(key, None)
+        for key in list(self.watchers):
+            watcher, room_id = self.watchers[key]
+            if key not in wanted or wanted[key] != room_id:
+                watcher.stop()
+                del self.watchers[key]
+        if limit <= 0:
+            return
+        for (bot, uid), room_id in wanted.items():
+            if len(self.watchers) >= limit:
+                break
+            if (bot, uid) in self.watchers:
+                continue
+            watcher = livesocket.LiveWatcher(
+                room_id, lambda kind, b=bot, u=uid: self._trigger(b, u, 'live'), self._watch_log)
+            watcher.start()
+            self.watchers[(bot, uid)] = (watcher, room_id)
+
+    def _sync_follow(self, now):
+        """关注流触发：一条请求知道「关注的人里谁发了新动态」，详情仍走 opus。
+
+        未关注的目标 UP 不在 cards 里，自动继续用逐 UP 轮询，不影响功能。
+        """
+        for bot in self.order:
+            settings = store.bot_config(bot)
+            if not settings.get('enable', True) or settings.get('dynamic_source') != 'follow':
+                continue
+            seconds = max(30, _int(settings['poll'].get('dynamic_seconds'), 600))
+            if now - self.follow_sync_at.get(bot, 0) < seconds:
+                continue
+            self.follow_sync_at[bot] = now
+            ids, error = bili_api.follow_max_ids()
+            if error or not isinstance(ids, dict):
+                continue
+            for uid in list((store.rooms(bot)['rooms'] or {})):
+                dynamic_id = ids.get(uid)
+                if not dynamic_id:
+                    continue
+                key = bot, uid
+                previous = self.follow_seen.get(key)
+                self.follow_seen[key] = dynamic_id
+                # 首次只记基线，避免把已有动态当成新的推一遍。
+                if previous is not None and dynamic_id > previous:
+                    self._trigger(bot, uid, 'dynamic')
+
+    def _close_watchers(self):
+        for watcher, _ in self.watchers.values():
+            watcher.stop()
+        self.watchers.clear()
+
+    def _trigger(self, bot, uid, kind):
+        """长连接事件触发的即时检查：绕过轮询间隔，但仍走同一条状态机。"""
+        with self.condition:
+            if self.closed.is_set() or bot not in self.accounts:
+                return
+            account = self.accounts[bot]
+            if account.limit == 0:
+                return
+            key = bot, uid, kind
+            if key in self.pending or len(self.pending) >= _QUEUE_LIMIT:
+                return
+            room = store.rooms(bot)['rooms'].get(uid)
+            if room is None or not self._is_mounted(_Job(bot, uid, kind, room.get('resolved_at'), time()), room):
+                return
+            self.polls.append(_Job(bot, uid, kind, room.get('resolved_at'), time()))
+            self.pending.add(key)
+            account.queued += 1
             self.condition.notify()
 
     def _enqueue(self, bot, account, settings, rooms, now):

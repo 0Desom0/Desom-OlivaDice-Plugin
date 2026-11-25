@@ -16,6 +16,7 @@ _POLL_LABELS = {
     'dynamic_seconds': '动态轮询间隔',
     'video_seconds': '视频轮询间隔',
     'max_concurrent': '最大并发请求数',
+    'max_sockets': '直播间长连接上限',
 }
 _IMAGES = {'.jpg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp', '.avif': 'avif', '.bmp': 'bmp'}
 _MAX_PREVIEW = 512 * 1024
@@ -315,9 +316,18 @@ def _save_bot(payload, bot_hash):
     if 'poll' in payload:
         poll = _obj(payload['poll'], '轮询设置')
         changes['poll'] = {
-            key: _int(poll.get(key), label, 1, 32 if key == 'max_concurrent' else None)
-            for key, label in _POLL_LABELS.items()
+            'live_seconds': _int(poll.get('live_seconds'), _POLL_LABELS['live_seconds'], 1),
+            'dynamic_seconds': _int(poll.get('dynamic_seconds'), _POLL_LABELS['dynamic_seconds'], 1),
+            'video_seconds': _int(poll.get('video_seconds'), _POLL_LABELS['video_seconds'], 1),
+            'max_concurrent': _int(poll.get('max_concurrent'), _POLL_LABELS['max_concurrent'], 1, 32),
+            # 0 表示关闭长连接、完全用轮询
+            'max_sockets': _int(poll.get('max_sockets'), _POLL_LABELS['max_sockets'], 0, 32),
         }
+    if 'dynamic_source' in payload:
+        source = payload['dynamic_source']
+        if source not in ('follow', 'poll'):
+            raise _InvalidRequest('动态来源只能是 follow 或 poll。')
+        changes['dynamic_source'] = source
     if 'at_all' in payload:
         at_all = _obj(payload['at_all'], '@全体设置')
         changes['at_all'] = {

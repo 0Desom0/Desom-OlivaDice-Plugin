@@ -379,6 +379,13 @@
                                 <label class="field"><span class="field-label">动态轮询（秒）</span><input type="number" id="dynamic-seconds" min="1" required></label>
                                 <label class="field"><span class="field-label">视频轮询（秒）</span><input type="number" id="video-seconds" min="1" required></label>
                                 <label class="field"><span class="field-label">最大并发请求</span><input type="number" id="max-concurrent" min="1" max="32" required></label>
+                                <label class="field"><span class="field-label">直播间长连接上限（0 = 只用轮询）</span><input type="number" id="max-sockets" min="0" max="32" required></label>
+                                <label class="field"><span class="field-label">动态来源</span>
+                                    <select id="dynamic-source">
+                                        <option value="follow">关注流（需小号关注目标）</option>
+                                        <option value="poll">逐主播轮询</option>
+                                    </select>
+                                </label>
                             </div>
                         </article>
                         <article class="panel stack">
@@ -917,6 +924,8 @@
             $('command-name').textContent = settings.command_name;
             for (const kind of Object.keys(kinds)) $(kind + '-seconds').value = settings.poll[kind + '_seconds'];
             $('max-concurrent').value = settings.poll.max_concurrent;
+            $('max-sockets').value = settings.poll.max_sockets;
+            $('dynamic-source').value = settings.dynamic_source || 'follow';
             $('daily-limit').value = settings.at_all.daily_limit;
             $('guild-once').checked = settings.at_all.guild_at_once;
             $('send-interval').value = settings.send_interval_seconds;
@@ -950,7 +959,9 @@
                 poll: {
                     live_seconds: value('live-seconds'), dynamic_seconds: value('dynamic-seconds'),
                     video_seconds: value('video-seconds'), max_concurrent: value('max-concurrent'),
+                    max_sockets: value('max-sockets'),
                 },
+                dynamic_source: $('dynamic-source').value,
                 at_all: { daily_limit: value('daily-limit'), guild_at_once: $('guild-once').checked },
                 at_subscribers: { live: $('at-subscribers-live').checked },
                 push_default: readFlags($('push-default')),

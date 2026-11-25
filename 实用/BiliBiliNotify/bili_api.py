@@ -32,7 +32,10 @@ _VIDEO = f'{_API}/x/space/wbi/arc/search'
 _OPUS = f'{_API}/x/polymer/web-dynamic/v1/opus/feed/space'
 _SEARCH = f'{_API}/x/web-interface/wbi/search/type'
 _CARD = f'{_API}/x/web-interface/card'
-_ENDPOINTS = frozenset((_SPI, _LIVE, _MASTER, _DYNAMIC, _NAVNUM, _NAV, _VIDEO, _OPUS, _SEARCH, _CARD))
+_DANMU = f'{_LIVE_API}/xlive/web-room/v1/index/getDanmuInfo'
+_DYNAMIC_NEW = 'https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/dynamic_new'
+_ENDPOINTS = frozenset((_SPI, _LIVE, _MASTER, _DYNAMIC, _NAVNUM, _NAV, _VIDEO, _OPUS,
+                        _SEARCH, _CARD, _DANMU, _DYNAMIC_NEW))
 # 只有风控类错误才换通道；网络失败与格式异常直接回报，避免把故障当成「没内容」。
 _FALLBACK_CODES = (-412, -352, -403)
 _RISK = (-412, 'B站风控，请在 WebUI 填写 Cookie 或检查网络出口')
@@ -59,6 +62,7 @@ _wbi_lock = Lock()
 _wbi_cache = ('', 0)
 _name_lock = Lock()
 _name_cache = {}
+_uid_cache = (0, 0.0)
 _image_lock = Lock()
 _image_leases = {}
 
@@ -410,6 +414,72 @@ def _strip_markup(value):
 def _https(url):
     url = str(url or '').strip()
     return 'https:' + url if url.startswith('//') else url
+
+
+def follow_max_ids():
+    """关注流里每个 UID 的最新动态 id（只做「有没有新动态」的触发器）。
+
+    `dynamic_svr/.../dynamic_new` 返回的是「当前登录账号关注的人」的动态，
+    所以只有在配置了 SESSDATA 且该账号关注了目标 UP 时才有数据。
+    """
+    data, error = request_json(_DYNAMIC_NEW, params={'type_list': 268435455})
+    if error:
+        return None, error
+    cards = data.get('cards') if isinstance(data, dict) else None
+    if not isinstance(cards, list):
+        return _failure(_DYNAMIC_NEW, _FORMAT)
+    result = {}
+    for card in cards:
+        desc = card.get('desc') if isinstance(card, dict) else None
+        if not isinstance(desc, dict):
+            continue
+        uid = str(desc.get('uid') or '')
+        dynamic_id = _int_field(desc.get('dynamic_id'))
+        if uid and dynamic_id:
+            result[uid] = max(result.get(uid, 0), dynamic_id)
+    return result, None
+
+
+def danmu_info(room_id):
+    """取直播间弹幕服务器信息（WebSocket 认证要用的 token 与 host 列表）。
+
+    `getDanmuInfo` 不带 wbi 签名会返回 -352（实测 2026-11-25），签名后 code=0。
+    """
+    key, error = _wbi_key()
+    if error:
+        return None, error
+    params = _signed_query({'id': str(room_id), 'type': 0, 'web_location': '444.8'}, key)
+    data, error = request_json(_DANMU, params=params)
+    return _shape(_DANMU, data, error, dict)
+
+
+def login_uid():
+    """当前登录账号的 UID（WebSocket 认证要用；匿名时返回 0）。"""
+    global _uid_cache
+    value, fetched_at = _uid_cache
+    if value and time.monotonic() - fetched_at < _NAME_TTL:
+        return value
+    data, error = request_json(_NAV)
+    uid = 0
+    if error is None and isinstance(data, dict):
+        uid = _int_field(data.get('mid'))
+    if uid:
+        _uid_cache = (uid, time.monotonic())
+    return uid
+
+
+def buvid_text():
+    """当前可用的 buvid3 值（配置里手填的优先，其次自动领取的缓存）。"""
+    try:
+        settings = store.global_config()
+    except store.StorageError:
+        return ''
+    value = _cookie_value(settings['cookie'].get('buvid3'))
+    if value:
+        return value
+    cache = settings.get('buvid_cache') or {}
+    match = re.search(r'buvid3=([^;]+)', str(cache.get('cookie') or ''))
+    return match.group(1).strip() if match else ''
 
 
 def probe(kind, uid):

@@ -241,6 +241,27 @@ class Suite(unittest.TestCase):
         target = {**target, 'sdk': 'qqGuildv2_link', 'chat_type': 'guild_channel'}
         self.assertFalse(notify.eligible(settings, group, room, target, 'live'))
 
+    def test_livesocket(self):
+        """弹幕包解析：明文/zlib 两种正文、多包拼接、指令白名单、半截包。"""
+        import struct
+        import zlib
+
+        header = struct.Struct('>IHHII')
+
+        def frame(payload, version, operation=5):
+            return header.pack(header.size + len(payload), header.size, version, operation, 1) + payload
+
+        live = frame(json.dumps({'cmd': 'LIVE', 'roomid': 755313}).encode(), 0)
+        # 真实协议里 zlib 压的是「完整的内部包序列」，不是裸 JSON。
+        inner = frame(json.dumps({'cmd': 'PREPARING', 'roomid': 755313}).encode(), 0)
+        end = frame(zlib.compress(inner), 1)
+        messages = livesocket.parse_packet(live + end)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(livesocket.wanted_events(messages), ['live', 'end'])
+        danmu = frame(json.dumps({'cmd': 'DANMU_MSG:4:0:2:2:2:0'}).encode(), 0)
+        self.assertEqual(livesocket.wanted_events(livesocket.parse_packet(danmu)), [])
+        self.assertEqual(livesocket.parse_packet(live[:-3]), [])
+
     def test_manifest(self):
         manifest = (PLUGIN / 'app.json').read_bytes()
         self.assertEqual(manifest[:1], b'{')
@@ -261,13 +282,14 @@ CASES = (
     ('test_commands', '命令解析'), ('test_binding', 'UID 两级绑定与群订阅'), ('test_permissions', '权限'),
     ('test_storage', '存储原子性与损坏归档'), ('test_live', '直播状态机'), ('test_dynamics', '动态去重及过滤'),
     ('test_videos', '视频去重'), ('test_quota', '@全体配额'), ('test_subscribers', '@订阅者去重与分段'),
-    ('test_images', '首图选择'), ('test_eligibility', '三重开关真值表'), ('test_manifest', '清单与文件结构'),
+    ('test_images', '首图选择'), ('test_eligibility', '三重开关真值表'),
+    ('test_livesocket', '弹幕包解析'), ('test_manifest', '清单与文件结构'),
 )
 
 
 if __name__ == '__main__':
     with offline_plugin():
-        from BiliBiliNotify import bili_api, config, function, main, message, notify, sender, store, utils
+        from BiliBiliNotify import bili_api, config, function, livesocket, main, message, notify, sender, store, utils
 
         failed = []
         for method, label in CASES:
