@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from CelestePlugin import function  # noqa: E402
 from CelestePlugin import render  # noqa: E402
 from CelestePlugin import message  # noqa: E402
+from CelestePlugin import message_custom  # noqa: E402
 from CelestePlugin import utils  # noqa: E402
 
 
@@ -423,16 +424,16 @@ class CelestePluginFunctionTest(unittest.TestCase):
                     self.pool_index_item(1, downloads=1200, likes=24, age_days=3),
                     # 老（400 天）；下载正好 1000 不算热门；比例 1.0%
                     self.pool_index_item(2, downloads=1000, likes=10, age_days=400),
-                    self.pool_index_item(3, downloads=5000, likes=50, age_days=800),
+                    self.pool_index_item(3, downloads=5000, likes=50, age_days=1200),
                     # 不是 Maps / 不是 Mod，六个池子都不该收
                     self.pool_index_item(4, category='Skins', downloads=9000, likes=900, age_days=2),
                     self.pool_index_item(5, item_type='Tool', downloads=9000, likes=900, age_days=2),
                     # 冷门（下载 5）
-                    self.pool_index_item(6, downloads=5, likes=0, age_days=900),
+                    self.pool_index_item(6, downloads=5, likes=0, age_days=1200),
                     # 烂图（0%），下载 >= 508
-                    self.pool_index_item(7, downloads=600, likes=0, age_days=900),
+                    self.pool_index_item(7, downloads=600, likes=0, age_days=1200),
                     # 下载 < 508，不参与好/烂
-                    self.pool_index_item(8, downloads=400, likes=0, age_days=900),
+                    self.pool_index_item(8, downloads=400, likes=0, age_days=1200),
                 ]
             },
         }
@@ -444,8 +445,8 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertEqual([item['id'] for item in new_pool['pool']], [1])
         self.assertEqual(new_pool['rule'], '发布 < 30 天')
         self.assertTrue(new_pool['heading'].startswith('新图池 · 发布 < 30 天 · 池内 1 张'))
-        self.assertEqual([item['id'] for item in old_pool['pool']], [2, 3, 6, 7, 8])
-        self.assertEqual(old_pool['rule'], '发布 > 365 天')
+        self.assertEqual([item['id'] for item in old_pool['pool']], [3, 6, 7, 8])
+        self.assertEqual(old_pool['rule'], '发布 > 1095 天')
 
     def test_build_pool_hot_cold_and_ratio_pools(self):
         with mock.patch.object(function, 'load_index', return_value=self.pool_index_items()):
@@ -453,15 +454,15 @@ class CelestePluginFunctionTest(unittest.TestCase):
             cold_pool = function.build_pool('cold')
             good_pool = function.build_pool('good')
             bad_pool = function.build_pool('bad')
-        # 下载必须严格大于 1000；下载 < 10 才算冷门
+        # 下载必须严格大于 1000；下载 < 100 才算冷门
         self.assertEqual([item['id'] for item in hot_pool['pool']], [1, 3])
         self.assertEqual([item['id'] for item in cold_pool['pool']], [6])
         # 好图：下载 >= 508 且 赞/下载 >= 2%
         self.assertEqual([item['id'] for item in good_pool['pool']], [1])
-        # 烂图：下载 >= 508 且 赞/下载 <= 0.3%
+        # 烂图：下载 >= 508 且 赞/下载 <= 0.5%
         self.assertEqual([item['id'] for item in bad_pool['pool']], [7])
         self.assertIn('赞/下载 ≥ 2%', good_pool['rule'])
-        self.assertIn('赞/下载 ≤ 0.3%', bad_pool['rule'])
+        self.assertIn('赞/下载 ≤ 0.5%', bad_pool['rule'])
 
     def test_build_pool_uses_settings_and_reports_empty(self):
         with (
@@ -490,6 +491,16 @@ class CelestePluginFunctionTest(unittest.TestCase):
             })
         self.assertFalse(empty_pool['ok'])
         self.assertIn('冷门池现在是空的', empty_pool['error'])
+
+    def test_default_pool_thresholds(self):
+        settings = function.get_pool_settings()
+        self.assertEqual(settings['cold_max_downloads'], 100)
+        self.assertEqual(settings['old_days'], 1095)
+        self.assertEqual(settings['bad_max_ratio'], 0.5)
+        self.assertEqual(settings['good_min_ratio'], 2.0)
+        self.assertEqual(settings['ratio_min_downloads'], 508)
+        self.assertEqual(settings['new_days'], 30)
+        self.assertEqual(settings['hot_min_downloads'], 1000)
 
     def test_build_pool_rejects_unknown_key_and_index_failure(self):
         with mock.patch.object(function, 'load_index', return_value={'ok': False, 'error': '索引不可用'}):
@@ -566,9 +577,9 @@ class CelestePluginFunctionTest(unittest.TestCase):
             'short': '冷门',
             'pool': [],
             'pool_size': 0,
-            'rule': '下载 < 10',
-            'heading': '冷门池 · 下载 < 10 · 池内 0 张',
-            'error': '冷门池现在是空的（下载 < 10）',
+            'rule': '下载 < 100',
+            'heading': '冷门池 · 下载 < 100 · 池内 0 张',
+            'error': '冷门池现在是空的（下载 < 100）',
         }
         with mock.patch.object(function, 'build_pool', return_value=empty_pool):
             empty = function.pool_mods('cold', 1)
@@ -804,9 +815,9 @@ class CelestePluginFunctionTest(unittest.TestCase):
                     'ok': False,
                     'results': [],
                     'pool_size': 0,
-                    'heading': '冷门池 · 下载 < 10 · 池内 0 张',
+                    'heading': '冷门池 · 下载 < 100 · 池内 0 张',
                     'count': 1,
-                    'error': '冷门池现在是空的（下载 < 10）',
+                    'error': '冷门池现在是空的（下载 < 100）',
                 },
             ),
             mock.patch.object(message.utils, 'reply_message') as reply_mock,
@@ -1210,7 +1221,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
     def test_render_pool_summary_shows_notice(self):
         items = [function.normalize_wegfan_item(sample_search_item())]
         text, _keyboard, _images = render.render_pool_summary(
-            items, '冷门池 · 下载 < 10 · 池内 4 张', 'cold', notice='池里只有 4 张，这次全给你了。'
+            items, '冷门池 · 下载 < 100 · 池内 4 张', 'cold', notice='池里只有 4 张，这次全给你了。'
         )
         self.assertIn('提示：池里只有 4 张，这次全给你了。', text)
 
@@ -1243,7 +1254,7 @@ class CelestePluginFunctionTest(unittest.TestCase):
 
     def test_render_pool_home_marks_empty_pool(self):
         pool_list = [
-            {'key': 'cold', 'label': '冷门池', 'short': '冷门', 'rule': '下载 < 10', 'pool_size': 0, 'heading': ''},
+            {'key': 'cold', 'label': '冷门池', 'short': '冷门', 'rule': '下载 < 100', 'pool_size': 0, 'heading': ''},
         ]
         text, _keyboard = render.render_pool_home(pool_list)
         self.assertIn('池内 0 张（暂时抽不了）', text)
@@ -1264,6 +1275,59 @@ class CelestePluginFunctionTest(unittest.TestCase):
         # 半宽按钮放得下 6 个字，超过就有可能被截断
         for label in labels:
             self.assertLessEqual(len(label), 6, label)
+
+    def test_help_covers_chinese_and_english_for_every_entry(self):
+        text, _kb = render.render_help()
+        pairs = [
+            ('`.clst 关键词`', '`.clst keyword`'),
+            ('`.clst id 424541`', 'exact lookup'),
+            ('`.clst 作者 名称`', '`.clst author`'),
+            ('`.clst 分类 Maps`', '`.clst category`'),
+            ('`.clst 标签 关键词`', '`.clst tag`'),
+            ('`.clst 随机 [1-10]`', '`.clst random`'),
+            ('`.clst 发现`', '`.clst pools`'),
+            ('`.clst today`', ''),
+            ('`.clst 更新`', '`.clst update`'),
+            ('`.clst 无尽 开始`', '`.clst endless start`'),
+            ('`.clst 无尽 帮助`', '`.clst endless help`'),
+        ]
+        for chinese, english in pairs:
+            self.assertIn(chinese, text)
+            if english:
+                self.assertIn(english, text)
+        # 每个条目都要中文 + 英文各一份
+        for line in text.splitlines():
+            if not line.startswith('- `'):
+                continue
+            self.assertTrue(any('一' <= char <= '鿿' for char in line), line)
+            self.assertRegex(line, r'[A-Za-z]{3,}', line)
+
+    def test_endless_help_covers_chinese_and_english_for_every_entry(self):
+        text, _kb = render.render_endless_help()
+        self.assertIn('`.clst 无尽 全收集`', text)
+        self.assertIn('`.clst endless fc`', text)
+        for line in text.splitlines():
+            if not line.startswith('- `'):
+                continue
+            self.assertTrue(any('一' <= char <= '鿿' for char in line), line)
+            self.assertIn('endless ', line)
+
+    def test_plain_text_help_also_has_english_aliases(self):
+        plain = message_custom.help_text
+        for token in [
+            'keyword',
+            'author',
+            'category',
+            'tag',
+            'random',
+            'pools',
+            'update',
+            'endless start',
+        ]:
+            self.assertIn(token, plain)
+        self.assertIn('new|old|hot|cold|good|bad', plain)
+        for token in ['endless status', 'endless clear', 'endless undo', 'endless record']:
+            self.assertIn(token, message_custom.endless_help_text)
 
     def test_keyboards_use_two_buttons_per_row(self):
         detail = function.normalize_wegfan_item(sample_search_item())
