@@ -4,7 +4,7 @@ import tempfile
 import time
 from pathlib import Path
 from threading import Lock
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 
 import requests
 
@@ -34,8 +34,11 @@ _SEARCH = f'{_API}/x/web-interface/wbi/search/type'
 _CARD = f'{_API}/x/web-interface/card'
 _DANMU = f'{_LIVE_API}/xlive/web-room/v1/index/getDanmuInfo'
 _DYNAMIC_NEW = 'https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/dynamic_new'
+# 扫码登录（passport 域名，不走 api.bilibili.com 的空间风控）
+_QR_GENERATE = 'https://passport.bilibili.com/x/passport-login/web/qrcode/generate'
+_QR_POLL = 'https://passport.bilibili.com/x/passport-login/web/qrcode/poll'
 _ENDPOINTS = frozenset((_SPI, _LIVE, _MASTER, _DYNAMIC, _NAVNUM, _NAV, _VIDEO, _OPUS,
-                        _SEARCH, _CARD, _DANMU, _DYNAMIC_NEW))
+                        _SEARCH, _CARD, _DANMU, _DYNAMIC_NEW, _QR_GENERATE, _QR_POLL))
 # 只有风控类错误才换通道；网络失败与格式异常直接回报，避免把故障当成「没内容」。
 _FALLBACK_CODES = (-412, -352, -403)
 _RISK = (-412, 'B站风控，请在 WebUI 填写 Cookie 或检查网络出口')
@@ -451,6 +454,36 @@ def danmu_info(room_id):
     params = _signed_query({'id': str(room_id), 'type': 0, 'web_location': '444.8'}, key)
     data, error = request_json(_DANMU, params=params)
     return _shape(_DANMU, data, error, dict)
+
+
+def qr_generate():
+    """申请扫码登录二维码，返回 {url, qrcode_key}。"""
+    data, error = request_json(_QR_GENERATE)
+    return _shape(_QR_GENERATE, data, error, dict)
+
+
+def qr_poll(qrcode_key):
+    """轮询扫码状态；成功时 data['url'] 里带着 SESSDATA / bili_jct / DedeUserID。"""
+    data, error = request_json(_QR_POLL, params={'qrcode_key': str(qrcode_key)})
+    return _shape(_QR_POLL, data, error, dict)
+
+
+def parse_login_cookie(callback_url):
+    """从扫码成功的回跳地址里取出登录 Cookie。"""
+    try:
+        query = urlsplit(callback_url).query
+    except (TypeError, ValueError):
+        return {}
+    fields = dict(parse_qsl(query, keep_blank_values=True))
+    pairs = {}
+    # 回跳地址里的 SESSDATA 是 URL 编码过的，DedeUserID 用来核对身份。
+    if fields.get('SESSDATA'):
+        pairs['sessdata'] = fields['SESSDATA']
+    if fields.get('bili_jct'):
+        pairs['bili_jct'] = fields['bili_jct']
+    if fields.get('DedeUserID'):
+        pairs['dede_user_id'] = fields['DedeUserID']
+    return pairs
 
 
 def login_uid():

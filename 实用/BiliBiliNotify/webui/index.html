@@ -349,6 +349,19 @@
                 </form>
                 <article class="panel stack">
                     <div class="panel-heading">
+                        <div><h2>扫码登录</h2><p class="muted">用手机 B 站 App 扫码，登录成功后自动写入 SESSDATA 与 bili_jct，不用手抄 Cookie。</p></div>
+                        <div class="row"><button type="button" id="qr-start">获取二维码</button></div>
+                    </div>
+                    <div class="row" id="qr-body" hidden>
+                        <img id="qr-image" alt="B站登录二维码" width="200" height="200">
+                        <div class="stack" style="flex:1">
+                            <p id="qr-status" class="muted">等待扫码…</p>
+                            <p class="muted">扫码后在手机上点「确认登录」；二维码约 3 分钟过期。</p>
+                        </div>
+                    </div>
+                </article>
+                <article class="panel stack">
+                    <div class="panel-heading">
                         <div><h2>连接诊断</h2><p class="muted">自检使用已保存的总账号配置，逐个检查四个接口。</p></div>
                         <div class="row"><span id="buvid-time" class="muted"></span><button type="button" id="buvid-refresh">刷新 buvid</button></div>
                     </div>
@@ -534,6 +547,60 @@
         function notice(message, type = '') {
             $('notice').className = type;
             $('notice').textContent = message;
+        }
+
+        let qrKey = '';
+        let qrTimer = 0;
+
+        // 扫码登录：二维码由后端用 qrcode 渲染成 PNG，前端只负责显示与轮询状态。
+        async function qrStart() {
+            clearInterval(qrTimer);
+            qrTimer = 0;
+            qrKey = '';
+            $('qr-body').hidden = false;
+            $('qr-status').textContent = '正在获取二维码…';
+            try {
+                const state = await request({ action: 'qr_generate' });
+                const qr = (state && state.qr) || {};
+                if (!qr.image || !qr.qrcode_key) throw new Error('二维码为空');
+                qrKey = qr.qrcode_key;
+                $('qr-image').src = qr.image;
+                $('qr-status').textContent = '请用手机 B 站 App 扫码';
+                qrTimer = setInterval(qrPoll, 2000);
+            } catch (error) {
+                $('qr-status').textContent = '获取二维码失败：' + error.message;
+            }
+        }
+
+        async function qrPoll() {
+            if (!qrKey) return;
+            try {
+                const state = await request({ action: 'qr_poll', qrcode_key: qrKey });
+                const qr = (state && state.qr) || {};
+                if (qr.status === 0) {
+                    clearInterval(qrTimer);
+                    qrTimer = 0;
+                    qrKey = '';
+                    $('qr-status').textContent = '登录成功，凭据已保存';
+                    $('qr-image').removeAttribute('src');
+                    notice('B站账号登录成功，已写入 SESSDATA。', 'ok');
+                    $('refresh').click();
+                    return;
+                }
+                const texts = {
+                    86101: '等待扫码…',
+                    86090: '已扫码，请在手机上点「确认登录」',
+                    86038: '二维码已过期，请重新获取',
+                };
+                $('qr-status').textContent = texts[qr.status] || qr.message || '等待扫码…';
+                if (qr.status === 86038) {
+                    clearInterval(qrTimer);
+                    qrTimer = 0;
+                    qrKey = '';
+                }
+            } catch (error) {
+                $('qr-status').textContent = '查询失败：' + error.message;
+            }
         }
 
         async function perform(job, success = '') {
@@ -949,6 +1016,8 @@
             renderPrefixes();
             notice('已更新前缀草稿，保存本账号后生效。');
         });
+
+        $('qr-start').addEventListener('click', qrStart);
 
         $('bot-form').addEventListener('submit', (event) => {
             event.preventDefault();

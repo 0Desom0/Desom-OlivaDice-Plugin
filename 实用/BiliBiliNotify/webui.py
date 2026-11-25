@@ -20,7 +20,8 @@ _POLL_LABELS = {
 }
 _IMAGES = {'.jpg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp', '.avif': 'avif', '.bmp': 'bmp'}
 _MAX_PREVIEW = 512 * 1024
-_GLOBAL_ACTIONS = {'get_state', 'save_global', 'refresh_buvid', 'probe_api'}
+_GLOBAL_ACTIONS = {'get_state', 'save_global', 'refresh_buvid', 'probe_api',
+                   'qr_generate', 'qr_poll'}
 
 
 class _InvalidRequest(ValueError):
@@ -447,6 +448,57 @@ def _cover(bot_hash, uid):
         bili_api.release_image(path)
 
 
+def _qr_image(url):
+    """把登录地址渲染成二维码 PNG，直接内联给前端（不走外链）。"""
+    try:
+        import base64
+        import io
+
+        import qrcode
+    except ImportError:
+        raise _InvalidRequest('服务器缺少 qrcode 库，无法生成二维码；可以直接手填 Cookie。')
+    image = qrcode.make(url)
+    buffer = io.BytesIO()
+    image.save(buffer, format='PNG')
+    return 'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+
+
+def _qr_generate():
+    data, error = bili_api.qr_generate()
+    if error:
+        raise _InvalidRequest('申请二维码失败（%s）：%s' % (error[0], error[1]))
+    url = str(data.get('url') or '')
+    key = str(data.get('qrcode_key') or '')
+    if not url or not key:
+        raise _InvalidRequest('二维码接口返回格式异常。')
+    return {'ok': True, 'state': {'qr': {'qrcode_key': key, 'image': _qr_image(url)}}}
+
+
+def _qr_poll(payload):
+    """轮询扫码状态；成功后把凭据写进 global.json 并停用旧指纹缓存。"""
+    key = payload.get('qrcode_key')
+    if not isinstance(key, str) or not key or len(key) > 128:
+        raise _InvalidRequest('缺少有效的二维码标识。')
+    data, error = bili_api.qr_poll(key)
+    if error:
+        raise _InvalidRequest('查询扫码状态失败（%s）：%s' % (error[0], error[1]))
+    code = data.get('code')
+    if code != 0:
+        return {'ok': True, 'state': {'qr': {'status': int(code) if isinstance(code, int) else -1,
+                                             'message': str(data.get('message') or '')}}}
+    pairs = bili_api.parse_login_cookie(str(data.get('url') or ''))
+    if not pairs.get('sessdata'):
+        raise _InvalidRequest('登录成功但没拿到 SESSDATA，请重试。')
+    with store.edit_global() as settings:
+        settings['cookie']['sessdata'] = pairs['sessdata']
+        settings['cookie']['bili_jct'] = pairs.get('bili_jct', '')
+        # 旧指纹属于上一个会话，清掉让下一次请求重新领。
+        settings['buvid_cache'] = {'cookie': '', 'fetched_at': 0.0}
+        settings['meta'] = {'updated_at': int(time.time()), 'updated_by': '扫码登录'}
+    return {'ok': True, 'state': {'qr': {'status': 0, 'message': '登录成功',
+                                         'uid': pairs.get('dede_user_id', '')}}}
+
+
 def dispatch(payload, Proc):
     """校验请求并返回显式构建的、安全可序列化的页面状态。"""
     payload = _obj(payload, '请求数据')
@@ -461,6 +513,10 @@ def dispatch(payload, Proc):
         if action not in _GLOBAL_ACTIONS:
             raise _InvalidRequest('请先从面板上方选择一个 Bot。')
         bot_hash = next(iter(bots), '')
+    if action == 'qr_generate':
+        return _qr_generate()
+    if action == 'qr_poll':
+        return _qr_poll(payload)
     if action == 'save_global':
         _save_global(payload)
     elif action == 'save_bot':
