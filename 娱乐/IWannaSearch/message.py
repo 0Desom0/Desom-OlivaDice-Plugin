@@ -27,6 +27,10 @@ FLAG_KEY_MAP = {
     'tags_not': 'tag_not',
     'not_tag': 'tag_not',
     'not_tags': 'tag_not',
+    'tag_all': 'tag_all',
+    'tags_all': 'tag_all',
+    'all_tag': 'tag_all',
+    'all_tags': 'tag_all',
     'engine': 'engine',
     'engines': 'engine',
     'engine_not': 'engine_not',
@@ -38,13 +42,52 @@ FLAG_KEY_MAP = {
     'date_to': 'date_to',
     'from_date': 'date_from',
     'to_date': 'date_to',
+    'date_in': 'date_in',
+    'date_not': 'date_not',
+    'rating_min': 'rating_min',
+    'min_rating': 'rating_min',
+    'rating_max': 'rating_max',
+    'max_rating': 'rating_max',
+    'difficulty_min': 'difficulty_min',
+    'min_difficulty': 'difficulty_min',
+    'difficulty_max': 'difficulty_max',
+    'max_difficulty': 'difficulty_max',
+    'reviews_min': 'reviews_min',
+    'min_reviews': 'reviews_min',
+    'reviews_max': 'reviews_max',
+    'max_reviews': 'reviews_max',
+    'size_min_mb': 'size_min_mb',
+    'size_max_mb': 'size_max_mb',
+    'local': 'local',
+    'has_download': 'has_download',
+    'has_engine': 'has_engine',
+    'has_date': 'has_date',
     'source': 'source',
     'sources': 'source',
     'source_not': 'source_not',
     'sources_not': 'source_not',
     'not_source': 'source_not',
     'not_sources': 'source_not',
+    'source_id': 'source_id',
+    'sort': 'sort',
+    'order': 'order',
+    'fields': 'fields',
+    'limit': 'limit',
+    'offset': 'offset',
 }
+
+MULTI_VALUE_FLAG_KEYS = {
+    'tag',
+    'tag_not',
+    'tag_all',
+    'date_in',
+    'date_not',
+    'engine',
+    'engine_not',
+    'source',
+    'source_not',
+}
+ALWAYS_LIST_FLAG_KEYS = {'tag_all', 'date_in', 'date_not'}
 
 
 def parse_filter_flags(argument_text: str):
@@ -56,7 +99,8 @@ def parse_filter_flags(argument_text: str):
     try:
         import shlex
         tokens = shlex.split(raw)
-    except Exception:
+    except Exception as exc:
+        utils.info_log(utils.get_runtime_proc(), f'过滤参数 shlex 分词回退空白切分：{exc}')
         tokens = raw.split()
 
     filters: Dict[str, Any] = {}
@@ -81,13 +125,15 @@ def parse_filter_flags(argument_text: str):
                     val = 'true'
                     index += 1
 
-                if normalized_key in {'tag', 'tag_not'}:
+                if normalized_key in MULTI_VALUE_FLAG_KEYS:
                     if normalized_key in filters:
                         existing = filters[normalized_key]
                         if isinstance(existing, list):
                             existing.append(val)
                         else:
                             filters[normalized_key] = [existing, val]
+                    elif normalized_key in ALWAYS_LIST_FLAG_KEYS:
+                        filters[normalized_key] = [val]
                     else:
                         filters[normalized_key] = val
                 else:
@@ -103,12 +149,14 @@ def parse_filter_flags(argument_text: str):
 def handle_init(plugin_event, Proc) -> None:
     utils.ensure_runtime_storage_by_event(plugin_event, Proc)
     function.set_download_concurrency(get_api_runtime_config()['download_concurrency'])
+    function.maybe_refresh_index_async()
     utils.info_log(Proc, 'IWannaSearch init 完成。')
 
 
 def handle_init_after(plugin_event, Proc) -> None:
     utils.ensure_runtime_storage_by_event(plugin_event, Proc)
     function.set_download_concurrency(get_api_runtime_config()['download_concurrency'])
+    function.maybe_refresh_index_async()
     utils.debug_log(Proc, 'IWannaSearch init_after 已执行。', plugin_event=plugin_event)
 
 
@@ -122,6 +170,8 @@ def handle_group_message(plugin_event, Proc) -> None:
 
 def handle_heartbeat(plugin_event, Proc) -> None:
     clear_expired_selection_sessions()
+    if utils.load_global_config().get('local_index_enable', True) and function.index_is_stale():
+        function.maybe_refresh_index_async()
 
 
 def handle_save(plugin_event, Proc) -> None:
@@ -1062,11 +1112,12 @@ def handle_iw_date(plugin_event, command_argument: str) -> None:
 def handle_iw_catalog(plugin_event, command_argument: str) -> None:
     _clean_text, filters = parse_filter_flags(command_argument)
     runtime_config = get_api_runtime_config()
+    catalog_params = {'limit': 1}
+    catalog_params.update(filters)
     catalog_data = function.fetch_catalog_all(
         runtime_config['base_url'],
         runtime_config['timeout_seconds'],
-        limit=1,
-        **filters,
+        **catalog_params,
     )
     if not catalog_data.get('ok', False):
         utils.reply_message(plugin_event, render_custom_message(plugin_event, 'reply_api_error', extra_value_dict=catalog_data))
@@ -1276,6 +1327,62 @@ def handle_selection_input(plugin_event, input_text: str) -> bool:
     return True
 
 
+def handle_iw_index(plugin_event, command_argument: str) -> None:
+    """处理 .iw index status / update 命令。"""
+    action_name, _unused = parse_secondary_action(command_argument)
+    action_lower = utils.safe_str(action_name).strip().lower()
+    if action_lower in ('', 'status', '状态'):
+        status = function.get_index_status()
+        built_ts = float(status.get('built_at', 0) or 0)
+        if built_ts > 0:
+            built_at_text = datetime.datetime.fromtimestamp(built_ts).strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            built_at_text = '未构建'
+        extra = {
+            'enabled': '开启' if status.get('enabled', True) else '关闭',
+            'count': status.get('count', 0),
+            'built_at': built_at_text,
+            'size_mb': f"{float(status.get('size_mb', 0.0)):.2f}",
+            'stale': '是' if status.get('stale', True) else '否',
+        }
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(plugin_event, 'reply_index_status', extra_value_dict=extra),
+        )
+        return
+
+    if action_lower in ('update', 'rebuild', 'refresh', '更新', '重建'):
+        if not sender_has_master_permission(plugin_event):
+            reply_permission_denied(plugin_event)
+            return
+        result = function.rebuild_index()
+        if not result.get('ok', False):
+            utils.reply_message(
+                plugin_event,
+                render_custom_message(
+                    plugin_event,
+                    'reply_api_error',
+                    extra_value_dict={'error': result.get('error', '本地索引重建失败')},
+                ),
+            )
+            return
+        status = function.get_index_status()
+        utils.reply_message(
+            plugin_event,
+            render_custom_message(
+                plugin_event,
+                'reply_index_updated',
+                extra_value_dict={
+                    'count': result.get('count', 0),
+                    'size_mb': f"{float(status.get('size_mb', 0.0)):.2f}",
+                },
+            ),
+        )
+        return
+
+    utils.reply_message(plugin_event, '用法：.iw index status 或 .iw index update')
+
+
 def parse_iw_command(plugin_event, remaining_text: str, Proc=None) -> None:
     command_info = utils.parse_command(
         remaining_text,
@@ -1379,6 +1486,16 @@ def parse_iw_command(plugin_event, remaining_text: str, Proc=None) -> None:
     )
     if catalog_info['is_command']:
         handle_iw_catalog(plugin_event, catalog_info['command_argument'])
+        return
+
+    index_info = utils.parse_command(
+        command_argument,
+        prefix_list=[],
+        allow_no_prefix=True,
+        command_name=['index', '索引'],
+    )
+    if index_info['is_command']:
+        handle_iw_index(plugin_event, index_info['command_argument'])
         return
 
     search_info = utils.parse_command(

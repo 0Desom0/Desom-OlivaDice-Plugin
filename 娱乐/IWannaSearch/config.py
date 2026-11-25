@@ -49,6 +49,9 @@ default_global_config = {
     'selection_timeout_seconds': selection_timeout_seconds,
     'max_download_concurrency': download_concurrency_default,
     'cover_cache_max_items': 100,
+    'local_index_enable': True,
+    'index_refresh_hours': 24,
+    'index_build_timeout_seconds': 180,
 }
 
 default_bot_config = {

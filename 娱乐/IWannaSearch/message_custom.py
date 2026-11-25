@@ -43,6 +43,12 @@ default_custom_message_dict = {
 .iw today
 获取今日 I Wanna。每个用户每天固定一次，会缓存当天结果。
 
+.iw index status
+查看本地游戏索引状态（条数、更新时间、文件大小等）。
+
+.iw index update
+立即同步重建本地游戏索引（仅骰主/配置主人可用）。
+
 .iwbot merge on/off
 开启或关闭多个 rand 结果的合并转发（仅骰主/配置主人可用）。
 
@@ -52,7 +58,41 @@ default_custom_message_dict = {
 同样可以设置全局下载并发数（仅骰主/配置主人可用）。
 
 .iw help
-查看本帮助。''',
+查看本帮助。
+
+【筛选参数】
+--tag=标签（满足任一标签，可重复）
+--tag-all=标签（同时满足全部标签，可重复）
+--tag-not=标签（排除指定标签，可重复）
+--engine=引擎（指定游戏引擎，可重复）
+--engine-not=引擎（排除指定引擎，可重复）
+--year=年份（按 4 位发布年份筛选）
+--date-from=日期（起始发布日期，如 2020-01-01）
+--date-to=日期（结束发布日期，如 2021-12-31）
+--date-in=起始:结束（包含日期区间，支持开区间如 2020-01-01:，可重复）
+--date-not=起始:结束（排除日期区间，支持开区间，可重复）
+--rating-min=分（最低评分，0-10）
+--rating-max=分（最高评分，0-10）
+--difficulty-min=分（最低难度，0-100）
+--difficulty-max=分（最高难度，0-100）
+--reviews-min=数（最少评分人数）
+--reviews-max=数（最多评分人数）
+--size-min-mb=MB（最小文件体积，单位 MB）
+--size-max-mb=MB（最大文件体积，单位 MB）
+--source=来源（指定来源站点如 wiki/df，可重复）
+--source-not=来源（排除来源站点，可重复）
+--source-id=ID（按外部来源站点 ID 筛选）
+--local=true/false（是否站内 CDN 托管）
+--has-download=true/false（是否有可用下载链接）
+--has-engine=true/false（是否有引擎信息）
+--has-date=true/false（是否有发布日期）
+--sort=字段（排序字段：id/title/creator/rating/difficulty/date/reviews/size/random）
+--order=方向（排序方向：asc/desc）
+--fields=字段列表（逗号分隔指定返回字段）
+--limit=数量（返回条数上限，0 表示不限）
+--offset=偏移（分页起始偏移量）
+示例：.iw search needle --rating-min 8 --difficulty-min 70
+示例：.iw all --sort date --order desc --limit 20''',
     'reply_help_hint': '可使用 {prefix}iw help 查看 I Wanna 查询帮助。',
     'reply_empty_query': '请输入要查询的 I Wanna 名称或筛选参数。',
     'reply_not_found': '没有查询到符合条件的 I Wanna。',
@@ -82,7 +122,7 @@ default_custom_message_dict = {
 · 文档来源：{sources}
 · 文件大小：{file_size}''',
     'reply_multiple_header': '查询到了{count}个 I Wanna',
-    'reply_multiple_item': '{index}. [{id}] {title}',
+    'reply_multiple_item': '{index}. [{id}] {title}{meta}',
     'reply_multiple_footer': '请输入对应序号查询对应的 I Wanna，或输入 end/结束 退出选择。',
     'reply_page_info': '当前页数：{current_page}/{total_page}',
     'reply_result_limited_note': '找到{count}个 I Wanna，当前显示{available_count}个，可浏览{total_page}页。',
@@ -130,6 +170,13 @@ default_custom_message_dict = {
 提示：使用 .iw help 查看全功能查询指令。''',
     'reply_year_empty': '请输入要查询的 4 位年份，例如：.iw year 2021。',
     'reply_year_invalid': '年份格式不正确，请输入 4 位数字年份（例如：2021）。',
+    'reply_index_status': '''【本地索引状态】
+· 开关状态：{enabled}
+· 收录条数：{count} 条
+· 构建时间：{built_at}
+· 索引体积：{size_mb} MB
+· 是否过期：{stale}''',
+    'reply_index_updated': '本地索引已更新完成：共 {count} 条游戏，索引体积 {size_mb} MB。',
 }
 
 
@@ -161,7 +208,7 @@ custom_message_note_dict = {
     'reply_random_result_prefix': '【random/rand 结果前缀】用于随机游戏详情前缀。',
     'reply_game_metadata': '【游戏元数据】可用变量：{id} {title} {creator} {release_date} {rating} {difficulty} {rating_count} {tags} {engine} {sources} {external_urls} {page_url} {url} {file_size}',
     'reply_multiple_header': '【多个结果头部】可用变量：{count}',
-    'reply_multiple_item': '【多个结果列表项】可用变量：{index} {id} {title} {creator} {tags} {url}',
+    'reply_multiple_item': '【多个结果列表项】可用变量：{index} {id} {title} {meta} {creator} {tags} {url}',
     'reply_multiple_footer': '【多个结果页脚】结果不超过一页时的输入提示。可提示 end/结束 退出。',
     'reply_page_info': '【分页页码】可用变量：{current_page} {total_page}',
     'reply_result_limited_note': '【API 返回限制提示】当 count 大于实际 results 数量时显示。可用变量：{count} {available_count} {total_page}',
@@ -189,6 +236,8 @@ custom_message_note_dict = {
     'reply_catalog_summary': '【全库概况】可用变量：{catalog_size} {dated} {engine_count} {tag_count}',
     'reply_year_empty': '【年份查询为空】用户未输入年份时回复。',
     'reply_year_invalid': '【年份格式错误】用户输入非 4 位年份时回复。',
+    'reply_index_status': '【本地索引状态】可用变量：{count} {built_at} {size_mb} {stale} {enabled}',
+    'reply_index_updated': '【本地索引更新完成】可用变量：{count} {size_mb}',
 }
 
 
