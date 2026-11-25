@@ -42,13 +42,15 @@ _NETWORK = (-3, 'B站网络连接失败或超时')
 _BUVID_TTL = 86400
 _NAME_TTL = 3600
 _WBI_TTL = 3600
-# 使用本机 BiliShareInfo/main.py 的有效置换，不能替换成计划书中的示意下标。
-_WBI_INDICES = (
-    46, 47, 18, 2, 53, 8, 23, 32,
-    15, 50, 10, 31, 58, 3, 45, 35,
-    27, 43, 5, 49, 33, 9, 42, 19,
-    29, 28, 37, 1, 4, 51, 17, 25,
+# B 站官方 mixinKeyEncTab（64 项）取前 32 位；与 StarBot/utils/wbi.py 一致。
+# 之前从 BiliShareInfo 抄的 32 项表从第 27 位起是错的，签名会失配。
+_WBI_TAB64 = (
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 )
+_WBI_INDICES = _WBI_TAB64[:32]
 _IMAGE_DOMAINS = ('hdslb.com', 'biliimg.com', 'bilibili.com', 'bilivideo.com', 'bilivideo.cn')
 _IMAGE_EXTENSIONS = {'jpeg': 'jpg', 'png': 'png', 'gif': 'gif', 'webp': 'webp', 'avif': 'avif', 'bmp': 'bmp'}
 _MAX_IMAGE = 5 * 1024 * 1024
