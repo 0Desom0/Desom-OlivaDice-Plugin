@@ -211,9 +211,8 @@ def build_header(plugin_event) -> str:
     if len(text) > 40:
         text = f'{text[:40]}…'
     at_tag = f'<qqbot-at-user id="{user_id}" />'
-    # 不再用行首 ">"：QQ 客户端渲染这个引用行时会额外打出一个 "null"，
-    # 换成加粗的一行（实测日志里我们发出的正文本身没有 null）。
-    return f'{at_tag}：{text}' if text else at_tag
+    # 引用行保持 Markdown 块引用（行首 ">"）
+    return f'> {at_tag}：{text}' if text else f'> {at_tag}'
 
 
 def strip_link_lines(content: str) -> str:
