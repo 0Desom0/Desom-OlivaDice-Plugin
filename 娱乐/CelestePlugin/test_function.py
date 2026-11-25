@@ -963,6 +963,41 @@ class CelestePluginFunctionTest(unittest.TestCase):
         # 多张概要（compact）不加发布时间，省高度
         self.assertNotIn('发布：', function.format_detail(detail, compact=True))
 
+    def test_publish_and_update_lines(self):
+        base = {
+            'gameBananaId': 1,
+            'name': 'X',
+            'gameBananaSection': 'Mod',
+            'screenshots': [],
+            'downloads': 10,
+            'views': 20,
+            'likes': 1,
+            'pageUrl': 'https://gamebanana.com/mods/1',
+        }
+        updated_detail = function.normalize_wegfan_item(
+            dict(base, createTime='2023-02-17T00:00:00Z', updateTime='2026-11-20T12:00:00Z')
+        )
+        text, _kb, _images = render.render_detail(updated_detail)
+        self.assertIn('- **发布**：2023-02-17（', text)
+        self.assertIn('- **更新**：2026-11-20（', text)
+        plain = function.format_detail(updated_detail)
+        self.assertIn('发布：2023-02-17（', plain)
+        self.assertIn('更新：2026-11-20（', plain)
+        # 纯文本里发布要排在更新前面
+        self.assertLess(plain.index('发布：'), plain.index('更新：'))
+
+        same_day = function.normalize_wegfan_item(
+            dict(base, createTime='2023-02-17T00:00:00Z', updateTime='2023-02-17T08:00:00Z')
+        )
+        same_text, _kb, _images = render.render_detail(same_day)
+        self.assertIn('- **发布**：2023-02-17（', same_text)
+        self.assertNotIn('- **更新**：', same_text)
+
+        # 多张概要（compact）两行都不加
+        compact_plain = function.format_detail(updated_detail, compact=True)
+        self.assertNotIn('发布：', compact_plain)
+        self.assertNotIn('更新：', compact_plain)
+
     def test_render_detail_download_buttons_are_links(self):
         detail = function.normalize_wegfan_item(sample_search_item())
         text, keyboard, images = render.render_detail(detail)

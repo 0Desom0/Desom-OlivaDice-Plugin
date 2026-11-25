@@ -1465,6 +1465,23 @@ def format_publish_time(value: Any) -> str:
     return f'{date_text}（{days // 365} 年前）'
 
 
+def format_publish_and_update(detail: dict[str, Any]) -> tuple[str, str]:
+    """详情页用的「发布 / 更新」两行文字；更新与发布同一天时只留发布。"""
+    created_raw = safe_int(detail.get('created_at'))
+    created_text = format_publish_time(created_raw)
+    if not created_text:
+        return '', ''
+    updated_raw = safe_int(detail.get('updated_at'))
+    if updated_raw <= 0:
+        return created_text, ''
+    zone = ZoneInfo('Asia/Hong_Kong')
+    created_day = datetime.datetime.fromtimestamp(created_raw, tz=zone).date()
+    updated_day = datetime.datetime.fromtimestamp(updated_raw, tz=zone).date()
+    if updated_day <= created_day:
+        return created_text, ''
+    return created_text, format_publish_time(updated_raw)
+
+
 def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = '') -> str:
     global_config = utils.load_global_config()
     description_limit = int(global_config.get('description_max_length', 320))
@@ -1504,9 +1521,12 @@ def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = 
         f'标签：{tag_text}',
         f'数据：下载 {detail.get("downloads", 0):,} / 浏览 {detail.get("views", 0):,} / 喜欢 {detail.get("likes", 0):,}',
     ]
-    publish_text = format_publish_time(detail.get('created_at'))
-    if publish_text and not compact:
-        detail_lines.insert(0, f'发布：{publish_text}')
+    publish_text, update_text = format_publish_and_update(detail)
+    if not compact:
+        if update_text:
+            detail_lines.insert(0, f'更新：{update_text}')
+        if publish_text:
+            detail_lines.insert(0, f'发布：{publish_text}')
     if not compact:
         detail_lines.append(f'简介：{description}')
     detail_lines.append(f'Mod 页面：{detail.get("page_url", "")}')
