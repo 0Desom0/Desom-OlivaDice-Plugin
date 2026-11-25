@@ -359,6 +359,19 @@ class IWannaSearchAPIFeaturesTest(unittest.TestCase):
         self.assertNotIn('msg_id', calls[2])
         self.assertNotIn('event_id', calls[2])
 
+    def test_highlight_scores_and_plain_fallback(self):
+        """详情页评分/难度按字段染色；纯文本回退把所有标记洗掉。"""
+        colored = self.message.markdown.convert('· 评分：7.0/10  难度：53.8/100')
+        self.assertIn('textcolor{#4FC3F7}{7.0/10}', colored)
+        self.assertIn('textcolor{#C792EA}{53.8/100}', colored)
+        plain = self.message.utils.strip_markup(colored)
+        self.assertIn('评分', plain)
+        self.assertIn('7.0/10', plain)
+        self.assertIn('53.8/100', plain)
+        self.assertNotIn('$', plain)
+        self.assertNotIn(chr(92), plain)
+        self.assertNotIn('*', plain)
+
     def test_build_game_template_value_meta(self):
         """测试列表模板字段 meta 在有评分难度、仅评分、均无时的输出。"""
         both = self.function.build_game_template_value(
@@ -366,20 +379,20 @@ class IWannaSearchAPIFeaturesTest(unittest.TestCase):
             index=1,
         )
         self.assertEqual(both['index'], '1')
-        self.assertEqual(both['index_mark'], '$\textcolor{#FF6B35}{\text{1}}$')
+        self.assertEqual(both['index_mark'], '$\\textcolor{#FF6B35}{1}$')
         self.assertEqual(
             both['meta'],
-            ' · 评分 $\textcolor{#4FC3F7}{\text{8.8/10}}$'
-            ' · 难度 $\textcolor{#C792EA}{\text{71.7/100}}$',
+            ' · 评分 $\\textcolor{#4FC3F7}{8.8/10}$'
+            ' · 难度 $\\textcolor{#C792EA}{71.7/100}$',
         )
         rendered = self.message_custom.default_custom_message_dict['reply_multiple_item'].format(**both)
-        self.assertIn('$\textcolor{#4FC3F7}{\text{8.8/10}}$', rendered)
+        self.assertIn('$\\textcolor{#4FC3F7}{8.8/10}$', rendered)
 
         only_rating = self.function.build_game_template_value(
             {'id': '100', 'title': 'Only Rating', 'rating': 7.0, 'difficulty': None},
             index=2,
         )
-        self.assertEqual(only_rating['meta'], ' · 评分 $\textcolor{#4FC3F7}{\text{7.0/10}}$')
+        self.assertEqual(only_rating['meta'], ' · 评分 $\\textcolor{#4FC3F7}{7.0/10}$')
 
         none_both = self.function.build_game_template_value(
             {'id': '101', 'title': 'No Score', 'rating': None, 'difficulty': None},

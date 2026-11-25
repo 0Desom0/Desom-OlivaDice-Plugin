@@ -115,7 +115,7 @@ default_custom_message_dict = {
 · 标题：{title}
 · 作者：{creator}
 · 发布日期：{release_date}
-· 评分：{rating_mark}  难度：{difficulty_mark}
+· 评分：{rating}  难度：{difficulty}
 · 评分人数：{rating_count}
 · 标签：{tags}
 · 游戏引擎：{engine}

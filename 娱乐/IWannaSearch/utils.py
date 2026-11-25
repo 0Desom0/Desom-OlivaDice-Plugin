@@ -1537,7 +1537,9 @@ def reply_message(
             pass
 
     try:
-        outgoing_message = add_reply_quote(plugin_event, final_message) if quote_reply else final_message
+        # 纯文本通道：先把 Markdown / LaTeX 标记洗干净再发，避免露出 ** 和 $	extcolor$
+        plain_message = strip_markup(final_message)
+        outgoing_message = add_reply_quote(plugin_event, plain_message) if quote_reply else plain_message
         # 回调事件没有 reply 通道；必须走 send_message 并带 event_id 才是被动回复
         func_type = safe_str((getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type', ''))
         if func_type == 'button_click':
@@ -1588,6 +1590,51 @@ def build_reply_quote_segment(plugin_event) -> str:
     if not message_id or message_id == '-1':
         return ''
     return f'[OP:reply,id={op_escape(message_id)}]'
+
+
+LATEX_MARK_PATTERN = re.compile(r'\$\s*\\textcolor\{#[0-9A-Fa-f]{6}\}\{((?:[^{}]|\\.)*)\}\s*\$')
+
+
+MARKUP_AT_PATTERN = re.compile(r'<qqbot-at-user id="[^"]*"\s*/>')
+
+
+def strip_markup(text: str) -> str:
+    """纯文本通道（民间机器人、Markdown 不支持时）清洗：不留任何 md / LaTeX 符号。"""
+    out = safe_str(text)
+    # 1) 拆掉 LaTeX 颜色标记：$\textcolor{#RRGGBB}{正文}$ → 正文
+    while True:
+        start = out.find('$' + chr(92) + 'textcolor{')
+        if start < 0:
+            break
+        depth, cursor = 0, start + 1
+        end = -1
+        while cursor < len(out):
+            char = out[cursor]
+            if char == chr(123):
+                depth += 1
+            elif char == chr(125):
+                depth -= 1
+            elif char == chr(36) and depth == 0:
+                end = cursor
+                break
+            cursor += 1
+        if end < 0:
+            break
+        segment = out[start + 1:end]
+        body_split = segment.find(chr(125) + chr(123))
+        body = segment[body_split + 2:] if body_split >= 0 else segment
+        if body.endswith(chr(125)):
+            body = body[:-1]
+        body = body.replace('\\' + ' ', ' ')
+        for mark in ('{', '}', chr(36), '_', '#', '%', '&', '^'):
+            body = body.replace('\\' + mark, mark)
+        body = body.replace('\\\\', '\\')
+        out = out[:start] + body + out[end + 1:]
+    # 2) 去掉 Markdown 记号
+    out = MARKUP_AT_PATTERN.sub('', out)
+    for mark in ('**', '__', '~~', '`'):
+        out = out.replace(mark, '')
+    return out
 
 
 def add_reply_quote(plugin_event, message_text: str) -> str:

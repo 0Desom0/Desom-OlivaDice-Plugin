@@ -15,11 +15,12 @@ HEADING_PATTERN = re.compile(r'【([^】]+)】')
 LIST_ITEM_PATTERN = re.compile(r'^(\d+)[.、)]\s+(.+)$')
 # 序号高亮色（与 function.MARK_COLOR_INDEX 一致；这里独立定义避免循环 import）
 INDEX_MARK_COLOR = "#FF6B35"
+BSLASH = chr(92)  # 反斜杠；不用字面量，免得源码里的 \t 被当成制表符
 
 
 def mark_index(number: str) -> str:
     """序号上色：QQ 认 KaTeX 的 \textcolor，\text{} 保住空格。"""
-    return f'$\textcolor{{{INDEX_MARK_COLOR}}}{{\text{{{number}}}}}$'
+    return f'$\\textcolor{{{INDEX_MARK_COLOR}}}{{{number}}}$'
 # 详情页里原本文本形式的链接行，改由按钮承载后从正文剔除。
 LINK_LINE_PATTERN = re.compile(r'^(外部页面|外部链接|档案页面|档案页|下载链接)[：:]\s*\S*https?://')
 # 字段行：`· ID：11510` 或 `· 评分：8.1/10  难度：91.2/100`
@@ -44,6 +45,26 @@ def safe_text(value: Any, default_value: str = '') -> str:
     return str(value)
 
 
+# 详情页字段：`评分：8.8/10` / `**评分**：8.8/10`，按字段名上不同颜色
+SCORE_FIELD_PATTERN = re.compile(r'(评分|难度)(\**)[：:]\s*([^\s，,；;]+)')
+SCORE_FIELD_COLORS = {
+    '评分': '#4FC3F7',
+    '难度': '#C792EA',
+}
+
+
+def highlight_scores(text: str) -> str:
+    """把详情页的评分/难度数值染上各自颜色（纯文本回退时由 strip_markup 洗掉）。"""
+    def _wrap(match):
+        label, stars, value = match.group(1), match.group(2), match.group(3)
+        color = SCORE_FIELD_COLORS.get(label)
+        if not color:
+            return match.group(0)
+        return f'{label}{stars}：$' + BSLASH + f'textcolor{{{color}}}{{{value}}}$'
+
+    return SCORE_FIELD_PATTERN.sub(_wrap, text)
+
+
 def convert(content: str) -> str:
     """把纯文本回复词转成 Markdown。
 
@@ -64,7 +85,7 @@ def convert(content: str) -> str:
         if field_match:
             # `· ID：11510` → `**ID**：11510`
             label, value = field_match.group(1), field_match.group(2)
-            line_list.append(f'**{label}**：{value}' if value else f'**{label}**')
+            line_list.append(highlight_scores(f'**{label}**：{value}' if value else f'**{label}**'))
             continue
         item_match = LIST_ITEM_PATTERN.match(stripped)
         if item_match:

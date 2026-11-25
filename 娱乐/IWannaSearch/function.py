@@ -21,17 +21,27 @@ from . import utils
 
 function_module_note = 'I Wanna Archive API 查询模块。'
 # 三个高亮色：序号橙红、评分天蓝、难度浅紫，深色卡片上都清楚且互不混淆
+BSLASH = chr(92)  # 反斜杠；别写字面量，源码里的 	 会被当成制表符
 MARK_COLOR_INDEX = "#FF6B35"
 MARK_COLOR_RATING = "#4FC3F7"
 MARK_COLOR_DIFFICULTY = "#C792EA"
 
 
 def mark_text(text: str, color: str = MARK_COLOR_INDEX) -> str:
-    """需要醒目标注的片段：语法统一收在这里，改一处就够（QQ 认 KaTeX 的 	extcolor）。"""
+    r"""需要醒目标注的片段：语法统一收在这里，改一处就够。
+
+    QQ 只认单层 \textcolor{...}{...}，再嵌 \text{} 会整段渲染失败；
+    数学模式会吞空格，所以正文里的空格写成反斜杠加空格。
+    """
     if not text:
         return ''
-    # LaTeX 数学模式会吞掉空格，用 	ext{} 包住正文把空格保住
-    return f'$\textcolor{{{color}}}{{\text{{{text}}}}}$'
+    escaped = str(text).replace('\\', '\\\\')
+    for char in ('$', '{', '}', '_', '^', '&', '%', '#'):
+        escaped = escaped.replace(char, '\\' + char)
+    escaped = escaped.replace(' ', '\\' + ' ')
+    return f'$' + BSLASH + f'textcolor{{{color}}}{{{escaped}}}$'
+
+
 default_empty_text = '暂无'
 
 
@@ -1641,14 +1651,10 @@ def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict
         'meta': ''.join(meta_parts),
         'creator': safe_text(game_item.get('creator', default_empty_text), default_empty_text),
         'release_date': format_release_date(game_item.get('release_date')),
+        # 详情页的 {rating}/{difficulty} 保持纯文本，颜色由 markdown.convert 按“评分：/难度：”统一加，
+        # 这样各 bot 已保存的旧自定义模板也能变色
         'rating': rating_text,
-        'rating_mark': mark_text(rating_text, MARK_COLOR_RATING)
-        if rating_text != default_empty_text
-        else default_empty_text,
         'difficulty': difficulty_text,
-        'difficulty_mark': mark_text(difficulty_text, MARK_COLOR_DIFFICULTY)
-        if difficulty_text != default_empty_text
-        else default_empty_text,
         'rating_count': format_rating_count(game_item.get('rating_count')),
         'tags': tag_text,
         'engine': format_engine_value(game_item.get('engine')),
