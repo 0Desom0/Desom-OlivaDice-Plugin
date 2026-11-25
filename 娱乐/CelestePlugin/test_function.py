@@ -946,6 +946,23 @@ class CelestePluginFunctionTest(unittest.TestCase):
         self.assertIn('**标题搜索：map**', text)
         self.assertIn('回复序号看详情', text)
 
+    def test_format_publish_time_uses_hong_kong_date(self):
+        # 2026-08-22T19:41:38Z = 香港时间 08-23 03:41
+        stamp = function.parse_wegfan_time('2026-08-22T19:41:38Z')
+        text = function.format_publish_time(stamp)
+        self.assertTrue(text.startswith('2026-08-23（'), text)
+        self.assertTrue(text.endswith('）'), text)
+        self.assertEqual(function.format_publish_time(0), '')
+
+    def test_detail_pages_show_publish_date(self):
+        detail = function.normalize_wegfan_item(sample_search_item())
+        text, _keyboard, _images = render.render_detail(detail)
+        self.assertIn('- **发布**：2026-08-23（', text)
+        plain = function.format_detail(detail)
+        self.assertIn('发布：2026-08-23（', plain)
+        # 多张概要（compact）不加发布时间，省高度
+        self.assertNotIn('发布：', function.format_detail(detail, compact=True))
+
     def test_render_detail_download_buttons_are_links(self):
         detail = function.normalize_wegfan_item(sample_search_item())
         text, keyboard, images = render.render_detail(detail)

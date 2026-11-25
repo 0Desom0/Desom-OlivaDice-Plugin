@@ -371,6 +371,9 @@ def render_detail(
         f"- **作者**：{utils.safe_str(detail.get('author'), '未知作者')} · "
         f"**分类**：{_category_text(detail)}"
     )
+    publish_text = function.format_publish_time(detail.get('created_at'))
+    if publish_text:
+        lines.append(f'- **发布**：{publish_text}')
     lines.append(f'- **数据**：{_stats_line(detail)}')
     if credit_text:
         lines.append(f'- **署名**：{credit_text}')

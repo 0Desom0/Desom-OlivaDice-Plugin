@@ -1447,6 +1447,24 @@ def format_component_entry(entry: dict[str, Any]) -> str:
     return f'{name} {version}'
 
 
+def format_publish_time(value: Any) -> str:
+    """把 created_at 时间戳格式化成香港时区的发布日期（附距今多久）。"""
+    stamp = safe_int(value)
+    if stamp <= 0:
+        return ''
+    moment = datetime.datetime.fromtimestamp(stamp, tz=ZoneInfo('Asia/Hong_Kong'))
+    today = datetime.datetime.now(ZoneInfo('Asia/Hong_Kong')).date()
+    days = (today - moment.date()).days
+    date_text = moment.strftime('%Y-%m-%d')
+    if days <= 0:
+        return f'{date_text}（今天）'
+    if days < 30:
+        return f'{date_text}（{days} 天前）'
+    if days < 365:
+        return f'{date_text}（{days // 30} 个月前）'
+    return f'{date_text}（{days // 365} 年前）'
+
+
 def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = '') -> str:
     global_config = utils.load_global_config()
     description_limit = int(global_config.get('description_max_length', 320))
@@ -1486,6 +1504,9 @@ def format_detail(detail: dict[str, Any], compact: bool = False, heading: str = 
         f'标签：{tag_text}',
         f'数据：下载 {detail.get("downloads", 0):,} / 浏览 {detail.get("views", 0):,} / 喜欢 {detail.get("likes", 0):,}',
     ]
+    publish_text = format_publish_time(detail.get('created_at'))
+    if publish_text and not compact:
+        detail_lines.insert(0, f'发布：{publish_text}')
     if not compact:
         detail_lines.append(f'简介：{description}')
     detail_lines.append(f'Mod 页面：{detail.get("page_url", "")}')
