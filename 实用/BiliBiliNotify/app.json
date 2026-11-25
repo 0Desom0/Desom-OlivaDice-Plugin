@@ -1,0 +1,30 @@
+{
+  "name": "B站订阅推送",
+  "namespace": "BiliBiliNotify",
+  "info": "B站直播/动态/视频订阅推送：分群开关、分主播开关、用户订阅@、@全体配额、qqGuildv2 Markdown",
+  "author": "Desom-fu",
+  "version": "1.0.0",
+  "svn": 1,
+  "compatible_svn": 190,
+  "priority": 30000,
+  "message_mode": "olivos_string",
+  "support": [
+    {
+      "sdk": "onebot",
+      "platform": "qq",
+      "model": "all"
+    },
+    {
+      "sdk": "all",
+      "platform": "all",
+      "model": "all"
+    }
+  ],
+  "webui_config": [
+    {
+      "title": "B站订阅推送面板",
+      "type": "iframe",
+      "path": "webui/index.html"
+    }
+  ]
+}

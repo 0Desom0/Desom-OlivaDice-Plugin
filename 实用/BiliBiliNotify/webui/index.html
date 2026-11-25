@@ -1,0 +1,1272 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>B站订阅推送面板</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --background: #f6f7fa;
+            --panel: #fff;
+            --soft: #f3f5f9;
+            --text: #20283a;
+            --muted: #526176;
+            --line: #dce2ec;
+            --accent: #ac2654;
+            --accent-bg: #fce9f0;
+            --action: #ab2e57;
+            --good: #1a684e;
+            --good-bg: #e3f5ec;
+            --warning: #825103;
+            --warning-bg: #fdf0d5;
+            --error: #a62943;
+            --error-bg: #ffeaee;
+            --radius: 15px;
+            --shadow: 0 12px 32px #1b26450a, 0 2px 4px #1b264507;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --background: #141820;
+                --panel: #1d2330;
+                --soft: #252d3d;
+                --text: #edf0f8;
+                --muted: #aab7cb;
+                --line: #384458;
+                --accent: #ff9ab9;
+                --accent-bg: #472a3d;
+                --action: #a62c58;
+                --good: #86e4bd;
+                --good-bg: #203e36;
+                --warning: #ffd388;
+                --warning-bg: #463927;
+                --error: #ffa2b2;
+                --error-bg: #4f2837;
+                --shadow: 0 12px 32px #080b1433;
+            }
+        }
+        *, *::before, *::after { box-sizing: border-box; }
+        [hidden] { display: none !important; }
+        body {
+            margin: 0;
+            background: var(--background);
+            color: var(--text);
+            font: 15px/1.55 system-ui, "Microsoft YaHei", sans-serif;
+        }
+        main { width: min(1180px, 100% - 48px); margin: 0 auto; padding: 32px 0 64px; }
+        h1, h2, h3, p { margin: 0; }
+        h1 { font-size: clamp(26px, 5vw, 37px); line-height: 1.17; letter-spacing: -.035em; }
+        h2 { font-size: 19px; line-height: 1.3; letter-spacing: -.012em; }
+        h3 { font-size: 16px; line-height: 1.3; }
+        p, h3, .identity, output { overflow-wrap: anywhere; }
+        small, .muted { color: var(--muted); font-size: 13px; }
+        .mono { font-family: ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+        button, input, select, textarea { font: inherit; }
+        button, summary, select { cursor: pointer; }
+        button:disabled, :disabled { cursor: not-allowed; opacity: .62; }
+        button, input:not([type="checkbox"]), select, textarea, summary {
+            border: 1px solid var(--line);
+            border-radius: 9px;
+            color: var(--text);
+            background: var(--panel);
+        }
+        button { padding: 7px 12px; min-height: 36px; font-weight: 620; }
+        button:hover:not(:disabled), summary:hover { background: var(--soft); }
+        button.primary { color: white; background: var(--action); border-color: var(--action); }
+        button.primary:hover:not(:disabled) { background: #8c2045; }
+        button.danger { color: var(--error); }
+        button.micro { padding: 4px 9px; min-height: 30px; font-size: 13px; }
+        input:not([type="checkbox"]), select, textarea { width: 100%; min-height: 40px; padding: 7px 10px; }
+        input[type="checkbox"] { accent-color: var(--action); width: 17px; height: 17px; margin: 0; }
+        input::placeholder, textarea::placeholder { color: var(--muted); opacity: .85; }
+        textarea { resize: vertical; }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+        .hero, .row, .toolbar, .panel-heading, .footer, .up-title, .group-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .hero, .panel-heading, .up-title { justify-content: space-between; }
+        .hero { gap: 20px; margin-bottom: 24px; }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            color: var(--accent);
+            margin-bottom: 7px;
+            font-size: 12px;
+            letter-spacing: .14em;
+            font-weight: 760;
+        }
+        .brand svg { width: 20px; height: 20px; }
+        .hero .toolbar { justify-content: flex-end; }
+        .picker { position: relative; width: min(255px, 72vw); }
+        .picker summary {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            column-gap: 10px;
+            padding: 7px 11px;
+            line-height: 1.35;
+            list-style: none;
+        }
+        .picker summary::-webkit-details-marker { display: none; }
+        .picker summary::after { content: "▾"; grid-column: 2; grid-row: 1 / 3; color: var(--muted); }
+        .picker[open] summary::after { content: "▴"; }
+        .picker strong, .picker small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .picker .options {
+            position: absolute;
+            z-index: 5;
+            inset: calc(100% + 6px) 0 auto;
+            display: grid;
+            padding: 5px;
+            overflow: auto;
+            max-height: 245px;
+            border: 1px solid var(--line);
+            border-radius: 11px;
+            background: var(--panel);
+            box-shadow: var(--shadow);
+        }
+        .options button { border-color: transparent; text-align: left; }
+        .options button[aria-current="true"] { background: var(--accent-bg); color: var(--accent); }
+        .summary-grid, .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+        .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 11px 15px; }
+        .metric span:first-child { display: block; color: var(--muted); font-size: 13px; }
+        .metric strong { display: block; font-size: 24px; font-variant-numeric: tabular-nums; line-height: 1.4; }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            font-size: 13px;
+            font-weight: 700;
+            padding: 3px 9px;
+            border-radius: 20px;
+            color: var(--muted);
+            background: var(--soft);
+        }
+        .metric .pill { margin-top: 4px; }
+        .pill.good { color: var(--good); background: var(--good-bg); }
+        .pill.warn { color: var(--warning); background: var(--warning-bg); }
+        .pill.bad { color: var(--error); background: var(--error-bg); }
+        .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .tabs {
+            display: flex;
+            overflow-x: auto;
+            border-bottom: 1px solid var(--line);
+            margin-top: 17px;
+            scrollbar-width: thin;
+        }
+        .tabs button {
+            color: var(--muted);
+            background: transparent;
+            border: 0;
+            border-bottom: 3px solid transparent;
+            border-radius: 0;
+            padding: 12px 15px 10px;
+            white-space: nowrap;
+            font-weight: 650;
+        }
+        .tabs button[aria-selected="true"] { color: var(--accent); border-color: var(--accent); }
+        .tabs button:focus-visible { outline-offset: -3px; }
+        #notice { display: block; min-height: 32px; padding: 5px 2px; color: var(--muted); font-size: 13px; }
+        #notice.error { color: var(--error); }
+        #notice.success { color: var(--good); }
+        .stack { display: grid; gap: 16px; }
+        .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+        .panel {
+            min-width: 0;
+            padding: 19px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: var(--panel);
+            box-shadow: var(--shadow);
+        }
+        .panel-heading { align-items: flex-start; margin-bottom: 13px; }
+        .panel-heading p { margin-top: 4px; }
+        .fields, .credential-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .field { display: grid; min-width: 0; gap: 5px; }
+        .field label, .field-label { font-size: 13px; font-weight: 650; }
+        .field-wide { grid-column: 1 / -1; }
+        .credential .row { gap: 5px; flex-wrap: nowrap; }
+        .credential input { min-width: 0; flex: 1; }
+        .credential button { flex-shrink: 0; }
+        .form-row { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+        .form-row .field, .form-row > input { flex: 1 1 135px; }
+        .form-row button { min-height: 40px; }
+        .footer { justify-content: flex-end; }
+        .switch { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
+        .switch.solo { justify-content: center; min-width: 28px; min-height: 28px; }
+        .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+        .chip {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border-radius: 8px;
+            padding: 3px 5px 3px 9px;
+            background: var(--soft);
+            overflow-wrap: anywhere;
+        }
+        .chip button { border: 0; padding: 0 6px; min-height: 26px; background: transparent; color: var(--muted); }
+        .chip button:hover:not(:disabled) { color: var(--error); background: var(--error-bg); }
+        fieldset { border: 1px solid var(--line); border-radius: 10px; margin: 0; padding: 10px 12px; }
+        legend { padding: 0 5px; font-weight: 650; }
+        .probe-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+        .probe-result, .check-item { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; }
+        .probe-result output, .check-item small { display: block; margin-top: 4px; }
+        .add-bar { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 11px; }
+        .add-bar .form-row { flex: 0 1 390px; }
+        .add-bar p { margin-top: 4px; }
+        .up-grid { align-items: stretch; }
+        .up-card { display: grid; gap: 11px; align-content: start; }
+        .up-title { align-items: start; }
+        .up-title p { margin-top: 3px; }
+        .check-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        .check-item { margin: 0; }
+        .check-item strong, .check-item time { display: block; }
+        .check-item time { font-size: 13px; color: var(--muted); }
+        .check-item .error { color: var(--error); }
+        .up-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+        .up-actions select { width: auto; min-height: 36px; }
+        .up-actions .danger { margin-left: auto; }
+        .cover { display: block; max-width: 100%; width: 100%; max-height: 240px; border-radius: 9px; object-fit: contain; background: var(--soft); }
+        .table-scroll { overflow: auto; }
+        table { width: 100%; min-width: 710px; border-collapse: collapse; text-align: center; }
+        th, td { padding: 8px 7px; border-bottom: 1px solid var(--line); }
+        th:first-child, td:first-child { text-align: left; }
+        th { color: var(--muted); font-size: 13px; }
+        td:first-child { max-width: 300px; }
+        .group-title { gap: 7px; }
+        .group-title button { text-align: left; }
+        .group-title small { display: block; }
+        .group-disabled { color: var(--muted); }
+        .group-disclosure { background: var(--soft); }
+        .expanded { display: grid; gap: 11px; padding: 6px; min-width: 0; }
+        .target { padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+        .target .panel-heading { margin-bottom: 6px; }
+        .target form { max-width: 420px; }
+        .target .chips { margin: 7px 0; }
+        .empty { color: var(--muted); }
+        .checks { display: grid; gap: 0; margin: 0; }
+        .checks > div { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+        .checks dd { margin: 0; text-align: right; }
+        .logs { margin: 0; padding-left: 2em; overflow-wrap: anywhere; }
+        .logs li { padding: 5px 0 5px 5px; border-bottom: 1px solid var(--line); }
+        .logs li:last-child { border-bottom: 0; }
+        @media (max-width: 765px) {
+            main { width: calc(100% - 28px); padding-top: 22px; }
+            .grid { grid-template-columns: minmax(0, 1fr); }
+        }
+        @media (max-width: 440px) {
+            .summary-grid, .metrics, .probe-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .credential-grid { grid-template-columns: minmax(0, 1fr); }
+            .panel { padding: 14px; }
+            .tabs button { padding-inline: 11px; }
+        }
+        @media (prefers-reduced-motion: no-preference) {
+            button, summary { transition: background-color .14s ease, color .14s ease; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <header class="hero">
+            <div>
+                <p class="brand">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">
+                        <path d="m6 3 4 4m8-4-4 4M7 20v2m10-2v2M8 12v3m8-3v3" stroke-linecap="round" />
+                        <rect x="3" y="7" width="18" height="13" rx="3" />
+                    </svg>
+                    BILIBILI NOTIFY
+                </p>
+                <h1>B站订阅推送面板</h1>
+            </div>
+            <div class="toolbar">
+                <details class="picker" id="bot-picker">
+                    <summary><strong id="bot-name">选择 Bot</strong><small id="bot-identity">账号设置与订阅按 Bot 隔离</small></summary>
+                    <div class="options" id="bot-options"></div>
+                </details>
+                <button type="button" id="refresh">刷新</button>
+            </div>
+        </header>
+        <div class="summary-grid" aria-label="当前 Bot 概况">
+            <article class="metric"><span>主播</span><strong id="total-ups">—</strong></article>
+            <article class="metric"><span>群</span><strong id="total-groups">—</strong></article>
+            <article class="metric"><span>今日 @全体</span><strong id="total-at">—</strong></article>
+            <article class="metric"><span>风控状态</span><span class="pill" id="risk">待连接</span></article>
+        </div>
+        <nav class="tabs" role="tablist" aria-label="订阅推送设置">
+            <button type="button" role="tab" id="tab-global" aria-controls="global" aria-selected="true">总账号</button>
+            <button type="button" role="tab" id="tab-bot" aria-controls="bot" aria-selected="false" tabindex="-1">本账号</button>
+            <button type="button" role="tab" id="tab-ups" aria-controls="ups" aria-selected="false" tabindex="-1">主播管理</button>
+            <button type="button" role="tab" id="tab-groups" aria-controls="groups" aria-selected="false" tabindex="-1">群订阅</button>
+            <button type="button" role="tab" id="tab-status" aria-controls="status" aria-selected="false" tabindex="-1">运行状态</button>
+        </nav>
+        <output id="notice" role="status" aria-live="polite">正在读取面板状态…</output>
+        <div id="content" hidden>
+            <section id="global" role="tabpanel" aria-labelledby="tab-global" class="stack">
+                <form id="global-form" class="stack" autocomplete="off">
+                    <div class="grid">
+                        <article class="panel stack">
+                            <header>
+                                <h2>B站凭据</h2>
+                                <p class="muted">输入新值替换；留空保留。清除后需保存。</p>
+                            </header>
+                            <div id="credentials" class="credential-grid"></div>
+                            <div id="credential-extra" class="credential-grid"></div>
+                            <label class="field">
+                                <span class="field-label">User-Agent</span>
+                                <input type="text" id="user-agent" placeholder="留空使用内置浏览器 UA">
+                            </label>
+                        </article>
+                        <article class="panel stack">
+                            <header>
+                                <h2>访问管理</h2>
+                                <p class="muted">白名单用户可管理订阅；设置适用于所有 Bot。</p>
+                            </header>
+                            <ul class="chips" id="whitelist"></ul>
+                            <div class="form-row">
+                                <label class="field"><span class="field-label">平台</span>
+                                    <select id="whitelist-platform">
+                                        <option value="qq">OneBot QQ</option>
+                                        <option value="qqGuild">QQ 官方群</option>
+                                    </select>
+                                </label>
+                                <label class="field"><span class="field-label">用户 ID</span>
+                                    <input id="whitelist-id" placeholder="QQ 号 / OpenID">
+                                </label>
+                                <button type="button" id="whitelist-add">添加</button>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="file-log"> 写入每日通知日志文件</label>
+                        </article>
+                    </div>
+                    <div class="footer"><button type="submit" class="primary">保存总账号</button></div>
+                </form>
+                <article class="panel stack">
+                    <div class="panel-heading">
+                        <div><h2>连接诊断</h2><p class="muted">自检使用已保存的总账号配置，逐个检查四个接口。</p></div>
+                        <div class="row"><span id="buvid-time" class="muted"></span><button type="button" id="buvid-refresh">刷新 buvid</button></div>
+                    </div>
+                    <form id="probe-form" class="form-row">
+                        <label class="field"><span class="field-label">自检 UID</span><input id="probe-uid" inputmode="numeric" value="2" required></label>
+                        <button type="submit">运行接口自检</button>
+                    </form>
+                    <div id="probe-results" class="probe-grid"></div>
+                </article>
+            </section>
+            <section id="bot" role="tabpanel" aria-labelledby="tab-bot" class="stack" hidden>
+                <form id="bot-form" class="stack">
+                    <div class="grid">
+                        <article class="panel stack">
+                            <h2>命令与轮询</h2>
+                            <label class="switch"><input type="checkbox" id="bot-enable"> 启用此 Bot 的订阅推送</label>
+                            <div class="field">
+                                <span class="field-label">命令前缀 · <code id="command-name">bili</code></span>
+                                <ul class="chips" id="prefixes"></ul>
+                                <div class="form-row">
+                                    <input id="prefix" aria-label="单字符命令前缀" placeholder="输入单个非空白字符">
+                                    <button type="button" id="prefix-add">添加前缀</button>
+                                </div>
+                                <small>移除全部前缀后，此 Bot 不接收订阅命令。</small>
+                            </div>
+                            <div class="fields">
+                                <label class="field"><span class="field-label">直播轮询（秒）</span><input type="number" id="live-seconds" min="1" required></label>
+                                <label class="field"><span class="field-label">动态轮询（秒）</span><input type="number" id="dynamic-seconds" min="1" required></label>
+                                <label class="field"><span class="field-label">视频轮询（秒）</span><input type="number" id="video-seconds" min="1" required></label>
+                                <label class="field"><span class="field-label">最大并发请求</span><input type="number" id="max-concurrent" min="1" max="32" required></label>
+                            </div>
+                        </article>
+                        <article class="panel stack">
+                            <h2>推送与提醒</h2>
+                            <div class="fields">
+                                <label class="field"><span class="field-label">每日 @全体 配额（每个 OneBot 群）</span><input type="number" id="daily-limit" min="0" required></label>
+                                <label class="field"><span class="field-label">连续发送间隔（秒）</span><input type="number" id="send-interval" min="1" required></label>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="guild-once"> QQ 官方群每次开播最多 @全体 一次</label>
+                            <label class="switch"><input type="checkbox" id="at-subscribers-live"> 开播时 @订阅者</label>
+                            <fieldset><legend>新群默认接收</legend><div class="row" id="push-default"></div></fieldset>
+                            <label class="field">
+                                <span class="field-label">禁用群列表</span>
+                                <textarea id="disabled-groups" rows="2" placeholder="例如 onebot|qq|123456"></textarea>
+                                <small>每行一个 SDK|平台|群 ID，也可在「群订阅」停用群。</small>
+                            </label>
+                        </article>
+                    </div>
+                    <div class="footer"><button type="submit" class="primary">保存本账号</button></div>
+                </form>
+            </section>
+            <section id="ups" role="tabpanel" aria-labelledby="tab-ups" class="stack" hidden>
+                <article class="panel add-bar">
+                    <div><h2>添加主播</h2><p class="muted">填 B站个人空间的 UID。添加后，到「群订阅」选择接收推送的群。</p></div>
+                    <form id="up-form" class="form-row">
+                        <label class="field"><span class="field-label">主播 UID</span><input id="up-uid" inputmode="numeric" required></label>
+                        <button class="primary" type="submit">添加主播</button>
+                    </form>
+                </article>
+                <div class="grid up-grid" id="up-list"></div>
+            </section>
+            <section id="groups" role="tabpanel" aria-labelledby="tab-groups" class="stack" hidden>
+                <article class="panel add-bar">
+                    <div><h2>登记群</h2><p class="muted" id="group-help"></p></div>
+                    <form id="group-form" class="form-row">
+                        <label class="field"><span class="field-label" id="group-id-label">群 ID</span><input id="group-id" aria-labelledby="group-id-label" required></label>
+                        <button class="primary" type="submit">登记群</button>
+                    </form>
+                </article>
+                <article class="panel">
+                    <header class="panel-heading"><div><h2>群订阅</h2><p class="muted">展开群可关联主播、细分推送类型，以及增删订阅者。</p></div></header>
+                    <p id="group-empty" class="empty">尚未登记群。可在这里登记，或在群里成功执行一条订阅命令。</p>
+                    <div id="group-table" class="table-scroll" tabindex="0" aria-label="群订阅表">
+                        <table>
+                            <thead><tr><th scope="col">群标识</th><th scope="col">直播</th><th scope="col">动态</th><th scope="col">视频</th><th scope="col">@全体</th><th scope="col">今日配额</th><th scope="col">主播</th><th scope="col">群开关</th></tr></thead>
+                            <tbody id="group-list"></tbody>
+                        </table>
+                    </div>
+                </article>
+            </section>
+            <section id="status" role="tabpanel" aria-labelledby="tab-status" class="stack" hidden>
+                <article class="panel stack">
+                    <h2>调度与检查</h2>
+                    <div class="metrics">
+                        <div class="metric"><span>Tick</span><strong id="ticks">—</strong></div>
+                        <div class="metric"><span>工作线程</span><strong id="workers">—</strong></div>
+                        <div class="metric"><span>队列长度</span><strong id="queue">—</strong></div>
+                        <div class="metric"><span>412 计数</span><strong id="count-412">—</strong></div>
+                    </div>
+                    <dl class="checks" id="last-checks"></dl>
+                </article>
+                <article class="panel stack">
+                    <h2>最近 20 条日志</h2>
+                    <p id="logs-empty" class="empty">暂无通知日志。</p>
+                    <ol id="logs" class="logs"></ol>
+                </article>
+            </section>
+            <p class="panel empty" id="no-bot" hidden>当前没有可用的 Bot。配置账号后，点上方「刷新」。</p>
+        </div>
+    </main>
+    <script>
+        'use strict';
+
+        const EVENT = 'BiliBiliNotify_WebUI_Config';
+        const kinds = { live: '直播', dynamic: '动态', video: '视频' };
+        const probes = { ...kinds, nav: '空间统计' };
+        const accountPanels = new Set(['bot', 'ups', 'groups']);
+        const pending = new Map();
+        const expanded = new Set();
+        const $ = (id) => document.getElementById(id);
+        const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+        const credentialInputs = new Map();
+        let sequence = 0;
+        let activePanel = 'global';
+        let busy = false;
+        let state;
+        let whitelistDraft = [];
+        let prefixDraft = [];
+        let globalDirty = false;
+        let botDirty = false;
+        let cover;
+
+        function request(payload) {
+            if (window.parent === window) {
+                return Promise.reject(new Error('请从 OlivOS WebUI 的「插件页面」打开此面板。'));
+            }
+            const requestId = `${Date.now()}-${++sequence}`;
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    pending.delete(requestId);
+                    reject(new Error('请求超时。若刚提交修改，请先刷新确认是否已保存。'));
+                }, 90000);
+                pending.set(requestId, { resolve, reject, timer });
+                try {
+                    window.parent.postMessage({
+                        type: 'olivos:plugin_event', event: EVENT, request_id: requestId, payload,
+                    }, '*');
+                } catch {
+                    clearTimeout(timer);
+                    pending.delete(requestId);
+                    reject(new Error('请求未发送，请从 OlivOS WebUI 重新打开面板。'));
+                }
+            });
+        }
+
+        window.addEventListener('message', (event) => {
+            const message = event.data;
+            if (event.source !== window.parent || message?.type !== 'olivos:plugin_reply') return;
+            const entry = pending.get(message.request_id);
+            if (!entry) return;
+            clearTimeout(entry.timer);
+            pending.delete(message.request_id);
+            if (typeof message.error === 'string') {
+                entry.reject(new Error(message.error));
+            } else if (message.payload?.ok === true && message.payload.state) {
+                entry.resolve(message.payload.state);
+            } else {
+                entry.reject(new Error(message.payload?.error || '面板回包格式错误，请刷新重试。'));
+            }
+        });
+
+        function el(tag, classes, text) {
+            const element = document.createElement(tag);
+            if (classes) element.className = classes;
+            if (text !== undefined) element.textContent = text;
+            return element;
+        }
+
+        function button(text, classes, click) {
+            const element = el('button', classes, text);
+            element.type = 'button';
+            element.addEventListener('click', click);
+            return element;
+        }
+
+        function notice(message, type = '') {
+            $('notice').className = type;
+            $('notice').textContent = message;
+        }
+
+        async function perform(job, success = '') {
+            if (busy) return false;
+            const focused = document.activeElement;
+            busy = true;
+            $('content').inert = true;
+            $('content').setAttribute('aria-busy', 'true');
+            $('refresh').disabled = true;
+            $('bot-picker').inert = true;
+            notice('正在处理…');
+            try {
+                await job();
+                notice(success, success ? 'success' : '');
+                return true;
+            } catch (error) {
+                notice(error.message, 'error');
+                return false;
+            } finally {
+                busy = false;
+                $('content').inert = false;
+                $('content').removeAttribute('aria-busy');
+                $('refresh').disabled = false;
+                $('bot-picker').inert = false;
+                if (document.activeElement === document.body && focused instanceof HTMLElement) {
+                    const key = focused.dataset.focusKey;
+                    const replacement = key && Array.from(document.querySelectorAll('[data-focus-key]'))
+                        .find((item) => item.dataset.focusKey === key);
+                    (focused.isConnected ? focused : replacement)?.focus({ preventScroll: true });
+                }
+            }
+        }
+
+        function action(payload, success, options = {}) {
+            return perform(async () => {
+                const next = await request({ bot_hash: state?.bot_hash || '', ...payload });
+                if (options.resetGlobal) globalDirty = false;
+                if (options.resetBot) botDirty = false;
+                options.beforeRender?.();
+                render(next);
+            }, success);
+        }
+
+        function clock(seconds) {
+            if (!seconds) return '—';
+            const date = new Date(seconds * 1000);
+            if (Number.isNaN(date.getTime())) return '—';
+            const pad = (value) => String(value).padStart(2, '0');
+            return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        }
+
+        function platformName(platform) {
+            return ({ qq: 'OneBot QQ', qqGuild: 'QQ 官方群' })[platform] || platform || '未知平台';
+        }
+
+        function quotaText(group) {
+            if (group.platform === 'qq') return `${group.used} / ${state.bot.at_all.daily_limit}`;
+            return group.last_at_live_time && state.bot.at_all.guild_at_once
+                ? `上次：${clock(group.last_at_live_time)}` : '—';
+        }
+
+        function showPanel(name) {
+            activePanel = name;
+            for (const tab of tabs) {
+                const panel = tab.getAttribute('aria-controls');
+                const selected = name === panel;
+                tab.setAttribute('aria-selected', String(selected));
+                tab.tabIndex = selected ? 0 : -1;
+                $(panel).hidden = !selected || (accountPanels.has(panel) && !state?.bot);
+            }
+            $('no-bot').hidden = !accountPanels.has(name) || !!state?.bot;
+        }
+
+        tabs.forEach((tab, index) => {
+            tab.addEventListener('click', () => showPanel(tab.getAttribute('aria-controls')));
+            tab.addEventListener('keydown', (event) => {
+                const position = {
+                    ArrowRight: (index + 1) % tabs.length,
+                    ArrowLeft: (index + tabs.length - 1) % tabs.length,
+                    Home: 0,
+                    End: tabs.length - 1,
+                }[event.key];
+                if (position === undefined) return;
+                event.preventDefault();
+                tabs[position].focus();
+                showPanel(tabs[position].getAttribute('aria-controls'));
+            });
+        });
+
+        function reload(botHash, switching = false) {
+            return action({ action: 'get_state', bot_hash: botHash }, '', {
+                resetGlobal: !switching, resetBot: true,
+                beforeRender() {
+                    cover = undefined;
+                    if (switching) expanded.clear();
+                },
+            });
+        }
+
+        $('refresh').addEventListener('click', () => {
+            if ((globalDirty || botDirty) && !window.confirm('放弃未保存的修改并刷新？')) return;
+            reload(state?.bot_hash || '');
+        });
+
+        function renderPicker() {
+            const selected = state.bots.find((bot) => bot.hash === state.bot_hash);
+            $('bot-name').textContent = selected?.name || '没有可用的 Bot';
+            $('bot-identity').textContent = selected
+                ? `${platformName(selected.platform)} · ${selected.hash.slice(0, 8)}` : '账号列表为空';
+            const options = $('bot-options');
+            options.replaceChildren();
+            for (const bot of state.bots) {
+                const option = button('', '', () => {
+                    if (busy) return;
+                    if (bot.hash !== state.bot_hash && botDirty && !window.confirm('放弃本账号未保存的修改并切换？')) {
+                        return;
+                    }
+                    $('bot-picker').open = false;
+                    $('bot-picker').querySelector('summary').focus();
+                    if (bot.hash !== state.bot_hash) reload(bot.hash, true);
+                });
+                option.title = bot.hash;
+                option.setAttribute('aria-current', String(bot.hash === state.bot_hash));
+                option.append(el('strong', '', bot.name), el('small', '', `${platformName(bot.platform)} · ${bot.hash.slice(0, 8)}`));
+                options.append(option);
+            }
+            if (!state.bots.length) options.append(el('small', '', '刷新可重新读取账号列表。'));
+        }
+
+        document.addEventListener('click', (event) => {
+            if (!$('bot-picker').contains(event.target)) $('bot-picker').open = false;
+        });
+        $('bot-picker').addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                $('bot-picker').open = false;
+                $('bot-picker').querySelector('summary').focus();
+            }
+        });
+
+        function renderSummary() {
+            $('total-ups').textContent = state.bot ? Object.keys(state.rooms).length : '—';
+            const groups = Object.values(state.groups).filter((group) => group.supported);
+            $('total-groups').textContent = state.bot ? groups.length : '—';
+            $('total-at').textContent = state.bot ? groups.reduce((sum, group) => sum + (group.used || 0), 0) : '—';
+            const risk = $('risk');
+            risk.className = 'pill';
+            if (!state.status) {
+                risk.textContent = '待选 Bot';
+            } else if (state.status.blocked) {
+                risk.textContent = '412 风控';
+                risk.classList.add('bad');
+            } else if (state.status.backing_off) {
+                risk.textContent = '退避中';
+                risk.classList.add('warn');
+            } else {
+                risk.textContent = '正常';
+                risk.classList.add('good');
+            }
+        }
+
+        function render(next) {
+            state = next;
+            $('content').hidden = false;
+            renderPicker();
+            renderSummary();
+            renderGlobal();
+            if (state.bot) {
+                renderBot();
+                renderUps();
+                renderGroups();
+            }
+            renderStatus();
+            showPanel(activePanel);
+        }
+
+        function makeCredential(parent, key, label, numeric = false) {
+            const id = `cred-${key}`;
+            const box = el('div', 'field credential');
+            const heading = el('label', '', label);
+            heading.htmlFor = id;
+            const row = el('div', 'row');
+            const input = el('input');
+            input.type = 'password';
+            input.id = id;
+            input.autocomplete = 'new-password';
+            if (numeric) input.inputMode = 'numeric';
+            const entry = { input, clear: false, numeric, configured: false };
+            entry.remove = button('清除', 'micro', () => {
+                entry.clear = !entry.clear;
+                entry.input.value = '';
+                globalDirty = true;
+                syncCredential(entry);
+            });
+            entry.remove.setAttribute('aria-label', `清除或保留 ${label}`);
+            input.addEventListener('input', () => {
+                entry.clear = false;
+                syncCredential(entry);
+            });
+            row.append(input, entry.remove);
+            box.append(heading, row);
+            parent.append(box);
+            credentialInputs.set(key, entry);
+        }
+
+        function syncCredential(entry) {
+            entry.input.placeholder = entry.clear ? '保存后清空' : entry.configured ? '•••••••• 已设置' : '未设置';
+            entry.remove.textContent = entry.clear ? '撤销清除' : '清除';
+            entry.remove.disabled = !entry.configured && !entry.input.value && !entry.clear;
+        }
+
+        for (const [key, label] of Object.entries({
+            sessdata: 'SESSDATA', bili_jct: 'bili_jct', buvid3: 'buvid3', buvid4: 'buvid4',
+        })) makeCredential($('credentials'), key, label);
+        makeCredential($('credential-extra'), 'b_nut', 'b_nut', true);
+        makeCredential($('credential-extra'), 'proxy', '代理（留空直连）');
+
+        function chip(text, onRemove) {
+            const item = el('li', 'chip');
+            const remove = button('×', '', onRemove);
+            remove.setAttribute('aria-label', `移除 ${text}`);
+            item.append(el('span', 'mono', text), remove);
+            return item;
+        }
+
+        function renderWhitelist() {
+            const list = $('whitelist');
+            list.replaceChildren();
+            for (const [index, entry] of whitelistDraft.entries()) {
+                list.append(chip(`${platformName(entry.platform)} · ${entry.user_id}`, () => {
+                    globalDirty = true;
+                    whitelistDraft.splice(index, 1);
+                    renderWhitelist();
+                }));
+            }
+            if (!whitelistDraft.length) list.append(el('li', 'empty', '白名单为空'));
+        }
+
+        function renderGlobal() {
+            const settings = state.global;
+            $('buvid-time').textContent = settings.buvid_cache.configured
+                ? `领取于 ${clock(settings.buvid_cache.fetched_at)}` : '尚未领取指纹';
+            if (globalDirty) return;
+            for (const [key, entry] of credentialInputs) {
+                entry.input.value = '';
+                entry.clear = false;
+                entry.configured = key === 'proxy' ? settings.proxy : settings.cookie[key];
+                syncCredential(entry);
+            }
+            $('user-agent').value = settings.user_agent;
+            $('file-log').checked = settings.log_to_file;
+            whitelistDraft = settings.whitelist.slice();
+            renderWhitelist();
+        }
+
+        function inputAction(input, control, handler) {
+            control.addEventListener('click', handler);
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && !event.isComposing) {
+                    event.preventDefault();
+                    handler();
+                }
+            });
+        }
+
+        function userId(text, platform) {
+            const value = text.trim();
+            if (platform === 'qq') return /^[0-9]{1,20}$/.test(value) ? value.replace(/^0+/, '') : '';
+            return /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : '';
+        }
+
+        $('global-form').addEventListener('input', () => { globalDirty = true; });
+        inputAction($('whitelist-id'), $('whitelist-add'), () => {
+            const platform = $('whitelist-platform').value;
+            const user = userId($('whitelist-id').value, platform);
+            if (!user) {
+                notice('请填有效的 QQ 号或用户 OpenID。', 'error');
+                return;
+            }
+            if (whitelistDraft.some((item) => item.platform === platform && item.user_id.toLowerCase() === user.toLowerCase())) {
+                notice('白名单已有该用户。', 'error');
+                return;
+            }
+            whitelistDraft.push({ platform, user_id: user });
+            $('whitelist-id').value = '';
+            globalDirty = true;
+            renderWhitelist();
+            notice('已加入白名单草稿，保存总账号后生效。');
+        });
+
+        $('global-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const payload = {
+                action: 'save_global', cookie: {}, user_agent: $('user-agent').value,
+                whitelist: whitelistDraft, log_to_file: $('file-log').checked,
+            };
+            for (const [key, entry] of credentialInputs) {
+                const text = entry.input.value.trim();
+                if (!entry.clear && !text) continue;
+                if (key === 'proxy') {
+                    payload.proxy = text;
+                } else if (entry.numeric) {
+                    if (!entry.clear && (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(Number(text)))) {
+                        notice('b_nut 必须是非负整数。', 'error');
+                        entry.input.focus();
+                        return;
+                    }
+                    payload.cookie[key] = entry.clear ? 0 : Number(text);
+                } else {
+                    payload.cookie[key] = text;
+                }
+            }
+            action(payload, '总账号已保存。', { resetGlobal: true, beforeRender: () => { $('whitelist-id').value = ''; } });
+        });
+
+        $('buvid-refresh').addEventListener('click', () => action({ action: 'refresh_buvid' }, '已重新领取 buvid。'));
+        const probeResults = new Map();
+        for (const [kind, title] of Object.entries(probes)) {
+            const card = el('div', 'probe-result');
+            const result = el('output', 'muted', '未检查');
+            card.append(el('strong', '', title), result);
+            $('probe-results').append(card);
+            probeResults.set(kind, result);
+        }
+
+        $('probe-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const uid = userId($('probe-uid').value, 'qq');
+            if (!uid) {
+                notice('自检 UID 必须是有效的数字 UID。', 'error');
+                return;
+            }
+            perform(async () => {
+                for (const result of probeResults.values()) result.textContent = '待检查';
+                for (const [kind, result] of probeResults) {
+                    result.textContent = '检查中…';
+                    try {
+                        const probe = await request({ action: 'probe_api', bot_hash: state.bot_hash, uid, kind });
+                        result.textContent = `code ${probe.code} · ${probe.summary}`;
+                    } catch (error) {
+                        result.textContent = error.message;
+                    }
+                }
+            }, '接口自检结束。');
+        });
+
+        function checkbox(text, current, onChange, hideText = false) {
+            const label = el('label', hideText ? 'switch solo' : 'switch');
+            const input = el('input');
+            input.type = 'checkbox';
+            input.checked = current;
+            input.addEventListener('change', onChange);
+            if (hideText) input.setAttribute('aria-label', text);
+            label.append(input);
+            if (!hideText) label.append(el('span', '', text));
+            return label;
+        }
+
+        function makeFlags(container, values) {
+            container.replaceChildren();
+            for (const [kind, title] of Object.entries(kinds)) {
+                const element = checkbox(title, values[kind], () => { botDirty = true; });
+                element.firstChild.name = kind;
+                container.append(element);
+            }
+        }
+
+        function readFlags(container) {
+            return Object.fromEntries(Array.from(container.querySelectorAll('input')).map((input) => [input.name, input.checked]));
+        }
+
+        function renderPrefixes() {
+            const list = $('prefixes');
+            list.replaceChildren();
+            for (const [index, prefix] of prefixDraft.entries()) {
+                list.append(chip(prefix, () => {
+                    botDirty = true;
+                    prefixDraft.splice(index, 1);
+                    renderPrefixes();
+                }));
+            }
+            if (!prefixDraft.length) list.append(el('li', 'empty', '无命令前缀'));
+        }
+
+        function renderBot() {
+            if (botDirty) return;
+            const settings = state.bot;
+            $('bot-enable').checked = settings.enable;
+            $('command-name').textContent = settings.command_name;
+            for (const kind of Object.keys(kinds)) $(kind + '-seconds').value = settings.poll[kind + '_seconds'];
+            $('max-concurrent').value = settings.poll.max_concurrent;
+            $('daily-limit').value = settings.at_all.daily_limit;
+            $('guild-once').checked = settings.at_all.guild_at_once;
+            $('send-interval').value = settings.send_interval_seconds;
+            $('disabled-groups').value = settings.disabled_group_list.join('\n');
+            $('at-subscribers-live').checked = settings.at_subscribers.live;
+            makeFlags($('push-default'), settings.push_default);
+            prefixDraft = settings.prefix_list.slice();
+            renderPrefixes();
+        }
+
+        $('bot-form').addEventListener('input', () => { botDirty = true; });
+        inputAction($('prefix'), $('prefix-add'), () => {
+            const value = $('prefix').value;
+            if (Array.from(value).length !== 1 || /[\p{White_Space}\p{Surrogate}\u001c-\u001f]/u.test(value)) {
+                notice('每个命令前缀必须是单个非空白字符。', 'error');
+                return;
+            }
+            if (!prefixDraft.includes(value)) prefixDraft.push(value);
+            $('prefix').value = '';
+            botDirty = true;
+            renderPrefixes();
+            notice('已更新前缀草稿，保存本账号后生效。');
+        });
+
+        $('bot-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const value = (id) => $(id).valueAsNumber;
+            const disabled = $('disabled-groups').value.split('\n').map((line) => line.trim()).filter(Boolean);
+            action({
+                action: 'save_bot', enable: $('bot-enable').checked, prefix_list: prefixDraft,
+                poll: {
+                    live_seconds: value('live-seconds'), dynamic_seconds: value('dynamic-seconds'),
+                    video_seconds: value('video-seconds'), max_concurrent: value('max-concurrent'),
+                },
+                at_all: { daily_limit: value('daily-limit'), guild_at_once: $('guild-once').checked },
+                at_subscribers: { live: $('at-subscribers-live').checked },
+                push_default: readFlags($('push-default')),
+                send_interval_seconds: value('send-interval'), disabled_group_list: disabled,
+            }, '本账号已保存。', { resetBot: true, beforeRender: () => { $('prefix').value = ''; } });
+        });
+
+        function immediateFlag(title, current, focusKey, payload, hidden = false) {
+            const flag = checkbox(title, current, async (event) => {
+                const value = event.target.checked;
+                if (!await action(payload(value), '开关已保存。')) event.target.checked = current;
+            }, hidden);
+            flag.firstChild.dataset.focusKey = focusKey;
+            return flag;
+        }
+
+        function upTest(room) {
+            const select = el('select');
+            select.setAttribute('aria-label', `${room.name} 测试推送类型`);
+            for (const [kind, title] of Object.entries(kinds)) {
+                const option = el('option', '', title);
+                option.value = kind;
+                select.append(option);
+            }
+            const test = button('测试推送', '', () => {
+                const kind = select.value;
+                if (window.confirm(`向符合条件的群发送「${room.name} · ${kinds[kind]}」测试推送？`)) {
+                    action({ action: 'test_push', uid: room.uid, kind }, '测试推送已发送。');
+                }
+            });
+            test.dataset.focusKey = `test:${room.uid}`;
+            return [select, test];
+        }
+
+        function upCover(room) {
+            const showing = cover?.uid === room.uid;
+            const toggle = button(showing ? '收起封面' : '预览封面', '', () => {
+                if (showing) {
+                    cover = undefined;
+                    renderUps();
+                } else {
+                    perform(async () => {
+                        const result = await request({ action: 'get_cover', bot_hash: state.bot_hash, uid: room.uid });
+                        if (!/^data:image\/(jpeg|png|gif|webp|avif|bmp);base64,[A-Za-z0-9+/=]+$/.test(result.image)) {
+                            throw new Error('封面回包格式错误。');
+                        }
+                        cover = { uid: room.uid, image: result.image };
+                        renderUps();
+                    });
+                }
+            });
+            toggle.dataset.focusKey = `cover:${room.uid}`;
+            toggle.setAttribute('aria-expanded', String(showing));
+            return toggle;
+        }
+
+        function renderUps() {
+            const list = $('up-list');
+            list.replaceChildren();
+            const rooms = Object.values(state.rooms);
+            if (!rooms.length) list.append(el('p', 'panel empty', '还没有主播。添加 UID 后，主播会显示在这里。'));
+            for (const room of rooms) {
+                const card = el('article', 'panel up-card');
+                const heading = el('header', 'up-title');
+                const identity = el('div', 'identity');
+                identity.append(el('h3', '', room.name), el('p', 'muted mono', `UID ${room.uid} · 房间 ${room.room_id || '—'}`));
+                const live = room.live_status === 1;
+                heading.append(identity, el('span', live ? 'pill good' : 'pill', live ? '直播中' : '未开播'));
+                const flags = el('div', 'row');
+                const checks = el('div', 'check-list');
+                for (const [kind, title] of Object.entries(kinds)) {
+                    flags.append(immediateFlag(title, room.enabled[kind], `up:${room.uid}:${kind}`,
+                        (value) => ({ action: 'toggle_up', uid: room.uid, kind, value })));
+                    const check = el('div', 'check-item');
+                    check.append(el('strong', '', title), el('time', '', clock(room.last_checks[kind])));
+                    if (room.last_errors[kind]) check.append(el('small', 'error', room.last_errors[kind]));
+                    checks.append(check);
+                }
+                const actions = el('div', 'up-actions');
+                actions.append(...upTest(room));
+                if (room.has_cover) actions.append(upCover(room));
+                const remove = button('删除', 'danger', () => {
+                    if (window.confirm(`从当前 Bot 删除「${room.name}」及其全部群关联与订阅者？`)) {
+                        action({ action: 'remove_up', uid: room.uid }, '主播及其群订阅已删除。');
+                    }
+                });
+                actions.append(remove);
+                card.append(heading, flags, checks, actions);
+                if (cover?.uid === room.uid) {
+                    const image = el('img', 'cover');
+                    image.src = cover.image;
+                    image.alt = `${room.name} 的直播封面`;
+                    card.append(image);
+                }
+                list.append(card);
+            }
+        }
+
+        $('up-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const uid = userId($('up-uid').value, 'qq');
+            if (!uid) {
+                notice('请输入数字 UID，不是直播间号。', 'error');
+                return;
+            }
+            action({ action: 'add_up', uid }, '主播已添加。请到「群订阅」关联接收推送的群。', {
+                beforeRender: () => { $('up-uid').value = ''; },
+            });
+        });
+
+        function targetCard(room, target, sid, platform) {
+            const card = el('section', 'target');
+            const heading = el('header', 'panel-heading');
+            const title = el('div', 'identity');
+            title.append(el('h3', '', room.name), el('small', 'mono', `UID ${room.uid} · 房间 ${room.room_id || '—'}`));
+            const detach = button('解除关联', 'micro danger', () => {
+                if (window.confirm(`解除「${room.name}」与本群的关联，并删除本群的订阅者？`)) {
+                    action({ action: 'remove_up', uid: room.uid, sid }, '已解除群关联；主播仍在本账号保留。');
+                }
+            });
+            heading.append(title, detach);
+            const flags = el('div', 'row');
+            for (const [kind, name] of Object.entries(kinds)) {
+                flags.append(immediateFlag(name, target[kind], `target:${sid}:${room.uid}:${kind}`,
+                    (value) => ({ action: 'toggle_up', uid: room.uid, sid, kind, value })));
+            }
+            const subscribers = el('ul', 'chips');
+            for (const userId of target.subscribers) {
+                subscribers.append(chip(userId, () => {
+                    action({ action: 'remove_subscriber', uid: room.uid, sid, user_id: userId }, '订阅者已移除。');
+                }));
+            }
+            if (!target.subscribers.length) subscribers.append(el('li', 'empty', '暂无订阅者'));
+            const form = el('form', 'form-row');
+            const input = el('input');
+            input.required = true;
+            input.placeholder = platform === 'qq' ? '订阅者 QQ 号' : '订阅者 OpenID';
+            input.setAttribute('aria-label', `${room.name} ${input.placeholder}`);
+            input.dataset.focusKey = `subscriber:${sid}:${room.uid}`;
+            if (platform === 'qq') input.inputMode = 'numeric';
+            const add = el('button', '', '添加订阅者');
+            add.type = 'submit';
+            form.addEventListener('submit', (event) => {
+                event.preventDefault();
+                const user = userId(input.value, platform);
+                if (!user) {
+                    notice(`请填有效的${platform === 'qq' ? ' QQ 号' : ' OpenID'}。`, 'error');
+                    return;
+                }
+                action({ action: 'add_subscriber', uid: room.uid, sid, user_id: user }, '订阅者已添加。');
+            });
+            form.append(input, add);
+            card.append(heading, flags, subscribers, form);
+            return card;
+        }
+
+        function attachForm(sid, available, index) {
+            const form = el('form', 'form-row');
+            const input = el('input');
+            input.required = true;
+            input.inputMode = 'numeric';
+            input.placeholder = '填已添加的主播 UID';
+            input.setAttribute('aria-label', '关联已有主播的 UID');
+            input.dataset.focusKey = `attach:${sid}`;
+            const options = el('datalist');
+            options.id = `room-options-${index}`;
+            input.setAttribute('list', options.id);
+            for (const room of available) {
+                const option = el('option', '', room.name);
+                option.value = room.uid;
+                options.append(option);
+            }
+            const attach = el('button', '', '关联主播');
+            attach.type = 'submit';
+            form.addEventListener('submit', (event) => {
+                event.preventDefault();
+                const uid = userId(input.value, 'qq');
+                if (!available.some((room) => room.uid === uid)) {
+                    notice('请选择已添加且尚未关联本群的主播 UID。', 'error');
+                    return;
+                }
+                action({ action: 'add_up', uid, sid }, '主播已关联本群。');
+            });
+            form.append(input, options, attach);
+            return form;
+        }
+
+        function groupDisclosure(sid, group, list, index) {
+            const content = el('div', 'expanded');
+            content.id = `group-detail-${index}`;
+            const available = [];
+            for (const room of list) {
+                const target = room.targets[sid];
+                if (target) content.append(targetCard(room, target, sid, group.platform));
+                else available.push(room);
+            }
+            if (!content.childElementCount) content.append(el('p', 'empty', '本群尚未关联主播。'));
+            if (available.length) content.append(attachForm(sid, available, index));
+            else if (!list.length) content.append(el('p', 'muted', '请先在「主播管理」添加主播。'));
+            return content;
+        }
+
+        function renderGroups() {
+            const bot = state.bots.find((item) => item.hash === state.bot_hash);
+            const isQQ = bot.sdk === 'onebot' && bot.platform === 'qq';
+            const isOfficial = bot.sdk === 'qqGuildv2_link' && bot.platform === 'qqGuild';
+            $('group-form').hidden = !isQQ && !isOfficial;
+            $('group-id-label').textContent = isQQ ? 'QQ群号' : 'QQ群 OpenID';
+            $('group-id').inputMode = isQQ ? 'numeric' : 'text';
+            $('group-help').textContent = isQQ ? '填写当前 Bot 所在的 QQ 群号码。'
+                : isOfficial ? '只支持宿主已识别的 QQ 群。请先在群内向 Bot 发送消息。' : '当前 Bot 不支持群订阅。';
+            const groups = Object.entries(state.groups);
+            $('group-empty').hidden = groups.length > 0;
+            $('group-table').hidden = groups.length === 0;
+            const list = $('group-list');
+            list.replaceChildren();
+            const rooms = Object.values(state.rooms);
+            for (const [index, [sid, group]] of groups.entries()) {
+                const row = el('tr', group.supported ? '' : 'group-disabled');
+                const id = el('td');
+                const identity = el('div', 'group-title');
+                const count = rooms.reduce((sum, room) => sum + Number(!!room.targets[sid]), 0);
+                if (!group.supported) {
+                    identity.append(el('strong', 'mono', group.group_id), el('small', '', '频道不支持'));
+                    id.append(identity);
+                    row.append(id);
+                    for (let i = 0; i < 6; i++) row.append(el('td', '', '—'));
+                    row.append(el('td', '', '只读'));
+                    list.append(row);
+                    continue;
+                }
+                const detailRow = el('tr', 'group-disclosure');
+                const detailCell = el('td');
+                detailCell.colSpan = 8;
+                detailRow.append(detailCell);
+                const disclosure = button('', 'micro', () => {
+                    if (expanded.delete(sid)) detailCell.replaceChildren();
+                    else expanded.add(sid);
+                    syncDisclosure();
+                });
+                disclosure.dataset.focusKey = `group:${sid}`;
+                disclosure.setAttribute('aria-controls', `group-panel-${index}`);
+                detailRow.id = `group-panel-${index}`;
+                function syncDisclosure() {
+                    const open = expanded.has(sid);
+                    detailRow.hidden = !open;
+                    disclosure.setAttribute('aria-expanded', String(open));
+                    disclosure.textContent = `${open ? '▾' : '▸'} ${group.group_id}`;
+                    if (open) detailCell.append(groupDisclosure(sid, group, rooms, index));
+                }
+                syncDisclosure();
+                identity.append(disclosure, el('small', '', platformName(group.platform)));
+                id.append(identity);
+                row.append(id);
+                for (const [kind, title] of Object.entries(kinds)) {
+                    const cell = el('td');
+                    cell.append(immediateFlag(`${group.group_id} ${title}`, group.push[kind], `group:${sid}:${kind}`,
+                        (value) => ({ action: 'save_group', sid, push: { ...group.push, [kind]: value } }), true));
+                    row.append(cell);
+                }
+                const atAll = el('td');
+                atAll.append(immediateFlag(`${group.group_id} @全体`, group.at_all, `group:${sid}:at`,
+                    (value) => ({ action: 'save_group', sid, at_all: value }), true));
+                const enabled = el('td');
+                enabled.append(immediateFlag(`${group.group_id} 启用群`, !group.disabled, `group:${sid}:enabled`,
+                    (value) => ({ action: 'save_group', sid, disabled: !value }), true));
+                row.append(atAll, el('td', 'mono', quotaText(group)), el('td', 'mono', count), enabled);
+                list.append(row, detailRow);
+            }
+        }
+
+        $('group-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const bot = state.bots.find((item) => item.hash === state.bot_hash);
+            const id = userId($('group-id').value, bot.platform);
+            if (!id) {
+                notice('请输入有效的 QQ 群号或 QQ 群 OpenID。', 'error');
+                return;
+            }
+            const sid = `${bot.sdk}|${bot.platform}|${id}`;
+            if (state.groups[sid]) {
+                expanded.add(sid);
+                renderGroups();
+                notice('该群已登记，已展开群订阅。');
+                return;
+            }
+            action({ action: 'save_group', sid }, '群已登记；可在下方关联主播。', {
+                beforeRender() { expanded.add(sid); $('group-id').value = ''; },
+            });
+        });
+
+        function renderStatus() {
+            const status = state.status;
+            for (const key of ['ticks', 'workers', 'queue']) $(key).textContent = status?.[key] ?? '—';
+            $('count-412').textContent = status?.count_412 ?? '—';
+            const checks = $('last-checks');
+            checks.replaceChildren();
+            for (const [kind, title] of Object.entries(kinds)) {
+                const item = el('div');
+                const time = clock(status?.last_checks?.[kind]);
+                const check = status?.kind_backoff?.[kind] ? `${time} · 退避中` : time;
+                item.append(el('dt', '', `最近${title}检查`), el('dd', 'mono', check));
+                checks.append(item);
+            }
+            const logs = $('logs');
+            logs.replaceChildren();
+            $('logs-empty').hidden = state.logs.length > 0;
+            for (const line of state.logs.slice().reverse()) {
+                const text = line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, (timestamp) => {
+                    return clock(new Date(timestamp).getTime() / 1000);
+                });
+                logs.append(el('li', 'mono', text));
+            }
+        }
+
+        reload('');
+    </script>
+</body>
+</html>

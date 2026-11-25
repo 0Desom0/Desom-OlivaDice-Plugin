@@ -1,0 +1,43 @@
+from pathlib import Path
+
+PLUGIN_NAME = 'BiliBiliNotify'
+DISPLAY_NAME = 'B站订阅推送'
+WEBUI_EVENT = 'BiliBiliNotify_WebUI_Config'
+DATA_ROOT = Path('plugin/data') / PLUGIN_NAME
+IMAGE_ROOT = Path('data/images') / PLUGIN_NAME / 'covers'
+GLOBAL_FILE = 'global.json'
+BOT_FILE = 'config.json'
+ROOMS_FILE = 'rooms.json'
+KINDS = ('live', 'dynamic', 'video')
+LABELS = dict(zip(KINDS, ('直播', '动态', '视频')))
+COMMAND_NAME = 'bili'
+allowed_prefix_list = ('.', '。', '/', '／')
+HTTP_TIMEOUT = 10
+IMAGE_TIMEOUT = 15
+
+# 总账号凭据与指纹独立于各 Bot 的轮询、群和主播开关。
+GLOBAL_DEFAULT = {
+    'version': 1,
+    'cookie': {'sessdata': '', 'bili_jct': '', 'buvid3': '', 'buvid4': '', 'b_nut': 0},
+    'user_agent': '',
+    'proxy': '',
+    'whitelist': [],
+    'buvid_cache': {'cookie': '', 'fetched_at': 0.0},
+    'log_to_file': False,
+    'meta': {'updated_at': 0, 'updated_by': ''},
+}
+BOT_DEFAULT = {
+    'version': 1,
+    'enable': True,
+    'prefix_list': list(allowed_prefix_list),
+    'command_name': COMMAND_NAME,
+    'poll': {'live_seconds': 10, 'dynamic_seconds': 600, 'video_seconds': 600, 'max_concurrent': 3},
+    'at_all': {'daily_limit': 10, 'guild_at_once': True},
+    'at_subscribers': {'live': True, 'dynamic': False, 'video': False},
+    'push_default': dict.fromkeys(KINDS, True),
+    'send_interval_seconds': 3,
+    'disabled_group_list': [],
+    'configured_master_list': [],
+    'meta': {'updated_at': 0},
+}
+ROOMS_DEFAULT = {'version': 1, 'rooms': {}, 'groups': {}}
