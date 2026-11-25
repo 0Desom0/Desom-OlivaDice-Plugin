@@ -175,6 +175,9 @@ def build_header(plugin_event) -> str:
     if not user_id:
         return ''
     text = OP_PATTERN.sub('', safe_text(getattr(data, 'message', ''))).strip()
+    # OlivOS 偶尔把没有正文的回调事件传成字符串 "null"/"None"，别把它印在引用行里
+    if text.lower() in {'null', 'none', 'undefined'}:
+        text = ''
     if len(text) > 40:
         text = f'{text[:40]}…'
     at_tag = f'<qqbot-at-user id="{user_id}" />'
@@ -283,24 +286,36 @@ def reply_markdown(plugin_event, content: str, keyboard_dict=None, images=None) 
     event_id = safe_text(extend.get('event_id')).strip()
     func_type = safe_text((getattr(plugin_event, 'plugin_info', {}) or {}).get('func_type', ''))
     # 带键盘/图片的 Markdown 必须是被动回复，否则客户端会把按钮退化成文字。
+    # 回调事件：先用卡片 msg_id（最稳），再试 event_id，最后才退回主动发送。
+    attempts = []
     if func_type == 'button_click':
+        if message_id and message_id != '-1':
+            attempts.append({'msg_id': message_id})
         if event_id:
-            payload['event_id'] = event_id
+            attempts.append({'event_id': event_id})
+        attempts.append({})
     elif message_id and message_id != '-1':
-        payload['msg_id'] = message_id
+        attempts.append({'msg_id': message_id})
     elif event_id:
-        payload['event_id'] = event_id
+        attempts.append({'event_id': event_id})
+    else:
+        attempts.append({})
     if callable(sender):
-        try:
-            result = sender(**payload)
-        except Exception as error:
-            log_failure(f'indeAPI 调用抛错 {type(error).__name__}: {error}')
-            result = None
-        if isinstance(result, dict) and result.get('active', False):
-            _release_images(payload)
-            return True
-        if isinstance(result, dict):
-            log_failure(f'indeAPI 发送未激活：{result.get("data")}')
+        for extra in attempts:
+            call_payload = dict(payload, **extra)
+            try:
+                result = sender(**call_payload)
+            except Exception as error:
+                log_failure(f'indeAPI 调用抛错 {type(error).__name__}: {error}')
+                result = None
+            if isinstance(result, dict) and result.get('active', False):
+                _release_images(payload)
+                return True
+            if isinstance(result, dict):
+                log_failure(
+                    f'indeAPI 发送未激活（凭据 {extra or "主动"}）：{result.get("data")}'
+                )
+        payload = dict(payload, **attempts[-1])
     # 二级通道：直接走 qqGuildv2 适配器，绕过 indeAPI 的包装层。
     try:
         import OlivOS

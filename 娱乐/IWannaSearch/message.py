@@ -1408,6 +1408,22 @@ def parse_iw_command(plugin_event, remaining_text: str, Proc=None) -> None:
         handle_iw_today(plugin_event)
         return
 
+    jump_info = utils.parse_command(
+        command_argument,
+        prefix_list=[],
+        allow_no_prefix=True,
+        command_name=['跳页', '跳转', 'jump', 'page'],
+    )
+    if jump_info['is_command']:
+        session = get_valid_selection_session(plugin_event)
+        if not session:
+            utils.reply_message(
+                plugin_event, render_custom_message(plugin_event, 'reply_session_expired')
+            )
+            return
+        handle_jump_page_input(plugin_event, session, jump_info['command_argument'])
+        return
+
     random_info = utils.parse_command(
         command_argument,
         prefix_list=[],

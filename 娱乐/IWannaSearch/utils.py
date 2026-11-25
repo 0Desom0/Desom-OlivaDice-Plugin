@@ -1545,11 +1545,33 @@ def reply_message(
             sender = getattr(getattr(plugin_event, 'indeAPI', None), 'send_message', None)
             extend = getattr(getattr(plugin_event, 'data', None), 'extend', None)
             event_id = safe_str(extend.get('event_id')) if isinstance(extend, dict) else ''
-            if chat_type and chat_id and callable(sender):
-                return sender(
-                    chat_type=chat_type, chat_id=chat_id, message=final_message, event_id=event_id or None
-                )
-            return None
+            card_id = safe_str(getattr(getattr(plugin_event, 'data', None), 'message_id', '')).strip()
+            if not (chat_type and chat_id and callable(sender)):
+                return None
+            # 回调回复：先试卡片 msg_id（最稳），再试 event_id，最后退回主动发送。
+            last_result = None
+            for extra in (
+                {'msg_id': card_id} if card_id and card_id != '-1' else None,
+                {'event_id': event_id} if event_id else None,
+                {},
+            ):
+                if extra is None:
+                    continue
+                try:
+                    result = sender(
+                        chat_type=chat_type, chat_id=chat_id, message=final_message, **(extra or {})
+                    )
+                except Exception as send_error:
+                    error_log(
+                        get_runtime_proc(),
+                        f'[回调] send_message 失败（{extra or "主动"}）：{type(send_error).__name__}: {send_error}',
+                    )
+                    continue
+                last_result = result
+                if isinstance(result, dict) and result.get('active', False):
+                    return result
+                error_log(get_runtime_proc(), f'[回调] send_message 未激活（{extra or "主动"}）：{result}')
+            return last_result
         return plugin_event.reply(outgoing_message)
     except Exception:
         return None

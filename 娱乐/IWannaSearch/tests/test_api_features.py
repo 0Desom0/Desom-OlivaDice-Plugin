@@ -7,11 +7,27 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 PACKAGE = '_iwanna_search_feature_test'
+
+
+def _fake_event(message_text: str):
+    """最小 plugin_event：够走 handle_message 的分发即可。"""
+    import types
+    data = types.SimpleNamespace(
+        user_id='U', group_id='G', message_id='M', message=message_text,
+        extend={'flag_from_qq': True, 'flag_from_direct': False},
+    )
+    event = types.SimpleNamespace(
+        data=data,
+        plugin_info={'func_type': 'group_message'},
+        platform={'platform': 'qqguild'},
+    )
+    return event
 
 
 class IWannaSearchAPIFeaturesTest(unittest.TestCase):
@@ -303,21 +319,65 @@ class IWannaSearchAPIFeaturesTest(unittest.TestCase):
         # 给了 date_in 后不再用 year 生成 date_from/date_to
         self.assertFalse(any(k in ('date_from', 'date_to') for k, _ in tuples))
 
+    def test_jump_page_is_a_root_subcommand(self):
+        """`.iw 跳页 2` 必须走翻页，而不是当成搜索关键词。"""
+        session = {'results': [{'id': str(i), 'title': f'G{i}'} for i in range(20)], 'count': 20, 'page_size': 8, 'page_index': 0}
+        with (
+            mock.patch.object(self.message, 'get_valid_selection_session', return_value=session),
+            mock.patch.object(self.message, 'handle_jump_page_input') as jump_mock,
+        ):
+            self.message.handle_message(_fake_event('/iw 跳页 2'), None)
+        jump_mock.assert_called_once()
+        self.assertEqual(str(jump_mock.call_args[0][2]).strip(), '2')
+
+    def test_button_callback_reply_tries_passive_then_active(self):
+        """回调回复顺序：卡片 msg_id → event_id → 主动。"""
+        calls = []
+        class _Sender:
+            def __call__(self, **kwargs):
+                calls.append(dict(kwargs))
+                return {'active': len(calls) == 3}
+        fake = _fake_event('/iw x')
+        fake.plugin_info = {'func_type': 'button_click'}
+        fake.data.extend = {'event_id': 'EVT-1', 'chat_type': 'qq_group', 'chat_id': 'G'}
+        fake.data.message_id = 'CARD-1'
+        plugin_event = type('E', (), {
+            'data': fake.data,
+            'plugin_info': fake.plugin_info,
+            'platform': fake.platform,
+        })()
+        from IWannaSearch import utils as iw_utils
+        with (
+            mock.patch.object(iw_utils, 'get_runtime_proc', return_value=None),
+            mock.patch.object(iw_utils.markdown, 'reply_markdown', return_value=False),
+        ):
+            plugin_event.indeAPI = type('A', (), {'send_message': _Sender()})()
+            iw_utils.reply_message(plugin_event, '翻到第 2 页')
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0].get('msg_id'), 'CARD-1')
+        self.assertEqual(calls[1].get('event_id'), 'EVT-1')
+        self.assertNotIn('msg_id', calls[2])
+        self.assertNotIn('event_id', calls[2])
+
     def test_build_game_template_value_meta(self):
         """测试列表模板字段 meta 在有评分难度、仅评分、均无时的输出。"""
         both = self.function.build_game_template_value(
             {'id': '21342', 'title': 'I wanna be the Cerulean', 'rating': 8.8, 'difficulty': 71.7},
             index=1,
         )
-        self.assertEqual(both['meta'], ' · 评分 8.8/10 · 难度 71.7/100')
+        self.assertEqual(
+            both['meta'],
+            ' · <font color="#FF6B35">评分 8.8/10</font>'
+            ' · <font color="#FF6B35">难度 71.7/100</font>',
+        )
         rendered = self.message_custom.default_custom_message_dict['reply_multiple_item'].format(**both)
-        self.assertEqual(rendered, '1. [21342] I wanna be the Cerulean · 评分 8.8/10 · 难度 71.7/100')
+        self.assertIn('<font color="#FF6B35">评分 8.8/10</font>', rendered)
 
         only_rating = self.function.build_game_template_value(
             {'id': '100', 'title': 'Only Rating', 'rating': 7.0, 'difficulty': None},
             index=2,
         )
-        self.assertEqual(only_rating['meta'], ' · 评分 7.0/10')
+        self.assertEqual(only_rating['meta'], ' · <font color="#FF6B35">评分 7.0/10</font>')
 
         none_both = self.function.build_game_template_value(
             {'id': '101', 'title': 'No Score', 'rating': None, 'difficulty': None},

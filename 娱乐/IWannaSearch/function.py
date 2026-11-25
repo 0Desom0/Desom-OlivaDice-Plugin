@@ -20,6 +20,7 @@ from . import utils
 
 
 function_module_note = 'I Wanna Archive API 查询模块。'
+MARK_COLOR = "#FF6B35"
 default_empty_text = '暂无'
 
 
@@ -1614,10 +1615,12 @@ def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict
     rating_text = format_score_value(raw_rating, 10)
     difficulty_text = format_score_value(raw_difficulty, 100)
     meta_parts = []
+    # 醒目标注：橙红色（#FF6B35）在这套深色卡片上对比强、又不刺眼；
+    # QQ Markdown 认 <font color>，纯文本回退时 convert 之外的路径也不会漏标签。
     if not value_is_empty(raw_rating) and rating_text != default_empty_text:
-        meta_parts.append(f' · 评分 {rating_text}')
+        meta_parts.append(f' · <font color="{MARK_COLOR}">评分 {rating_text}</font>')
     if not value_is_empty(raw_difficulty) and difficulty_text != default_empty_text:
-        meta_parts.append(f' · 难度 {difficulty_text}')
+        meta_parts.append(f' · <font color="{MARK_COLOR}">难度 {difficulty_text}</font>')
     return {
         'index': safe_text(index),
         'id': safe_text(game_item.get('id', default_empty_text), default_empty_text),

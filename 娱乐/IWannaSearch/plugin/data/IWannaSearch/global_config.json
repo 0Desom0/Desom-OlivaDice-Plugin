@@ -1,0 +1,13 @@
+{
+  "global_enable_switch": true,
+  "global_debug_mode_switch": false,
+  "api_base_url": "https://fangame-archive.com",
+  "api_timeout_seconds": 12,
+  "result_page_size": 8,
+  "selection_timeout_seconds": 300,
+  "max_download_concurrency": 5,
+  "cover_cache_max_items": 100,
+  "local_index_enable": true,
+  "index_refresh_hours": 24,
+  "index_build_timeout_seconds": 180
+}
