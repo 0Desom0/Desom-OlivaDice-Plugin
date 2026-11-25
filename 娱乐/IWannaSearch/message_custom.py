@@ -115,7 +115,7 @@ default_custom_message_dict = {
 · 标题：{title}
 · 作者：{creator}
 · 发布日期：{release_date}
-· 评分：{rating}  难度：{difficulty}
+· 评分：{rating_mark}  难度：{difficulty_mark}
 · 评分人数：{rating_count}
 · 标签：{tags}
 · 游戏引擎：{engine}
@@ -208,7 +208,7 @@ custom_message_note_dict = {
     'reply_random_result_prefix': '【random/rand 结果前缀】用于随机游戏详情前缀。',
     'reply_game_metadata': '【游戏元数据】可用变量：{id} {title} {creator} {release_date} {rating} {difficulty} {rating_count} {tags} {engine} {sources} {external_urls} {page_url} {url} {file_size}',
     'reply_multiple_header': '【多个结果头部】可用变量：{count}',
-    'reply_multiple_item': '【多个结果列表项】可用变量：{index} {id} {title} {meta} {creator} {tags} {url}',
+    'reply_multiple_item': '【多个结果列表项】可用变量：{index} {index_mark} {id} {title} {meta} {creator} {tags} {url}',
     'reply_multiple_footer': '【多个结果页脚】结果不超过一页时的输入提示。可提示 end/结束 退出。',
     'reply_page_info': '【分页页码】可用变量：{current_page} {total_page}',
     'reply_result_limited_note': '【API 返回限制提示】当 count 大于实际 results 数量时显示。可用变量：{count} {available_count} {total_page}',

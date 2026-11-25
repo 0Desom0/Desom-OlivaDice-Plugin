@@ -20,7 +20,18 @@ from . import utils
 
 
 function_module_note = 'I Wanna Archive API 查询模块。'
-MARK_COLOR = "#FF6B35"
+# 三个高亮色：序号橙红、评分天蓝、难度浅紫，深色卡片上都清楚且互不混淆
+MARK_COLOR_INDEX = "#FF6B35"
+MARK_COLOR_RATING = "#4FC3F7"
+MARK_COLOR_DIFFICULTY = "#C792EA"
+
+
+def mark_text(text: str, color: str = MARK_COLOR_INDEX) -> str:
+    """需要醒目标注的片段：语法统一收在这里，改一处就够（QQ 认 KaTeX 的 	extcolor）。"""
+    if not text:
+        return ''
+    # LaTeX 数学模式会吞掉空格，用 	ext{} 包住正文把空格保住
+    return f'$\textcolor{{{color}}}{{\text{{{text}}}}}$'
 default_empty_text = '暂无'
 
 
@@ -1616,20 +1627,28 @@ def build_game_template_value(game_item: Dict[str, Any], index: int = 0) -> Dict
     difficulty_text = format_score_value(raw_difficulty, 100)
     meta_parts = []
     # 醒目标注：橙红色（#FF6B35）在这套深色卡片上对比强、又不刺眼；
-    # QQ Markdown 认 <font color>，纯文本回退时 convert 之外的路径也不会漏标签。
+    # QQ Markdown 不吃 <font color>，实测认 KaTeX 的 	extcolor（见 mark_text）。
     if not value_is_empty(raw_rating) and rating_text != default_empty_text:
-        meta_parts.append(f' · <font color="{MARK_COLOR}">评分 {rating_text}</font>')
+        meta_parts.append(f' · 评分 {mark_text(rating_text, MARK_COLOR_RATING)}')
     if not value_is_empty(raw_difficulty) and difficulty_text != default_empty_text:
-        meta_parts.append(f' · <font color="{MARK_COLOR}">难度 {difficulty_text}</font>')
+        meta_parts.append(f' · 难度 {mark_text(difficulty_text, MARK_COLOR_DIFFICULTY)}')
     return {
         'index': safe_text(index),
+        # 列表序号由 markdown 层上色（见 markdown.mark_index），模板仍可用 {index}
+        'index_mark': mark_text(safe_text(index)) if safe_text(index) else '',
         'id': safe_text(game_item.get('id', default_empty_text), default_empty_text),
         'title': safe_text(game_item.get('title', default_empty_text), default_empty_text),
         'meta': ''.join(meta_parts),
         'creator': safe_text(game_item.get('creator', default_empty_text), default_empty_text),
         'release_date': format_release_date(game_item.get('release_date')),
         'rating': rating_text,
+        'rating_mark': mark_text(rating_text, MARK_COLOR_RATING)
+        if rating_text != default_empty_text
+        else default_empty_text,
         'difficulty': difficulty_text,
+        'difficulty_mark': mark_text(difficulty_text, MARK_COLOR_DIFFICULTY)
+        if difficulty_text != default_empty_text
+        else default_empty_text,
         'rating_count': format_rating_count(game_item.get('rating_count')),
         'tags': tag_text,
         'engine': format_engine_value(game_item.get('engine')),

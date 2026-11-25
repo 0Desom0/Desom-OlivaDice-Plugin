@@ -13,6 +13,13 @@ OP_PATTERN = re.compile(r'\[OP:[^\]]*\]')
 HEADING_PATTERN = re.compile(r'【([^】]+)】')
 # 列表项：`1. xxx`（搜索结果是编号列表）。
 LIST_ITEM_PATTERN = re.compile(r'^(\d+)[.、)]\s+(.+)$')
+# 序号高亮色（与 function.MARK_COLOR_INDEX 一致；这里独立定义避免循环 import）
+INDEX_MARK_COLOR = "#FF6B35"
+
+
+def mark_index(number: str) -> str:
+    """序号上色：QQ 认 KaTeX 的 \textcolor，\text{} 保住空格。"""
+    return f'$\textcolor{{{INDEX_MARK_COLOR}}}{{\text{{{number}}}}}$'
 # 详情页里原本文本形式的链接行，改由按钮承载后从正文剔除。
 LINK_LINE_PATTERN = re.compile(r'^(外部页面|外部链接|档案页面|档案页|下载链接)[：:]\s*\S*https?://')
 # 字段行：`· ID：11510` 或 `· 评分：8.1/10  难度：91.2/100`
@@ -62,7 +69,9 @@ def convert(content: str) -> str:
         item_match = LIST_ITEM_PATTERN.match(stripped)
         if item_match:
             # `1. [11510] 标题` → 整行加粗；标题完整显示，长标题由客户端折行
-            line_list.append(f'**{item_match.group(1)}. {item_match.group(2)}**')
+            line_list.append(
+                f'**{mark_index(item_match.group(1))}. {item_match.group(2)}**'
+            )
             continue
         line_list.append(HEADING_PATTERN.sub(lambda match: f'**{match.group(1)}**', line))
     # 压缩连续空行，保持条目之间恰好一个空行

@@ -365,19 +365,21 @@ class IWannaSearchAPIFeaturesTest(unittest.TestCase):
             {'id': '21342', 'title': 'I wanna be the Cerulean', 'rating': 8.8, 'difficulty': 71.7},
             index=1,
         )
+        self.assertEqual(both['index'], '1')
+        self.assertEqual(both['index_mark'], '$\textcolor{#FF6B35}{\text{1}}$')
         self.assertEqual(
             both['meta'],
-            ' · <font color="#FF6B35">评分 8.8/10</font>'
-            ' · <font color="#FF6B35">难度 71.7/100</font>',
+            ' · 评分 $\textcolor{#4FC3F7}{\text{8.8/10}}$'
+            ' · 难度 $\textcolor{#C792EA}{\text{71.7/100}}$',
         )
         rendered = self.message_custom.default_custom_message_dict['reply_multiple_item'].format(**both)
-        self.assertIn('<font color="#FF6B35">评分 8.8/10</font>', rendered)
+        self.assertIn('$\textcolor{#4FC3F7}{\text{8.8/10}}$', rendered)
 
         only_rating = self.function.build_game_template_value(
             {'id': '100', 'title': 'Only Rating', 'rating': 7.0, 'difficulty': None},
             index=2,
         )
-        self.assertEqual(only_rating['meta'], ' · <font color="#FF6B35">评分 7.0/10</font>')
+        self.assertEqual(only_rating['meta'], ' · 评分 $\textcolor{#4FC3F7}{\text{7.0/10}}$')
 
         none_both = self.function.build_game_template_value(
             {'id': '101', 'title': 'No Score', 'rating': None, 'difficulty': None},
