@@ -83,46 +83,211 @@ def _category_text(detail: dict[str, Any]) -> str:
     ) or '未分类'
 
 
+HELP_TOPIC_ORDER = ['query', 'picks', 'pools', 'endless', 'manage']
+HELP_TOPIC_LABELS = {
+    'query': ('查询', 'Query'),
+    'picks': ('推荐', 'Picks'),
+    'pools': ('挑图池', 'Pools'),
+    'endless': ('无尽', 'Endless'),
+    'manage': ('管理', 'Manage'),
+}
+HELP_TOPIC_ALIAS = {
+    'query': 'query',
+    '查询': 'query',
+    'search': 'query',
+    'find': 'query',
+    'picks': 'picks',
+    'pick': 'picks',
+    '推荐': 'picks',
+    'recommend': 'picks',
+    'pools': 'pools',
+    'pool': 'pools',
+    '池子': 'pools',
+    '挑图池': 'pools',
+    '图池': 'pools',
+    'endless': 'endless',
+    '无尽': 'endless',
+    'manage': 'manage',
+    '管理': 'manage',
+    'switch': 'manage',
+    '开关': 'manage',
+}
+
+
+def resolve_help_topic(topic: Any) -> str:
+    text = utils.safe_str(topic).strip().lower()
+    return HELP_TOPIC_ALIAS.get(text, '')
+
+
 def render_help() -> tuple[str, dict[str, Any] | None]:
+    """帮助首页：只列分类与一句话说明，详细命令点按钮再看。"""
     text = '\n'.join(
         [
             '## Celeste Mod 工具',
-            '> 前缀 `.clst`；中英文命令都能用，也可以直接点下面的按钮',
+            '> 选一类看详细命令；中英文都能用',
             '',
-            '**查询 Query**',
-            '- `.clst 关键词` / `.clst keyword` 标题搜索',
-            '- `.clst id 424541` 按 GameBanana ID 精确查询 / exact lookup',
-            '- `.clst 作者 名称` / `.clst author` 按投稿者查询',
-            '- `.clst 分类 Maps` / `.clst category` 按主分类、子分类查询',
-            '- `.clst 标签 关键词` / `.clst tag` 按子分类、标题与简介关键词查询',
-            '',
-            '**推荐 Picks**',
-            '- `.clst 随机 [1-10]` / `.clst random` 全库随机地图',
-            '- `.clst 发现` / `.clst pools` 六个挑图池：新图/老图 · 热门/冷门 · 好图/烂图',
-            '  池名英文 new / old / hot / cold / good / bad，例如 `.clst latest 3`',
-            '- `.clst today` 今日 Mod（每人每天一张，当天固定）',
-            '- `.clst 更新` / `.clst update` 骰主手动重建索引',
-            '',
-            '**无尽挑战 Endless**',
-            '- `.clst 无尽 开始` / `.clst endless start`',
-            '- `.clst 无尽 帮助` / `.clst endless help`',
+            '- **查询 Query** 标题 / ID / 作者 / 分类 / 标签',
+            '- **推荐 Picks** 随机、发现、今日 Mod、更新索引',
+            '- **挑图池 Pools** 新老 · 冷热 · 好烂，点一下直接抽',
+            '- **无尽 Endless** 连抽通关挑战',
+            '- **管理 Manage** 本群开关',
         ]
     )
     rows = [
         [
-            button('发现', 'clst:pools', style=1, callback=True),
-            button('随机一张', 'clst:rnd:1', callback=True),
+            button('查询', 'clst:help:query', style=1, callback=True),
+            button('推荐', 'clst:help:picks', callback=True),
         ],
         [
-            button('随机 3 张', 'clst:rnd:3', callback=True),
-            button('今日 Mod', 'clst:today', callback=True),
+            button('挑图池', 'clst:help:pools', callback=True),
+            button('无尽', 'clst:help:endless', callback=True),
         ],
-        [
-            button('无尽帮助', 'clst:en:help', callback=True),
-            button('刷新帮助', 'clst:help', callback=True),
-        ],
+        [button('管理', 'clst:help:manage', callback=True)],
     ]
     return text, keyboard(rows)
+
+
+def render_help_topic(
+    topic: str,
+    pools: list[dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    """分类帮助页：这一类的完整命令 + 能直接点的按钮。"""
+    key = resolve_help_topic(topic)
+    if key == 'query':
+        text = '\n'.join(
+            [
+                '## 查询 Query',
+                '> 中英文命令都能用；搜索列表直接回序号看详情',
+                '',
+                '- `.clst 关键词` / `.clst keyword` 标题搜索',
+                '- `.clst id 424541` 精确查询 / exact lookup',
+                '- `.clst 作者 名称` / `.clst author` 按投稿者',
+                '- `.clst 分类 Maps` / `.clst category` 按分类',
+                '- `.clst 标签 关键词` / `.clst tag` 按标签',
+                '- 翻页：`.clst 上一页` / `.clst 下一页` / `.clst 跳页 3`',
+            ]
+        )
+        rows = [
+            [
+                button('作者查询', '.clst 作者 '),
+                button('分类查询', '.clst 分类 '),
+            ],
+            [
+                button('标签查询', '.clst 标签 '),
+                button('ID 查询', '.clst id '),
+            ],
+            [button('返回帮助', 'clst:help', callback=True)],
+        ]
+        return text, keyboard(rows)
+
+    if key == 'picks':
+        text = '\n'.join(
+            [
+                '## 推荐 Picks',
+                '> 随机 / 今日 / 挑图池；中英文都能用',
+                '',
+                '- `.clst 随机 [1-10]` / `.clst random` 全库随机地图',
+                '- `.clst 发现` / `.clst pools` 六个挑图池总入口',
+                '- `.clst today` 今日 Mod（每人每天一张，当天固定）',
+                '- `.clst 更新` / `.clst update` 骰主手动重建索引',
+            ]
+        )
+        rows = [
+            [
+                button('随机一张', 'clst:rnd:1', style=1, callback=True),
+                button('随机 3 张', 'clst:rnd:3', callback=True),
+            ],
+            [
+                button('今日 Mod', 'clst:today', callback=True),
+                button('挑图池', 'clst:help:pools', callback=True),
+            ],
+            [button('返回帮助', 'clst:help', callback=True)],
+        ]
+        return text, keyboard(rows)
+
+    if key == 'pools':
+        pool_list = pools if pools is not None else function.build_all_pools()
+        lines = [
+            '## 挑图池 Pools',
+            '> 点按钮抽 1 张；要一次多张发 `.clst 新图 3`',
+            '',
+        ]
+        for pool in pool_list:
+            size = int(pool.get('pool_size', 0) or 0)
+            lines.append(
+                f"- **{pool.get('label', '池子')}** · {pool.get('rule', '')} · 池内 {size:,} 张"
+            )
+        lines.append('')
+        lines.append('池名英文：new / old / hot / cold / good / bad')
+        rows: list[list[dict[str, Any]]] = []
+        row: list[dict[str, Any]] = []
+        for pool in pool_list:
+            row.append(
+                button(
+                    utils.safe_str(pool.get('short')) or '池子',
+                    f"clst:pool:{pool.get('key')}:1",
+                    style=1 if pool.get('pool_size') else 0,
+                    callback=True,
+                )
+            )
+            if len(row) >= 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([button('返回帮助', 'clst:help', callback=True)])
+        return '\n'.join(lines), keyboard(rows)
+
+    if key == 'endless':
+        text = '\n'.join(
+            [
+                '## 无尽挑战 Endless',
+                '> 中英文命令都能用；完整玩法在「无尽帮助」里',
+                '',
+                '- `.clst 无尽 开始 [0-10]` / `.clst endless start`',
+                '- `.clst 无尽 状态` / `.clst endless status`',
+                '- `.clst 无尽 详情` / `.clst endless detail`',
+                '- `.clst 无尽 帮助` / `.clst endless help`',
+            ]
+        )
+        rows = [
+            [
+                button('开始挑战', 'clst:en:start', style=1, callback=True),
+                button('状态', 'clst:en:status', callback=True),
+            ],
+            [
+                button('记录', 'clst:en:record', callback=True),
+                button('无尽帮助', 'clst:en:help', callback=True),
+            ],
+            [button('返回帮助', 'clst:help', callback=True)],
+        ]
+        return text, keyboard(rows)
+
+    if key == 'manage':
+        text = '\n'.join(
+            [
+                '## 群管理 Manage',
+                '> 群主、群管或骰主可以修改本群开关',
+                '',
+                '- `.clst status` 查看本群开关',
+                '- `.clst on` / `.clst off` 开启 / 关闭插件',
+                '- `.clst 更新` / `.clst update` 骰主手动重建索引',
+            ]
+        )
+        rows = [
+            [
+                button('查看状态', 'clst:status', callback=True),
+                button('开启插件', '.clst on'),
+            ],
+            [
+                button('关闭插件', '.clst off'),
+                button('更新索引', '.clst 更新'),
+            ],
+            [button('返回帮助', 'clst:help', callback=True)],
+        ]
+        return text, keyboard(rows)
+
+    return render_help()
 
 
 def render_list(

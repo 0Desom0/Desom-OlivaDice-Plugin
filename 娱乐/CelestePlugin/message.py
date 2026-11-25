@@ -205,7 +205,7 @@ def process_button_data(plugin_event, button_data: str) -> bool:
     argument = parts[2] if len(parts) > 2 else ''
 
     if action == 'help':
-        send_help(plugin_event)
+        send_help(plugin_event, argument)
         return True
     if action == 'status':
         handle_plugin_switch(plugin_event, 'plugin_status')
@@ -419,12 +419,21 @@ def reply_detail(
     )
 
 
-def send_help(plugin_event) -> None:
+def send_help(plugin_event, topic: str = '') -> None:
+    """帮助首页只列分类；`帮助 查询` 或点按钮再看某一类的完整命令。"""
+    topic_key = render.resolve_help_topic(topic)
     if utils.can_send_markdown(plugin_event):
-        text, keyboard = render.render_help()
+        if topic_key:
+            pools = function.build_all_pools() if topic_key == 'pools' else None
+            text, keyboard = render.render_help_topic(topic_key, pools)
+        else:
+            text, keyboard = render.render_help()
         if utils.reply_markdown(plugin_event, text, keyboard):
             return
-    utils.reply_message(plugin_event, message_custom.help_text)
+    if topic_key:
+        utils.reply_message(plugin_event, message_custom.help_topic_text(topic_key))
+    else:
+        utils.reply_message(plugin_event, message_custom.help_text)
 
 
 def send_selection_page(plugin_event, session: dict[str, Any]) -> None:
@@ -1079,7 +1088,7 @@ def dispatch_clst_command(plugin_event, command_argument: str) -> None:
 
     subcommand, sub_argument = parse_subcommand(argument)
     if subcommand == 'help':
-        send_help(plugin_event)
+        send_help(plugin_event, sub_argument)
         return
     if subcommand in ['plugin_status', 'plugin_on', 'plugin_off']:
         handle_plugin_switch(plugin_event, subcommand)

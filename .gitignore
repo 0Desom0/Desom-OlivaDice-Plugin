@@ -22,3 +22,5 @@ tts_samples/
 voice
 tts_debug/
 .workbuddy
+# CelestePlugin 运行期缓存（本地索引/封面），别提交
+/娱乐/CelestePlugin/plugin/

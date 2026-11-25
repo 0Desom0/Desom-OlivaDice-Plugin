@@ -1259,49 +1259,6 @@ class CelestePluginFunctionTest(unittest.TestCase):
         text, _keyboard = render.render_pool_home(pool_list)
         self.assertIn('池内 0 张（暂时抽不了）', text)
 
-    def test_help_buttons_show_full_labels_two_per_row(self):
-        text, kb = render.render_help()
-        self.assertIn('.clst 发现', text)
-        self.assertNotIn('.clst 热门', text)
-        rows = kb['content']['rows']
-        self.assertLessEqual(len(rows), render.MAX_ROWS)
-        labels = []
-        for row in rows:
-            # 一行超过 2 个时客户端会把标签截成「热门…」
-            self.assertLessEqual(len(row['buttons']), 2)
-            labels.extend(item['render_data']['label'] for item in row['buttons'])
-        self.assertIn('发现', labels)
-        self.assertIn('今日 Mod', labels)
-        # 半宽按钮放得下 6 个字，超过就有可能被截断
-        for label in labels:
-            self.assertLessEqual(len(label), 6, label)
-
-    def test_help_covers_chinese_and_english_for_every_entry(self):
-        text, _kb = render.render_help()
-        pairs = [
-            ('`.clst 关键词`', '`.clst keyword`'),
-            ('`.clst id 424541`', 'exact lookup'),
-            ('`.clst 作者 名称`', '`.clst author`'),
-            ('`.clst 分类 Maps`', '`.clst category`'),
-            ('`.clst 标签 关键词`', '`.clst tag`'),
-            ('`.clst 随机 [1-10]`', '`.clst random`'),
-            ('`.clst 发现`', '`.clst pools`'),
-            ('`.clst today`', ''),
-            ('`.clst 更新`', '`.clst update`'),
-            ('`.clst 无尽 开始`', '`.clst endless start`'),
-            ('`.clst 无尽 帮助`', '`.clst endless help`'),
-        ]
-        for chinese, english in pairs:
-            self.assertIn(chinese, text)
-            if english:
-                self.assertIn(english, text)
-        # 每个条目都要中文 + 英文各一份
-        for line in text.splitlines():
-            if not line.startswith('- `'):
-                continue
-            self.assertTrue(any('一' <= char <= '鿿' for char in line), line)
-            self.assertRegex(line, r'[A-Za-z]{3,}', line)
-
     def test_endless_help_covers_chinese_and_english_for_every_entry(self):
         text, _kb = render.render_endless_help()
         self.assertIn('`.clst 无尽 全收集`', text)
@@ -1312,22 +1269,106 @@ class CelestePluginFunctionTest(unittest.TestCase):
             self.assertTrue(any('一' <= char <= '鿿' for char in line), line)
             self.assertIn('endless ', line)
 
-    def test_plain_text_help_also_has_english_aliases(self):
-        plain = message_custom.help_text
-        for token in [
-            'keyword',
-            'author',
-            'category',
-            'tag',
-            'random',
-            'pools',
-            'update',
-            'endless start',
-        ]:
-            self.assertIn(token, plain)
-        self.assertIn('new|old|hot|cold|good|bad', plain)
-        for token in ['endless status', 'endless clear', 'endless undo', 'endless record']:
-            self.assertIn(token, message_custom.endless_help_text)
+    def test_help_home_is_short_with_topic_buttons(self):
+        text, kb = render.render_help()
+        # 首页不再堆命令，只列分类
+        self.assertLessEqual(len(text.splitlines()), 10)
+        self.assertNotIn('`.clst id 424541`', text)
+        buttons = [item for row in kb['content']['rows'] for item in row['buttons']]
+        self.assertEqual(
+            [item['action']['data'] for item in buttons],
+            [
+                'clst:help:query',
+                'clst:help:picks',
+                'clst:help:pools',
+                'clst:help:endless',
+                'clst:help:manage',
+            ],
+        )
+        self.assertEqual([item['render_data']['label'] for item in buttons],
+                         ['查询', '推荐', '挑图池', '无尽', '管理'])
+        for row in kb['content']['rows']:
+            self.assertLessEqual(len(row['buttons']), 2)
+
+    def test_help_topic_pages_are_bilingual_and_fit(self):
+        fake_pools = [
+            {'key': 'new', 'label': '新图池', 'short': '新图', 'rule': '发布 < 30 天', 'pool_size': 79},
+            {'key': 'hot', 'label': '热门池', 'short': '热门', 'rule': '下载 > 1,000', 'pool_size': 533},
+        ]
+        with mock.patch.object(function, 'build_all_pools', return_value=fake_pools):
+            for topic in render.HELP_TOPIC_ORDER:
+                text, kb = render.render_help_topic(topic)
+                self.assertTrue(text.startswith('##'), topic)
+                rows = kb['content']['rows']
+                self.assertLessEqual(len(rows), render.MAX_ROWS, topic)
+                for row in rows:
+                    self.assertLessEqual(len(row['buttons']), 2, topic)
+                # 每一页都要有中文命令、有英文别名（pools 页条目是池子卡片，整页看英文即可）
+                entry_lines = [line for line in text.splitlines() if line.startswith('- ')]
+                self.assertTrue(entry_lines, topic)
+                for line in entry_lines:
+                    self.assertTrue(
+                        any('\u4e00' <= char <= '\u9fff' for char in line), f'{topic}: {line}'
+                    )
+                self.assertRegex(text, r'[A-Za-z]{3,}', topic)
+                # 每一页都能回首页
+                payloads = {b['action']['data'] for row in rows for b in row['buttons']}
+                self.assertIn('clst:help', payloads, topic)
+
+    def test_help_topic_resolution_and_fallback(self):
+        self.assertEqual(render.resolve_help_topic('查询'), 'query')
+        self.assertEqual(render.resolve_help_topic('POOL'), 'pools')
+        self.assertEqual(render.resolve_help_topic('池子'), 'pools')
+        self.assertEqual(render.resolve_help_topic('无尽'), 'endless')
+        self.assertEqual(render.resolve_help_topic('nope'), '')
+        text, _kb = render.render_help_topic('nope')
+        self.assertIn('Celeste Mod 工具', text)
+
+    def test_help_topic_dispatch_and_topic_markdown(self):
+        with mock.patch.object(message, 'send_help') as help_mock:
+            message.dispatch_clst_command(object(), '帮助 查询')
+            message.dispatch_clst_command(object(), 'help pools')
+        self.assertEqual([call[0][1] for call in help_mock.call_args_list], ['查询', 'pools'])
+
+        with (
+            mock.patch.object(message.utils, 'can_send_markdown', return_value=True),
+            mock.patch.object(message.utils, 'reply_markdown', return_value=True) as markdown_mock,
+        ):
+            message.send_help(object(), 'picks')
+        text = markdown_mock.call_args[0][1]
+        self.assertIn('## 推荐 Picks', text)
+        self.assertIn('`.clst random`', text)
+
+    def test_help_button_click_opens_topic(self):
+        class Data(object):
+            button_data = 'clst:help:endless'
+            group_id = 'GROUP'
+            user_id = 'USER'
+            extend = {}
+
+        class FakeEvent(object):
+            data = Data()
+            plugin_info = {'func_type': 'button_click'}
+            platform = {'platform': 'qqguild'}
+
+        with (
+            mock.patch.object(utils, 'check_core_group_enable', return_value=True),
+            mock.patch.object(utils, 'is_group_disabled', return_value=False),
+            mock.patch.object(message, 'send_help') as help_mock,
+        ):
+            message.handle_button_click(FakeEvent(), None)
+        help_mock.assert_called_once()
+        self.assertEqual(help_mock.call_args[0][1], 'endless')
+
+    def test_plain_help_fallbacks_are_bilingual(self):
+        self.assertIn('.clst 帮助 查询', message_custom.help_text)
+        self.assertIn('keyword', message_custom.help_topic_text('query'))
+        self.assertIn('new|old|hot|cold|good|bad', message_custom.help_topic_text('pools'))
+        for topic in render.HELP_TOPIC_ORDER:
+            plain = message_custom.help_topic_text(topic)
+            self.assertTrue(any('\u4e00' <= char <= '\u9fff' for char in plain), topic)
+            self.assertRegex(plain, r'[A-Za-z]{3,}', topic)
+        self.assertEqual(message_custom.help_topic_text('nope'), message_custom.help_text)
 
     def test_keyboards_use_two_buttons_per_row(self):
         detail = function.normalize_wegfan_item(sample_search_item())
