@@ -70,12 +70,19 @@ def new_entries(kind, state, items):
     return _fresh_entries(kind, state, _ordered_entries(kind, items))
 
 
-# 一次最多补发几条：动态 id 是雪花号、旧记录可能是秒级时间戳，
-# 口径不一致时长连接/降级通道会让历史条目全部「比上次新」，只补最新一条即可。
-_CATCHUP_LIMIT = 3
+def _same_scale(earlier, later):
+    """判断两个时间戳是否同一口径（雪花 id 与秒级时间戳混用时差好几个数量级）。"""
+    if not earlier or not later:
+        return True
+    return max(earlier, later) / min(earlier, later) < 1000
 
 
 def _fresh_entries(kind, state, records):
+    """按发布时间返回未见条目，不改变入参。连发多少条就推多少条。
+
+    只有「口径变了」时才不下发（源切换导致所有历史都比上次新），
+    这时静默重建基线，而不是把历史当新动态推出去。
+    """
     since = _int(state.get('last_ts'))
     seen = set(state.get('seen_ids') or ())
     seen.add(str(state.get(_LAST_IDS[kind]) or ''))
@@ -84,9 +91,8 @@ def _fresh_entries(kind, state, records):
         if stamp > since and identity not in seen:
             seen.add(identity)
             fresh.append(item)
-    if len(fresh) > _CATCHUP_LIMIT:
-        # 只推最新的，其余记为已见，避免把陈年动态一口气刷出来。
-        fresh = fresh[-1:]
+    if fresh and since and not _same_scale(since, records[-1][0]):
+        return []
     return fresh
 
 
