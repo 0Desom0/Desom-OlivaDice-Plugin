@@ -128,6 +128,10 @@ def _render(kind, fields, sdk, image, at_all, subscribers, test):
         values['at_all'] = '[OP:at,id=all]\n' if kind == 'start' and at_all else ''
         values['subscribers'] = '\n' + ' '.join(mentioned) if mentioned else ''
         template = message_custom.OP[kind]
+    if not image:
+        # 没有配图时连占位符带缩进一起删掉，避免正文前顶出一行空白。
+        template = (template.replace('\n{image}\n', '\n')
+                    .replace('{image}\n', '').replace('{image}', ''))
     prefix = message_custom.TEXT['test_prefix'] if test else ''
     return split_segments((prefix, template.format(**values).strip()), _LIMIT)
 

@@ -203,6 +203,42 @@ def _feed_author(kind, item):
     return str((modules.get('module_author') or {}).get('name') or '')
 
 
+def _major_images(major):
+    """按 StarBot 的分类取配图：图文 draw / opus、视频 archive、专栏 article。
+
+    不再拿作者头像兜底 —— 没图就发不带图的消息。
+    """
+    draw = major.get('draw') or {}
+    opus = major.get('opus') or {}
+    archive = major.get('archive') or {}
+    article = major.get('article') or {}
+    return (
+        _first_field(draw.get('items'), 'src'),
+        _first_field(opus.get('pics'), 'url'),
+        str(archive.get('cover') or ''),
+        _first_field(article.get('covers'), 'url'),
+    )
+
+
+def _orig_text(orig):
+    """原动态的一句话概要：视频标题 / 专栏标题 / opus 正文 / 普通动态正文。"""
+    modules = orig.get('modules') or {}
+    dynamic = modules.get('module_dynamic') or {}
+    major = dynamic.get('major') or {}
+    archive = major.get('archive') or {}
+    article = major.get('article') or {}
+    opus = major.get('opus') or {}
+    for text in (
+        str(archive.get('title') or ''),
+        str(article.get('title') or ''),
+        str((opus.get('summary') or {}).get('text') or ''),
+        str((dynamic.get('desc') or {}).get('text') or ''),
+    ):
+        if text:
+            return text[:40]
+    return ''
+
+
 def _feed_fields(kind, item):
     stamp, identity = _entry_parts(kind, item)
     if kind == 'video':
@@ -213,11 +249,23 @@ def _feed_fields(kind, item):
     author = modules.get('module_author') or {}
     dynamic = modules.get('module_dynamic') or {}
     major = dynamic.get('major') or {}
-    draw = major.get('draw') or {}
     opus = major.get('opus') or {}
-    image = sender.pick_first_image((_first_field(draw.get('items'), 'src'), _first_field(opus.get('pics'), 'url'),
-                                     author.get('face')))
+    # 转发动态自己没有配图，图片和正文都要看被转发的原动态。
+    orig = item.get('orig') if isinstance(item.get('orig'), dict) else {}
+    orig_modules = orig.get('modules') or {}
+    orig_dynamic = orig_modules.get('module_dynamic') or {}
+    orig_major = orig_dynamic.get('major') or {}
+    image = sender.pick_first_image([
+        *(_major_images(major)),
+        *(_major_images(orig_major)),
+    ])
     body = (dynamic.get('desc') or {}).get('text') or (opus.get('summary') or {}).get('text') or ''
+    if item.get('type') == 'DYNAMIC_TYPE_FORWARD' and orig:
+        orig_author = str((orig_modules.get('module_author') or {}).get('name') or '')
+        detail = _orig_text(orig)
+        if detail:
+            note = f'转发 {orig_author}：{detail}' if orig_author else f'转发：{detail}'
+            body = f'{body}｜{note}' if body else note
     # stamp 是雪花 id 时不能当时刻用，发布时间以 pub_ts 为准。
     published = _int(author.get('pub_ts')) or stamp
     clock = _clock(published)
