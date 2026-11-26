@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import re
 import tempfile
 import time
@@ -176,6 +177,48 @@ def refresh_buvid():
         return _failure(_SPI, _LOCAL)
 
 
+_TICKET_KEY = b'XgwSnGZ1p'
+_TICKET_LOCK = Lock()
+_TICKET = {'value': '', 'expires': 0.0}
+
+
+def _web_ticket(settings, cache):
+    """B站 web ticket（StarBot 同款），降低接口风控概率；TTL 通常 3 天，内存缓存。
+
+    申请接口只接受 POST，GET 会 405。票据申请失败不影响请求本身，返回空串即可。
+    """
+    if _TICKET['value'] and time.time() < _TICKET['expires']:
+        return _TICKET['value']
+    with _TICKET_LOCK:
+        if _TICKET['value'] and time.time() < _TICKET['expires']:
+            return _TICKET['value']
+        csrf = _cookie_value(settings['cookie'].get('bili_jct'))
+        if not csrf:
+            return ''
+        stamp = int(time.time())
+        sign = hmac.new(_TICKET_KEY, ('ts%d' % stamp).encode(), hashlib.sha256).hexdigest()
+        url = (f'{_API}/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket'
+               f'?key_id=ec02&hexsign={sign}&context[ts]={stamp}&csrf={csrf}')
+        try:
+            with requests.Session() as client:
+                client.trust_env = False
+                with client.post(url, headers=_base_headers(settings),
+                                 timeout=_request_timeout(settings), allow_redirects=False) as response:
+                    payload = response.json() if response.status_code == 200 else {}
+        except (requests.RequestException, ValueError):
+            return ''
+        data = payload.get('data') if isinstance(payload, dict) else None
+        ticket = str((data or {}).get('ticket') or '')
+        if not ticket:
+            return ''
+        created = int((data or {}).get('created_at') or stamp)
+        ttl = int((data or {}).get('ttl') or 3600)
+        # 提前 10 分钟过期，避免边界时刻拿到失效票据。
+        _TICKET['value'] = ticket
+        _TICKET['expires'] = created + ttl - 600
+        return ticket
+
+
 def _request_headers(settings, cache):
     headers = _base_headers(settings)
     saved = settings['cookie']
@@ -187,6 +230,9 @@ def _request_headers(settings, cache):
     for source, name in (('sessdata', 'SESSDATA'), ('bili_jct', 'bili_jct')):
         if value := _cookie_value(saved[source]):
             values[name] = value
+    if ticket := _web_ticket(settings, cache):
+        values['bili_ticket'] = ticket
+        values['bili_ticket_expires'] = str(int(_TICKET['expires']) + 600)
     headers['Cookie'] = '; '.join(f'{key}={value}' for key, value in values.items())
     return headers
 
@@ -343,7 +389,11 @@ def follow_user(uid):
 
 def feed_all(page=1):
     """关注流：一次性返回所有已关注 UP 的最新动态（需要登录且已关注）。"""
-    data, error = request_json(_FEED_ALL, params={'features': 'itemOpusStyle', 'page': page})
+    data, error = request_json(_FEED_ALL, params={
+        'features': 'itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,decorationCard,onlyfansAssetsV2,'
+                    'forwardListHidden,ugcDelete,onlyfansQaCard,commentsNewVersion',
+        'page': page,
+    })
     if error:
         return None, error
     items = data.get('items') if isinstance(data, dict) else None
