@@ -35,6 +35,8 @@ BOT_DEFAULT = {
     # live_relaxed_seconds：长连接已连上的主播，直播轮询放宽到该间隔（0 = 不放宽）。
     'poll': {'live_seconds': 10, 'dynamic_seconds': 10, 'video_seconds': 10,
              'max_concurrent': 3, 'max_sockets': 8, 'live_relaxed_seconds': 60},
+    # retry：单次接口失败后的重试（仅网络异常与 5xx），风控码不重试；每次请求独立计算。
+    'retry': {'max_times': 3, 'interval_ms': 5000},
     'at_all': {'daily_limit': 10, 'guild_at_once': True},
     'at_subscribers': {'live': True, 'dynamic': False, 'video': False},
     # dynamic_source：follow = 关注流当触发器（需 SESSDATA 且关注目标 UP），poll = 逐 UP 轮询

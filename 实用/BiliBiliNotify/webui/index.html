@@ -394,6 +394,10 @@
                                 <label class="field"><span class="field-label">最大并发请求</span><input type="number" id="max-concurrent" min="1" max="32" required></label>
                                 <label class="field"><span class="field-label">直播间长连接上限（0 = 只用轮询）</span><input type="number" id="max-sockets" min="0" max="32" required></label>
                                 <label class="field"><span class="field-label">长连接在线时的直播轮询（秒，0 = 不放宽）</span><input type="number" id="live-relaxed" min="0" max="3600" required></label>
+                                <label class="field"><span class="field-label">接口失败重试次数（0 = 不重试）</span><input type="number" id="retry-times" min="0" max="10" required>
+                                    <small>只对网络异常和 5xx 重试；风控码（412/799）不重试，重试只会加重封禁。</small>
+                                </label>
+                                <label class="field"><span class="field-label">重试间隔（毫秒）</span><input type="number" id="retry-interval" min="0" max="60000" step="500" required></label>
                                 <label class="field"><span class="field-label">动态触发方式</span>
                                     <select id="dynamic-source">
                                         <option value="follow">关注流触发（请求最少，需已关注目标）</option>
@@ -999,6 +1003,8 @@
             $('max-concurrent').value = settings.poll.max_concurrent;
             $('max-sockets').value = settings.poll.max_sockets;
             $('live-relaxed').value = settings.poll.live_relaxed_seconds;
+            $('retry-times').value = settings.retry.max_times;
+            $('retry-interval').value = settings.retry.interval_ms;
             $('dynamic-source').value = settings.dynamic_source || 'follow';
             $('auto-follow').checked = settings.auto_follow === true;
             $('daily-limit').value = settings.at_all.daily_limit;
@@ -1039,6 +1045,7 @@
                     max_sockets: value('max-sockets'), live_relaxed_seconds: value('live-relaxed'),
                 },
                 dynamic_source: $('dynamic-source').value, auto_follow: $('auto-follow').checked,
+                retry: {max_times: value('retry-times'), interval_ms: value('retry-interval')},
                 at_all: { daily_limit: value('daily-limit'), guild_at_once: $('guild-once').checked },
                 at_subscribers: { live: $('at-subscribers-live').checked },
                 push_default: readFlags($('push-default')),

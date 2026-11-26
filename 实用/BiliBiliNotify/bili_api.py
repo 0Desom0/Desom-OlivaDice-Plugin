@@ -87,7 +87,7 @@ def _base_headers(settings):
     return headers
 
 
-def _fetch_json(url, *, params, settings, headers, timeout, retry, allowed_codes=()):
+def _fetch_json(url, *, params, settings, headers, timeout, retry, interval=5.0, allowed_codes=()):
     proxy = settings['proxy']
     proxies = {'https': proxy} if proxy else {}
     while True:
@@ -100,6 +100,11 @@ def _fetch_json(url, *, params, settings, headers, timeout, retry, allowed_codes
                         return None, _RISK, retry
                     if not 200 <= response.status_code < 300:
                         status = response.status_code
+                        # 5xx 是服务端临时故障，值得重试；4xx 与风控码重试只会加重封禁。
+                        if status >= 500 and retry > 0:
+                            retry -= 1
+                            time.sleep(interval)
+                            continue
                         return None, (status, f'B站返回 HTTP {status}'), retry
                     try:
                         payload = response.json()
@@ -117,7 +122,7 @@ def _fetch_json(url, *, params, settings, headers, timeout, retry, allowed_codes
             if retry <= 0:
                 return None, _NETWORK, retry
             retry -= 1
-            time.sleep(1)
+            time.sleep(interval)
         except (requests.RequestException, ValueError, TypeError, UnicodeError):
             return None, (-4, 'B站请求失败，请检查请求配置'), retry
 
@@ -237,7 +242,7 @@ def _request_headers(settings, cache):
     return headers
 
 
-def request_json(url, *, params=None, timeout=None, retry=1, force_buvid=False, allowed_codes=()):
+def request_json(url, *, params=None, timeout=None, retry=None, force_buvid=False, allowed_codes=()):
     """固定 B站接口，返回解包后的 data 或安全错误。"""
     if url not in _ENDPOINTS:
         return None, (-4, '未配置的 B站接口')
@@ -245,7 +250,17 @@ def request_json(url, *, params=None, timeout=None, retry=1, force_buvid=False, 
         settings = store.global_config()
         cache = settings['buvid_cache']
         timeout = _request_timeout(settings) if timeout is None else timeout
-        retry = min(1, max(0, retry))
+        policy = settings.get('retry') if isinstance(settings.get('retry'), dict) else {}
+        if retry is None:
+            # _int_field(None) 是 0，这里要区分「没配」和「配成 0」。
+            raw_times = policy.get('max_times')
+            retry = (config.BOT_DEFAULT['retry']['max_times'] if raw_times is None
+                     else _int_field(raw_times))
+        retry = max(0, min(10, retry))
+        raw_interval = policy.get('interval_ms')
+        interval = (config.BOT_DEFAULT['retry']['interval_ms'] if raw_interval is None
+                    else _int_field(raw_interval)) / 1000.0
+        interval = max(0.0, min(60.0, interval))
         if url == _SPI:
             headers = _base_headers(settings)
         else:
@@ -259,13 +274,13 @@ def request_json(url, *, params=None, timeout=None, retry=1, force_buvid=False, 
             headers = _request_headers(settings, cache)
         data, error, retries = _fetch_json(
             url, params=params, settings=settings, headers=headers, timeout=timeout, retry=retry,
-            allowed_codes=allowed_codes,
+            interval=interval, allowed_codes=allowed_codes,
         )
         if error == _RISK and url != _SPI:
             fresh, _ = _refresh_buvid(previous=cache)
             data, error, _ = _fetch_json(
                 url, params=params, settings=settings, headers=_request_headers(settings, fresh or cache),
-                timeout=timeout, retry=retries, allowed_codes=allowed_codes,
+                timeout=timeout, retry=retries, interval=interval, allowed_codes=allowed_codes,
             )
     except store.StorageError:
         return _failure(url, _LOCAL)

@@ -330,6 +330,14 @@ def _save_bot(payload, bot_hash):
             'live_relaxed_seconds': _int(poll.get('live_relaxed_seconds'),
                                          _POLL_LABELS['live_relaxed_seconds'], 0, 3600),
         }
+    if 'retry' in payload:
+        retry = payload['retry']
+        if not isinstance(retry, dict):
+            raise ValueError('重试必须是 JSON 对象')
+        changes['retry'] = {
+            'max_times': _int(retry.get('max_times'), '重试次数', 0, 10),
+            'interval_ms': _int(retry.get('interval_ms'), '重试间隔', 0, 60000),
+        }
     if 'auto_follow' in payload:
         changes['auto_follow'] = _bool(payload['auto_follow'], '自动关注')
     if 'dynamic_source' in payload:
