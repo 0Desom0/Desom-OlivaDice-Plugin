@@ -19,6 +19,7 @@ _DETAIL_COOLDOWN = 600
 _SEEN_LIMIT = 32
 _KINDS = config.KINDS
 _WATCHER_SYNC_SECONDS = 30
+_MAINTAIN_SECONDS = 5
 _IDS = {'dynamic': 'id_str', 'video': 'bvid'}
 _LAST_IDS = {'dynamic': 'last_id', 'video': 'last_bvid'}
 _NAV_KEYS = {'dynamic': 'opus', 'video': 'video'}
@@ -386,6 +387,10 @@ class _Engine:
         self.executor = ThreadPoolExecutor(max_workers=_WORKER_LIMIT, thread_name_prefix='BiliBiliNotify')
         self.dispatcher = Thread(target=self._dispatch, name='BiliBiliNotify-dispatch', daemon=True)
         self.dispatcher.start()
+        # 维护线程：建连/收连与关注流同步都要发网络请求，绝不能放在宿主 tick 里，
+        # 否则 tick 会卡住 30 秒以上，宿主报「task already pending or running」并跳过。
+        self.maintainer = Thread(target=self._maintain, name='BiliBiliNotify-maintain', daemon=True)
+        self.maintainer.start()
 
     def close(self):
         self._close_watchers()
@@ -421,9 +426,20 @@ class _Engine:
                 if account.limit and len(self.pending) < _QUEUE_LIMIT:
                     self._enqueue(bot, account, settings, store.rooms(bot)['rooms'], now)
             self.order.rotate(-1)
-            self._sync_watchers()
-            self._sync_follow(now)
             self.condition.notify()
+
+    def _maintain(self):
+        """后台维护：每 5 秒看一次，具体节奏由 _sync_* 各自节流。"""
+        while not self.closed.wait(_MAINTAIN_SECONDS):
+            try:
+                with self.condition:
+                    if self.closed.is_set():
+                        return
+                    self._sync_watchers()
+                    self._sync_follow(time())
+                    self.condition.notify()
+            except Exception as error:  # noqa: BLE001 - 维护线程不能因为一次异常退出
+                store.log(self.proc, f'维护线程异常：{type(error).__name__}', level=3)
 
     def _watch_log(self, message):
         store.log(self.proc, message, 3)
