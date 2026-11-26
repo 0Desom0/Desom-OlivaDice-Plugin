@@ -242,7 +242,45 @@ def live_status(uids):
     return _shape(_LIVE, data, error, dict)
 
 
+_FEED_TTL = 5.0
+_FEED_LOCK = Lock()
+_feed_cache = {'at': 0.0, 'items': None}
+# 空间动态接口被封时短时间内直接跳过，避免每个主播都白撞一次 412。
+_SPACE_COOLDOWN = 60.0
+_space_retry_at = 0.0
+
+
+def feed_all_cached(max_age=_FEED_TTL):
+    """关注流短缓存：同一轮里多个主播共用一次请求（持锁拉取，避免并发重复）。"""
+    with _FEED_LOCK:
+        if _feed_cache['items'] is not None and time.time() - _feed_cache['at'] < max_age:
+            return _feed_cache['items'], None
+        items, error = feed_all()
+        if items is not None:
+            _feed_cache.update(at=time.time(), items=items)
+        return items, error
+
+
 def dynamics(uid):
+    global _space_retry_at
+    now = time.time()
+    if now < _space_retry_at:
+        # 冷却期内不撞封禁接口，直接走关注流。
+        return _dynamic_fallback(uid)
+    data, error = request_json(_DYNAMIC, params={'host_mid': str(uid), 'offset': '', 'features': 'itemOpusStyle'})
+    if isinstance(data, dict):
+        items = data.get('items')
+        if items is None:
+            items = []
+        if isinstance(items, list):
+            return items, None
+    if error is None or error[0] not in _FALLBACK_CODES:
+        return _shape(_DYNAMIC, None, error, list)
+    _space_retry_at = now + _SPACE_COOLDOWN
+    return _dynamic_fallback(uid)
+
+
+def _dynamic_fallback(uid):
     data, error = request_json(_DYNAMIC, params={'host_mid': str(uid), 'offset': '', 'features': 'itemOpusStyle'})
     if isinstance(data, dict):
         # 空主页会省略 items；非列表则是接口结构异常，不当作空结果。
@@ -254,7 +292,7 @@ def dynamics(uid):
     if error is None or error[0] not in _FALLBACK_CODES:
         return _shape(_DYNAMIC, None, error, list)
     # 关注流（StarBot 3.0 的做法）：只含已关注的 UP，结构完整、可过滤投稿动态。
-    items, feed_error = feed_all()
+    items, _ = feed_all_cached()
     if items is not None:
         mine = [item for item in items if _item_uid(item) == str(uid)]
         if mine:
