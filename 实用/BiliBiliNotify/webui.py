@@ -327,6 +327,8 @@ def _save_bot(payload, bot_hash):
             'live_relaxed_seconds': _int(poll.get('live_relaxed_seconds'),
                                          _POLL_LABELS['live_relaxed_seconds'], 0, 3600),
         }
+    if 'auto_follow' in payload:
+        changes['auto_follow'] = _bool(payload['auto_follow'], '自动关注')
     if 'dynamic_source' in payload:
         source = payload['dynamic_source']
         if source not in ('follow', 'poll'):

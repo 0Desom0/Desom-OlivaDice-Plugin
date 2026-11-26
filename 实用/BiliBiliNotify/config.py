@@ -40,6 +40,8 @@ BOT_DEFAULT = {
     'at_subscribers': {'live': True, 'dynamic': False, 'video': False},
     # dynamic_source：follow = 关注流当触发器（需 SESSDATA 且关注目标 UP），poll = 逐 UP 轮询
     'dynamic_source': 'follow',
+    # auto_follow：添加主播时顺手关注它（会修改登录账号的关注列表，默认关）。
+    'auto_follow': False,
     'push_default': dict.fromkeys(KINDS, True),
     'send_interval_seconds': 3,
     'disabled_group_list': [],

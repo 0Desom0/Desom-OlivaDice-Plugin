@@ -35,10 +35,12 @@ _CARD = f'{_API}/x/web-interface/card'
 _DANMU = f'{_LIVE_API}/xlive/web-room/v1/index/getDanmuInfo'
 _DYNAMIC_NEW = 'https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/dynamic_new'
 # 扫码登录（passport 域名，不走 api.bilibili.com 的空间风控）
+_FEED_ALL = f'{_API}/x/polymer/web-dynamic/v1/feed/all'
+_RELATION = f'{_API}/x/relation/modify'
 _QR_GENERATE = 'https://passport.bilibili.com/x/passport-login/web/qrcode/generate'
 _QR_POLL = 'https://passport.bilibili.com/x/passport-login/web/qrcode/poll'
 _ENDPOINTS = frozenset((_SPI, _LIVE, _MASTER, _DYNAMIC, _NAVNUM, _NAV, _VIDEO, _OPUS,
-                        _SEARCH, _CARD, _DANMU, _DYNAMIC_NEW, _QR_GENERATE, _QR_POLL))
+                        _SEARCH, _CARD, _DANMU, _DYNAMIC_NEW, _FEED_ALL, _QR_GENERATE, _QR_POLL))
 # 只有风控类错误才换通道；网络失败与格式异常直接回报，避免把故障当成「没内容」。
 _FALLBACK_CODES = (-412, -352, -403)
 _RISK = (-412, 'B站风控，请在 WebUI 填写 Cookie 或检查网络出口')
@@ -251,7 +253,61 @@ def dynamics(uid):
             return items, None
     if error is None or error[0] not in _FALLBACK_CODES:
         return _shape(_DYNAMIC, None, error, list)
+    # 关注流（StarBot 3.0 的做法）：只含已关注的 UP，结构完整、可过滤投稿动态。
+    items, feed_error = feed_all()
+    if items is not None:
+        mine = [item for item in items if _item_uid(item) == str(uid)]
+        if mine:
+            return mine, None
     return _opus_dynamics(uid)
+
+
+def follow_user(uid):
+    """关注目标 UP（act=5）。会修改登录账号的关注列表，只在开启「自动关注」时调用。"""
+    try:
+        settings = store.global_config()
+    except store.StorageError:
+        return False, _LOCAL
+    csrf = str(settings['cookie'].get('bili_jct') or '').strip()
+    if not csrf:
+        return False, (-1, '自动关注需要 bili_jct，请先扫码登录或填写 Cookie')
+    headers = _request_headers(settings, settings['buvid_cache'])
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+    headers['Referer'] = f'https://space.bilibili.com/{uid}'
+    proxy = settings['proxy']
+    proxies = {'https': proxy} if proxy else {}
+    try:
+        with requests.Session() as client:
+            client.trust_env = False
+            with client.post(_RELATION, data={'fid': str(uid), 'act': 5, 're_src': 11, 'csrf': csrf},
+                             headers=headers, proxies=proxies, timeout=_request_timeout(settings),
+                             allow_redirects=False) as response:
+                payload = response.json() if response.content else {}
+    except (requests.RequestException, ValueError):
+        return False, _NETWORK
+    if not isinstance(payload, dict):
+        return False, _FORMAT
+    code = payload.get('code')
+    if code == 0:
+        return True, None
+    return False, (int(code) if isinstance(code, int) else -1, str(payload.get('message') or '关注失败'))
+
+
+def feed_all(page=1):
+    """关注流：一次性返回所有已关注 UP 的最新动态（需要登录且已关注）。"""
+    data, error = request_json(_FEED_ALL, params={'features': 'itemOpusStyle', 'page': page})
+    if error:
+        return None, error
+    items = data.get('items') if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None, _failure(_FEED_ALL, _FORMAT)
+    return items, None
+
+
+def _item_uid(item):
+    modules = item.get('modules') if isinstance(item, dict) else None
+    author = (modules or {}).get('module_author') or {}
+    return str(author.get('mid') or author.get('uid') or '')
 
 
 def _opus_dynamics(uid):

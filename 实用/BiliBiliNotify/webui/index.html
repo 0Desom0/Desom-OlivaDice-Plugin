@@ -394,12 +394,16 @@
                                 <label class="field"><span class="field-label">最大并发请求</span><input type="number" id="max-concurrent" min="1" max="32" required></label>
                                 <label class="field"><span class="field-label">直播间长连接上限（0 = 只用轮询）</span><input type="number" id="max-sockets" min="0" max="32" required></label>
                                 <label class="field"><span class="field-label">长连接在线时的直播轮询（秒，0 = 不放宽）</span><input type="number" id="live-relaxed" min="0" max="3600" required></label>
-                                <label class="field"><span class="field-label">动态来源</span>
+                                <label class="field"><span class="field-label">动态触发方式</span>
                                     <select id="dynamic-source">
-                                        <option value="follow">关注流（需小号关注目标）</option>
-                                        <option value="poll">逐主播轮询</option>
+                                        <option value="follow">关注流触发（请求最少，需已关注目标）</option>
+                                        <option value="poll">逐主播轮询（不依赖关注）</option>
                                     </select>
                                 </label>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="auto-follow"> 添加主播时自动关注它（会修改登录账号的关注列表，默认关）</label>
+                            <p class="muted">动态检测分两层：<strong>触发</strong>决定隔多久去问一次（关注流触发或逐主播轮询）；<strong>取数</strong>会自动选通道——空间动态 → 关注流 → opus 动态流，只有被风控时才降级，同一条动态只推一次。</p>
+                            <div class="fields" hidden>
                             </div>
                             <p class="muted">长连接和轮询是配合关系：<strong>长连接</strong>负责秒级发现开播/下播（每台最多连「长连接上限」个直播间）；<strong>轮询</strong>是安全网，长连接没连上、超出上限或临时断线时按上面的间隔继续检查。两者同时工作，同一次开播只会推送一条。</p>
                         </article>
@@ -996,6 +1000,7 @@
             $('max-sockets').value = settings.poll.max_sockets;
             $('live-relaxed').value = settings.poll.live_relaxed_seconds;
             $('dynamic-source').value = settings.dynamic_source || 'follow';
+            $('auto-follow').checked = settings.auto_follow === true;
             $('daily-limit').value = settings.at_all.daily_limit;
             $('guild-once').checked = settings.at_all.guild_at_once;
             $('send-interval').value = settings.send_interval_seconds;
@@ -1033,7 +1038,7 @@
                     video_seconds: value('video-seconds'), max_concurrent: value('max-concurrent'),
                     max_sockets: value('max-sockets'), live_relaxed_seconds: value('live-relaxed'),
                 },
-                dynamic_source: $('dynamic-source').value,
+                dynamic_source: $('dynamic-source').value, auto_follow: $('auto-follow').checked,
                 at_all: { daily_limit: value('daily-limit'), guild_at_once: $('guild-once').checked },
                 at_subscribers: { live: $('at-subscribers-live').checked },
                 push_default: readFlags($('push-default')),

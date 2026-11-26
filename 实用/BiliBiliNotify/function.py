@@ -122,6 +122,11 @@ def add_up(bot_hash, uid, target=None, added_by='', types=None):
         profile = None
 
     settings = store.bot_config(bot_hash)
+    if room is None and settings.get('auto_follow'):
+        # 关注后 feed/all 才能覆盖该 UP；失败不影响绑定本身。
+        followed, follow_error = bili_api.follow_user(uid)
+        if not followed:
+            store.log(None, '自动关注 uid=%s 失败：%s' % (uid, follow_error))
     with store.edit_rooms(bot_hash) as data:
         current = data['rooms'].get(uid)
         if current is None:
