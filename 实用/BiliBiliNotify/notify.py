@@ -166,6 +166,7 @@ def _risk_count(data, kind):
 
 
 def _clock(stamp):
+    stamp = _int(stamp)
     try:
         return datetime.fromtimestamp(stamp).strftime('%Y-%m-%d %H:%M:%S') if stamp else ''
     except (OSError, OverflowError, ValueError):

@@ -288,7 +288,8 @@ def follow_user(uid):
     try:
         with requests.Session() as client:
             client.trust_env = False
-            with client.post(_RELATION, data={'fid': str(uid), 'act': 5, 're_src': 11, 'csrf': csrf},
+            # act: 1 = 关注，2 = 取消关注，5 = 拉黑，6 = 取消拉黑。
+            with client.post(_RELATION, data={'fid': str(uid), 'act': 1, 're_src': 11, 'csrf': csrf},
                              headers=headers, proxies=proxies, timeout=_request_timeout(settings),
                              allow_redirects=False) as response:
                 payload = response.json() if response.content else {}
