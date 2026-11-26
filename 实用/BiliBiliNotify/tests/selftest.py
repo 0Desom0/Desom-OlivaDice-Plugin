@@ -82,27 +82,29 @@ class Suite(unittest.TestCase):
         for prefix in config.allowed_prefix_list:
             for help_command in ('help', '帮助'):
                 with self.subTest(prefix=prefix, command=help_command):
-                    replies = self.command(f'[OP:reply,id=42][OP:at,id=99999] {prefix}bili {help_command}')
+                    replies = self.command(f'[OP:reply,id=42][OP:at,id=99999] {prefix}bpush {help_command}')
                     self.assertEqual(len(replies), 1)
-                    self.assertIn(f'{prefix}bili up', replies[0])
-        self.assertFalse(self.command('bili help'))
-        self.assertFalse(self.command('[OP:at,id=12345] .bili help'))
-        self.assertFalse(self.command('.bili help', sdk='qqGuildv2_link', chat_type='guild_channel'))
-        self.assertIn('只在群里用', self.command('.bili help', sdk='qqGuildv2_link', chat_type='qq_private')[0])
+                    self.assertIn(f'{prefix}bpush up', replies[0])
+        self.assertFalse(self.command(f'{config.COMMAND_NAME} help'))
+        self.assertFalse(self.command('[OP:at,id=12345] .bpush help'))
+        self.assertFalse(self.command(f'.{config.COMMAND_NAME} help', sdk='qqGuildv2_link', chat_type='guild_channel'))
+        private_reply = self.command(f'.{config.COMMAND_NAME} help', sdk='qqGuildv2_link',
+                                     chat_type='qq_private')
+        self.assertIn('只在群里用', private_reply[0])
         self.assertEqual(message.parse_action('up live 2 on'), ('live', ('2', 'on'), True))
         self.assertFalse(message.parse_action('live add 2')[2])
         self.assertEqual(message.parse_action('主播添加 2'), ('add', ('2',), True))
         with store.edit_bot(BOT) as settings:
             settings['prefix_list'] = []
-        self.assertFalse(self.command('.bili help'))
+        self.assertFalse(self.command(f'.{config.COMMAND_NAME} help'))
 
     def test_binding(self):
         self.assertEqual(function.extract_uid('2'), '2')
         self.assertEqual(function.extract_uid('https://space.bilibili.com/2?tracking=4'), '2')
         self.assertFalse(function.extract_uid('https://live.bilibili.com/1024'))
-        self.assertIn('没查到 UID 1024', self.command('.bili up add 1024', 'owner')[0])
-        self.assertIn('碧诗（UID 2 / 房间 1024）', self.command('.bili 主播添加 2', 'owner')[0])
-        self.assertIn('未开播的主播（UID 3）', self.command('.bili up add 3', 'owner')[0])
+        self.assertIn('没查到 UID 1024', self.command(f'.{config.COMMAND_NAME} up add 1024', 'owner')[0])
+        self.assertIn('碧诗（UID 2 / 房间 1024）', self.command(f'.{config.COMMAND_NAME} 主播添加 2', 'owner')[0])
+        self.assertIn('未开播的主播（UID 3）', self.command(f'.{config.COMMAND_NAME} up add 3', 'owner')[0])
         path = Path(self.temp_dir) / 'accounts' / BOT / 'rooms.json'
         payload = json.loads(path.read_text(encoding='utf-8'))
         first = payload['rooms']['2']
@@ -114,9 +116,9 @@ class Suite(unittest.TestCase):
         self.assertEqual(payload['rooms']['3']['room_id'], '')
         sid = function.sid_for(GROUP)
         self.assertEqual(payload['groups'][sid]['push'], dict.fromkeys(config.KINDS, True))
-        self.assertIn('订阅成功', self.command('.bili up sub 2')[0])
-        self.assertIn('已关闭', self.command('.bili up live 2 off', 'owner')[0])
-        self.assertIn('清理了 1 位', self.command('.bili up del 2', 'owner')[0])
+        self.assertIn('订阅成功', self.command(f'.{config.COMMAND_NAME} up sub 2')[0])
+        self.assertIn('已关闭', self.command(f'.{config.COMMAND_NAME} up live 2 off', 'owner')[0])
+        self.assertIn('清理了 1 位', self.command(f'.{config.COMMAND_NAME} up del 2', 'owner')[0])
         self.assertNotIn(sid, store.rooms(BOT)['rooms']['2']['targets'])
 
     def test_permissions(self):

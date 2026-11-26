@@ -1,24 +1,39 @@
 # 固定文案，不从存储加载或通过 WebUI 修改。
 TEXT = {
     'help': (
-        'B站订阅推送 · 命令\n'
-        '{prefix}bili up add|del <UID> / up list\n'
-        '{prefix}bili up live|dynamic|video <UID> <on|off>\n'
-        '{prefix}bili up sub|unsub <UID> / up subs\n'
-        '{prefix}bili push live|dynamic|video <on|off>\n'
-        '{prefix}bili atall <on|off> / status / test <UID> / help'
+        'B站订阅推送 · 命令说明（每条都要带前缀 {prefix}）\n'
+        '\n'
+        '{prefix}bpush up add <UID>               添加主播（房间号自动解析）\n'
+        '{prefix}bpush up del <UID>               从本群移除该主播\n'
+        '{prefix}bpush up list                    查看本群已添加的主播\n'
+        '{prefix}bpush up live <UID> on|off       分主播：直播检测开关\n'
+        '{prefix}bpush up dynamic <UID> on|off    分主播：动态检测开关\n'
+        '{prefix}bpush up video <UID> on|off      分主播：视频检测开关\n'
+        '{prefix}bpush up sub <UID>               订阅开播提醒（开播时 @ 你）\n'
+        '{prefix}bpush up unsub <UID>             取消订阅\n'
+        '{prefix}bpush up subs                    查看自己在本群的订阅\n'
+        '{prefix}bpush push live|dynamic|video on|off  本群该类推送开关\n'
+        '{prefix}bpush atall on|off               本群开播时 @全体 开关\n'
+        '{prefix}bpush status                     运行状态\n'
+        '{prefix}bpush test <UID>                 立即推送一条测试\n'
+        '{prefix}bpush help                       本说明\n'
+        '\n'
+        '说明：「up」是主播维度（这个主播要不要检测），\n'
+        '「push」是群维度（这个群收不收这类推送）。\n'
+        '管理类命令（add/del/live/dynamic/video/push/atall/test）需要：\n'
+        '群主 / 管理员 / 骰主 / WebUI 白名单。'
     ),
     'private': '这个功能只在群里用哦~ 把命令发到群里就行。',
     'denied': '需要群主、管理员、骰主或全局白名单权限。',
     'persist': '写入失败，检查目录权限。',
     'error': '处理失败，请稍后重试。',
-    'bad_uid': '请提供一个 UID（纯数字）哦~ 比如 {prefix}bili up add 2',
+    'bad_uid': '请提供一个 UID（纯数字）哦~ 比如 {prefix}bpush up add 2',
     'up_missing': '没查到 UID {uid} 的主播信息。\n可能是 UID 填错了，或者 B站风控了。稍后再试一次，或在 WebUI 里填 Cookie。',
     'duplicate': '这个主播已经在本群的订阅列表里了~',
     'added': '已添加：{identity}\n本群推送：{switches}\n@全体：{at_all}',
-    'at_all_hint': '（{prefix}bili atall on 可开）',
+    'at_all_hint': '（{prefix}bpush atall on 可开）',
     'removed': '已从本群移除：UID {uid}\n顺带清理了 {count} 位群友的订阅。',
-    'list_empty': '本群还没有添加任何主播，管理员可以用 {prefix}bili up add <UID> 添加。',
+    'list_empty': '本群还没有添加任何主播，管理员可以用 {prefix}bpush up add <UID> 添加。',
     'list_head': '本群主播（{count} 个）：',
     'list_item': '{index}. {identity} · {switches} · 订阅 {count} 人',
     'identity': '{name}（UID {uid}{room}）',

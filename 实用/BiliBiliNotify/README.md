@@ -21,20 +21,20 @@ OlivOS 插件：B 站**直播开播 / 切换分区 / 下播**、**新动态**、
 
 | 命令 | 说明 |
 |---|---|
-| `.bili up add <UID>` | 添加主播（只填 UID，房间号自动解析） |
-| `.bili up del <UID>` | 从本群移除 |
-| `.bili up list` | 本群主播清单 |
-| `.bili up live <UID> <on\|off>` | 分主播：直播检测开关 |
-| `.bili up dynamic <UID> <on\|off>` | 分主播：动态检测开关 |
-| `.bili up video <UID> <on\|off>` | 分主播：视频检测开关 |
-| `.bili up sub <UID>` | 订阅开播提醒（开播时 @ 你） |
-| `.bili up unsub <UID>` | 取消订阅 |
-| `.bili up subs` | 查看自己在本群的订阅 |
-| `.bili push <live\|dynamic\|video> <on\|off>` | 本群群级推送开关 |
-| `.bili atall <on\|off>` | 本群开播 @全体 开关 |
-| `.bili status` | 运行状态 |
-| `.bili test <UID>` | 立即拉一次并推送测试消息 |
-| `.bili help` | 帮助 |
+| `.bpush up add <UID>` | 添加主播（只填 UID，房间号自动解析） |
+| `.bpush up del <UID>` | 从本群移除 |
+| `.bpush up list` | 本群主播清单 |
+| `.bpush up live <UID> <on\|off>` | 分主播：直播检测开关 |
+| `.bpush up dynamic <UID> <on\|off>` | 分主播：动态检测开关 |
+| `.bpush up video <UID> <on\|off>` | 分主播：视频检测开关 |
+| `.bpush up sub <UID>` | 订阅开播提醒（开播时 @ 你） |
+| `.bpush up unsub <UID>` | 取消订阅 |
+| `.bpush up subs` | 查看自己在本群的订阅 |
+| `.bpush push <live\|dynamic\|video> <on\|off>` | 本群群级推送开关 |
+| `.bpush atall <on\|off>` | 本群开播 @全体 开关 |
+| `.bpush status` | 运行状态 |
+| `.bpush test <UID>` | 立即拉一次并推送测试消息 |
+| `.bpush help` | 帮助 |
 
 权限：群主 / 管理员 / 骰主（读 OlivaDiceCore 骰主列表）/ WebUI 白名单。
 
