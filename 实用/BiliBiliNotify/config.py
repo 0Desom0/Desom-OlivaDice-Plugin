@@ -30,7 +30,6 @@ BOT_DEFAULT = {
     'version': 1,
     'enable': True,
     'prefix_list': list(allowed_prefix_list),
-    'command_name': COMMAND_NAME,
     # max_sockets：直播间长连接上限（WebSocket 只用于把开播感知从轮询提到秒级，
     # 超出的主播仍靠轮询；0 表示关闭长连接、只用轮询）。
     # live_relaxed_seconds：长连接已连上的主播，直播轮询放宽到该间隔（0 = 不放宽）。
@@ -40,8 +39,9 @@ BOT_DEFAULT = {
     'at_subscribers': {'live': True, 'dynamic': False, 'video': False},
     # dynamic_source：follow = 关注流当触发器（需 SESSDATA 且关注目标 UP），poll = 逐 UP 轮询
     'dynamic_source': 'follow',
-    # auto_follow：添加主播时顺手关注它（会修改登录账号的关注列表，默认关）。
-    'auto_follow': False,
+    # auto_follow：添加主播时顺手关注它（会修改登录账号的关注列表）。
+    # 默认开，但只有登录态（SESSDATA + bili_jct）才真正调用；未登录时静默跳过。
+    'auto_follow': True,
     'push_default': dict.fromkeys(KINDS, True),
     'send_interval_seconds': 3,
     'disabled_group_list': [],

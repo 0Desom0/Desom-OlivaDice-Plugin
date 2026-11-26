@@ -220,6 +220,8 @@ def _state(bots, bot_hash):
     pair = _bot_pair(bots[bot_hash])
     state.update(
         bot={key: bot[key] for key in config.BOT_DEFAULT if key != 'configured_master_list'},
+        # 命令名固定在代码里，不落盘：旧配置里残留的 command_name 不再影响解析与显示。
+
         rooms={uid: _view_room(bot_hash, uid, room) for uid, room in data['rooms'].items()},
         groups={
             sid: _view_group(sid, group, pair, bot['disabled_group_list'], today)
@@ -227,6 +229,7 @@ def _state(bots, bot_hash):
         },
         status=notify.status(bot_hash),
     )
+    state['bot']['command_name'] = config.COMMAND_NAME
     return state
 
 

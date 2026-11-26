@@ -262,6 +262,15 @@ def dynamics(uid):
     return _opus_dynamics(uid)
 
 
+def logged_in():
+    """是否具备可用的登录态（关注、关注流、个人接口都需要）。"""
+    try:
+        cookie = store.global_config()['cookie']
+    except store.StorageError:
+        return False
+    return bool(_cookie_value(cookie.get('sessdata')) and _cookie_value(cookie.get('bili_jct')))
+
+
 def follow_user(uid):
     """关注目标 UP（act=5）。会修改登录账号的关注列表，只在开启「自动关注」时调用。"""
     try:
