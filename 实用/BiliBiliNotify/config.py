@@ -33,7 +33,7 @@ BOT_DEFAULT = {
     # max_sockets：直播间长连接上限（WebSocket 只用于把开播感知从轮询提到秒级，
     # 超出的主播仍靠轮询；0 表示关闭长连接、只用轮询）。
     # live_relaxed_seconds：长连接已连上的主播，直播轮询放宽到该间隔（0 = 不放宽）。
-    'poll': {'live_seconds': 10, 'dynamic_seconds': 600, 'video_seconds': 600,
+    'poll': {'live_seconds': 10, 'dynamic_seconds': 10, 'video_seconds': 10,
              'max_concurrent': 3, 'max_sockets': 8, 'live_relaxed_seconds': 60},
     'at_all': {'daily_limit': 10, 'guild_at_once': True},
     'at_subscribers': {'live': True, 'dynamic': False, 'video': False},

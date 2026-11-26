@@ -319,6 +319,36 @@ def _item_uid(item):
     return str(author.get('mid') or author.get('uid') or '')
 
 
+_OPUS_PAGE = 'https://www.bilibili.com/opus/{opus_id}'
+_PUB_TIME = re.compile(r'pub_time\\?":\\?"([^"\\]{1,40})')
+
+
+def opus_pub_time(opus_id):
+    """opus 流不带发布时间，从 opus 页面补（只在真要推送时调用一次）。"""
+    if not re.fullmatch(r'[0-9]{1,25}', str(opus_id)):
+        return ''
+    headers = {
+        'User-Agent': BASE_HEADERS['User-Agent'],
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+    }
+    try:
+        with requests.Session() as client:
+            client.trust_env = False
+            with client.get(_OPUS_PAGE.format(opus_id=opus_id), headers=headers,
+                            timeout=config.IMAGE_TIMEOUT, allow_redirects=False) as response:
+                if response.status_code != 200:
+                    return ''
+                text = response.text
+    except requests.RequestException:
+        return ''
+    match = _PUB_TIME.search(text)
+    if not match:
+        return ''
+    # 「2026年11月26日 09:14」→「2026-11-26 09:14」，与其它推送保持同一写法。
+    return re.sub(r'年|月', '-', match.group(1)).replace('日', '').strip()
+
+
 def _opus_dynamics(uid):
     """空间动态流被风控时改读 opus 流；条目拉平成与原接口同构的结构。
 

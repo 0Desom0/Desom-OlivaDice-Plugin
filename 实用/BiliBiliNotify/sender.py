@@ -264,7 +264,8 @@ def send(proc, bot_hash, target, kind, fields, *, image='', at_all=False, subscr
         elif image:
             url = _push_url(image)
             if len(url) <= _LIMIT - len('[OP:image,file=]'):
-                image_segment = f'[OP:image,file={url}]\n'
+                # 普通图文里图片是独立段，额外换行会顶出一行空白，这里不留。
+                image_segment = f'[OP:image,file={url}]'
         chunks = _render(kind, fields, sdk, image_segment, at_all, subscribers, test)
         for index, chunk in enumerate(chunks):
             if index:

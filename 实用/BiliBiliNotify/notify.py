@@ -217,8 +217,14 @@ def _feed_fields(kind, item):
     image = sender.pick_first_image((_first_field(draw.get('items'), 'src'), _first_field(opus.get('pics'), 'url'),
                                      author.get('face')))
     body = (dynamic.get('desc') or {}).get('text') or (opus.get('summary') or {}).get('text') or ''
+    # stamp 是雪花 id 时不能当时刻用，发布时间以 pub_ts 为准。
+    published = _int(author.get('pub_ts')) or stamp
+    clock = _clock(published)
+    if not clock and identity:
+        # opus 降级通道没有 pub_ts，从 opus 页面补一次发布时间。
+        clock = bili_api.opus_pub_time(identity)
     return str(author.get('name') or ''), {
-        'body': str(body)[:200], 'time': _clock(stamp), 'link': f'https://t.bilibili.com/{identity}',
+        'body': str(body)[:200], 'time': clock, 'link': f'https://t.bilibili.com/{identity}',
     }, image
 
 
