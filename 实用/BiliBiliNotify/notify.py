@@ -829,6 +829,12 @@ def start(Proc):
             store.load_bot(bot_hash)
             settings = store.bot_config(bot_hash)
             accounts[bot_hash] = _Account(_limit(settings) if settings.get('enable', True) else 0)
+            # StarBot 的做法：间隔低于 10 秒时提醒，太密容易被 B 站临时封接口。
+            for kind in ('live', 'dynamic', 'video'):
+                seconds = _int(settings['poll'].get(f'{kind}_seconds'), 0)
+                if 0 < seconds < 10:
+                    store.log(Proc, '轮询间隔 %s_seconds=%s 低于 10 秒，可能触发 B站风控'
+                              % (kind, settings['poll'].get(f'{kind}_seconds')), level=3)
         _engine = _Engine(Proc, accounts) if accounts else None
 
 
