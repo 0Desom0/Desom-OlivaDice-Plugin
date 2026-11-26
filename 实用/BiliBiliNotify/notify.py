@@ -134,11 +134,17 @@ def _backoff(state):
     return min(60 * 2 ** min(failures, 4), 600) if failures > 0 else 0
 
 
-def _due(settings, room, kind, now):
+def _due(settings, room, kind, now, watched=False):
     if not room.get(kind, {}).get('enabled'):
         return False
     state = _state(room, kind)
     seconds = _int(settings['poll'].get(f'{kind}_seconds'), config.BOT_DEFAULT['poll'][f'{kind}_seconds'])
+    if watched and kind == 'live':
+        # 长连接已经在推事件，轮询只当安全网，可以放宽。
+        relaxed = _int(settings['poll'].get('live_relaxed_seconds'),
+                       config.BOT_DEFAULT['poll'].get('live_relaxed_seconds', 0))
+        if relaxed > 0:
+            seconds = max(seconds, relaxed)
     last_check = _int(state.get('last_check_at'))
     return not last_check or now - last_check >= max(seconds, _backoff(state))
 
@@ -459,7 +465,7 @@ class _Engine:
             uid, kind = uids[room_index], _KINDS[kind_index]
             room = rooms[uid]
             key = bot, uid, kind
-            if key in self.pending or not _due(settings, room, kind, now):
+            if key in self.pending or not _due(settings, room, kind, now, watched=(bot, uid) in self.watchers):
                 continue
             self.polls.append(_Job(bot, uid, kind, room.get('resolved_at'), now))
             self.pending.add(key)

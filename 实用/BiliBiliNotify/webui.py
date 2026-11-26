@@ -17,6 +17,7 @@ _POLL_LABELS = {
     'video_seconds': '视频轮询间隔',
     'max_concurrent': '最大并发请求数',
     'max_sockets': '直播间长连接上限',
+    'live_relaxed_seconds': '长连接在线时的直播轮询间隔',
 }
 _IMAGES = {'.jpg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp', '.avif': 'avif', '.bmp': 'bmp'}
 _MAX_PREVIEW = 512 * 1024
@@ -323,6 +324,8 @@ def _save_bot(payload, bot_hash):
             'max_concurrent': _int(poll.get('max_concurrent'), _POLL_LABELS['max_concurrent'], 1, 32),
             # 0 表示关闭长连接、完全用轮询
             'max_sockets': _int(poll.get('max_sockets'), _POLL_LABELS['max_sockets'], 0, 32),
+            'live_relaxed_seconds': _int(poll.get('live_relaxed_seconds'),
+                                         _POLL_LABELS['live_relaxed_seconds'], 0, 3600),
         }
     if 'dynamic_source' in payload:
         source = payload['dynamic_source']

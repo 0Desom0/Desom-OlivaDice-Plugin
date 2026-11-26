@@ -393,6 +393,7 @@
                                 <label class="field"><span class="field-label">视频轮询（秒）</span><input type="number" id="video-seconds" min="1" required></label>
                                 <label class="field"><span class="field-label">最大并发请求</span><input type="number" id="max-concurrent" min="1" max="32" required></label>
                                 <label class="field"><span class="field-label">直播间长连接上限（0 = 只用轮询）</span><input type="number" id="max-sockets" min="0" max="32" required></label>
+                                <label class="field"><span class="field-label">长连接在线时的直播轮询（秒，0 = 不放宽）</span><input type="number" id="live-relaxed" min="0" max="3600" required></label>
                                 <label class="field"><span class="field-label">动态来源</span>
                                     <select id="dynamic-source">
                                         <option value="follow">关注流（需小号关注目标）</option>
@@ -400,6 +401,7 @@
                                     </select>
                                 </label>
                             </div>
+                            <p class="muted">长连接和轮询是配合关系：<strong>长连接</strong>负责秒级发现开播/下播（每台最多连「长连接上限」个直播间）；<strong>轮询</strong>是安全网，长连接没连上、超出上限或临时断线时按上面的间隔继续检查。两者同时工作，同一次开播只会推送一条。</p>
                         </article>
                         <article class="panel stack">
                             <h2>推送与提醒</h2>
@@ -992,6 +994,7 @@
             for (const kind of Object.keys(kinds)) $(kind + '-seconds').value = settings.poll[kind + '_seconds'];
             $('max-concurrent').value = settings.poll.max_concurrent;
             $('max-sockets').value = settings.poll.max_sockets;
+            $('live-relaxed').value = settings.poll.live_relaxed_seconds;
             $('dynamic-source').value = settings.dynamic_source || 'follow';
             $('daily-limit').value = settings.at_all.daily_limit;
             $('guild-once').checked = settings.at_all.guild_at_once;
@@ -1028,7 +1031,7 @@
                 poll: {
                     live_seconds: value('live-seconds'), dynamic_seconds: value('dynamic-seconds'),
                     video_seconds: value('video-seconds'), max_concurrent: value('max-concurrent'),
-                    max_sockets: value('max-sockets'),
+                    max_sockets: value('max-sockets'), live_relaxed_seconds: value('live-relaxed'),
                 },
                 dynamic_source: $('dynamic-source').value,
                 at_all: { daily_limit: value('daily-limit'), guild_at_once: $('guild-once').checked },
