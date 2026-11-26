@@ -621,32 +621,6 @@ def _remove_file(path):
         store.log(None, '无法清理 B站封面临时文件', level=3)
 
 
-_IMAGE_LIMIT = 512
-
-
-def _scale_image(path, limit=_IMAGE_LIMIT):
-    """QQ 群 markdown 图片的尺寸参数有上限，超限时客户端会按固定框压扁/裁切；
-    这里把封面等比缩到上限内，声明尺寸就跟真实尺寸一致，比例不变形。"""
-    try:
-        from PIL import Image
-    except ImportError:
-        return
-    try:
-        with Image.open(path) as image:
-            width, height = image.size
-            if max(width, height) <= limit:
-                return
-            fmt = (image.format or 'PNG').upper()
-            if fmt not in ('PNG', 'JPEG', 'WEBP', 'GIF'):
-                fmt = 'PNG'
-            image.thumbnail((limit, limit))
-            if fmt == 'JPEG' and image.mode not in ('RGB', 'L'):
-                image = image.convert('RGB')
-            image.save(path, format=fmt)
-    except (OSError, ValueError):
-        store.log(None, '封面缩放失败，按原图发送', level=3)
-
-
 def _download_cover(client, url, digest):
     temporary = None
     try:
@@ -673,7 +647,6 @@ def _download_cover(client, url, digest):
                     handle.write(chunk)
             if not size:
                 return None
-            _scale_image(temporary)
             path = config.IMAGE_ROOT / f'{digest}.{extension}'
             with _image_lock:
                 # 每个下载先写独立临时文件；已交付的同名封面绝不在发送期间被覆盖。

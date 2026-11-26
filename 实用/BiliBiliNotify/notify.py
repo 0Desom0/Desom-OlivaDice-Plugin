@@ -70,6 +70,11 @@ def new_entries(kind, state, items):
     return _fresh_entries(kind, state, _ordered_entries(kind, items))
 
 
+# 一次最多补发几条：动态 id 是雪花号、旧记录可能是秒级时间戳，
+# 口径不一致时长连接/降级通道会让历史条目全部「比上次新」，只补最新一条即可。
+_CATCHUP_LIMIT = 3
+
+
 def _fresh_entries(kind, state, records):
     since = _int(state.get('last_ts'))
     seen = set(state.get('seen_ids') or ())
@@ -79,6 +84,9 @@ def _fresh_entries(kind, state, records):
         if stamp > since and identity not in seen:
             seen.add(identity)
             fresh.append(item)
+    if len(fresh) > _CATCHUP_LIMIT:
+        # 只推最新的，其余记为已见，避免把陈年动态一口气刷出来。
+        fresh = fresh[-1:]
     return fresh
 
 
@@ -215,10 +223,12 @@ def _feed_fields(kind, item):
 
 
 def _initialized(kind, state):
-    return state.get('initialized', bool(
-        state.get(_LAST_IDS[kind]) or state.get('last_ts')
-        or (state.get('last_check_at') and not state.get('fail_count'))
-    ))
+    # 只有真的记录过基线（last_id 或 last_ts）才算建档完成。
+    # 之前把 last_check_at 也算进来，导致「查过但一次都没成功推送」的主播
+    # 在第一次拿到数据时把整批历史当成新动态推出去。
+    if not (state.get(_LAST_IDS[kind]) or state.get('last_ts')):
+        return False
+    return state.get('initialized', True)
 
 
 @dataclass(frozen=True, slots=True)

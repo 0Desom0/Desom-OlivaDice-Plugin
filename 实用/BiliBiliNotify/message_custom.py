@@ -72,8 +72,8 @@ OP = {
     'start': '{at_all}【B站开播】{name} 开播啦！\n标题：{title}\n分区：{area}\n时间：{time}\n{image}{link}{subscribers}',
     'area': '【B站换分区】{name} 切换了分区\n标题：{title}\n新分区：{area}\n{image}{link}',
     'end': '【B站下播】{name} 下播了\n标题：{title}\n下播分区：{area}',
-    'dynamic': '【B站动态】{name} 发布了新动态\n{body}\n{image}{link}',
-    'video': '【B站投稿】{name} 发布了新视频\n标题：{title}\n{image}{link}',
+    'dynamic': '【B站动态】{name} 发布了新动态\n时间：{time}\n{body}\n{image}{link}',
+    'video': '【B站投稿】{name} 发布了新视频\n标题：{title}\n时间：{time}\n{image}{link}',
 }
 
 MARKDOWN = {
@@ -81,6 +81,6 @@ MARKDOWN = {
               '**时间**：{time}\n**链接**：{link}\n{at_all}{subscribers}'),
     'area': '**B站换分区** · {name}\n{image}\n**标题**：{title}\n**新分区**：{area}\n**链接**：{link}',
     'end': '**B站下播** · {name}\n\n**标题**：{title}\n**下播分区**：{area}',
-    'dynamic': '**B站动态** · {name}\n{image}\n{body}\n**链接**：{link}',
-    'video': '**B站投稿** · {name}\n{image}\n**标题**：{title}\n**链接**：{link}',
+    'dynamic': '**B站动态** · {name}\n**时间**：{time}\n{image}\n{body}\n**链接**：{link}',
+    'video': '**B站投稿** · {name}\n**标题**：{title}\n**时间**：{time}\n{image}\n**链接**：{link}',
 }
