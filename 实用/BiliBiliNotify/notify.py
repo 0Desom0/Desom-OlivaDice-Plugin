@@ -188,7 +188,36 @@ def _live_cover(payload):
     return sender.pick_first_image(payload.get(key) for key in ('cover_from_user', 'keyframe', 'system_cover'))
 
 
-def _live_fields(room, uid, runtime, payload, kind, stamp):
+def _format_duration(seconds):
+    seconds = _int(seconds)
+    if seconds < 0:
+        return ''
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts = ((hours, '小时'), (minutes, '分'), (secs, '秒'))
+    return ''.join(f'{value}{unit}' for value, unit in parts if value) or '0秒'
+
+
+def _live_end_duration(room, uid, runtime, ended_at, *, use_stats=False):
+    started_at = 0
+    if use_stats and (config.DATA_ROOT / 'stats.db').is_file():
+        try:
+            session = live_stats.room_summary(uid, str(room.get('room_id') or '')).get('session')
+            if (isinstance(session, dict) and session.get('status') in ('live', 'pending')
+                    and _int(session.get('start_at')) > 0):
+                session_end = _int(session.get('end_at'))
+                if not session_end or abs(session_end - ended_at) <= 60:
+                    started_at = _int(session.get('start_at'))
+        except Exception:
+            started_at = 0
+    if started_at <= 0:
+        started_at = _int(runtime.get('last_live_time'))
+    if started_at <= 0 or ended_at < started_at:
+        return ''
+    return _format_duration(ended_at - started_at)
+
+
+def _live_fields(room, uid, runtime, payload, kind, stamp, *, use_stats=False):
     room_id = room.get('room_id')
     link = f'https://live.bilibili.com/{room_id}' if room_id else f'https://space.bilibili.com/{uid}'
     fields = {
@@ -200,6 +229,7 @@ def _live_fields(room, uid, runtime, payload, kind, stamp):
     if kind == 'end':
         fields['area'] = runtime.get('last_area_v2_name') or fields['area']
         fields['title'] = runtime.get('last_title') or fields['title']
+        fields['duration'] = _live_end_duration(room, uid, runtime, _int(stamp), use_stats=use_stats)
     return fields
 
 
@@ -396,7 +426,7 @@ def _render_card(proc, job, sid, notice, settings):
             item, fallback_name=notice.fields['name'], link=notice.fields['link'], archive_dir=archive,
         )
     except Exception as error:
-        _send_log(proc, job, sid, notice.kind, f'卡片渲染失败：{type(error).__name__}，回退图文')
+        _send_log(proc, job, sid, notice.kind, f'卡片渲染失败：{type(error).__name__}: {error}，回退图文')
         return None
 
 
@@ -620,7 +650,10 @@ class _Engine:
                                     detail['danmu_rows'] = live_stats.finalized_danmu_rows(session_id)
                                 cards[key] = function.render_session_image(kind, detail, stats)
                             except Exception as error:
-                                _send_log(self.proc, job, sid, kind, f'场次 {session_id} 渲染失败：{type(error).__name__}')
+                                _send_log(
+                                    self.proc, job, sid, kind,
+                                    f'场次 {session_id} 渲染失败：{type(error).__name__}: {error}',
+                                )
                                 cards[key] = None
                         path = cards[key]
                         if path is None:
@@ -1113,7 +1146,9 @@ def _record_live(room, state, result, record_stats=None):
     cover = _live_cover(payload)
     # 参考 StarBot：断流宽限内续接同一场次，只发送首次开播提醒。
     if action and not (action == 'start' and resumed):
-        fields = _live_fields(room, uid, state, payload, action, live_time or result.checked_at)
+        fields = _live_fields(
+            room, uid, state, payload, action, live_time or result.checked_at, use_stats=bool(record_stats),
+        )
         fields['name'] = nickname or function.names.get((result.job.bot, uid)) or f'UID {uid}'
         notices = (_Notice(action, fields, cover if action != 'end' else '', live_time),)
     else:

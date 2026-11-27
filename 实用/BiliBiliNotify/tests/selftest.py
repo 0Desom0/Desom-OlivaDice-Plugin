@@ -650,7 +650,7 @@ class PhaseOneSuite(Suite):
         op = SimpleNamespace(send=Mock(return_value={'retcode': 0}))
         with patch.object(sender, '_event', return_value=op):
             self.assertTrue(sender.send(self.proc, BOT, GROUP, 'dynamic', fields, local_image=path))
-        self.assertEqual(op.send.call_args.args[2], f'[OP:image,file={path.resolve().as_uri()}]\n【B站动态】碧诗\n{link}')
+        self.assertEqual(op.send.call_args.args[2], f'[OP:image,file={path.resolve().as_uri()}]\n【B站动态】\n碧诗\n{link}')
 
         qq_target = dict(GROUP, sdk='qqGuildv2_link', platform='qqGuild', chat_type='qq_group')
         markdown = Mock(side_effect=({'active': True}, {'active': False}))
@@ -663,7 +663,7 @@ class PhaseOneSuite(Suite):
               patch.object(sender.OlivOS, 'messageAPI', api, create=True),
               patch.object(sender.OlivOS, 'qqGuildv2SDK', sdk, create=True)):
             for _ in range(2):
-                self.assertTrue(sender.send_local_image(self.proc, BOT, qq_target, path, f'【B站动态】碧诗\n{link}'))
+                self.assertTrue(sender.send_local_image(self.proc, BOT, qq_target, path, f'【B站动态】\n碧诗\n{link}'))
             mark = markdown.call_args.kwargs
             self.assertEqual(mark['local_images'], {'cover': f'{config.PLUGIN_NAME}/generated/{path.name}'})
             self.assertIn(link, mark['markdown']['content'])
@@ -741,7 +741,7 @@ class PhaseOneSuite(Suite):
             self.assertIs(render.call_args.args[0], item)
         first, second, fallback, text_group = sent
         self.assertEqual(first[1], second[1])
-        self.assertIn('【B站动态】碧诗\nhttps://t.bilibili.com/198', first[1])
+        self.assertIn('【B站动态】\n碧诗\nhttps://t.bilibili.com/198', first[1])
         self.assertIn(fake_bili.VIDEO_URL, fallback[1])
         self.assertEqual(fallback[1], text_group[1])
         generated = config.IMAGE_ROOT.parent / 'generated'
@@ -755,7 +755,7 @@ class PhaseOneSuite(Suite):
             self.assertEqual(notify.test_push(self.proc, BOT, '2', 'dynamic', targets=(GROUP,)), 'ok')
         self.assertEqual(len(sent), 1)
         self.assertIn('file=file:', sent[0][1])
-        self.assertIn('[测试] 【B站动态】碧诗', sent[0][1])
+        self.assertIn('[测试] 【B站动态】\n碧诗', sent[0][1])
         self.assertFalse(list(generated.glob('*.png')))
 
         sent.clear()
@@ -1920,6 +1920,73 @@ with offline_plugin():
         with webui._bot_nick_lock:
             webui._bot_nick_cache.clear()
 
+    def test_opk_eager_module_preload(self):
+        # OPK 在 init 后会清理 plugin/tmp/<namespace>，所有插件子模块必须在 import BiliBiliNotify 时完成预加载。
+        code = '''
+import sys
+from pathlib import Path
+from selftest import PLUGIN, offline_plugin
+with offline_plugin():
+    import BiliBiliNotify  # noqa: F401
+    expected = sorted(p.stem for p in Path(PLUGIN).glob('*.py') if p.name != '__init__.py')
+    missing = [name for name in expected if f'BiliBiliNotify.{name}' not in sys.modules]
+    assert not missing, f'OPK 运行期可能触发 ImportError，未在启动期预加载的模块: {missing}'
+'''
+        result = subprocess.run([sys.executable, '-c', code], cwd=PLUGIN / 'tests',
+                                capture_output=True, encoding='utf-8', timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_push_newlines_and_end_duration(self):
+        # 全部 OP 推送方框后必须紧跟换行；下播推送有开播时间时展示直播时长，缺失或时钟倒流时省略该行。
+        sample_fields = {
+            'name': '碧诗', 'title': '晚间闲聊', 'area': '虚拟主播',
+            'time': '2026-11-27 20:00:00', 'body': '动态正文', 'link': 'https://live.bilibili.com/1024',
+        }
+        for kind, header in (
+            ('start', '【B站开播】\n'),
+            ('area', '【B站换分区】\n'),
+            ('end', '【B站下播】\n'),
+            ('dynamic', '【B站动态】\n'),
+            ('video', '【B站投稿】\n'),
+        ):
+            rendered = ''.join(sender._render(kind, sample_fields, 'onebot', '', False, (), False))
+            self.assertIn(header, rendered)
+        # 无开播时间：OP 与 Markdown 均不显示直播时长。
+        room = {'uid': '2', 'room_id': '1024'}
+        no_start = notify._live_fields(
+            room, '2', {'live_status': 1, 'last_live_time': 0, 'last_title': 'T', 'last_area_v2_name': 'A'},
+            {'live_status': 0}, 'end', 1700003600,
+        )
+        self.assertEqual(no_start['duration'], '')
+        for sdk in ('onebot', 'qqGuildv2_link'):
+            text = ''.join(sender._render('end', {**no_start, 'name': '碧诗'}, sdk, '', False, (), False))
+            self.assertNotIn('直播时长', text)
+        # 时钟倒流也不显示。
+        reversed_clock = notify._live_fields(
+            room, '2', {'live_status': 1, 'last_live_time': 1700004000, 'last_title': 'T', 'last_area_v2_name': 'A'},
+            {'live_status': 0}, 'end', 1700003600,
+        )
+        self.assertEqual(reversed_clock['duration'], '')
+        # 有开播时间（含直播中途绑定/重载持久化下来的 last_live_time）：精准计算并渲染。
+        with_start = notify._live_fields(
+            room, '2', {'live_status': 1, 'last_live_time': 1700000000, 'last_title': 'T', 'last_area_v2_name': 'A'},
+            {'live_status': 0}, 'end', 1700005445,
+        )
+        self.assertEqual(with_start['duration'], '1小时30分45秒')
+        op_end = ''.join(sender._render('end', {**with_start, 'name': '碧诗'}, 'onebot', '', False, (), False))
+        md_end = ''.join(sender._render('end', {**with_start, 'name': '碧诗'}, 'qqGuildv2_link', '', False, (), False))
+        self.assertIn('【B站下播】\n碧诗 下播了', op_end)
+        self.assertIn('\n直播时长：1小时30分45秒', op_end)
+        self.assertIn('\n**直播时长**：1小时30分45秒', md_end)
+        # 开启直播统计且断流续接场次：优先取 stats.db 整场 start_at。
+        live_stats.start_or_resume('2', '1024', start_at=1700000000, title='T', area='A', grace_seconds=120)
+        live_stats.end_session('2', '1024', end_at=1700007200, grace_seconds=120)
+        with_stats = notify._live_fields(
+            room, '2', {'live_status': 1, 'last_live_time': 1700003600, 'last_title': 'T', 'last_area_v2_name': 'A'},
+            {'live_status': 0}, 'end', 1700007200, use_stats=True,
+        )
+        self.assertEqual(with_stats['duration'], '2小时')
+
 
 CASES = (
     (Suite, 'test_commands', '命令解析'), (Suite, 'test_binding', 'UID 两级绑定与群订阅'), (Suite, 'test_permissions', '权限'),
@@ -1953,6 +2020,8 @@ CASES = (
     (PhaseThreeSuite, 'test_web_sessions_preview_and_settings', 'WebUI 历史、预览权限与体积、统计配置门控'),
     (PhaseThreeSuite, 'test_sourcery_audit_regressions', 'Sourcery 审计缺陷回归：V11 POST、解压上限、报告边界与路由'),
     (PhaseThreeSuite, 'test_bot_nicknames_and_sync', 'WebUI Bot 选择器昵称解析与异步登录信息同步'),
+    (PhaseThreeSuite, 'test_opk_eager_module_preload', 'OPK 生命周期：启动期预加载全部插件子模块防延迟导入失败'),
+    (PhaseThreeSuite, 'test_push_newlines_and_end_duration', '推送方框换行与下播直播时长计算及缺失隐藏'),
 )
 
 

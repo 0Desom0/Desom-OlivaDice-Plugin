@@ -2,7 +2,7 @@ import re
 import time
 from urllib.parse import urlsplit
 
-from . import bili_api, config, store
+from . import bili_api, config, report_render, store, wordcloud_render
 
 # 昵称只在本代进程中保存，不进入 JSON。
 names = {}
@@ -47,14 +47,10 @@ def ensure_group(data, settings, target):
 def render_session_image(kind, detail, settings, *, archive_dir=None):
     """群命令、下播推送与面板预览共用同一套图像配置。"""
     if kind == 'report':
-        from . import report_render
-
         return report_render.render_live_report(
             detail, hide_revenue=settings['hide_revenue'], avatar_url=detail.get('avatar_url', ''),
             archive_dir=archive_dir,
         )
-    from . import wordcloud_render
-
     return wordcloud_render.render_wordcloud(
         detail, word_limit=settings['wordcloud_limit'], stopwords=settings['wordcloud_stopwords'],
         custom_words=settings['wordcloud_words'], archive_dir=archive_dir,

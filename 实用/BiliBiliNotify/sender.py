@@ -124,6 +124,11 @@ def _render(kind, fields, sdk, image, at_all, subscribers, test):
     markdown = sdk == _QQ
     escape = _markdown_text if markdown else _plain_text
     values = {key: escape(fields.get(key, '')) for key in ('name', 'title', 'area', 'time')}
+    duration = str(fields.get('duration') or '').strip()
+    values['duration'] = (
+        (f'\n**直播时长**：{escape(duration)}' if markdown else f'\n直播时长：{escape(duration)}')
+        if duration else ''
+    )
     values['body'] = escape(str(fields.get('body') or '')[:200])
     values['link'] = _push_url(_http_url(fields.get('link'))) or escape(fields.get('link', ''))
     values['image'] = image
@@ -431,7 +436,7 @@ def send(proc, bot_hash, target, kind, fields, *, image='', at_all=False, subscr
          interval=3, still_current=None, local_image=None):
     if local_image is not None:
         name = ' '.join(str(fields.get('name') or '').splitlines())
-        caption = f"【B站动态】{name}\n{fields.get('link') or ''}"
+        caption = f"【B站动态】\n{name}\n{fields.get('link') or ''}"
         return send_local_image(proc, bot_hash, target, local_image, caption, test=test, still_current=still_current)
     if not _supported(target) or not _current(still_current):
         return False

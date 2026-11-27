@@ -384,7 +384,7 @@ def _image_stats(kind, uid, room, settings, Proc, bot_hash, target):
     try:
         path = function.render_session_image(kind, detail, settings)
     except Exception as error:
-        store.log(Proc, f'直播资料图片渲染失败：{type(error).__name__}', 3)
+        store.log(Proc, f'直播资料图片渲染失败：{type(error).__name__}: {error}', 3)
         return False, TEXT['stats_image_failed']
     if path is None:
         return False, TEXT['stats_empty_cloud' if kind == 'cloud' else 'stats_image_failed']
