@@ -1867,6 +1867,59 @@ with offline_plugin():
             reply, = self.command('.bpush report')
             self.assertIn('场次', reply)
 
+    def test_bot_nicknames_and_sync(self):
+        with webui._bot_nick_lock:
+            webui._bot_nick_cache.clear()
+        bot_a = 'aa0ee01502c7d673633be9908676df62'
+        bot_b = '23c1c9409599b84d65ca6b9366aa5b3c'
+        bot_c = '0a47d5024e221827bbae786e5d5d29ad'
+        bots = {
+            bot_a: SimpleNamespace(id=3948837959, platform={'sdk': 'onebot', 'platform': 'qq'}, extends={}),
+            bot_b: SimpleNamespace(id=102080146, platform={'sdk': 'qqGuildv2_link', 'platform': 'qqGuild'}, extends={}),
+            bot_c: SimpleNamespace(id=90307142, platform={'sdk': 'heybox', 'platform': 'xiaoheihe'},
+                                   extends={}, enable=False),
+        }
+        proc = SimpleNamespace(log=lambda *_: None, Proc_data={'bot_info_dict': bots})
+        fake_core = SimpleNamespace(msgCustom=SimpleNamespace(dictStrCustomDict={
+            bot_a: {'strBotName': 'Fronia芙萝妮娅'},
+            bot_b: {'strBotName': 'OlivaDice'},  # 默认模板名不覆盖真实昵称
+        }))
+        with patch.dict(sys.modules, {'OlivaDiceCore': fake_core}):
+            st = webui.dispatch({'action': 'get_state', 'bot_hash': bot_a}, proc)['state']
+            by_hash = {b['hash']: b for b in st['bots']}
+            self.assertEqual(by_hash[bot_a]['nickname'], 'Fronia芙萝妮娅')
+            self.assertEqual(by_hash[bot_a]['id'], '3948837959')
+            self.assertEqual(by_hash[bot_b]['nickname'], '')
+            self.assertEqual(by_hash[bot_b]['name'], '102080146')
+
+            # sync_bot_names 并行通过 Event.get_login_info 拉取平台真实昵称并缓存，跳过禁用 Bot。
+            called_ids = []
+
+            class FakeEvent:
+                def __init__(self, raw, **kw):
+                    self.bot_info = raw
+
+                def get_login_info(self, flag_log=False):
+                    called_ids.append(self.bot_info.id)
+                    if self.bot_info.id == 3948837959:
+                        return {'active': True, 'data': {'name': '小芙QQ真名', 'id': '3948837959'}}
+                    if self.bot_info.id == 102080146:
+                        return {'active': True, 'data': {'name': '芙萝妮娅官方号', 'id': '102080146'}}
+                    return None
+
+            fake_content = SimpleNamespace(fake_sdk_event=lambda bot, **kw: bot)
+            fake_api = SimpleNamespace(Event=FakeEvent)
+            with (patch.object(webui.OlivOS, 'contentAPI', fake_content, create=True),
+                  patch.object(webui.OlivOS, 'API', fake_api, create=True)):
+                synced = webui.dispatch({'action': 'sync_bot_names', 'bot_hash': bot_a}, proc)['state']
+            synced_map = {b['hash']: b for b in synced['bots']}
+            self.assertEqual(synced_map[bot_a]['nickname'], '小芙QQ真名')
+            self.assertEqual(synced_map[bot_b]['nickname'], '芙萝妮娅官方号')
+            self.assertEqual(synced_map[bot_c]['nickname'], '')
+            self.assertCountEqual(called_ids, [3948837959, 102080146])
+        with webui._bot_nick_lock:
+            webui._bot_nick_cache.clear()
+
 
 CASES = (
     (Suite, 'test_commands', '命令解析'), (Suite, 'test_binding', 'UID 两级绑定与群订阅'), (Suite, 'test_permissions', '权限'),
@@ -1899,6 +1952,7 @@ CASES = (
     (PhaseThreeSuite, 'test_image_commands_and_help_gates', '群报告与词云查询、管理三态、帮助与缺依赖门控'),
     (PhaseThreeSuite, 'test_web_sessions_preview_and_settings', 'WebUI 历史、预览权限与体积、统计配置门控'),
     (PhaseThreeSuite, 'test_sourcery_audit_regressions', 'Sourcery 审计缺陷回归：V11 POST、解压上限、报告边界与路由'),
+    (PhaseThreeSuite, 'test_bot_nicknames_and_sync', 'WebUI Bot 选择器昵称解析与异步登录信息同步'),
 )
 
 

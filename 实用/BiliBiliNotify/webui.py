@@ -1,8 +1,11 @@
 """通过 OlivOS 菜单事件提供订阅推送管理面板。"""
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, wait
 import io
 import re
+import sys
+from threading import Lock
 import time
 from datetime import date
 from urllib.parse import urlsplit
@@ -47,8 +50,12 @@ _SESSION_FIELDS = frozenset((
     'id', 'room_id', 'uname', 'title', 'area', 'status', 'start_at', 'end_at', 'duration',
     'danmu', 'online_peak', 'interactors',
 ))
-_GLOBAL_ACTIONS = {'get_state', 'save_global', 'refresh_buvid', 'probe_api',
+_GLOBAL_ACTIONS = {'get_state', 'save_global', 'refresh_buvid', 'probe_api', 'sync_bot_names',
                    'qr_generate', 'qr_poll', 'account_sync', 'switch_account', 'remove_account'}
+_BOT_NICK_TTL = 1800.0
+_BOT_NICK_RETRY_TTL = 30.0
+_bot_nick_lock = Lock()
+_bot_nick_cache = {}
 
 
 class _InvalidRequest(ValueError):
@@ -318,13 +325,127 @@ def _view_group(sid, group, pair, disabled, today):
     }
 
 
+def _clean_nickname(value):
+    if value is None:
+        return ''
+    text = ' '.join(str(value).split())
+    return ''.join(ch for ch in text if ord(ch) >= 32 and ord(ch) != 127)[:64]
+
+
+def _oliva_bot_name(bot_hash):
+    core = sys.modules.get('OlivaDiceCore')
+    if core is None:
+        return ''
+    try:
+        custom = getattr(getattr(core, 'msgCustom', None), 'dictStrCustomDict', None)
+        if not isinstance(custom, dict):
+            return ''
+        entry = custom.get(bot_hash)
+        if not isinstance(entry, dict):
+            return ''
+        name = _clean_nickname(entry.get('strBotName'))
+        return '' if name in ('', 'OlivaDice') else name
+    except Exception:
+        return ''
+
+
+def _bot_nickname(bot_hash, info):
+    bot_id = _clean_nickname(getattr(info, 'id', ''))
+    with _bot_nick_lock:
+        cached = _bot_nick_cache.get(bot_hash)
+    if cached and cached[0] and cached[0] != bot_id:
+        return cached[0], bot_id
+    extends = getattr(info, 'extends', None)
+    extends = extends if isinstance(extends, dict) else {}
+    for candidate in (
+        getattr(info, 'name', ''),
+        getattr(info, 'nickname', ''),
+        extends.get('name', ''),
+        extends.get('nickname', ''),
+        extends.get('remark', ''),
+        _oliva_bot_name(bot_hash),
+    ):
+        nick = _clean_nickname(candidate)
+        if nick and nick != bot_id:
+            return nick, bot_id
+    return '', bot_id
+
+
+def _bot_list(bots):
+    result = []
+    for key, info in bots.items():
+        pair = _bot_pair(info)
+        nickname, bot_id = _bot_nickname(key, info)
+        result.append({
+            'hash': key,
+            'id': bot_id,
+            'nickname': nickname,
+            'name': nickname or bot_id or '未命名 Bot',
+            'sdk': pair[0],
+            'platform': pair[1],
+        })
+    return result
+
+
+def _fetch_bot_login_name(Proc, bot_info):
+    if getattr(bot_info, 'enable', True) is False:
+        return ''
+    platform = getattr(bot_info, 'platform', None)
+    if not isinstance(platform, dict) or not platform.get('sdk'):
+        return ''
+    content_api = getattr(OlivOS, 'contentAPI', None)
+    api_mod = getattr(OlivOS, 'API', None)
+    if content_api is None or api_mod is None or not hasattr(content_api, 'fake_sdk_event'):
+        return ''
+    try:
+        raw_event = content_api.fake_sdk_event(
+            bot_info, platform=platform, fakename=config.PLUGIN_NAME,
+            plugin_namespace=config.PLUGIN_NAME, message_mode_tx='olivos_string',
+        )
+        event = api_mod.Event(raw_event, log_func=None, Proc=Proc)
+        result = event.get_login_info(flag_log=False)
+    except Exception:
+        return ''
+    if not isinstance(result, dict) or result.get('active') is not True:
+        return ''
+    data = result.get('data')
+    return _clean_nickname(data.get('name')) if isinstance(data, dict) else ''
+
+
+def _sync_bot_names(Proc, bots, *, force=False):
+    now = time.monotonic()
+    pending = []
+    with _bot_nick_lock:
+        for key in bots:
+            cached = _bot_nick_cache.get(key)
+            if force or cached is None:
+                pending.append(key)
+            else:
+                ttl = _BOT_NICK_TTL if cached[0] else _BOT_NICK_RETRY_TTL
+                if now - cached[1] >= ttl:
+                    pending.append(key)
+    if pending:
+        pool = ThreadPoolExecutor(max_workers=min(8, len(pending)), thread_name_prefix='BiliBiliNotify-botnick')
+        try:
+            futures = {pool.submit(_fetch_bot_login_name, Proc, bots[key]): key for key in pending}
+            done, _ = wait(futures, timeout=3.0)
+            stamped = time.monotonic()
+            with _bot_nick_lock:
+                for future in done:
+                    key = futures[future]
+                    try:
+                        nick = future.result()
+                    except Exception:
+                        nick = ''
+                    _bot_nick_cache[key] = (nick, stamped)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+    return {'ok': True, 'state': {'bots': _bot_list(bots)}}
+
+
 def _state(bots, bot_hash):
     state = {
-        'bots': [
-            {'hash': key, 'name': str(getattr(info, 'name', '') or getattr(info, 'id', '') or '未命名 Bot'),
-             'sdk': _bot_pair(info)[0], 'platform': _bot_pair(info)[1]}
-            for key, info in bots.items()
-        ],
+        'bots': _bot_list(bots),
         'bot_hash': bot_hash,
         'global': _global_view(),
         'bot': None,
@@ -850,6 +971,9 @@ def dispatch(payload, Proc):
         return _qr_poll(payload)
     if action == 'account_sync':
         return _account_sync(bots, bot_hash)
+    if action == 'sync_bot_names':
+        force = _bool(payload.get('force', False), '强制刷新昵称')
+        return _sync_bot_names(Proc, bots, force=force)
     if action == 'switch_account':
         _switch_account(payload)
     elif action == 'remove_account':

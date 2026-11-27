@@ -102,7 +102,7 @@
         }
         .brand svg { width: 20px; height: 20px; }
         .hero .toolbar { justify-content: flex-end; }
-        .picker { position: relative; width: min(255px, 72vw); }
+        .picker { position: relative; width: min(290px, 76vw); }
         .picker summary {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto;
@@ -199,7 +199,11 @@
         .form-row { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
         .form-row .field, .form-row > input { flex: 1 1 135px; }
         .form-row button { min-height: 40px; }
-        .footer { justify-content: flex-end; }
+        .footer { justify-content: flex-end; gap: 12px; }
+        .save-status { margin-right: auto; font-size: 13px; color: var(--muted); }
+        .save-status.saving { color: var(--warning); }
+        .save-status.saved { color: var(--good); }
+        .save-status.error { color: var(--error); }
         .switch { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
         .switch.solo { justify-content: center; min-width: 28px; min-height: 28px; }
         .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
@@ -485,7 +489,7 @@
                         <article class="panel stack">
                             <header>
                                 <h2>网络与高级凭据</h2>
-                                <p class="muted">代理与 UA 适用于所有 Bot；修改后点击下方「保存全局配置」生效。</p>
+                                <p class="muted">代理与 UA 适用于所有 Bot；修改后自动保存，也可点下方按钮手动保存。</p>
                             </header>
                             <div id="credential-network"></div>
                             <label class="field">
@@ -504,7 +508,7 @@
                         <article class="panel stack">
                             <header>
                                 <h2>访问管理</h2>
-                                <p class="muted">白名单用户可管理订阅；修改后点击下方「保存全局配置」生效。</p>
+                                <p class="muted">白名单用户可管理订阅；修改后自动保存，也可点下方按钮手动保存。</p>
                             </header>
                             <ul class="chips" id="whitelist"></ul>
                             <div class="form-row">
@@ -522,7 +526,10 @@
                             <label class="switch"><input type="checkbox" id="file-log"> 写入每日通知日志文件</label>
                         </article>
                     </div>
-                    <div class="footer"><button type="submit" class="primary">保存全局配置</button></div>
+                    <div class="footer">
+                        <span id="global-save-status" class="save-status" role="status" aria-live="polite">修改后自动保存</span>
+                        <button type="submit" class="primary">保存全局配置</button>
+                    </div>
                 </form>
                 <article class="panel stack" id="probe-panel">
                     <div class="panel-heading">
@@ -693,7 +700,10 @@
                             <small id="wordcloud-settings-hint" hidden></small>
                         </fieldset>
                     </article>
-                    <div class="footer"><button type="submit" class="primary">保存本账号</button></div>
+                    <div class="footer">
+                        <span id="bot-save-status" class="save-status" role="status" aria-live="polite">修改后自动保存</span>
+                        <button type="submit" class="primary">保存本账号</button>
+                    </div>
                 </form>
             </section>
             <section id="ups" role="tabpanel" aria-labelledby="tab-ups" class="stack" hidden>
@@ -1074,22 +1084,161 @@
             });
         });
 
-        function reload(botHash, switching = false) {
+        function setSaveStatus(id, text, cls = '') {
+            const node = $(id);
+            if (!node) return;
+            node.textContent = text;
+            node.className = cls ? `save-status ${cls}` : 'save-status';
+        }
+
+        function createAutoSaver({ statusId, isDirty, setDirty, buildPayload, onApplied, fallbackMessage, scope }) {
+            let timer = 0;
+            let saving = false;
+            let queued = false;
+            let revision = 0;
+
+            function cancel() {
+                clearTimeout(timer);
+                timer = 0;
+                queued = false;
+            }
+
+            function schedule(delay = 700) {
+                if (!state) return;
+                ++revision;
+                setDirty(true);
+                clearTimeout(timer);
+                if (delay > 0) setSaveStatus(statusId, '待自动保存…');
+                timer = setTimeout(() => {
+                    timer = 0;
+                    flush({ strict: false, force: false });
+                }, delay);
+            }
+
+            async function flush({ strict = false, force = false } = {}) {
+                clearTimeout(timer);
+                timer = 0;
+                if (!state) return false;
+                if (scope === 'bot' && !state.bot) return false;
+                if (!isDirty() && !force) return true;
+                if (saving) {
+                    queued = true;
+                    return false;
+                }
+                if (probeBusy && !strict) {
+                    queued = true;
+                    return false;
+                }
+                const built = buildPayload(strict);
+                if (built.waiting) {
+                    setSaveStatus(statusId, built.waiting);
+                    return false;
+                }
+                if (built.error) {
+                    setSaveStatus(statusId, built.error, 'error');
+                    if (strict) notice(built.error, 'error');
+                    return false;
+                }
+                const sentRevision = revision;
+                const sentBotHash = state.bot_hash || '';
+                saving = true;
+                queued = false;
+                setSaveStatus(statusId, force ? '正在保存…' : '正在自动保存…', 'saving');
+                try {
+                    const next = await request({ bot_hash: sentBotHash, ...built.payload });
+                    const unchanged = revision === sentRevision;
+                    if (unchanged) setDirty(false);
+                    onApplied(next, built, { unchanged, force, sentBotHash });
+                    if (unchanged) {
+                        const stamp = clockHms(Math.floor(Date.now() / 1000));
+                        setSaveStatus(statusId, `${force ? '已保存' : '已自动保存'} · ${stamp}`, 'saved');
+                        if (force && fallbackMessage) notice(fallbackMessage, 'success');
+                    }
+                    return true;
+                } catch (error) {
+                    setSaveStatus(statusId, `保存失败：${error.message}`, 'error');
+                    notice(error.message, 'error');
+                    return false;
+                } finally {
+                    saving = false;
+                    if (queued || (isDirty() && revision !== sentRevision && !probeBusy)) {
+                        queued = false;
+                        schedule(120);
+                    }
+                }
+            }
+
+            return {
+                schedule,
+                flush,
+                cancel,
+                hasPending: () => Boolean(timer || saving || queued),
+                resetStatus: () => {
+                    cancel();
+                    setSaveStatus(statusId, '修改后自动保存');
+                },
+            };
+        }
+
+        let botNamesSyncing = false;
+        let lastBotSyncKey = '';
+
+        async function syncBotNames(force = false) {
+            if (botNamesSyncing || !state?.bots?.length) return;
+            const key = state.bots.map((bot) => bot.hash).join(',');
+            if (!force && key === lastBotSyncKey) return;
+            botNamesSyncing = true;
+            lastBotSyncKey = key;
+            try {
+                const reply = await request({ action: 'sync_bot_names', bot_hash: state.bot_hash || '', force });
+                if (Array.isArray(reply?.bots) && state) {
+                    state.bots = reply.bots;
+                    renderPicker();
+                }
+            } catch {
+                if (!force) lastBotSyncKey = '';
+            } finally {
+                botNamesSyncing = false;
+            }
+        }
+
+        function botDisplay(bot) {
+            const title = bot.nickname || bot.name || bot.id || '未命名 Bot';
+            const idPart = bot.id && bot.id !== title ? `${bot.id} · ` : '';
+            const subtitle = `${idPart}${platformName(bot.platform)} · ${bot.hash.slice(0, 8)}`;
+            const tooltip = bot.id && bot.id !== title ? `${title}（${bot.id}）· ${bot.hash}` : `${title} · ${bot.hash}`;
+            return { title, subtitle, tooltip };
+        }
+
+        async function flushPendingSavers(scopes = ['global', 'bot']) {
+            if (scopes.includes('global') && globalDirty) await globalSaver.flush({ strict: false, force: false });
+            if (scopes.includes('bot') && botDirty) await botSaver.flush({ strict: false, force: false });
+        }
+
+        function reload(botHash, switching = false, syncNames = false) {
+            globalSaver.cancel();
+            botSaver.cancel();
             return action({ action: 'get_state', bot_hash: botHash }, '', {
                 resetGlobal: !switching, resetBot: true,
                 beforeRender() {
                     cover = undefined;
+                    if (!switching) globalSaver.resetStatus();
+                    botSaver.resetStatus();
                     if (switching) {
                         expanded.clear();
                         probeUidTouched = false;
                     }
                 },
+            }).then((ok) => {
+                if (ok && syncNames) syncBotNames(true);
+                return ok;
             });
         }
 
-        $('refresh').addEventListener('click', () => {
-            if ((globalDirty || botDirty) && !window.confirm('放弃未保存的修改并刷新？')) return;
-            reload(state?.bot_hash || '');
+        $('refresh').addEventListener('click', async () => {
+            await flushPendingSavers(['global', 'bot']);
+            if ((globalDirty || botDirty) && !window.confirm('当前存在未完成校验的修改，仍要放弃并刷新？')) return;
+            reload(state?.bot_hash || '', false, true);
         });
 
         function openHealthDetail() {
@@ -1106,27 +1255,37 @@
 
         function renderPicker() {
             const selected = state.bots.find((bot) => bot.hash === state.bot_hash);
-            $('bot-name').textContent = selected?.name || '没有可用的 Bot';
-            $('bot-identity').textContent = selected
-                ? `${platformName(selected.platform)} · ${selected.hash.slice(0, 8)}` : '账号列表为空';
+            if (selected) {
+                const { title, subtitle } = botDisplay(selected);
+                $('bot-name').textContent = title;
+                $('bot-identity').textContent = subtitle;
+            } else {
+                $('bot-name').textContent = '没有可用的 Bot';
+                $('bot-identity').textContent = '账号列表为空';
+            }
             const options = $('bot-options');
             options.replaceChildren();
             for (const bot of state.bots) {
-                const option = button('', '', () => {
+                const { title, subtitle, tooltip } = botDisplay(bot);
+                const option = button('', '', async () => {
                     if (busy || probeBusy) return;
-                    if (bot.hash !== state.bot_hash && botDirty && !window.confirm('放弃本账号未保存的修改并切换？')) {
-                        return;
+                    if (bot.hash !== state.bot_hash) {
+                        await flushPendingSavers(['bot']);
+                        if (botDirty && !window.confirm('本账号存在未完成校验的修改，仍要放弃并切换？')) {
+                            return;
+                        }
                     }
                     $('bot-picker').open = false;
                     $('bot-picker').querySelector('summary').focus();
                     if (bot.hash !== state.bot_hash) reload(bot.hash, true);
                 });
-                option.title = bot.hash;
+                option.title = tooltip;
                 option.setAttribute('aria-current', String(bot.hash === state.bot_hash));
-                option.append(el('strong', '', bot.name), el('small', '', `${platformName(bot.platform)} · ${bot.hash.slice(0, 8)}`));
+                option.append(el('strong', '', title), el('small', '', subtitle));
                 options.append(option);
             }
             if (!state.bots.length) options.append(el('small', '', '刷新可重新读取账号列表。'));
+            else syncBotNames(false);
         }
 
         document.addEventListener('click', (event) => {
@@ -1292,16 +1451,18 @@
             input.id = id;
             input.autocomplete = 'new-password';
             if (numeric) input.inputMode = 'numeric';
-            const entry = { input, clear: false, numeric, configured: false };
+            const entry = { input, clear: false, numeric, configured: false, rev: 0 };
             entry.remove = button('清除', 'micro', () => {
                 entry.clear = !entry.clear;
                 entry.input.value = '';
-                globalDirty = true;
+                entry.rev += 1;
                 syncCredential(entry);
+                globalSaver.schedule(350);
             });
             entry.remove.setAttribute('aria-label', `清除或保留 ${label}`);
             input.addEventListener('input', () => {
                 entry.clear = false;
+                entry.rev += 1;
                 syncCredential(entry);
             });
             row.append(input, entry.remove);
@@ -1335,9 +1496,9 @@
             list.replaceChildren();
             for (const [index, entry] of whitelistDraft.entries()) {
                 list.append(chip(`${platformName(entry.platform)} · ${entry.user_id}`, () => {
-                    globalDirty = true;
                     whitelistDraft.splice(index, 1);
                     renderWhitelist();
+                    globalSaver.schedule(0);
                 }));
             }
             if (!whitelistDraft.length) list.append(el('li', 'empty', '白名单为空'));
@@ -1518,7 +1679,119 @@
             return /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : '';
         }
 
-        $('global-form').addEventListener('input', () => { globalDirty = true; });
+        function buildGlobalPayload(strict = false) {
+            const ua = $('user-agent').value;
+            if (Array.from(ua).some((ch) => ch.charCodeAt(0) > 255)) {
+                return strict
+                    ? { error: '请输入由 HTTP 请求头支持的字符组成的 User-Agent。' }
+                    : { waiting: '等待输入有效的 User-Agent 后自动保存' };
+            }
+            const payload = {
+                action: 'save_global', cookie: {}, user_agent: ua,
+                whitelist: whitelistDraft.slice(), log_to_file: $('file-log').checked,
+            };
+            const sentCreds = new Map();
+            let loginCookieTouched = false;
+            for (const [key, entry] of credentialInputs) {
+                const text = entry.input.value.trim();
+                if (!entry.clear && !text) continue;
+                if (key === 'proxy') {
+                    if (!entry.clear) {
+                        let validProxy = false;
+                        try {
+                            const parsed = new URL(text);
+                            validProxy = !/\s/.test(text) && (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+                                && Boolean(parsed.hostname) && (parsed.pathname === '' || parsed.pathname === '/')
+                                && !parsed.search && !parsed.hash;
+                        } catch {
+                            validProxy = false;
+                        }
+                        if (!validProxy) {
+                            return strict
+                                ? { error: '请输入 http://主机:端口 或 https://主机:端口 格式的代理，或清空以直连。' }
+                                : { waiting: '等待补全有效代理地址后自动保存' };
+                        }
+                    }
+                    payload.proxy = entry.clear ? '' : text;
+                } else if (entry.numeric) {
+                    if (!entry.clear && (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(Number(text)))) {
+                        if (strict) {
+                            $('advanced-credentials').open = true;
+                            entry.input.focus();
+                            return { error: 'b_nut 必须是非负整数。' };
+                        }
+                        return { waiting: '等待补全有效 b_nut 整数后自动保存' };
+                    }
+                    payload.cookie[key] = entry.clear ? 0 : Number(text);
+                } else {
+                    if (!entry.clear && Array.from(text).some((ch) => {
+                        const code = ch.charCodeAt(0);
+                        return code < 33 || code > 126 || ch === ';';
+                    })) {
+                        return strict
+                            ? { error: `请输入 ${key} 的单个 Cookie 字段值。` }
+                            : { waiting: `等待补全有效的 ${key} 字段值后自动保存` };
+                    }
+                    payload.cookie[key] = entry.clear ? '' : text;
+                    if (key === 'sessdata' || key === 'bili_jct') loginCookieTouched = true;
+                }
+                sentCreds.set(key, entry.rev);
+            }
+            return { payload, sentCreds, loginCookieTouched };
+        }
+
+        const globalSaver = createAutoSaver({
+            statusId: 'global-save-status',
+            scope: 'global',
+            isDirty: () => globalDirty,
+            setDirty: (value) => { globalDirty = value; },
+            buildPayload: buildGlobalPayload,
+            fallbackMessage: '全局配置已保存。',
+            onApplied(next, built, { force }) {
+                state.global = next.global;
+                if (next.status) state.status = next.status;
+                if (next.logs) state.logs = next.logs;
+                if (built.loginCookieTouched) lastAccountSyncKey = '';
+                for (const [key, entry] of credentialInputs) {
+                    entry.configured = key === 'proxy' ? next.global.proxy : next.global.cookie[key];
+                    if (force || (built.sentCreds.has(key) && built.sentCreds.get(key) === entry.rev)) {
+                        entry.input.value = '';
+                        entry.clear = false;
+                    }
+                    syncCredential(entry);
+                }
+                const cookieFlags = Object.values(next.global.cookie || {});
+                const setCount = cookieFlags.filter(Boolean).length;
+                $('cred-summary').textContent = setCount ? `· 已设 ${setCount}/${cookieFlags.length} 项` : '· 默认自动管理';
+                $('buvid-time').textContent = next.global.buvid_cache.configured
+                    ? `领取于 ${clock(next.global.buvid_cache.fetched_at)}` : '尚未领取指纹';
+                if (force) {
+                    $('whitelist-id').value = '';
+                    $('user-agent').value = next.global.user_agent;
+                    $('file-log').checked = next.global.log_to_file;
+                    whitelistDraft = next.global.whitelist.slice();
+                    renderWhitelist();
+                }
+                renderSummary();
+                renderAccounts();
+                renderStatus();
+            },
+        });
+
+        const globalDraftIds = new Set(['whitelist-id', 'whitelist-platform']);
+        $('global-form').addEventListener('input', (event) => {
+            if (globalDraftIds.has(event.target?.id)) return;
+            globalSaver.schedule(event.target?.type === 'checkbox' ? 0 : 750);
+        });
+        $('global-form').addEventListener('change', (event) => {
+            if (globalDraftIds.has(event.target?.id)) return;
+            if (event.target?.type === 'checkbox') globalSaver.schedule(0);
+        });
+        $('global-form').addEventListener('focusout', (event) => {
+            if (globalDraftIds.has(event.target?.id)) return;
+            if (globalDirty && globalSaver.hasPending()) globalSaver.flush({ strict: false, force: false });
+        });
+
         inputAction($('whitelist-id'), $('whitelist-add'), () => {
             const platform = $('whitelist-platform').value;
             const user = userId($('whitelist-id').value, platform);
@@ -1532,38 +1805,13 @@
             }
             whitelistDraft.push({ platform, user_id: user });
             $('whitelist-id').value = '';
-            globalDirty = true;
             renderWhitelist();
-            notice('已加入白名单草稿，点「保存全局配置」后生效。');
+            globalSaver.schedule(0);
         });
 
         $('global-form').addEventListener('submit', (event) => {
             event.preventDefault();
-            const payload = {
-                action: 'save_global', cookie: {}, user_agent: $('user-agent').value,
-                whitelist: whitelistDraft, log_to_file: $('file-log').checked,
-            };
-            for (const [key, entry] of credentialInputs) {
-                const text = entry.input.value.trim();
-                if (!entry.clear && !text) continue;
-                if (key === 'proxy') {
-                    payload.proxy = text;
-                } else if (entry.numeric) {
-                    if (!entry.clear && (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(Number(text)))) {
-                        $('advanced-credentials').open = true;
-                        notice('b_nut 必须是非负整数。', 'error');
-                        entry.input.focus();
-                        return;
-                    }
-                    payload.cookie[key] = entry.clear ? 0 : Number(text);
-                } else {
-                    payload.cookie[key] = text;
-                }
-            }
-            action(payload, '全局配置已保存。', {
-                resetGlobal: true,
-                beforeRender: () => { $('whitelist-id').value = ''; lastAccountSyncKey = ''; },
-            });
+            globalSaver.flush({ strict: true, force: true });
         });
 
         $('account-sync').addEventListener('click', () => syncAccountProfile(true));
@@ -1798,7 +2046,7 @@
         function makeFlags(container, values) {
             container.replaceChildren();
             for (const [kind, title] of Object.entries(kinds)) {
-                const element = checkbox(title, values[kind], () => { botDirty = true; });
+                const element = checkbox(title, values[kind], () => { botSaver.schedule(0); });
                 element.firstChild.name = kind;
                 container.append(element);
             }
@@ -1813,9 +2061,9 @@
             list.replaceChildren();
             for (const [index, prefix] of prefixDraft.entries()) {
                 list.append(chip(prefix, () => {
-                    botDirty = true;
                     prefixDraft.splice(index, 1);
                     renderPrefixes();
+                    botSaver.schedule(0);
                 }));
             }
             if (!prefixDraft.length) list.append(el('li', 'empty', '无命令前缀'));
@@ -1859,26 +2107,24 @@
             renderPrefixes();
         }
 
-        $('bot-form').addEventListener('input', () => { botDirty = true; });
-        inputAction($('prefix'), $('prefix-add'), () => {
-            const value = $('prefix').value;
-            if (Array.from(value).length !== 1 || /[\p{White_Space}\p{Surrogate}\u001c-\u001f]/u.test(value)) {
-                notice('每个命令前缀必须是单个非空白字符。', 'error');
-                return;
+        function buildBotPayload(strict = false) {
+            const form = $('bot-form');
+            if (!form.checkValidity()) {
+                if (strict) form.reportValidity();
+                return strict
+                    ? { error: '请检查标红或超出范围的数值设置。' }
+                    : { waiting: '等待补全有效数值后自动保存' };
             }
-            if (!prefixDraft.includes(value)) prefixDraft.push(value);
-            $('prefix').value = '';
-            botDirty = true;
-            renderPrefixes();
-            notice('已更新前缀草稿，保存本账号后生效。');
-        });
-
-        $('qr-start').addEventListener('click', qrStart);
-
-        $('bot-form').addEventListener('submit', (event) => {
-            event.preventDefault();
-            const value = (id) => $(id).valueAsNumber;
+            const value = (id) => {
+                const input = $(id);
+                const num = input.valueAsNumber;
+                return Number.isInteger(num) ? num : NaN;
+            };
             const disabled = $('disabled-groups').value.split('\n').map((line) => line.trim()).filter(Boolean);
+            const validSid = (line) => /^(onebot\|qq\|[0-9]{1,20}|qqGuildv2_link\|qqGuild\|[A-Za-z0-9_-]{1,128})$/.test(line);
+            if (!strict && disabled.some((line) => !validSid(line))) {
+                return { waiting: '等待补全有效的禁用群标识（SDK|平台|群 ID）后自动保存' };
+            }
             const poll = {
                 live_seconds: value('live-seconds'), dynamic_seconds: value('dynamic-seconds'),
                 video_seconds: value('video-seconds'), max_concurrent: value('max-concurrent'),
@@ -1886,9 +2132,9 @@
             if (!$('max-sockets').disabled) poll.max_sockets = value('max-sockets');
             if (!$('live-relaxed').disabled) poll.live_relaxed_seconds = value('live-relaxed');
             const payload = {
-                action: 'save_bot', enable: $('bot-enable').checked, prefix_list: prefixDraft, poll,
+                action: 'save_bot', enable: $('bot-enable').checked, prefix_list: prefixDraft.slice(), poll,
                 dynamic_source: $('dynamic-source').value, auto_follow: $('auto-follow').checked,
-                retry: {max_times: value('retry-times'), interval_ms: value('retry-interval')},
+                retry: { max_times: value('retry-times'), interval_ms: value('retry-interval') },
                 at_all: { daily_limit: value('daily-limit'), guild_at_once: $('guild-once').checked },
                 at_subscribers: { live: $('at-subscribers-live').checked },
                 push_default: readFlags($('push-default')),
@@ -1917,14 +2163,99 @@
                 }
                 if (!$('wordcloud-settings').disabled) {
                     const entries = (id) => $(id).value.split(/[\n,，]+/).map((item) => item.trim()).filter(Boolean);
+                    const words = entries('wordcloud-words');
+                    const stops = entries('wordcloud-stopwords');
+                    if (!strict && (words.length > 200 || stops.length > 200
+                        || words.some((w) => w.length > 32) || stops.some((w) => w.length > 32))) {
+                        return { waiting: '词云列表每份最多 200 项、每项最多 32 字，调整后自动保存' };
+                    }
                     Object.assign(payload.live_stats, {
                         wordcloud_limit: value('wordcloud-limit'),
-                        wordcloud_words: entries('wordcloud-words'),
-                        wordcloud_stopwords: entries('wordcloud-stopwords'),
+                        wordcloud_words: words,
+                        wordcloud_stopwords: stops,
                     });
                 }
             }
-            action(payload, '本账号已保存。', { resetBot: true, beforeRender: () => { $('prefix').value = ''; } });
+            const numbers = [
+                ...Object.values(poll), payload.retry.max_times, payload.retry.interval_ms,
+                payload.at_all.daily_limit, payload.send_interval_seconds,
+                ...(payload.live_stats ? [
+                    payload.live_stats.reconnect_grace_seconds,
+                    payload.live_stats.query_cooldown_seconds,
+                    payload.live_stats.danmu_retention_days,
+                    ...(payload.live_stats.min_report_minutes !== undefined
+                        ? [payload.live_stats.min_report_minutes, payload.live_stats.min_report_danmu] : []),
+                    ...(payload.live_stats.wordcloud_limit !== undefined ? [payload.live_stats.wordcloud_limit] : []),
+                ] : []),
+            ];
+            if (numbers.some((num) => !Number.isInteger(num))) {
+                return strict
+                    ? { error: '请填写完整的整数参数。' }
+                    : { waiting: '等待补全整数参数后自动保存' };
+            }
+            return { payload };
+        }
+
+        const botSaver = createAutoSaver({
+            statusId: 'bot-save-status',
+            scope: 'bot',
+            isDirty: () => botDirty,
+            setDirty: (value) => { botDirty = value; },
+            buildPayload: buildBotPayload,
+            fallbackMessage: '本账号已保存。',
+            onApplied(next, _built, { force, sentBotHash }) {
+                if (state.bot_hash !== sentBotHash) return;
+                state.bot = next.bot;
+                state.capabilities = next.capabilities;
+                state.rooms = next.rooms;
+                state.groups = next.groups;
+                state.status = next.status;
+                state.logs = next.logs;
+                if (force) {
+                    $('prefix').value = '';
+                    renderBot();
+                }
+                renderFeatureGates();
+                renderSummary();
+                renderUps();
+                renderGroups();
+                renderStatus();
+            },
+        });
+
+        $('bot-form').addEventListener('input', (event) => {
+            const target = event.target;
+            if (!target || target.id === 'prefix') return;
+            const immediate = target.type === 'checkbox' || target.tagName === 'SELECT';
+            botSaver.schedule(immediate ? 0 : 750);
+        });
+        $('bot-form').addEventListener('change', (event) => {
+            const target = event.target;
+            if (!target || target.id === 'prefix') return;
+            if (target.type === 'checkbox' || target.tagName === 'SELECT') botSaver.schedule(0);
+        });
+        $('bot-form').addEventListener('focusout', (event) => {
+            if (event.target?.id === 'prefix') return;
+            if (botDirty && botSaver.hasPending()) botSaver.flush({ strict: false, force: false });
+        });
+
+        inputAction($('prefix'), $('prefix-add'), () => {
+            const value = $('prefix').value;
+            if (Array.from(value).length !== 1 || /[\p{White_Space}\p{Surrogate}\u001c-\u001f]/u.test(value)) {
+                notice('每个命令前缀必须是单个非空白字符。', 'error');
+                return;
+            }
+            if (!prefixDraft.includes(value)) prefixDraft.push(value);
+            $('prefix').value = '';
+            renderPrefixes();
+            botSaver.schedule(0);
+        });
+
+        $('qr-start').addEventListener('click', qrStart);
+
+        $('bot-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            botSaver.flush({ strict: true, force: true });
         });
 
         function immediateFlag(title, current, focusKey, payload, hidden = false) {
