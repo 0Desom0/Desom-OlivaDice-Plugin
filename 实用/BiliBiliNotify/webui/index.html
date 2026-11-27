@@ -216,8 +216,63 @@
         .chip button:hover:not(:disabled) { color: var(--error); background: var(--error-bg); }
         fieldset { border: 1px solid var(--line); border-radius: 10px; margin: 0; padding: 10px 12px; }
         legend { padding: 0 5px; font-weight: 650; }
+        .account-current {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+            padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--soft);
+        }
+        .account-profile { display: flex; align-items: center; gap: 12px; min-width: 0; }
+        .account-avatar {
+            width: 46px; height: 46px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
+            border: 1px solid var(--line); background: var(--panel);
+        }
+        .account-avatar.sm { width: 34px; height: 34px; }
+        .account-avatar-fallback {
+            display: inline-flex; align-items: center; justify-content: center;
+            background: var(--accent-bg); color: var(--accent); font-weight: 760; font-size: 16px;
+        }
+        .account-avatar-fallback.sm { font-size: 13px; }
+        .account-meta { min-width: 0; display: grid; gap: 2px; }
+        .account-meta strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .account-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .account-item {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+            padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel);
+        }
+        .account-item.is-active { border-color: var(--accent); background: var(--soft); }
+        .account-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+        .qr-box {
+            padding: 12px 14px; border: 1px dashed var(--line); border-radius: 11px;
+            background: var(--soft); align-items: center;
+        }
+        #qr-image { border-radius: 8px; background: #fff; padding: 6px; }
         .probe-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; }
-        .probe-controls .field { flex: 1 1 200px; max-width: 280px; }
+        .probe-controls .field { flex: 1 1 220px; max-width: 300px; }
+        .uid-combobox { position: relative; display: flex; align-items: stretch; }
+        .uid-combobox input { padding-right: 38px; }
+        .uid-toggle {
+            position: absolute; inset: 1px 1px 1px auto; width: 34px; min-height: 0; padding: 0;
+            border: 0; border-left: 1px solid var(--line); border-radius: 0 8px 8px 0;
+            background: transparent; color: var(--muted);
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .uid-toggle:hover:not(:disabled) { background: var(--soft); color: var(--text); }
+        .uid-menu {
+            position: absolute; z-index: 12; inset: calc(100% + 6px) 0 auto;
+            display: grid; gap: 3px; padding: 6px; max-height: 240px; overflow: auto;
+            border: 1px solid var(--line); border-radius: 11px;
+            background: var(--panel); box-shadow: var(--shadow);
+        }
+        .uid-option {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+            width: 100%; min-height: 36px; padding: 7px 10px; border: 1px solid transparent;
+            border-radius: 8px; background: transparent; text-align: left; font-weight: 500;
+        }
+        .uid-option:hover, .uid-option.is-highlighted { background: var(--soft); }
+        .uid-option[aria-selected="true"] { background: var(--accent-bg); color: var(--accent); }
+        .uid-option strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .uid-option small { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+        .uid-option[aria-selected="true"] small { color: var(--accent); opacity: .88; }
+        .uid-menu-empty { padding: 8px 10px; color: var(--muted); font-size: 13px; }
         .mode-group { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 40px; }
         .mode-option {
             display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px;
@@ -310,7 +365,7 @@
         .logs li:last-child { border-bottom: 0; }
         @media (max-width: 765px) {
             main { width: calc(100% - 28px); padding-top: 22px; }
-            .grid, .probe-grid, .channel-grid { grid-template-columns: minmax(0, 1fr); }
+            .grid, .probe-grid, .channel-grid, .account-list { grid-template-columns: minmax(0, 1fr); }
             .probe-bar-right { margin-left: 0; }
         }
         @media (max-width: 440px) {
@@ -405,16 +460,28 @@
                     </div>
                     <div class="footer"><button type="submit" class="primary">保存总账号</button></div>
                 </form>
-                <article class="panel stack">
+                <article class="panel stack" id="account-panel">
                     <div class="panel-heading">
-                        <div><h2>扫码登录</h2><p class="muted">用手机 B 站 App 扫码，登录成功后自动写入 SESSDATA 与 bili_jct，不用手抄 Cookie。</p></div>
-                        <div class="row"><button type="button" id="qr-start">获取二维码</button></div>
+                        <div>
+                            <h2>B站账号与扫码登录</h2>
+                            <p class="muted">扫码登录后自动保存头像、昵称与 UID，支持保存多个 B站账号并一键自由切换，不用手抄 Cookie。</p>
+                        </div>
+                        <div class="row">
+                            <button type="button" id="account-sync">刷新账号信息</button>
+                            <button type="button" id="qr-start" class="primary">扫码登录 / 添加账号</button>
+                        </div>
                     </div>
-                    <div class="row" id="qr-body" hidden>
-                        <img id="qr-image" alt="B站登录二维码" width="200" height="200">
+                    <div id="account-current" class="account-current"></div>
+                    <div id="account-list-wrap" class="stack" hidden>
+                        <small class="field-label">已保存的 B站账号（点击切换即刻生效）</small>
+                        <div id="account-list" class="account-list"></div>
+                    </div>
+                    <div class="row qr-box" id="qr-body" hidden>
+                        <img id="qr-image" alt="B站登录二维码" width="180" height="180">
                         <div class="stack" style="flex:1">
                             <p id="qr-status" class="muted">等待扫码…</p>
-                            <p class="muted">扫码后在手机上点「确认登录」；二维码约 3 分钟过期。</p>
+                            <p class="muted">用手机 B 站 App 扫码后点「确认登录」；新账号会自动加入上方列表并切换生效，二维码约 3 分钟过期。</p>
+                            <div class="row"><button type="button" id="qr-close" class="micro">关闭二维码</button></div>
                         </div>
                     </div>
                 </article>
@@ -427,11 +494,14 @@
                         <div class="row"><span id="buvid-time" class="muted"></span><button type="button" id="buvid-refresh">刷新 buvid</button></div>
                     </div>
                     <form id="probe-form" class="probe-controls">
-                        <label class="field">
-                            <span class="field-label">自检 UID（优先选已添加主播）</span>
-                            <input id="probe-uid" list="probe-uid-list" inputmode="numeric" value="2" placeholder="输入数字 UID 或从列表选择" required>
-                            <datalist id="probe-uid-list"></datalist>
-                        </label>
+                        <div class="field">
+                            <label class="field-label" for="probe-uid">自检 UID（优先选已添加主播）</label>
+                            <div class="uid-combobox" id="probe-uid-box">
+                                <input id="probe-uid" inputmode="numeric" value="2" placeholder="输入数字 UID 或点右侧选主播" autocomplete="off" required role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="probe-uid-menu">
+                                <button type="button" id="probe-uid-toggle" class="uid-toggle" aria-label="展开已添加主播列表" title="选择已添加主播">▾</button>
+                                <div id="probe-uid-menu" class="uid-menu" role="listbox" hidden></div>
+                            </div>
+                        </div>
                         <div class="mode-group" role="radiogroup" aria-label="自检模式">
                             <label class="mode-option"><input type="radio" name="probe-mode" value="cascade" checked> 级联短路（省请求）</label>
                             <label class="mode-option"><input type="radio" name="probe-mode" value="full"> 完整排查全部链条</label>
@@ -674,17 +744,29 @@
 
         let qrKey = '';
         let qrTimer = 0;
+        let accountSyncing = false;
+        let lastAccountSyncKey = '';
+        let uidMenuOpen = false;
+        let uidMenuIndex = -1;
 
-        // 扫码登录：二维码由后端用 qrcode 渲染成 PNG，前端只负责显示与轮询状态。
-        async function qrStart() {
+        function qrStop(hide = true) {
             clearInterval(qrTimer);
             qrTimer = 0;
             qrKey = '';
+            if (hide) {
+                $('qr-body').hidden = true;
+                $('qr-image').removeAttribute('src');
+            }
+        }
+
+        // 扫码登录：二维码由后端用 qrcode 渲染成 PNG，前端只负责显示与轮询状态。
+        async function qrStart() {
+            qrStop(false);
             $('qr-body').hidden = false;
             $('qr-status').textContent = '正在获取二维码…';
             try {
-                const state = await request({ action: 'qr_generate' });
-                const qr = (state && state.qr) || {};
+                const reply = await request({ action: 'qr_generate' });
+                const qr = (reply && reply.qr) || {};
                 if (!qr.image || !qr.qrcode_key) throw new Error('二维码为空');
                 qrKey = qr.qrcode_key;
                 $('qr-image').src = qr.image;
@@ -698,16 +780,14 @@
         async function qrPoll() {
             if (!qrKey) return;
             try {
-                const state = await request({ action: 'qr_poll', qrcode_key: qrKey });
-                const qr = (state && state.qr) || {};
+                const reply = await request({ action: 'qr_poll', qrcode_key: qrKey });
+                const qr = (reply && reply.qr) || {};
                 if (qr.status === 0) {
-                    clearInterval(qrTimer);
-                    qrTimer = 0;
-                    qrKey = '';
-                    $('qr-status').textContent = '登录成功，凭据已保存';
-                    $('qr-image').removeAttribute('src');
-                    notice('B站账号登录成功，已写入 SESSDATA。', 'ok');
-                    $('refresh').click();
+                    qrStop(true);
+                    const label = qr.uname ? `${qr.uname}（UID ${qr.uid}）` : (qr.uid ? `UID ${qr.uid}` : 'B站账号');
+                    lastAccountSyncKey = '';
+                    await reload(state?.bot_hash || '');
+                    notice(`${label} 登录成功，已加入多账号列表并生效。`, 'success');
                     return;
                 }
                 const texts = {
@@ -716,15 +796,13 @@
                     86038: '二维码已过期，请重新获取',
                 };
                 $('qr-status').textContent = texts[qr.status] || qr.message || '等待扫码…';
-                if (qr.status === 86038) {
-                    clearInterval(qrTimer);
-                    qrTimer = 0;
-                    qrKey = '';
-                }
+                if (qr.status === 86038) qrStop(false);
             } catch (error) {
                 $('qr-status').textContent = '查询失败：' + error.message;
             }
         }
+
+        $('qr-close').addEventListener('click', () => qrStop(true));
 
         async function perform(job, success = '') {
             if (busy || probeBusy) return false;
@@ -936,18 +1014,77 @@
             }
         }
 
-        function syncProbeUidOptions() {
-            const list = $('probe-uid-list');
-            list.replaceChildren();
-            const rooms = Object.values(state?.rooms || {});
-            for (const room of rooms) {
-                const option = el('option', '', `${room.name}（UID ${room.uid}）`);
-                option.value = room.uid;
-                list.append(option);
+        function getProbeRooms() {
+            return Object.values(state?.rooms || {});
+        }
+
+        function closeUidMenu() {
+            uidMenuOpen = false;
+            uidMenuIndex = -1;
+            $('probe-uid-menu').hidden = true;
+            $('probe-uid').setAttribute('aria-expanded', 'false');
+            $('probe-uid-toggle').textContent = '▾';
+        }
+
+        function selectProbeUid(uid) {
+            $('probe-uid').value = uid;
+            probeUidTouched = true;
+            closeUidMenu();
+        }
+
+        function renderUidMenu(showAll = false) {
+            const menu = $('probe-uid-menu');
+            menu.replaceChildren();
+            const rooms = getProbeRooms();
+            const raw = $('probe-uid').value.trim();
+            const current = userId(raw, 'qq');
+            const query = raw.toLowerCase();
+            const exactRoom = rooms.some((room) => room.uid === current);
+            const filtered = (showAll || !query || exactRoom)
+                ? rooms
+                : rooms.filter((room) => room.uid.includes(query) || (room.name || '').toLowerCase().includes(query));
+            if (!rooms.length) {
+                menu.append(el('div', 'uid-menu-empty', '当前 Bot 尚未添加主播，可直接输入任意数字 UID。'));
+                uidMenuIndex = -1;
+                return;
             }
+            if (!filtered.length) {
+                menu.append(el('div', 'uid-menu-empty', `未匹配已添加主播，可直接探测 UID ${raw}`));
+                uidMenuIndex = -1;
+                return;
+            }
+            filtered.forEach((room, idx) => {
+                const opt = el('button', 'uid-option');
+                opt.type = 'button';
+                opt.setAttribute('role', 'option');
+                opt.dataset.uid = room.uid;
+                opt.setAttribute('aria-selected', String(room.uid === current));
+                if (idx === uidMenuIndex) opt.classList.add('is-highlighted');
+                opt.append(el('strong', '', room.name || `UID ${room.uid}`), el('small', 'mono', `UID ${room.uid}`));
+                opt.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                    selectProbeUid(room.uid);
+                });
+                menu.append(opt);
+            });
+        }
+
+        function openUidMenu(showAll = false) {
+            if (probeBusy || busy) return;
+            uidMenuOpen = true;
+            uidMenuIndex = -1;
+            renderUidMenu(showAll);
+            $('probe-uid-menu').hidden = false;
+            $('probe-uid').setAttribute('aria-expanded', 'true');
+            $('probe-uid-toggle').textContent = '▴';
+        }
+
+        function syncProbeUidOptions() {
+            const rooms = getProbeRooms();
             if (!probeUidTouched) {
                 $('probe-uid').value = rooms.length ? rooms[0].uid : '2';
             }
+            if (uidMenuOpen) renderUidMenu(true);
         }
 
         function render(next) {
@@ -1028,10 +1165,147 @@
             if (!whitelistDraft.length) list.append(el('li', 'empty', '白名单为空'));
         }
 
+        function isSafeAvatar(uri) {
+            return typeof uri === 'string' && /^data:image\/(jpeg|png|gif|webp|avif|bmp);base64,[A-Za-z0-9+/=]+$/.test(uri);
+        }
+
+        function makeAvatar(account, small = false) {
+            const size = small ? ' sm' : '';
+            if (account && isSafeAvatar(account.avatar)) {
+                const img = el('img', `account-avatar${size}`);
+                img.src = account.avatar;
+                img.alt = `${account.uname || account.uid} 的头像`;
+                return img;
+            }
+            const label = (account?.uname || '').trim();
+            const initial = label ? Array.from(label)[0].toUpperCase() : 'B';
+            const fallback = el('span', `account-avatar account-avatar-fallback${size}`, initial);
+            fallback.setAttribute('aria-hidden', 'true');
+            return fallback;
+        }
+
+        async function syncAccountProfile(manual = false) {
+            if (accountSyncing || !state) return;
+            if (manual && (busy || probeBusy)) return;
+            accountSyncing = true;
+            $('account-sync').disabled = true;
+            if (manual) notice('正在同步 B站账号头像与昵称…');
+            try {
+                const next = await request({ action: 'account_sync', bot_hash: state.bot_hash || '' });
+                const accountNotice = next.account_notice || '';
+                delete next.account_notice;
+                state.global = next.global;
+                if (next.status) state.status = next.status;
+                if (next.logs) state.logs = next.logs;
+                renderSummary();
+                renderAccounts();
+                renderStatus();
+                if (accountNotice) {
+                    notice(accountNotice, 'error');
+                } else if (manual) {
+                    notice('账号资料已刷新。', 'success');
+                }
+            } catch (error) {
+                if (manual) notice(error.message, 'error');
+            } finally {
+                accountSyncing = false;
+                $('account-sync').disabled = false;
+            }
+        }
+
+        function renderAccounts() {
+            const settings = state.global;
+            const accounts = Array.isArray(settings.accounts) ? settings.accounts : [];
+            const active = accounts.find((acc) => acc.active) || null;
+            const currentBox = $('account-current');
+            currentBox.replaceChildren();
+
+            if (active) {
+                const profile = el('div', 'account-profile');
+                profile.append(makeAvatar(active, false));
+                const meta = el('div', 'account-meta');
+                meta.append(
+                    el('strong', '', active.uname || `B站用户 ${active.uid}`),
+                    el('small', 'mono', `UID ${active.uid}${active.updated_at ? ` · 更新于 ${clock(active.updated_at)}` : ''}`),
+                );
+                profile.append(meta);
+                currentBox.append(profile, el('span', 'pill good', '当前生效'));
+            } else if (settings.logged_in) {
+                const profile = el('div', 'account-profile');
+                profile.append(makeAvatar({ uname: 'B' }, false));
+                const meta = el('div', 'account-meta');
+                meta.append(
+                    el('strong', '', '已配置登录 Cookie'),
+                    el('small', '', '正在自动读取头像、昵称与 UID，或点右上角「刷新账号信息」。'),
+                );
+                profile.append(meta);
+                currentBox.append(profile, el('span', 'pill warn', '待同步资料'));
+            } else {
+                const profile = el('div', 'account-profile');
+                const meta = el('div', 'account-meta');
+                meta.append(
+                    el('strong', '', '当前未登录 B站账号'),
+                    el('small', '', '动态 / 视频链 1 关注流将自动跳过；可扫码登录或在下方已存账号中一键启用。'),
+                );
+                profile.append(meta);
+                currentBox.append(profile, el('span', 'pill', '未登录'));
+            }
+
+            const wrap = $('account-list-wrap');
+            const list = $('account-list');
+            list.replaceChildren();
+            wrap.hidden = accounts.length === 0;
+            for (const acc of accounts) {
+                const item = el('div', acc.active ? 'account-item is-active' : 'account-item');
+                const profile = el('div', 'account-profile');
+                profile.append(makeAvatar(acc, true));
+                const meta = el('div', 'account-meta');
+                meta.append(
+                    el('strong', '', acc.uname || `UID ${acc.uid}`),
+                    el('small', 'mono', `UID ${acc.uid}`),
+                );
+                profile.append(meta);
+
+                const actions = el('div', 'account-actions');
+                if (acc.active) {
+                    actions.append(el('span', 'pill good', '使用中'));
+                } else {
+                    const useBtn = button('切换使用', 'micro', () => {
+                        action({ action: 'switch_account', uid: acc.uid },
+                            `已切换至「${acc.uname || acc.uid}」（UID ${acc.uid}）。`,
+                            { resetGlobal: true, beforeRender: () => { lastAccountSyncKey = ''; } });
+                    });
+                    useBtn.disabled = !acc.has_credentials;
+                    actions.append(useBtn);
+                }
+                const delBtn = button('移除', 'micro danger', () => {
+                    const warn = acc.active
+                        ? `移除当前使用中的「${acc.uname || acc.uid}」并退出登录？`
+                        : `从已保存列表中移除「${acc.uname || acc.uid}」？`;
+                    if (window.confirm(warn)) {
+                        action({ action: 'remove_account', uid: acc.uid }, '账号已移除。', { resetGlobal: true });
+                    }
+                });
+                actions.append(delBtn);
+                item.append(profile, actions);
+                list.append(item);
+            }
+
+            $('account-sync').disabled = accountSyncing || (!settings.logged_in && !accounts.length);
+            const needsProfile = settings.logged_in && (!active || !active.uname);
+            const needsAvatar = accounts.some((acc) => acc.has_face && !acc.avatar);
+            const syncKey = `${settings.logged_in}|${settings.active_account || ''}|${accounts.map((a) => `${a.uid}:${Number(!!a.avatar)}`).join(',')}`;
+            if ((needsProfile || needsAvatar) && !accountSyncing && syncKey !== lastAccountSyncKey) {
+                lastAccountSyncKey = syncKey;
+                syncAccountProfile(false);
+            }
+        }
+
         function renderGlobal() {
             const settings = state.global;
             $('buvid-time').textContent = settings.buvid_cache.configured
                 ? `领取于 ${clock(settings.buvid_cache.fetched_at)}` : '尚未领取指纹';
+            renderAccounts();
             if (globalDirty) return;
             for (const [key, entry] of credentialInputs) {
                 entry.input.value = '';
@@ -1102,11 +1376,54 @@
                     payload.cookie[key] = text;
                 }
             }
-            action(payload, '总账号已保存。', { resetGlobal: true, beforeRender: () => { $('whitelist-id').value = ''; } });
+            action(payload, '总账号已保存。', {
+                resetGlobal: true,
+                beforeRender: () => { $('whitelist-id').value = ''; lastAccountSyncKey = ''; },
+            });
         });
 
+        $('account-sync').addEventListener('click', () => syncAccountProfile(true));
         $('buvid-refresh').addEventListener('click', () => action({ action: 'refresh_buvid' }, '已重新领取 buvid。'));
-        $('probe-uid').addEventListener('input', () => { probeUidTouched = true; });
+        $('probe-uid').addEventListener('input', () => {
+            probeUidTouched = true;
+            openUidMenu(false);
+        });
+        $('probe-uid').addEventListener('focus', () => openUidMenu(true));
+        $('probe-uid').addEventListener('keydown', (event) => {
+            const opts = Array.from($('probe-uid-menu').querySelectorAll('.uid-option'));
+            if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                if (!uidMenuOpen) openUidMenu(true);
+                else if (opts.length) {
+                    uidMenuIndex = (uidMenuIndex + 1) % opts.length;
+                    opts.forEach((item, idx) => item.classList.toggle('is-highlighted', idx === uidMenuIndex));
+                    opts[uidMenuIndex].scrollIntoView({ block: 'nearest' });
+                }
+            } else if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                if (uidMenuOpen && opts.length) {
+                    uidMenuIndex = (uidMenuIndex - 1 + opts.length) % opts.length;
+                    opts.forEach((item, idx) => item.classList.toggle('is-highlighted', idx === uidMenuIndex));
+                    opts[uidMenuIndex].scrollIntoView({ block: 'nearest' });
+                }
+            } else if (event.key === 'Enter' && uidMenuOpen && uidMenuIndex >= 0 && opts[uidMenuIndex]) {
+                event.preventDefault();
+                selectProbeUid(opts[uidMenuIndex].dataset.uid);
+            } else if (event.key === 'Escape' && uidMenuOpen) {
+                event.preventDefault();
+                closeUidMenu();
+            }
+        });
+        $('probe-uid-toggle').addEventListener('click', () => {
+            if (uidMenuOpen) closeUidMenu();
+            else {
+                $('probe-uid').focus();
+                openUidMenu(true);
+            }
+        });
+        document.addEventListener('click', (event) => {
+            if (uidMenuOpen && !$('probe-uid-box').contains(event.target)) closeUidMenu();
+        });
 
         const probeCards = new Map();
         const probeStates = new Map();
@@ -1116,7 +1433,9 @@
         }
 
         function setProbeDisabled(disabled) {
+            if (disabled) closeUidMenu();
             $('probe-uid').disabled = disabled;
+            $('probe-uid-toggle').disabled = disabled;
             $('probe-all').disabled = disabled;
             $('refresh').disabled = disabled;
             $('buvid-refresh').disabled = disabled;

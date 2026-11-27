@@ -740,6 +740,122 @@ class ChainSuite(unittest.TestCase):
         for secret in (secret_sess, secret_jct, secret_proxy):
             self.assertNotIn(secret, dumped)
 
+    def test_multi_account_and_follow_guard(self):
+        # 1. 构造假头像临时文件（1x1 PNG），测试头像 data URI 转换且不外泄原始 URL。
+        png_bytes = (
+            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89'
+            b'\x00\x00\x00\x0bIDATx\x9cc`\x00\x02\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+        )
+        avatar_file = Path(self.temp_dir) / 'avatar.png'
+        avatar_file.write_bytes(png_bytes)
+        with bili_api._avatar_lock:
+            bili_api._avatar_cache.clear()
+
+        face_a = 'https://i0.hdslb.com/bfs/face/acc_a.png'
+        face_b = 'https://i0.hdslb.com/bfs/face/acc_b.png'
+        profiles = {
+            'SESS_A_SECRET': {'uid': '1001', 'uname': '小芙一号', 'face': face_a},
+            'SESS_B_SECRET': {'uid': '1002', 'uname': '小芙二号', 'face': face_b},
+        }
+
+        def fake_profile(quiet=True):
+            sess = store.global_config()['cookie']['sessdata']
+            if sess in profiles:
+                return dict(profiles[sess]), None
+            return None, (-101, '未登录')
+
+        def fake_poll(key):
+            if key == 'qr_a':
+                url = 'https://passport.bilibili.com/cb?SESSDATA=SESS_A_SECRET&bili_jct=JCT_A_SECRET&DedeUserID=1001'
+            else:
+                url = 'https://passport.bilibili.com/cb?SESSDATA=SESS_B_SECRET&bili_jct=JCT_B_SECRET&DedeUserID=1002'
+            return {'code': 0, 'url': url}, None
+
+        with (patch.object(bili_api, 'qr_poll', side_effect=fake_poll),
+              patch.object(bili_api, 'account_profile', side_effect=fake_profile),
+              patch.object(bili_api, 'download_image', return_value=avatar_file),
+              patch.object(bili_api, 'release_image')):
+            # 扫码登录账号 A，再扫码登录账号 B：两个账号都保留，当前激活 B。
+            r1 = webui.dispatch({'action': 'qr_poll', 'qrcode_key': 'qr_a'}, self.proc)
+            self.assertEqual(r1['state']['qr']['uid'], '1001')
+            self.assertEqual(r1['state']['qr']['uname'], '小芙一号')
+
+            r2 = webui.dispatch({'action': 'qr_poll', 'qrcode_key': 'qr_b'}, self.proc)
+            self.assertEqual(r2['state']['qr']['uid'], '1002')
+            st = webui.dispatch({'action': 'get_state', 'bot_hash': BOT}, self.proc)['state']
+            self.assertEqual(st['global']['active_account'], '1002')
+            self.assertEqual([a['uid'] for a in st['global']['accounts']], ['1002', '1001'])
+            self.assertTrue(st['global']['accounts'][0]['avatar'].startswith('data:image/png;base64,'))
+
+            # 严禁回显任何账号的 SESSDATA / bili_jct 或外部 face URL。
+            dumped = json.dumps(st, ensure_ascii=False)
+            for secret in ('SESS_A_SECRET', 'JCT_A_SECRET', 'SESS_B_SECRET', 'JCT_B_SECRET', face_a, face_b):
+                self.assertNotIn(secret, dumped)
+
+            # 自由切换回账号 A：active cookie 变为 A，且清空 _TICKET 与 _uid_cache。
+            with bili_api._TICKET_LOCK:
+                bili_api._TICKET.update(value='OLD_TICKET', expires=time.time() + 3600)
+            bili_api._uid_cache = (1002, time.monotonic())
+            sw = webui.dispatch({'action': 'switch_account', 'bot_hash': BOT, 'uid': '1001'}, self.proc)
+            self.assertTrue(sw['ok'])
+            self.assertEqual(sw['state']['global']['active_account'], '1001')
+            self.assertEqual(store.global_config()['cookie']['sessdata'], 'SESS_A_SECRET')
+            self.assertEqual(bili_api._TICKET['value'], '')
+            self.assertEqual(bili_api._uid_cache[0], 0)
+
+            # 移除非当前账号 B：A 仍保持生效。
+            rm_b = webui.dispatch({'action': 'remove_account', 'bot_hash': BOT, 'uid': '1002'}, self.proc)
+            self.assertEqual([a['uid'] for a in rm_b['state']['global']['accounts']], ['1001'])
+            self.assertEqual(rm_b['state']['global']['active_account'], '1001')
+
+            # 旧配置兼容：只有 cookie 没有 accounts 时，account_sync 自动识别并入库。
+            with store.edit_global() as cfg:
+                cfg['accounts'] = []
+                cfg['active_account'] = ''
+            synced = webui.dispatch({'action': 'account_sync', 'bot_hash': BOT}, self.proc)
+            self.assertEqual(synced['state']['global']['active_account'], '1001')
+            self.assertEqual(synced['state']['global']['accounts'][0]['uname'], '小芙一号')
+
+            # 移除当前激活账号 A：自动清空登录态。
+            rm_a = webui.dispatch({'action': 'remove_account', 'bot_hash': BOT, 'uid': '1001'}, self.proc)
+            self.assertFalse(rm_a['state']['global']['logged_in'])
+            self.assertEqual(rm_a['state']['global']['accounts'], [])
+
+        # 2. follow_user 遇到 B站 22014（已关注）时按成功返回，不误报失败。
+        with store.edit_global() as cfg:
+            cfg['cookie']['sessdata'] = 'SESS_A_SECRET'
+            cfg['cookie']['bili_jct'] = 'JCT_A_SECRET'
+
+        class FakeResp:
+            status_code = 200
+            content = b'{"code": 22014}'
+
+            def json(self):
+                return {'code': 22014, 'message': '已经关注用户，无法重复关注'}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        class FakeSession:
+            trust_env = True
+
+            def post(self, *args, **kwargs):
+                return FakeResp()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        with patch.object(bili_api.requests, 'Session', return_value=FakeSession()):
+            ok, err = bili_api.follow_user('2394718')
+            self.assertTrue(ok)
+            self.assertIsNone(err)
+
 
 CASES = (
     (Suite, 'test_commands', '命令解析'), (Suite, 'test_binding', 'UID 两级绑定与群订阅'), (Suite, 'test_permissions', '权限'),
@@ -753,6 +869,7 @@ CASES = (
     (ChainSuite, 'test_video_three_chain_cascade', '视频三链条级联与关注流归一化'),
     (ChainSuite, 'test_live_three_chain_and_normalization', '直播三步探测与单间字段对齐'),
     (ChainSuite, 'test_probe_api_webui_and_redaction', 'WebUI 手动自检、冷却解除与凭据脱敏'),
+    (ChainSuite, 'test_multi_account_and_follow_guard', '多账号扫码保存切换、头像脱敏与自动关注'),
 )
 
 

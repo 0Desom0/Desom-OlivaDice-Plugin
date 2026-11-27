@@ -22,7 +22,7 @@ _POLL_LABELS = {
 _IMAGES = {'.jpg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp', '.avif': 'avif', '.bmp': 'bmp'}
 _MAX_PREVIEW = 512 * 1024
 _GLOBAL_ACTIONS = {'get_state', 'save_global', 'refresh_buvid', 'probe_api',
-                   'qr_generate', 'qr_poll'}
+                   'qr_generate', 'qr_poll', 'account_sync', 'switch_account', 'remove_account'}
 
 
 class _InvalidRequest(ValueError):
@@ -139,12 +139,75 @@ def _bot_map(Proc):
     }
 
 
+def _clean_accounts(raw_accounts):
+    """规整已保存的 B站账号列表（按 uid 去重）。"""
+    items = []
+    seen = set()
+    for raw in raw_accounts if isinstance(raw_accounts, list) else ():
+        if not isinstance(raw, dict):
+            continue
+        uid = str(raw.get('uid') or '').strip()
+        if not re.fullmatch(r'[0-9]{1,20}', uid) or not uid.strip('0'):
+            continue
+        uid = uid.lstrip('0')
+        if uid in seen:
+            continue
+        seen.add(uid)
+        items.append({
+            'uid': uid,
+            'uname': str(raw.get('uname') or '').strip()[:64],
+            'face': str(raw.get('face') or '').strip(),
+            'sessdata': str(raw.get('sessdata') or '').strip(),
+            'bili_jct': str(raw.get('bili_jct') or '').strip(),
+            'updated_at': int(raw.get('updated_at') or 0) if isinstance(raw.get('updated_at'), int) else 0,
+        })
+    return items
+
+
+def _upsert_account(settings, *, uid, uname='', face='', sessdata='', bili_jct='', updated_at=None):
+    accounts = _clean_accounts(settings.get('accounts'))
+    stamp = int(time.time()) if updated_at is None else int(updated_at)
+    existing = next((acc for acc in accounts if acc['uid'] == uid), None)
+    entry = {
+        'uid': uid,
+        'uname': uname or (existing['uname'] if existing else ''),
+        'face': face or (existing['face'] if existing else ''),
+        'sessdata': sessdata or (existing['sessdata'] if existing else ''),
+        'bili_jct': bili_jct or (existing['bili_jct'] if existing else ''),
+        'updated_at': stamp,
+    }
+    remaining = [acc for acc in accounts if acc['uid'] != uid]
+    settings['accounts'] = [entry, *remaining][:20]
+    return entry
+
+
+def _view_account(account, active_uid):
+    uid = account['uid']
+    face = account.get('face') or ''
+    return {
+        'uid': uid,
+        'uname': account.get('uname') or '',
+        'avatar': bili_api.avatar_data_uri(face, fetch=False) if face else '',
+        'has_face': bool(face),
+        'updated_at': account.get('updated_at', 0),
+        'active': bool(active_uid and uid == active_uid),
+        'has_credentials': bool(account.get('sessdata') and account.get('bili_jct')),
+    }
+
+
 def _global_view():
     settings = store.global_config()
+    logged = bili_api.logged_in()
+    accounts = _clean_accounts(settings.get('accounts'))
+    active_uid = str(settings.get('active_account') or '').strip() if logged else ''
+    if active_uid and not any(acc['uid'] == active_uid for acc in accounts):
+        active_uid = ''
     # 凭据只发布已配置状态；不发送原文、片段、缓存 Cookie 或代理地址。
     return {
         'cookie': {key: bool(settings['cookie'][key]) for key in config.GLOBAL_DEFAULT['cookie']},
-        'logged_in': bili_api.logged_in(),
+        'logged_in': logged,
+        'active_account': active_uid,
+        'accounts': [_view_account(acc, active_uid) for acc in accounts],
         'user_agent': settings['user_agent'],
         'proxy': bool(settings['proxy']),
         'whitelist': settings['whitelist'],
@@ -293,9 +356,13 @@ def _save_global(payload):
     with store.edit_global() as settings:
         updated_cookie = {**settings['cookie'], **credentials}
         if updated_cookie != settings['cookie'] or any(settings[key] != value for key, value in changes.items()):
-            changed_network = updated_cookie != settings['cookie'] or (
+            cookie_changed = updated_cookie != settings['cookie']
+            changed_network = cookie_changed or (
                 'proxy' in changes and changes['proxy'] != settings['proxy']
             )
+            if cookie_changed and any(k in credentials for k in ('sessdata', 'bili_jct')):
+                # 手动改写或清空登录态时解除旧的 active_account 绑定，交给同步重新识别。
+                settings['active_account'] = ''
             settings.update(changes, cookie=updated_cookie,
                             meta={'updated_at': int(time.time()), 'updated_by': 'WebUI'})
     if changed_network:
@@ -499,7 +566,7 @@ def _qr_generate():
 
 
 def _qr_poll(payload):
-    """轮询扫码状态；成功后把凭据写进 global.json 并停用旧指纹缓存。"""
+    """轮询扫码状态；成功后写入凭据、拉取账号资料并加入多账号列表。"""
     key = payload.get('qrcode_key')
     if not isinstance(key, str) or not key or len(key) > 128:
         raise _InvalidRequest('缺少有效的二维码标识。')
@@ -513,15 +580,99 @@ def _qr_poll(payload):
     pairs = bili_api.parse_login_cookie(str(data.get('url') or ''))
     if not pairs.get('sessdata'):
         raise _InvalidRequest('登录成功但没拿到 SESSDATA，请重试。')
+    now = int(time.time())
     with store.edit_global() as settings:
         settings['cookie']['sessdata'] = pairs['sessdata']
         settings['cookie']['bili_jct'] = pairs.get('bili_jct', '')
         # 旧指纹属于上一个会话，清掉让下一次请求重新领。
         settings['buvid_cache'] = {'cookie': '', 'fetched_at': 0.0}
-        settings['meta'] = {'updated_at': int(time.time()), 'updated_by': '扫码登录'}
+        settings['meta'] = {'updated_at': now, 'updated_by': '扫码登录'}
     bili_api.reset_channel_state()
-    return {'ok': True, 'state': {'qr': {'status': 0, 'message': '登录成功',
-                                         'uid': pairs.get('dede_user_id', '')}}}
+
+    profile, _ = bili_api.account_profile(quiet=True)
+    raw_uid = (profile or {}).get('uid') or str(pairs.get('dede_user_id') or '').strip()
+    uid = raw_uid.lstrip('0') if re.fullmatch(r'[0-9]{1,20}', raw_uid) and raw_uid.strip('0') else ''
+    uname = (profile or {}).get('uname') or ''
+    face = (profile or {}).get('face') or ''
+    if uid:
+        with store.edit_global() as settings:
+            _upsert_account(
+                settings, uid=uid, uname=uname, face=face,
+                sessdata=pairs['sessdata'], bili_jct=pairs.get('bili_jct', ''), updated_at=now,
+            )
+            settings['active_account'] = uid
+    if face:
+        bili_api.avatar_data_uri(face, fetch=True)
+    return {'ok': True, 'state': {'qr': {
+        'status': 0, 'message': '登录成功', 'uid': uid, 'uname': uname,
+    }}}
+
+
+def _account_sync(bots, bot_hash):
+    """同步当前登录账号的头像/昵称/UID，并预热已存账号头像缓存。"""
+    account_notice = ''
+    if bili_api.logged_in():
+        profile, error = bili_api.account_profile(quiet=True)
+        if profile:
+            now = int(time.time())
+            with store.edit_global() as settings:
+                _upsert_account(
+                    settings,
+                    uid=profile['uid'],
+                    uname=profile['uname'],
+                    face=profile['face'],
+                    sessdata=settings['cookie'].get('sessdata', ''),
+                    bili_jct=settings['cookie'].get('bili_jct', ''),
+                    updated_at=now,
+                )
+                settings['active_account'] = profile['uid']
+        elif error and error[0] == -101:
+            account_notice = '当前账号登录态已失效（-101），请重新扫码或切换其他账号。'
+    for account in _clean_accounts(store.global_config().get('accounts')):
+        if account.get('face'):
+            bili_api.avatar_data_uri(account['face'], fetch=True)
+    result = _state(bots, bot_hash)
+    if account_notice:
+        result['account_notice'] = account_notice
+    return {'ok': True, 'state': result}
+
+
+def _switch_account(payload):
+    uid = _uid(payload.get('uid'))
+    with store.edit_global() as settings:
+        accounts = _clean_accounts(settings.get('accounts'))
+        target = next((acc for acc in accounts if acc['uid'] == uid), None)
+        if target is None:
+            raise _InvalidRequest('未找到该已存账号，请刷新页面。')
+        if not target.get('sessdata') or not target.get('bili_jct'):
+            raise _InvalidRequest('该账号缺少完整登录凭据，请重新扫码登录。')
+        settings['cookie']['sessdata'] = target['sessdata']
+        settings['cookie']['bili_jct'] = target['bili_jct']
+        settings['buvid_cache'] = {'cookie': '', 'fetched_at': 0.0}
+        settings['active_account'] = uid
+        settings['accounts'] = accounts
+        settings['meta'] = {'updated_at': int(time.time()), 'updated_by': '切换账号'}
+    bili_api.reset_channel_state()
+
+
+def _remove_account(payload):
+    uid = _uid(payload.get('uid'))
+    cleared_active = False
+    with store.edit_global() as settings:
+        accounts = _clean_accounts(settings.get('accounts'))
+        remaining = [acc for acc in accounts if acc['uid'] != uid]
+        if len(remaining) == len(accounts):
+            raise _InvalidRequest('未找到要移除的账号，请刷新页面。')
+        settings['accounts'] = remaining
+        if str(settings.get('active_account') or '').strip() == uid:
+            settings['active_account'] = ''
+            settings['cookie']['sessdata'] = ''
+            settings['cookie']['bili_jct'] = ''
+            settings['buvid_cache'] = {'cookie': '', 'fetched_at': 0.0}
+            cleared_active = True
+        settings['meta'] = {'updated_at': int(time.time()), 'updated_by': '移除账号'}
+    if cleared_active:
+        bili_api.reset_channel_state()
 
 
 def dispatch(payload, Proc):
@@ -542,7 +693,13 @@ def dispatch(payload, Proc):
         return _qr_generate()
     if action == 'qr_poll':
         return _qr_poll(payload)
-    if action == 'save_global':
+    if action == 'account_sync':
+        return _account_sync(bots, bot_hash)
+    if action == 'switch_account':
+        _switch_account(payload)
+    elif action == 'remove_account':
+        _remove_account(payload)
+    elif action == 'save_global':
         _save_global(payload)
     elif action == 'save_bot':
         _save_bot(payload, bot_hash)

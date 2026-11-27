@@ -1,3 +1,4 @@
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -71,6 +72,8 @@ _WBI_INDICES = _WBI_TAB64[:32]
 _IMAGE_DOMAINS = ('hdslb.com', 'biliimg.com', 'bilibili.com', 'bilivideo.com', 'bilivideo.cn')
 _IMAGE_EXTENSIONS = {'jpeg': 'jpg', 'png': 'png', 'gif': 'gif', 'webp': 'webp', 'avif': 'avif', 'bmp': 'bmp'}
 _MAX_IMAGE = 5 * 1024 * 1024
+_MAX_AVATAR = 512 * 1024
+_AVATAR_MIME = {'.jpg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp', '.avif': 'avif', '.bmp': 'bmp'}
 _buvid_lock = Lock()
 _wbi_lock = Lock()
 _wbi_cache = ('', 0)
@@ -79,6 +82,8 @@ _name_cache = {}
 _uid_cache = (0, 0.0)
 _image_lock = Lock()
 _image_leases = {}
+_avatar_lock = Lock()
+_avatar_cache = {}
 _QUIET = local()
 
 
@@ -428,7 +433,8 @@ def channel_health():
 
 
 def reset_channel_state():
-    """测试或重置凭据时清空内存通道状态与缓存。"""
+    """测试或切换账号/凭据时清空内存通道状态、票据、UID 与关注流缓存。"""
+    global _uid_cache
     with _CHANNEL_LOCK:
         _chain_cooldowns.clear()
         _chain_faults.clear()
@@ -440,6 +446,9 @@ def reset_channel_state():
     with _FEED_LOCK:
         for entry in _feed_cache.values():
             entry.update(at=0.0, items=None)
+    with _TICKET_LOCK:
+        _TICKET.update(value='', expires=0.0)
+    _uid_cache = (0, 0.0)
 
 
 def _parse_live_time(value):
@@ -718,7 +727,8 @@ def follow_user(uid):
     if not isinstance(payload, dict):
         return False, _FORMAT
     code = payload.get('code')
-    if code == 0:
+    # code=22014 表示已经关注该 UP，视作成功不报失败日志。
+    if code in (0, 22014):
         return True, None
     return False, (int(code) if isinstance(code, int) else -1, str(payload.get('message') or '关注失败'))
 
@@ -1062,6 +1072,69 @@ def parse_login_cookie(callback_url):
     if fields.get('DedeUserID'):
         pairs['dede_user_id'] = fields['DedeUserID']
     return pairs
+
+
+def account_profile(*, quiet=True):
+    """查询当前登录账号的基础信息（UID、昵称、头像地址）。"""
+    global _uid_cache
+    if not logged_in():
+        return None, _NO_LOGIN
+    data, error = request_json(_NAV, quiet=quiet)
+    if error:
+        return None, error
+    if not isinstance(data, dict) or not data.get('isLogin'):
+        return None, (-101, '登录态已失效，请重新扫码登录')
+    uid = _int_field(data.get('mid'))
+    if not uid:
+        return None, _FORMAT
+    _uid_cache = (uid, time.monotonic())
+    return {
+        'uid': str(uid),
+        'uname': str(data.get('uname') or '').strip(),
+        'face': _https(data.get('face') or ''),
+    }, None
+
+
+def avatar_data_uri(url, *, fetch=False):
+    """把 B站头像转成安全内联 data URI（带进程内缓存；fetch=False 绝不联网）。"""
+    clean = _https(url)
+    if not clean or not _image_host_allowed(clean):
+        return ''
+    with _avatar_lock:
+        cached = _avatar_cache.get(clean)
+    if cached is not None:
+        return cached
+    if not fetch:
+        return ''
+    candidates = [clean]
+    lower = clean.lower()
+    if '@' not in clean and any(lower.endswith(ext) for ext in ('.jpg', '.jpeg', '.png', '.webp')):
+        candidates.insert(0, f'{clean}@96w_96h.webp')
+    data_uri = ''
+    for candidate in candidates:
+        path = download_image(candidate)
+        if path is None:
+            continue
+        try:
+            mime = _AVATAR_MIME.get(path.suffix.lower())
+            if not mime:
+                continue
+            with path.open('rb') as handle:
+                content = handle.read(_MAX_AVATAR + 1)
+            if 0 < len(content) <= _MAX_AVATAR:
+                encoded = base64.b64encode(content).decode('ascii')
+                data_uri = f'data:image/{mime};base64,{encoded}'
+                break
+        except OSError:
+            continue
+        finally:
+            release_image(path)
+    if data_uri:
+        with _avatar_lock:
+            if len(_avatar_cache) >= 32:
+                _avatar_cache.pop(next(iter(_avatar_cache)))
+            _avatar_cache[clean] = data_uri
+    return data_uri
 
 
 def login_uid():

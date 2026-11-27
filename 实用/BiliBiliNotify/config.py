@@ -19,6 +19,8 @@ IMAGE_TIMEOUT = 15
 GLOBAL_DEFAULT = {
     'version': 1,
     'cookie': {'sessdata': '', 'bili_jct': '', 'buvid3': '', 'buvid4': '', 'b_nut': 0},
+    'active_account': '',
+    'accounts': [],
     'user_agent': '',
     'proxy': '',
     'whitelist': [],
