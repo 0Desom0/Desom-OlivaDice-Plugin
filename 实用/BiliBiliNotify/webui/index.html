@@ -245,6 +245,19 @@
             background: var(--soft); align-items: center;
         }
         #qr-image { border-radius: 8px; background: #fff; padding: 6px; }
+        .advanced-fold {
+            border: 1px solid var(--line); border-radius: 10px; background: var(--soft); overflow: hidden;
+        }
+        .advanced-fold summary {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+            padding: 9px 12px; border: 0; border-radius: 0; background: transparent;
+            font-size: 13px; font-weight: 650; list-style: none;
+        }
+        .advanced-fold summary::-webkit-details-marker { display: none; }
+        .advanced-fold summary::after { content: "▸ 展开"; color: var(--muted); font-weight: 500; font-size: 12px; flex-shrink: 0; }
+        .advanced-fold[open] summary { border-bottom: 1px solid var(--line); }
+        .advanced-fold[open] summary::after { content: "▾ 收起"; }
+        .advanced-fold-body { padding: 12px; display: grid; gap: 10px; background: var(--panel); }
         .probe-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; }
         .probe-controls .field { flex: 1 1 220px; max-width: 300px; }
         .uid-combobox { position: relative; display: flex; align-items: stretch; }
@@ -423,48 +436,11 @@
         <output id="notice" role="status" aria-live="polite">正在读取面板状态…</output>
         <div id="content" hidden>
             <section id="global" role="tabpanel" aria-labelledby="tab-global" class="stack">
-                <form id="global-form" class="stack" autocomplete="off">
-                    <div class="grid">
-                        <article class="panel stack">
-                            <header>
-                                <h2>B站凭据</h2>
-                                <p class="muted">输入新值替换；留空保留。清除后需保存。</p>
-                            </header>
-                            <div id="credentials" class="credential-grid"></div>
-                            <div id="credential-extra" class="credential-grid"></div>
-                            <label class="field">
-                                <span class="field-label">User-Agent</span>
-                                <input type="text" id="user-agent" placeholder="留空使用内置浏览器 UA">
-                            </label>
-                        </article>
-                        <article class="panel stack">
-                            <header>
-                                <h2>访问管理</h2>
-                                <p class="muted">白名单用户可管理订阅；设置适用于所有 Bot。</p>
-                            </header>
-                            <ul class="chips" id="whitelist"></ul>
-                            <div class="form-row">
-                                <label class="field"><span class="field-label">平台</span>
-                                    <select id="whitelist-platform">
-                                        <option value="qq">OneBot QQ</option>
-                                        <option value="qqGuild">QQ 官方群</option>
-                                    </select>
-                                </label>
-                                <label class="field"><span class="field-label">用户 ID</span>
-                                    <input id="whitelist-id" placeholder="QQ 号 / OpenID">
-                                </label>
-                                <button type="button" id="whitelist-add">添加</button>
-                            </div>
-                            <label class="switch"><input type="checkbox" id="file-log"> 写入每日通知日志文件</label>
-                        </article>
-                    </div>
-                    <div class="footer"><button type="submit" class="primary">保存总账号</button></div>
-                </form>
                 <article class="panel stack" id="account-panel">
                     <div class="panel-heading">
                         <div>
                             <h2>B站账号与扫码登录</h2>
-                            <p class="muted">扫码登录后自动保存头像、昵称与 UID，支持保存多个 B站账号并一键自由切换，不用手抄 Cookie。</p>
+                            <p class="muted">扫码登录后自动保存头像、昵称与 UID，支持保存多个 B站账号并一键自由切换，操作即时生效。</p>
                         </div>
                         <div class="row">
                             <button type="button" id="account-sync">刷新账号信息</button>
@@ -485,6 +461,50 @@
                         </div>
                     </div>
                 </article>
+                <form id="global-form" class="stack" autocomplete="off">
+                    <div class="grid">
+                        <article class="panel stack">
+                            <header>
+                                <h2>网络与高级凭据</h2>
+                                <p class="muted">代理与 UA 适用于所有 Bot；修改后点击下方「保存全局配置」生效。</p>
+                            </header>
+                            <div id="credential-network"></div>
+                            <label class="field">
+                                <span class="field-label">User-Agent</span>
+                                <input type="text" id="user-agent" placeholder="留空使用内置浏览器 UA">
+                            </label>
+                            <details class="advanced-fold" id="advanced-credentials">
+                                <summary><span>高级：手动 Cookie 与设备指纹 <small id="cred-summary" class="muted"></small></span></summary>
+                                <div class="advanced-fold-body">
+                                    <p class="muted">通常使用上方扫码登录与自动指纹即可；仅需手动覆盖或清除凭据时展开修改，留空保留。</p>
+                                    <div id="credentials" class="credential-grid"></div>
+                                    <div id="credential-extra" class="credential-grid"></div>
+                                </div>
+                            </details>
+                        </article>
+                        <article class="panel stack">
+                            <header>
+                                <h2>访问管理</h2>
+                                <p class="muted">白名单用户可管理订阅；修改后点击下方「保存全局配置」生效。</p>
+                            </header>
+                            <ul class="chips" id="whitelist"></ul>
+                            <div class="form-row">
+                                <label class="field"><span class="field-label">平台</span>
+                                    <select id="whitelist-platform">
+                                        <option value="qq">OneBot QQ</option>
+                                        <option value="qqGuild">QQ 官方群</option>
+                                    </select>
+                                </label>
+                                <label class="field"><span class="field-label">用户 ID</span>
+                                    <input id="whitelist-id" placeholder="QQ 号 / OpenID">
+                                </label>
+                                <button type="button" id="whitelist-add">添加</button>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="file-log"> 写入每日通知日志文件</label>
+                        </article>
+                    </div>
+                    <div class="footer"><button type="submit" class="primary">保存全局配置</button></div>
+                </form>
                 <article class="panel stack" id="probe-panel">
                     <div class="panel-heading">
                         <div>
@@ -1138,11 +1158,11 @@
             entry.remove.disabled = !entry.configured && !entry.input.value && !entry.clear;
         }
 
+        makeCredential($('credential-network'), 'proxy', '代理（留空直连）');
         for (const [key, label] of Object.entries({
             sessdata: 'SESSDATA', bili_jct: 'bili_jct', buvid3: 'buvid3', buvid4: 'buvid4',
         })) makeCredential($('credentials'), key, label);
         makeCredential($('credential-extra'), 'b_nut', 'b_nut', true);
-        makeCredential($('credential-extra'), 'proxy', '代理（留空直连）');
 
         function chip(text, onRemove) {
             const item = el('li', 'chip');
@@ -1305,6 +1325,9 @@
             const settings = state.global;
             $('buvid-time').textContent = settings.buvid_cache.configured
                 ? `领取于 ${clock(settings.buvid_cache.fetched_at)}` : '尚未领取指纹';
+            const cookieFlags = Object.values(settings.cookie || {});
+            const setCount = cookieFlags.filter(Boolean).length;
+            $('cred-summary').textContent = setCount ? `· 已设 ${setCount}/${cookieFlags.length} 项` : '· 默认自动管理';
             renderAccounts();
             if (globalDirty) return;
             for (const [key, entry] of credentialInputs) {
@@ -1351,7 +1374,7 @@
             $('whitelist-id').value = '';
             globalDirty = true;
             renderWhitelist();
-            notice('已加入白名单草稿，保存总账号后生效。');
+            notice('已加入白名单草稿，点「保存全局配置」后生效。');
         });
 
         $('global-form').addEventListener('submit', (event) => {
@@ -1367,6 +1390,7 @@
                     payload.proxy = text;
                 } else if (entry.numeric) {
                     if (!entry.clear && (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(Number(text)))) {
+                        $('advanced-credentials').open = true;
                         notice('b_nut 必须是非负整数。', 'error');
                         entry.input.focus();
                         return;
@@ -1376,7 +1400,7 @@
                     payload.cookie[key] = text;
                 }
             }
-            action(payload, '总账号已保存。', {
+            action(payload, '全局配置已保存。', {
                 resetGlobal: true,
                 beforeRender: () => { $('whitelist-id').value = ''; lastAccountSyncKey = ''; },
             });
