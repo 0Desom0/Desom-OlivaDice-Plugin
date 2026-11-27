@@ -200,10 +200,10 @@ def _format_duration(seconds):
 
 def _live_end_duration(room, uid, runtime, ended_at, *, use_stats=False):
     started_at = 0
-    if use_stats and (config.DATA_ROOT / 'stats.db').is_file():
+    if use_stats and (store.ROOT / 'stats.db').is_file():
         try:
             session = live_stats.room_summary(uid, str(room.get('room_id') or '')).get('session')
-            if (isinstance(session, dict) and session.get('status') in ('live', 'pending')
+            if (isinstance(session, dict) and session.get('status') in ('live', 'pending_end')
                     and _int(session.get('start_at')) > 0):
                 session_end = _int(session.get('end_at'))
                 if not session_end or abs(session_end - ended_at) <= 60:

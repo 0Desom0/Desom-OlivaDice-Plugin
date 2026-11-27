@@ -1979,8 +1979,8 @@ with offline_plugin():
         self.assertIn('\n直播时长：1小时30分45秒', op_end)
         self.assertIn('\n**直播时长**：1小时30分45秒', md_end)
         # 开启直播统计且断流续接场次：优先取 stats.db 整场 start_at。
-        live_stats.start_or_resume('2', '1024', start_at=1700000000, title='T', area='A', grace_seconds=120)
-        live_stats.end_session('2', '1024', end_at=1700007200, grace_seconds=120)
+        live_stats.on_live_start('2', '1024', start_at=1700000000, title='T', area='A', grace_seconds=120)
+        live_stats.on_live_end('1024', end_at=1700007200, grace_seconds=120)
         with_stats = notify._live_fields(
             room, '2', {'live_status': 1, 'last_live_time': 1700003600, 'last_title': 'T', 'last_area_v2_name': 'A'},
             {'live_status': 0}, 'end', 1700007200, use_stats=True,
