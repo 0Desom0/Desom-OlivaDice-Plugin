@@ -43,10 +43,11 @@ _DYNAMIC_NEW = 'https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/dynamic_n
 # 扫码登录（passport 域名，不走 api.bilibili.com 的空间风控）
 _FEED_ALL = f'{_API}/x/polymer/web-dynamic/v1/feed/all'
 _RELATION = f'{_API}/x/relation/modify'
+_RELATION_STAT = f'{_API}/x/relation/stat'
 _QR_GENERATE = 'https://passport.bilibili.com/x/passport-login/web/qrcode/generate'
 _QR_POLL = 'https://passport.bilibili.com/x/passport-login/web/qrcode/poll'
 _ENDPOINTS = frozenset((_SPI, _LIVE, _LIVE_ROOM_INFO, _MASTER, _DYNAMIC, _NAVNUM, _NAV, _VIDEO, _OPUS,
-                        _SEARCH, _CARD, _DANMU, _DYNAMIC_NEW, _FEED_ALL, _QR_GENERATE, _QR_POLL))
+                        _SEARCH, _CARD, _DANMU, _DYNAMIC_NEW, _FEED_ALL, _RELATION_STAT, _QR_GENERATE, _QR_POLL))
 # 只有风控/未登录类错误才挂冷却；未命中某 UID 绝不冷却关注流。
 _FALLBACK_CODES = (-412, -352, -403)
 _FOLLOW_COOLDOWN_CODES = (-101, -412, -352, -403)
@@ -60,8 +61,7 @@ _TZ_CN = timezone(timedelta(hours=8))
 _BUVID_TTL = 86400
 _NAME_TTL = 3600
 _WBI_TTL = 3600
-# B 站官方 mixinKeyEncTab（64 项）取前 32 位；与 StarBot/utils/wbi.py 一致。
-# 之前从 BiliShareInfo 抄的 32 项表从第 27 位起是错的，签名会失配。
+# B 站官方 mixinKeyEncTab（64 项）取前 32 位；参考 StarBot。
 _WBI_TAB64 = (
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
     27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
@@ -217,7 +217,7 @@ _TICKET = {'value': '', 'expires': 0.0}
 
 
 def _web_ticket(settings, cache):
-    """B站 web ticket（StarBot 同款），降低接口风控概率；TTL 通常 3 天，内存缓存。
+    """B站 web ticket，降低接口风控概率；TTL 通常 3 天，内存缓存。参考 StarBot。
 
     申请接口只接受 POST，GET 会 405。票据申请失败不影响请求本身，返回空串即可。
     """
@@ -472,6 +472,17 @@ def live_status(uids, *, quiet=False):
         return {}, None
     data, error = request_json(_LIVE, params=[('uids[]', uid) for uid in uids], quiet=quiet)
     return _shape(_LIVE, data, error, dict, quiet=quiet)
+
+
+def fans_count(uid, *, quiet=True):
+    """参考 StarBot：使用关系计数轻接口获取开播、下播的粉丝快照。"""
+    data, error = request_json(_RELATION_STAT, params={'vmid': str(uid)}, retry=0, quiet=quiet)
+    if error:
+        return None, error
+    count = data.get('follower') if isinstance(data, dict) else None
+    if (type(count) is int and count >= 0) or (isinstance(count, str) and count.isascii() and count.isdecimal()):
+        return int(count), None
+    return (None, _FORMAT) if _is_quiet(quiet) else _failure(_RELATION_STAT, _FORMAT)
 
 
 def live_room_info(uid, room_id='', *, quiet=False):

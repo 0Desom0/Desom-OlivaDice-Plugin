@@ -1,7 +1,11 @@
+import json
 import re
 import time
 from html import unescape
 from pathlib import Path
+from shutil import copyfile
+from tempfile import NamedTemporaryFile
+from threading import Lock
 from urllib.parse import quote, urlsplit
 
 import OlivOS
@@ -19,6 +23,9 @@ _OP_INTRO = re.compile(r'\[(?=(?:OP|CQ):)', re.IGNORECASE)
 _MD_PUNCT = re.compile(r'([\\`*_{}\[\]()#+\-.!|~])')
 _MD_LABEL = re.compile(r'(?<!\\)\*\*([^*\n]+)\*\*')
 _MD_ESCAPE = re.compile(r'\\([\\`*_{}\[\]()#+\-.!|~])')
+_LOCAL_LEASE_SECONDS = 120
+_local_leases = {}
+_local_lock = Lock()
 
 
 def _http_url(value):
@@ -221,10 +228,10 @@ def _qq_ok(result):
     return isinstance(result, dict) and result.get('active') is True
 
 
-def _qq_send(proc, event, chat_id, chunk, path, still_current):
+def _qq_send(proc, event, chat_id, chunk, path, still_current, image_dir='covers'):
     local_images = None
     if path is not None and _COVER in chunk:
-        local_images = {'cover': Path(config.PLUGIN_NAME, 'covers', path.name).as_posix()}
+        local_images = {'cover': Path(config.PLUGIN_NAME, image_dir, path.name).as_posix()}
     try:
         # adapter/qqGuild/qqGuildv2SDKCommon.py: inde_interface.create_markdown_message。
         result = event.indeAPI.create_markdown_message(
@@ -251,6 +258,36 @@ def _qq_send(proc, event, chat_id, chunk, path, still_current):
 
 def _current(still_current):
     return still_current is None or still_current()
+
+
+def _unlink_local(path):
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        store.log(None, '生成图片临时文件清理失败', level=3)
+
+
+def release_local_image(path):
+    """通知发送完毕；仅入队的文件留给异步适配器读取。"""
+    path = Path(path).resolve()
+    with _local_lock:
+        lease = _local_leases.get(path)
+        if lease is not None and lease[0] > time.monotonic():
+            _local_leases[path] = (lease[0], True)
+            return
+        _local_leases.pop(path, None)
+    _unlink_local(path)
+
+
+def reap_local_images():
+    now = time.monotonic()
+    with _local_lock:
+        expired = [(path, released) for path, (deadline, released) in _local_leases.items() if deadline <= now]
+        for path, _ in expired:
+            del _local_leases[path]
+    for path, released in expired:
+        if released:
+            _unlink_local(path)
 
 
 def _group_id(target):
@@ -321,8 +358,81 @@ def bot_is_group_admin(proc, bot_hash, target):
     return event_bot_is_group_admin(event, _group_id(target), sdk=target.get('sdk'), proc=proc)
 
 
+def _send_local_op(event, chat_id, chunk):
+    # Event.send 丢弃 OneBot V11 回包。走同一适配器的公开 API 封装以识别图片拒收。
+    model = getattr(event, 'platform', {}).get('model')
+    servers = ('flaskServerAPI', 'onebotV11HostServerAPI', 'onebotV11LinkServerAPI')
+    if model and any(model in getattr(getattr(OlivOS, name, None), 'gCheckList', ()) for name in servers):
+        sdk = OlivOS.onebotSDK
+        request = sdk.api.send_msg(sdk.get_SDK_bot_info_from_Event(event))
+        request.data.message_type = 'group'
+        request.data.group_id = str(chat_id)
+        if hasattr(request.data, 'user_id'):
+            del request.data.user_id
+        message = OlivOS.messageAPI.Message_templet('olivos_string', chunk).get('old_string')
+        request.data.message = sdk.formatMessage(message, 'para' if model in sdk.paraMsgMap else 'msg')
+        raw = getattr(request.do_api(control_queue=event.plugin_info['control_queue']), 'body', None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return False
+        return raw if isinstance(raw, dict) else False
+    return event.send('group', chat_id, chunk, flag_log=False)
+
+
+def send_local_image(proc, bot_hash, target, image_path, caption='', *, test=False, still_current=None):
+    if not _supported(target) or not _current(still_current):
+        return False
+    staged = None
+    try:
+        path = Path(image_path).resolve()
+        if not path.is_file():
+            return False
+        event = _event(proc, bot_hash, target)
+        qq = target['sdk'] == _QQ
+        escape = _markdown_text if qq else _plain_text
+        lines = [_push_url(url) if (url := _http_url(line)) else escape(line) for line in str(caption).splitlines()]
+        text = '\n'.join(lines)
+        if text and test:
+            text = escape(message_custom.TEXT['test_prefix']) + text
+        if qq:
+            root = (config.IMAGE_ROOT.parent / 'generated').resolve()
+            if path.parent != root:
+                root.mkdir(parents=True, exist_ok=True)
+                with NamedTemporaryFile(dir=root, prefix='local-', suffix=path.suffix, delete=False) as handle:
+                    staged = Path(handle.name)
+                copyfile(path, staged)
+                path = staged
+            return _current(still_current) and _qq_send(
+                proc, event, _group_id(target), '\n'.join(filter(None, (_COVER, text))), path, still_current,
+                image_dir='generated',
+            )
+        chunk = '\n'.join(filter(None, (f'[OP:image,file={path.as_uri()}]', text)))
+        if not _current(still_current):
+            return False
+        result = _send_local_op(event, _group_id(target), chunk)
+        if not _op_ok(result):
+            store.log(proc, f'OP 本地图发送失败：{_result_details(result)}', level=3)
+            return False
+        if result is None or (isinstance(result, dict) and result.get('status') == 'async'):
+            with _local_lock:
+                _local_leases[path] = (time.monotonic() + _LOCAL_LEASE_SECONDS, False)
+        return True
+    except Exception as error:
+        store.log(proc, f'本地图发送异常：{type(error).__name__}', level=3)
+        return False
+    finally:
+        if staged is not None:
+            _unlink_local(staged)
+
+
 def send(proc, bot_hash, target, kind, fields, *, image='', at_all=False, subscribers=(), test=False,
-         interval=3, still_current=None):
+         interval=3, still_current=None, local_image=None):
+    if local_image is not None:
+        name = ' '.join(str(fields.get('name') or '').splitlines())
+        caption = f"【B站动态】{name}\n{fields.get('link') or ''}"
+        return send_local_image(proc, bot_hash, target, local_image, caption, test=test, still_current=still_current)
     if not _supported(target) or not _current(still_current):
         return False
     sdk = target['sdk']

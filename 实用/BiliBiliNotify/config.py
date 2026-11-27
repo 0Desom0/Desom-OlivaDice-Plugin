@@ -10,6 +10,10 @@ BOT_FILE = 'config.json'
 ROOMS_FILE = 'rooms.json'
 KINDS = ('live', 'dynamic', 'video')
 LABELS = dict(zip(KINDS, ('直播', '动态', '视频')))
+LIVE_IMAGES = {
+    'report': ('live_report', 'auto_report', '直播报告'),
+    'cloud': ('wordcloud', 'auto_wordcloud', '弹幕词云'),
+}
 COMMAND_NAME = 'bpush'
 allowed_prefix_list = ('.', '。', '/', '／')
 HTTP_TIMEOUT = 10
@@ -47,6 +51,23 @@ BOT_DEFAULT = {
     # 默认开，但只有登录态（SESSDATA + bili_jct）才真正调用；未登录时静默跳过。
     'auto_follow': True,
     'push_default': dict.fromkeys(KINDS, True),
+    'dynamic_image': False,
+    'save_dynamic_image': False,
+    'live_stats': {
+        'enabled': True,
+        'reconnect_grace_seconds': 120,
+        'query_cooldown_seconds': 10,
+        'danmu_retention_days': 30,
+        'hide_revenue': False,
+        'auto_report': True,
+        'auto_wordcloud': True,
+        'min_report_minutes': 3,
+        'min_report_danmu': 5,
+        'save_report_image': False,
+        'wordcloud_limit': 80,
+        'wordcloud_stopwords': [],
+        'wordcloud_words': [],
+    },
     'send_interval_seconds': 3,
     'disabled_group_list': [],
     'configured_master_list': [],

@@ -33,12 +33,32 @@ def ensure_group(data, settings, target):
         group = {
             **target,
             'push': dict(settings['push_default']),
+            'dynamic_image': None,
+            'report': None,
+            'cloud': None,
             'at_all': False,
             'at_quota': {'date': '', 'used': 0, 'last_at_live_time': 0},
             'first_seen_at': int(time.time()),
         }
         data['groups'][sid] = group
     return group
+
+
+def render_session_image(kind, detail, settings, *, archive_dir=None):
+    """群命令、下播推送与面板预览共用同一套图像配置。"""
+    if kind == 'report':
+        from . import report_render
+
+        return report_render.render_live_report(
+            detail, hide_revenue=settings['hide_revenue'], avatar_url=detail.get('avatar_url', ''),
+            archive_dir=archive_dir,
+        )
+    from . import wordcloud_render
+
+    return wordcloud_render.render_wordcloud(
+        detail, word_limit=settings['wordcloud_limit'], stopwords=settings['wordcloud_stopwords'],
+        custom_words=settings['wordcloud_words'], archive_dir=archive_dir,
+    )
 
 
 def _stamp(value):
@@ -91,6 +111,7 @@ def _initial_room(uid, profile, types):
             'last_area_v2_name': str(profile.get('area_v2_name') or ''),
             'last_title': str(profile.get('title') or ''),
             'last_cover': str(profile.get('cover_from_user') or ''),
+            'avatar_url': str(profile.get('face') or ''),
             'last_check_at': 0, 'last_error': '', 'fail_count': 0,
         },
         'targets': {},

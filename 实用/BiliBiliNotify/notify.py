@@ -1,14 +1,18 @@
 from bisect import bisect_left
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
+from itertools import islice
 from random import uniform
+import sqlite3
 from threading import Condition, Event, Lock, Thread
 from time import sleep, time
 
-from . import bili_api, config, function, livesocket, sender, store
+from . import bili_api, capabilities, config, dynamic_render, function, live_stats, livesocket, sender, store
 from .message_custom import TEXT
+from .render_base import archive_generated_png
 
 _QUEUE_LIMIT = 256
 _WORKER_LIMIT = 32
@@ -200,7 +204,8 @@ def _live_fields(room, uid, runtime, payload, kind, stamp):
 
 
 def _first_field(items, key):
-    return items[0].get(key) if items else ''
+    first = items[0] if items else None
+    return first.get(key) if isinstance(first, dict) else first if isinstance(first, str) else ''
 
 
 def _feed_author(kind, item):
@@ -210,8 +215,13 @@ def _feed_author(kind, item):
     return str((modules.get('module_author') or {}).get('name') or '')
 
 
+def _live_share_cover(major):
+    info = dynamic_render.live_share_info(major)
+    return info.get('cover') or info.get('keyframe') or ''
+
+
 def _major_images(major):
-    """按 StarBot 的分类取配图：图文 draw / opus、视频 archive、专栏 article。
+    """按动态类型取配图：图文 draw / opus、视频 archive、专栏 article。参考 StarBot。
 
     不再拿作者头像兜底 —— 没图就发不带图的消息。
     """
@@ -224,6 +234,7 @@ def _major_images(major):
         _first_field(opus.get('pics'), 'url'),
         str(archive.get('cover') or ''),
         _first_field(article.get('covers'), 'url'),
+        _live_share_cover(major),
     )
 
 
@@ -331,6 +342,7 @@ class _Notice:
     fields: dict
     image: str
     live_time: int = 0
+    raw_item: object = None
 
 
 def _request(uid, kind, room_id=''):
@@ -360,8 +372,60 @@ def _send_log(proc, job, sid, kind, detail):
     store.log(proc, f'bot={job.bot} uid={job.uid} sid={sid} kind={kind} {detail}', 3)
 
 
+@contextmanager
+def _card_cache():
+    cards = {}
+    try:
+        yield cards
+    finally:
+        for path in cards.values():
+            if path is not None:
+                sender.release_local_image(path)
+
+
+def _render_card(proc, job, sid, notice, settings):
+    try:
+        item = notice.raw_item
+        modules = item.get('modules') or {}
+        author = modules.get('module_author') or {}
+        if not author.get('pub_ts') and not author.get('pub_time') and notice.fields.get('time'):
+            # Opus 补采时间由 _feed_fields 获取；保持原始条目不变。
+            item = {**item, 'modules': {**modules, 'module_author': {**author, 'pub_time': notice.fields['time']}}}
+        archive = config.DATA_ROOT / 'dynamics' if settings.get('save_dynamic_image') else None
+        return dynamic_render.render_dynamic_card(
+            item, fallback_name=notice.fields['name'], link=notice.fields['link'], archive_dir=archive,
+        )
+    except Exception as error:
+        _send_log(proc, job, sid, notice.kind, f'卡片渲染失败：{type(error).__name__}，回退图文')
+        return None
+
+
+def _send_notice(proc, job, sid, target, group, settings, notice, cards, *, still_current,
+                 at_all=False, subscribers=(), test=False):
+    override = group.get('dynamic_image')
+    enabled = settings.get('dynamic_image') if override is None else override
+    if (notice.kind == 'dynamic' and notice.raw_item is not None and enabled
+            and capabilities.can('dynamic_image')):
+        key = id(notice)
+        if key not in cards:
+            cards[key] = _render_card(proc, job, sid, notice, settings)
+        path = cards[key]
+        if path is not None and sender.send(proc, job.bot, target, notice.kind, notice.fields, local_image=path,
+                                            test=test, still_current=still_current):
+            return True
+    return sender.send(proc, job.bot, target, notice.kind, notice.fields, image=notice.image, test=test,
+                       at_all=at_all, subscribers=subscribers, interval=_interval(settings),
+                       still_current=still_current)
+
+
+def _session_image_key(kind, stats):
+    if kind == 'report':
+        return kind, stats['hide_revenue']
+    return kind, stats['wordcloud_limit'], tuple(stats['wordcloud_stopwords']), tuple(stats['wordcloud_words'])
+
+
 class _Engine:
-    def __init__(self, proc, accounts):
+    def __init__(self, proc, accounts, on_session_finalized=None):
         self.proc = proc
         self.accounts = accounts
         self.order = deque(accounts)
@@ -372,6 +436,13 @@ class _Engine:
         self.results = deque()
         self.applies = deque()
         self.watchers = {}
+        self.watch_routes = {}
+        self.stats_ingest_lock = Lock()
+        self.stats_fan_jobs = {}
+        self.stats_cleanup_day = None
+        self.finalized_sessions = deque()
+        self.finalizing = False
+        self.on_session_finalized = self._push_session_images if on_session_finalized is None else on_session_finalized
         self.watcher_sync_at = 0.0
         self.follow_seen = {}
         self.follow_sync_at = {}
@@ -391,16 +462,24 @@ class _Engine:
             self.closed.set()
             watchers = list(self.watchers.values())
             self.watchers.clear()
+            self.watch_routes = {}
             self.polls.clear()
             self.results.clear()
             self.applies.clear()
+            self.finalized_sessions.clear()
             self.condition.notify_all()
-        for watcher, _ in watchers:
+        for watcher in watchers:
             watcher.stop()
         self.dispatcher.join()
+        self.maintainer.join(timeout=1.0)
         # 旧代只等已经进入的持久化事务，不等失联 API 或节流等待。
         with self.write_lock:
-            return
+            with self.stats_ingest_lock:
+                pass  # 排空关停信号发出前已经进入的事件入队操作。
+            try:
+                live_stats.close()  # 刷盘并停止事件写线程。
+            except (OSError, sqlite3.Error) as error:
+                store.log(self.proc, f'直播统计关停刷盘失败：{type(error).__name__}', 3)
 
     def _is_mounted(self, job, room):
         return (not self.closed.is_set() and job.bot in _bots(self.proc) and room is not None
@@ -434,10 +513,141 @@ class _Engine:
             try:
                 if self.closed.is_set():
                     return
+                sender.reap_local_images()
                 self._sync_watchers()
+                self._maintain_stats()
                 self._sync_follow(time())
             except Exception as error:  # noqa: BLE001 - 维护线程不能因为一次异常退出
                 store.log(self.proc, f'维护线程异常：{type(error).__name__}', level=3)
+
+    def _maintain_stats(self):
+        with self.stats_ingest_lock:
+            if self.closed.is_set():
+                return
+            live_stats.flush()
+        if self.closed.is_set() or not (store.ROOT / 'stats.db').exists():
+            return
+        # 快照请求与封账均在后台进行，维护期间仍可接收事件和派发轮询。
+        while not self.closed.is_set():
+            with self.write_lock:
+                if not self.stats_fan_jobs or self.closed.is_set():
+                    break
+                session_id = next(iter(self.stats_fan_jobs))
+                uid = self.stats_fan_jobs.pop(session_id)
+            count, error = bili_api.fans_count(uid)
+            if not error:
+                with self.write_lock:
+                    if not self.closed.is_set():
+                        live_stats.set_fans_start(session_id, count)
+        if self.closed.is_set():
+            return
+        finalized = live_stats.finalize_due(fans_fetcher=bili_api.fans_count)
+        if finalized:
+            with self.condition:
+                if not self.closed.is_set():
+                    self.finalized_sessions.extend(finalized)
+                    self.condition.notify()
+        today = date.today()
+        if self.stats_cleanup_day != today and not self.closed.is_set():
+            retention = max((settings['live_stats']['danmu_retention_days'] for bot in self.accounts
+                             if _stats_enabled(settings := store.bot_config(bot))), default=0)
+            if retention:
+                with self.stats_ingest_lock:
+                    if not self.closed.is_set():
+                        live_stats.cleanup_danmu(retention)
+                        self.stats_cleanup_day = today
+
+    def _run_finalized(self, session_id):
+        try:
+            if not self.closed.is_set():
+                self.on_session_finalized(session_id)
+        except Exception as error:
+            store.log(self.proc, f'场次 {session_id} 封账回调异常：{type(error).__name__}', 3)
+        finally:
+            with self.condition:
+                self.finalizing = False
+                self.running -= 1
+                self.condition.notify()
+
+    def _session_target(self, job, sid, added_at, kind, detail):
+        if self.closed.is_set() or job.bot not in _bots(self.proc):
+            return None
+        feature, setting, _ = config.LIVE_IMAGES[kind]
+        settings = store.bot_config(job.bot)
+        if not _stats_enabled(settings) or not capabilities.can(feature):
+            return None
+        stats = settings['live_stats']
+        if detail['duration'] < stats['min_report_minutes'] * 60 or detail['danmu'] < stats['min_report_danmu']:
+            return None
+        _, group, target = _active_target(store.rooms(job.bot), job, sid, added_at)
+        if target is None or not _group_allowed(settings, target):
+            return None
+        override = group.get(kind)
+        if not (override if type(override) is bool else stats[setting]):
+            return None
+        return settings, target
+
+    def _push_session_images(self, session_id):
+        kinds = [kind for kind, (feature, _, _) in config.LIVE_IMAGES.items() if capabilities.can(feature)]
+        if not kinds:
+            return
+        detail = live_stats.session_detail(session_id, include_danmu=False)
+        if detail is None:
+            return
+        uid = detail['uid']
+        issued_at = time()
+        bots = _bots(self.proc)
+        rooms = [(bot, room) for bot in self.accounts if bot in bots
+                 and (room := store.rooms(bot)['rooms'].get(uid)) is not None]
+        detail['avatar_url'] = next((url for _, room in rooms if (url := room['runtime'].get('avatar_url'))), '')
+        archive_dir = config.DATA_ROOT / 'reports' / uid
+        archived = set()
+        attempted = False
+        with _card_cache() as cards:
+            for bot, room in rooms:
+                job = _Job(bot, uid, 'live', room.get('resolved_at'), issued_at)
+                for sid, added in _targets(room, job):
+                    for kind in kinds:
+                        current = self._session_target(job, sid, added, kind, detail)
+                        if current is None:
+                            continue
+                        settings, _ = current
+                        stats = settings['live_stats']
+                        key = _session_image_key(kind, stats)
+                        if key not in cards:
+                            try:
+                                if kind == 'cloud' and 'danmu_rows' not in detail:
+                                    detail['danmu_rows'] = live_stats.finalized_danmu_rows(session_id)
+                                cards[key] = function.render_session_image(kind, detail, stats)
+                            except Exception as error:
+                                _send_log(self.proc, job, sid, kind, f'场次 {session_id} 渲染失败：{type(error).__name__}')
+                                cards[key] = None
+                        path = cards[key]
+                        if path is None:
+                            continue
+                        if attempted and self.closed.wait(_interval(settings)):
+                            return
+                        current = self._session_target(job, sid, added, kind, detail)
+                        if current is None or _session_image_key(kind, current[0]['live_stats']) != key:
+                            continue
+                        settings, target = current
+                        if settings['live_stats']['save_report_image'] and key not in archived:
+                            archive_generated_png(path, archive_dir)
+                            archived.add(key)
+
+                        def still_current():
+                            latest = self._session_target(job, sid, added, kind, detail)
+                            return latest is not None and _session_image_key(kind, latest[0]['live_stats']) == key
+
+                        label = config.LIVE_IMAGES[kind][2]
+                        name = detail['uname'] or function.names.get((bot, uid)) or f'UID {uid}'
+                        caption = TEXT['session_image_caption'].format(label=label, name=' '.join(name.splitlines()))
+                        sent = sender.send_local_image(
+                            self.proc, bot, target, path, caption, still_current=still_current,
+                        )
+                        attempted = True
+                        if not sent and still_current():
+                            _send_log(self.proc, job, sid, kind, f'场次 {session_id} 图片发送失败')
 
     def _watch_log(self, message):
         store.log(self.proc, message, 3)
@@ -448,21 +658,26 @@ class _Engine:
         if now - self.watcher_sync_at < _WATCHER_SYNC_SECONDS:
             return
         self.watcher_sync_at = now
+        available = capabilities.can('live_stats')
         limit = 0
         wanted = {}
+        stats_bots = set()
         for bot in tuple(self.accounts):
             settings = store.bot_config(bot)
             if not settings.get('enable', True):
                 continue
+            stats_enabled = _stats_enabled(settings)
+            if stats_enabled:
+                stats_bots.add(bot)
             limit = max(limit, _int(settings['poll'].get('max_sockets'),
                                     config.BOT_DEFAULT['poll'].get('max_sockets', 0)))
             for uid, room in (store.rooms(bot)['rooms'] or {}).items():
                 if not room.get('room_id') or not (room.get('live') or {}).get('enabled'):
                     continue
-                # 只有真的会推送的直播间才值得占一条长连接。
-                if not any(target.get('live') for target in (room.get('targets') or {}).values()):
+                if not stats_enabled and not any(target.get('live') for target in room['targets'].values()):
                     continue
-                wanted[(bot, uid)] = str(room['room_id'])
+                wanted.setdefault(str(room['room_id']), []).append((bot, uid))
+        wanted = dict(islice(wanted.items(), max(0, limit))) if available else {}
         for key in [key for key in self.follow_seen if key[0] not in self.accounts]:
             self.follow_seen.pop(key, None)
         to_stop = []
@@ -470,21 +685,24 @@ class _Engine:
         with self.condition:
             if self.closed.is_set():
                 return
-            for key in list(self.watchers):
-                watcher, room_id = self.watchers[key]
-                if key not in wanted or wanted[key] != room_id:
-                    to_stop.append(watcher)
-                    del self.watchers[key]
-            if limit > 0:
-                for (bot, uid), room_id in wanted.items():
-                    if len(self.watchers) >= limit:
-                        break
-                    if (bot, uid) in self.watchers:
-                        continue
+            self.watch_routes = {
+                room_id: (tuple(routes), tuple((bot, uid) for bot, uid in routes if bot in stats_bots))
+                for room_id, routes in wanted.items()
+            }
+            for room_id in self.watchers.keys() - wanted.keys():
+                to_stop.append(self.watchers.pop(room_id))
+            for room_id, (_, stats_routes) in self.watch_routes.items():
+                watcher = self.watchers.get(room_id)
+                on_message = (lambda msg, rid=room_id: self._watch_message(rid, msg)) if stats_routes else None
+                if watcher is None:
                     watcher = livesocket.LiveWatcher(
-                        room_id, lambda kind, b=bot, u=uid: self._trigger(b, u, 'live'), self._watch_log)
-                    self.watchers[(bot, uid)] = (watcher, room_id)
+                        room_id, lambda kind, rid=room_id: self._watch_transition(rid),
+                        self._watch_log, on_message=on_message,
+                    )
+                    self.watchers[room_id] = watcher
                     to_start.append(watcher)
+                else:
+                    watcher.on_message = on_message
         for watcher in to_stop:
             watcher.stop()
         for watcher in to_start:
@@ -492,6 +710,36 @@ class _Engine:
                 watcher.stop()
             else:
                 watcher.start()
+
+    def _watch_transition(self, room_id):
+        for bot, uid in self.watch_routes.get(room_id, ((), ()))[0]:
+            self._trigger(bot, uid, 'live')
+
+    def _watch_message(self, room_id, msg):
+        # 全 Bot 共用一个房间流；同一礼物、弹幕和观众事件只入队一次，优先选择已确认开播的路由。
+        chosen = None
+        for bot, uid in self.watch_routes.get(room_id, ((), ()))[1]:
+            if not _stats_enabled(store.bot_config(bot)):
+                continue
+            room = store.rooms(bot)['rooms'].get(uid)
+            if room is None or str(room['room_id']) != room_id or not room['live']['enabled']:
+                continue
+            runtime = room['runtime']
+            active = runtime.get('live_status') == 1
+            if chosen is None or active:
+                chosen = (bot, uid, runtime, active)
+                if active:
+                    break
+        if chosen is None:
+            return
+        bot, uid, runtime, active = chosen
+        with self.stats_ingest_lock:
+            if not self.closed.is_set():
+                live_stats.record_event(
+                    uid, room_id, msg, uname=function.names.get((bot, uid), ''),
+                    title=runtime.get('last_title', ''), area=runtime.get('last_area_v2_name', ''),
+                    active=active,
+                )
 
     def _sync_follow(self, now):
         """关注流触发：一条请求知道「关注的人里谁发了新动态」，详情仍走 opus。
@@ -526,13 +774,6 @@ class _Engine:
                 # 首次只记基线，避免把已有动态当成新的推一遍。
                 if previous is not None and dynamic_id > previous:
                     self._trigger(bot, uid, 'dynamic')
-
-    def _close_watchers(self):
-        with self.condition:
-            watchers = list(self.watchers.values())
-            self.watchers.clear()
-        for watcher, _ in watchers:
-            watcher.stop()
 
     def _trigger(self, bot, uid, kind):
         """长连接事件触发的即时检查：绕过轮询间隔，但仍走同一条状态机。"""
@@ -570,7 +811,8 @@ class _Engine:
             uid, kind = uids[room_index], _KINDS[kind_index]
             room = rooms[uid]
             key = bot, uid, kind
-            if key in self.pending or not _due(settings, room, kind, now, watched=(bot, uid) in self.watchers):
+            watched = str(room['room_id']) in self.watchers
+            if key in self.pending or not _due(settings, room, kind, now, watched=watched):
                 continue
             self.polls.append(_Job(bot, uid, kind, room.get('resolved_at'), now))
             self.pending.add(key)
@@ -581,6 +823,11 @@ class _Engine:
                 break
 
     def _take(self):
+        # 渲染与分群节流共享工作池；一次仅处理一个封账场次，给轮询保留容量。
+        if self.finalized_sessions and not self.finalizing:
+            self.finalizing = True
+            self.running += 1
+            return self._run_finalized, (self.finalized_sessions.popleft(),)
         # 优先处理已经拉到的数据；限额降低时，在途工作自然完成，不再超额启动。
         for queue, applying in ((self.applies, True), (self.polls, False)):
             for index, work in enumerate(queue):
@@ -590,12 +837,12 @@ class _Engine:
                     del queue[index]
                     self.pending.remove(job.key)
                     account.queued -= 1
-                    return job, None, False
+                    return None, ()
                 if account.running < account.limit:
                     del queue[index]
                     account.running += 1
                     self.running += 1
-                    return job, work if applying else None, True
+                    return self._work, (job, work if applying else None)
         return None
 
     def _dispatch(self):
@@ -609,9 +856,9 @@ class _Engine:
                         self.condition.wait()
                     else:
                         return
-                job, result, run = selection
-                if run:
-                    self.executor.submit(self._work, job, result)
+                work, args = selection
+                if work is not None:
+                    self.executor.submit(work, *args)
         finally:
             self.executor.shutdown(wait=False, cancel_futures=True)
 
@@ -674,7 +921,7 @@ class _Engine:
                 if not self._is_mounted(job, room):
                     return
                 # 先持久化游标再发送；热重载不会将已观察的事件重新群发。
-                notices, nickname, backoff, risk = _record(data, room, result)
+                notices, nickname, backoff, risk = _record(data, room, result, self._record_live_stats)
         if nickname and self._is_mounted(job, store.rooms(job.bot)['rooms'].get(job.uid)):
             function.names[job.bot, job.uid] = nickname
         if result.error:
@@ -683,6 +930,36 @@ class _Engine:
                       f'backoff={backoff}s', 3)
         if notices or risk:
             self._deliver(job, tuple(_targets(room, job)), notices, risk)
+
+    def _record_live_stats(self, room, result, action, live_status, live_time, nickname):
+        job = result.job
+        settings = store.bot_config(job.bot)
+        room_id = str(room.get('room_id') or result.payload.get('room_id') or '')
+        if not room_id or room_id == '0' or not capabilities.can('live_stats') or not _stats_enabled(settings):
+            return False
+        grace = settings['live_stats']['reconnect_grace_seconds']
+        for bot in self.accounts:
+            if bot != job.bot and str(store.rooms(bot)['rooms'].get(job.uid, {}).get('room_id')) == room_id:
+                other = store.bot_config(bot)
+                if _stats_enabled(other):
+                    grace = max(grace, other['live_stats']['reconnect_grace_seconds'])
+        try:
+            if action == 'end':
+                live_stats.on_live_end(room_id, end_at=result.checked_at, grace_seconds=grace)
+            elif live_status == 1:
+                meta = {'uname': nickname or function.names.get((job.bot, job.uid), ''),
+                        'title': str(result.payload.get('title') or ''),
+                        'area': str(result.payload.get('area_v2_name') or ''),
+                        'observed_at': result.checked_at, 'grace_seconds': grace}
+                if action == 'start':
+                    session_id, resumed = live_stats.on_live_start(job.uid, room_id, start_at=live_time, **meta)
+                    if session_id and not resumed:
+                        self.stats_fan_jobs[session_id] = job.uid
+                    return resumed
+                live_stats.ensure_active_session(job.uid, room_id, start_at=live_time, **meta)
+        except (OSError, sqlite3.Error) as error:
+            store.log(self.proc, f'直播统计状态写入失败：{type(error).__name__}', 3)
+        return False
 
     def _target(self, job, sid, added_at, warning=False):
         data = store.rooms(job.bot)
@@ -716,6 +993,10 @@ class _Engine:
                 return consume_at_all(group, settings, notice.live_time)
 
     def _deliver(self, job, destinations, notices, warning):
+        with _card_cache() as cards:
+            self._deliver_notices(job, destinations, notices, warning, cards)
+
+    def _deliver_notices(self, job, destinations, notices, warning, cards):
         if warning:
             notices = (None,)
         last_notice = -1
@@ -768,9 +1049,8 @@ class _Engine:
                                     _send_log(self.proc, job, sid, kind, 'at_all_quota_exhausted')
                         mention = kind == 'start' and settings.get('at_subscribers', {}).get('live', True)
                         subscribers = target.get('subscribers', ()) if mention else ()
-                        success = sender.send(self.proc, job.bot, target, kind, notice.fields, image=notice.image,
-                                              at_all=at_all, subscribers=subscribers, interval=_interval(settings),
-                                              still_current=still_current)
+                        success = _send_notice(self.proc, job, sid, target, group, settings, notice, cards,
+                                               at_all=at_all, subscribers=subscribers, still_current=still_current)
                 except Exception as error:
                     _send_log(self.proc, job, sid, kind, f'发送异常：{type(error).__name__}')
                     failed += 1
@@ -789,7 +1069,7 @@ def _interval(settings):
     return max(0, _int(settings.get('send_interval_seconds'), 3))
 
 
-def _record(data, room, result):
+def _record(data, room, result, record_stats=None):
     job = result.job
     kind = job.kind
     state = room.setdefault('runtime' if kind == 'live' else kind, {})
@@ -813,11 +1093,14 @@ def _record(data, room, result):
     if not result.detail:
         return (), '', 0, False
     state.update(fail_count=0, last_error='')
-    notices, nickname = _record_live(room, state, result) if kind == 'live' else _record_feed(state, result)
+    if kind == 'live':
+        notices, nickname = _record_live(room, state, result, record_stats)
+    else:
+        notices, nickname = _record_feed(state, result)
     return notices, nickname, 0, False
 
 
-def _record_live(room, state, result):
+def _record_live(room, state, result, record_stats=None):
     payload = result.payload
     uid = result.job.uid
     nickname = str(payload.get('uname') or '')
@@ -826,8 +1109,10 @@ def _record_live(room, state, result):
     live_time = _int(payload.get('live_time'))
     if not live_time and live_status == 1:
         live_time = (_int(state.get('last_live_time')) if action != 'start' else 0) or result.checked_at
+    resumed = record_stats(room, result, action, live_status, live_time, nickname) if record_stats else False
     cover = _live_cover(payload)
-    if action:
+    # 参考 StarBot：断流宽限内续接同一场次，只发送首次开播提醒。
+    if action and not (action == 'start' and resumed):
         fields = _live_fields(room, uid, state, payload, action, live_time or result.checked_at)
         fields['name'] = nickname or function.names.get((result.job.bot, uid)) or f'UID {uid}'
         notices = (_Notice(action, fields, cover if action != 'end' else '', live_time),)
@@ -836,6 +1121,8 @@ def _record_live(room, state, result):
     state.update(live_status=live_status, last_live_time=live_time,
                  last_area_v2_name=str(payload.get('area_v2_name') or ''), last_title=str(payload.get('title') or ''),
                  last_cover=cover)
+    if avatar := sender.pick_first_image((payload.get('face'),)):
+        state['avatar_url'] = avatar
     return notices, nickname
 
 
@@ -855,15 +1142,19 @@ def _record_feed(state, result):
     for item in fresh:
         name, fields, image = _feed_fields(kind, item)
         fields['name'] = name or latest_name or function.names.get((bot, uid)) or f'UID {uid}'
-        notices.append(_Notice(kind, fields, image))
+        notices.append(_Notice(kind, fields, image, raw_item=item if kind == 'dynamic' else None))
     return notices, latest_name
+
+
+def _stats_enabled(settings):
+    return settings['enable'] and settings['live_stats']['enabled']
 
 
 _lifecycle = Lock()
 _engine = None
 
 
-def start(Proc):
+def start(Proc, *, on_session_finalized=None):
     global _engine
     with _lifecycle:
         if _engine is not None:
@@ -877,13 +1168,13 @@ def start(Proc):
             store.load_bot(bot_hash)
             settings = store.bot_config(bot_hash)
             accounts[bot_hash] = _Account(_limit(settings) if settings.get('enable', True) else 0)
-            # StarBot 的做法：间隔低于 10 秒时提醒，太密容易被 B 站临时封接口。
+            # 参考 StarBot：间隔低于 10 秒时提醒，太密容易被 B 站临时封接口。
             for kind in ('live', 'dynamic', 'video'):
                 seconds = _int(settings['poll'].get(f'{kind}_seconds'), 0)
                 if 0 < seconds < 10:
                     store.log(Proc, '轮询间隔 %s_seconds=%s 低于 10 秒，可能触发 B站风控'
                               % (kind, settings['poll'].get(f'{kind}_seconds')), level=3)
-        _engine = _Engine(Proc, accounts) if accounts else None
+        _engine = _Engine(Proc, accounts, on_session_finalized) if accounts else None
 
 
 def stop(Proc):
@@ -938,6 +1229,7 @@ def test_push(Proc, bot_hash, uid, kind, targets=None):
     settings = store.bot_config(bot_hash)
     if not settings.get('enable', True) or not any(_group_allowed(settings, target) for _, target in destinations):
         return 'empty'
+    raw_item = None
     try:
         payload, error = _request(uid, kind, room_id=str(room.get('room_id') or ''))
         if error:
@@ -954,12 +1246,22 @@ def test_push(Proc, bot_hash, uid, kind, targets=None):
             if not items:
                 return 'empty'
             action = kind
-            nickname, fields, image = _feed_fields(kind, items[-1][2])
+            item = items[-1][2]
+            nickname, fields, image = _feed_fields(kind, item)
+            if kind == 'dynamic':
+                raw_item = item
     except Exception as error:
         store.log(Proc, f'bot={bot_hash} uid={uid} kind={kind} 测试请求异常：{type(error).__name__}', 3)
         return 'failed'
     fields['name'] = nickname or function.names.get((bot_hash, uid)) or f'UID {uid}'
     job = _Job(bot_hash, uid, kind, room.get('resolved_at'))
+    notice = _Notice(action, fields, image, raw_item=raw_item)
+    with _card_cache() as cards:
+        return _test_deliver(Proc, job, notice, destinations, explicit, cards)
+
+
+def _test_deliver(Proc, job, notice, destinations, explicit, cards):
+    bot_hash = job.bot
     sent, failed, attempted = False, False, False
     for sid, target in destinations:
         added_at = target.get('added_at')
@@ -981,14 +1283,16 @@ def test_push(Proc, bot_hash, uid, kind, targets=None):
                 continue
         attempted = True
         try:
-            success = sender.send(Proc, bot_hash, target, action, fields, image=image, test=True, interval=interval,
-                                  still_current=still_current)
+            settings = store.bot_config(bot_hash)
+            group = store.rooms(bot_hash)['groups'].get(sid, {})
+            success = _send_notice(Proc, job, sid, target, group, settings, notice, cards,
+                                   test=True, still_current=still_current)
         except Exception as error:
-            _send_log(Proc, job, sid, action, f'测试发送异常：{type(error).__name__}')
+            _send_log(Proc, job, sid, notice.kind, f'测试发送异常：{type(error).__name__}')
             failed = True
         else:
             sent = sent or success
             if not success and still_current():
-                _send_log(Proc, job, sid, action, '测试发送失败')
+                _send_log(Proc, job, sid, notice.kind, '测试发送失败')
                 failed = True
     return 'failed' if failed else 'ok' if sent else 'empty'

@@ -1,11 +1,7 @@
 # -*- encoding: utf-8 -*-
-"""B 站直播间 WebSocket 监听。
+"""B 站直播间 WebSocket：状态通知与 JSON 事件流。
 
-只做一件事：感知「开播 / 下播」两个事件，用来把推送从「等下一次轮询」提前到「秒级」。
-协议用 protover=1（zlib + JSON），不引入 protobuf。
-
-参考：https://github.com/Starlwr/StarBot （core/live.py，protover=3 + protobuf）
-      https://github.com/SocialSisterYi/bilibili-API-collect （直播间信息流协议）
+参考 StarBot：按包头递归拆分压缩帧，优先协商 Brotli。
 """
 
 import json
@@ -15,16 +11,24 @@ import threading
 import time
 import zlib
 
-import websocket
+try:
+    import brotli
+except ImportError:
+    brotli = None
 
-from . import bili_api, store
+try:
+    import websocket
+except ImportError:
+    websocket = None
+
+from . import bili_api, capabilities, store
 
 # B 站弹幕服务器会拒绝没有浏览器 UA 的握手（实测 websocket-client 默认 UA 被直接断开）。
 _UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
        '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
-# protover=1 是 zlib+JSON（parse_packet 能直接解），2/3 需要 protobuf。
-# 实测 2026-11-25：protover=0 会被服务端握手后立刻断开。
-_PROTOVER = 1
+# protover=1 兼容 zlib 帧，protover=3 支持 Brotli。
+_PROTOVER = 3 if brotli is not None else 1
+_BINARY_OPCODE = 2  # RFC 6455 二进制帧
 
 _HEADER = struct.Struct('>IHHII')  # 包长 / 头长 / 协议版本 / 操作码 / 序号
 _OP_HEARTBEAT = 2
@@ -36,39 +40,80 @@ _HEARTBEAT_SECONDS = 30
 _RECV_TIMEOUT = 40
 _RETRY_MIN = 3
 _RETRY_MAX = 60
-_CLOSE_STATES = {'LIVE', 'PREPARING', 'ROOM_CLOSE'}
+_MAX_PACKET_DEPTH = 8
+_MAX_DECOMPRESSED = 4 * 1024 * 1024
 _WANTED = {'LIVE': 'live', 'PREPARING': 'end', 'ROOM_CLOSE': 'end'}
 
 
-def parse_packet(data):
-    """把一个 TCP 帧拆成消息列表；zlib 压缩的正文会再递归拆一层。
+def _decompress_brotli(body):
+    decompressor = getattr(brotli, 'Decompressor', None)
+    if callable(decompressor):
+        stream = decompressor()
+        try:
+            decoded = stream.process(body, output_buffer_limit=_MAX_DECOMPRESSED)
+        except TypeError:
+            decoded = brotli.decompress(body)
+        else:
+            if not stream.is_finished() or len(decoded) > _MAX_DECOMPRESSED:
+                return None
+            return decoded
+    decoded = brotli.decompress(body)
+    return decoded if len(decoded) <= _MAX_DECOMPRESSED else None
 
-    Returns:
-        list[dict] -- 解析成功的 JSON 消息；无法解析的片段被忽略。
-    """
+
+def _decompress_zlib(body):
+    stream = zlib.decompressobj()
+    decoded = stream.decompress(body, _MAX_DECOMPRESSED)
+    if stream.unconsumed_tail or len(decoded) > _MAX_DECOMPRESSED:
+        return None
+    return decoded
+
+
+def parse_packet(data):
+    """解包 JSON 事件，忽略无效包和无法解压的正文。"""
     messages = []
+    _parse_packet(data, messages, 0)
+    return messages
+
+
+def _parse_packet(data, messages, depth):
+    if depth >= _MAX_PACKET_DEPTH:
+        return
     offset = 0
     total = len(data)
     while offset + _HEADER.size <= total:
         packet_len, header_len, version, operation, _ = _HEADER.unpack_from(data, offset)
-        if packet_len < header_len or offset + packet_len > total:
+        if not _HEADER.size <= header_len <= packet_len <= total - offset:
             break
         body = data[offset + header_len:offset + packet_len]
         offset += packet_len
-        if version == 1 and body:
-            try:
-                messages.extend(parse_packet(zlib.decompress(body)))
+        if operation != _OP_MESSAGE or not body:
+            continue
+        if version == 3:
+            if brotli is None:
                 continue
+            try:
+                decoded = _decompress_brotli(body)
+            except brotli.error:
+                continue
+            if decoded is not None:
+                _parse_packet(decoded, messages, depth + 1)
+            continue
+        if version in (1, 2):
+            try:
+                decoded = _decompress_zlib(body)
             except zlib.error:
-                pass  # 认证回包(op=8)的正文是明文 JSON，不是 zlib
-        if operation == _OP_MESSAGE and body:
-            try:
-                message = json.loads(body.decode('utf-8', 'ignore'))
-            except (UnicodeDecodeError, ValueError):
+                pass  # 部分 v1 消息仍是明文 JSON。
+            else:
+                if decoded is not None:
+                    _parse_packet(decoded, messages, depth + 1)
                 continue
-            if isinstance(message, dict):
-                messages.append(message)
-    return messages
+        try:
+            message = json.loads(body)
+        except (UnicodeError, ValueError, RecursionError):
+            continue
+        if isinstance(message, dict):
+            messages.append(message)
 
 
 def wanted_events(messages):
@@ -88,14 +133,16 @@ class LiveWatcher(threading.Thread):
     """单个直播间的长连接监听线程。
 
     - 收到 LIVE / PREPARING / ROOM_CLOSE 时调用 `on_event(kind)`；
+    - 每条 JSON 对象均交给可选的 `on_message(msg)`；
     - 断线按 3→60 秒指数退避重连；
     - `stop()` 后线程在 1 次接收超时内退出（宿主 save 时调用）。
     """
 
-    def __init__(self, room_id, on_event, log=None):
+    def __init__(self, room_id, on_event, log=None, on_message=None):
         super().__init__(daemon=True, name='bili-live-%s' % room_id)
         self.room_id = str(room_id)
         self.on_event = on_event
+        self.on_message = on_message
         self.log = log or (lambda *args, **kwargs: None)
         self._stop_event = threading.Event()
         self._socket = None
@@ -130,7 +177,7 @@ class LiveWatcher(threading.Thread):
             sock = self._socket
         if sock is None:
             raise ConnectionError('socket closed')
-        sock.send(packet, opcode=websocket.ABNF.OPCODE_BINARY)
+        sock.send(packet, opcode=_BINARY_OPCODE)
 
     def _resolve(self):
         """拿 token 与可用 host；失败返回 None。"""
@@ -153,7 +200,27 @@ class LiveWatcher(threading.Thread):
     def _wait_stop(self, seconds):
         return self._stop_event.wait(seconds)
 
+    def _dispatch_messages(self, messages):
+        seen = set()
+        for msg in messages:
+            event = _WANTED.get(str(msg.get('cmd') or '').split(':', 1)[0])
+            if event and event not in seen:
+                seen.add(event)
+                self.last_event_at = time.time()
+                self._call(self.on_event, event)
+            if self.on_message is not None:
+                self._call(self.on_message, msg)
+
+    def _call(self, callback, value):
+        try:
+            callback(value)
+        except Exception as error:  # 插件回调失败不影响长连接与后续消息。
+            self.log('直播间 %s 事件回调异常：%s' % (self.room_id, type(error).__name__))
+
     def run(self):
+        if websocket is None or not capabilities.can('live_stats'):
+            return
+
         delay = _RETRY_MIN
         while not self._stop_event.is_set():
             resolved = self._resolve()
@@ -189,12 +256,7 @@ class LiveWatcher(threading.Thread):
                         break
                     if isinstance(frame, str):
                         continue
-                    for event in wanted_events(parse_packet(frame)):
-                        self.last_event_at = time.time()
-                        try:
-                            self.on_event(event)
-                        except Exception as error:  # 回调是插件内部逻辑，异常不能断连接
-                            self.log('直播间 %s 事件回调异常：%s' % (self.room_id, type(error).__name__))
+                    self._dispatch_messages(parse_packet(frame))
             except Exception as error:
                 self.fail_count += 1
                 self.log('直播间 %s 长连接异常：%s' % (self.room_id, type(error).__name__))

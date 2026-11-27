@@ -1,16 +1,23 @@
-from contextlib import contextmanager
+import base64
+from contextlib import closing, contextmanager
 from copy import deepcopy
 import importlib
+import io
 from itertools import product
 import json
 from pathlib import Path
 import socket
+import sqlite3
+import struct
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event
 import time
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+import warnings
 
 import fake_bili
 
@@ -110,7 +117,7 @@ class Suite(unittest.TestCase):
         self.assertEqual(function.extract_uid('2'), '2')
         self.assertEqual(function.extract_uid('https://space.bilibili.com/2?tracking=4'), '2')
         self.assertFalse(function.extract_uid('https://live.bilibili.com/1024'))
-        self.assertIn('没查到 UID 1024', self.command(f'.{config.COMMAND_NAME} up add 1024', 'owner')[0])
+        self.assertIn('核对主播 UID 1024', self.command(f'.{config.COMMAND_NAME} up add 1024', 'owner')[0])
         self.assertIn('碧诗（UID 2 / 房间 1024）', self.command(f'.{config.COMMAND_NAME} 主播添加 2', 'owner')[0])
         self.assertIn('未开播的主播（UID 3）', self.command(f'.{config.COMMAND_NAME} up add 3', 'owner')[0])
         path = Path(self.temp_dir) / 'accounts' / BOT / 'rooms.json'
@@ -283,6 +290,8 @@ class Suite(unittest.TestCase):
         expected = (
             '__init__.py', 'main.py', 'config.py', 'message.py', 'message_custom.py', 'store.py', 'utils.py',
             'bili_api.py', 'notify.py', 'sender.py', 'function.py', 'webui.py', html,
+            'capabilities.py', 'render_base.py', 'dynamic_render.py', 'live_stats.py',
+            'report_render.py', 'wordcloud_render.py',
             'tests/selftest.py', 'tests/fake_bili.py', 'RUN_REPORT.md', 'LICENSE',
         )
         self.assertEqual([name for name in expected if not (PLUGIN / name).is_file()], [])
@@ -323,10 +332,10 @@ class Suite(unittest.TestCase):
         # 2. .bpush atall on：非管理时允许开关打开但附加提示
         ok_reply = self.command(f'.{config.COMMAND_NAME} atall on', 'owner', bot_role='admin')[0]
         self.assertIn('已开启', ok_reply)
-        self.assertNotIn('未检测到机器人是本群管理员', ok_reply)
+        self.assertNotIn('将机器人设为本群管理员', ok_reply)
         warn_reply = self.command(f'.{config.COMMAND_NAME} atall on', 'owner', bot_role='member')[0]
         self.assertIn('已开启', warn_reply)
-        self.assertIn('未检测到机器人是本群管理员', warn_reply)
+        self.assertIn('将机器人设为本群管理员', warn_reply)
 
         # 3. OneBot 推送期校验：非管理时回退跳过 @全体 且不扣配额，其余内容与 @订阅者正常发
         self.assertEqual(function.add_up(BOT, '2', GROUP, '10001')[0], 'added')
@@ -466,6 +475,304 @@ class Suite(unittest.TestCase):
         finally:
             release.set()
             notify.stop(self.proc)
+
+
+class PhaseOneSuite(Suite):
+    def setUp(self):
+        super().setUp()
+        root = Path(self.temp_dir)
+        self.enterContext(patch.object(config, 'DATA_ROOT', root / 'plugin-data'))
+        self.enterContext(patch.object(config, 'IMAGE_ROOT', root / 'images' / 'covers'))
+        self.proc.Proc_data['bot_info_dict'][BOT] = SimpleNamespace(name='离线测试', platform=GROUP)
+        self.sid = function.sid_for(GROUP)
+
+    def web(self, action, **payload):
+        return webui.dispatch({'action': action, 'bot_hash': BOT, **payload}, self.proc)['state']
+
+    def test_capabilities_and_webui(self):
+        self.assertEqual(config.KINDS, ('live', 'dynamic', 'video'))
+        self.assertEqual(set(capabilities.snapshot()['deps']), {'pil', 'qrcode', 'brotli', 'websocket', 'jieba'})
+        with patch.object(capabilities, 'import_module', side_effect=ImportError):
+            self.assertFalse(capabilities._has_module.__wrapped__('PIL'))
+
+        def load_optional(name):
+            warnings.warn('pkg_resources is deprecated as an API', DeprecationWarning, stacklevel=2)
+            if name != 'jieba':
+                raise ImportError(name)
+            return ModuleType(name)
+
+        with patch.object(capabilities, 'import_module', side_effect=load_optional), warnings.catch_warnings():
+            warnings.simplefilter('error', DeprecationWarning)
+            self.assertTrue(capabilities._has_module.__wrapped__('jieba'))
+        self.web('save_group', sid=self.sid)
+        with store.edit_rooms(BOT) as data:
+            del data['groups'][self.sid]['dynamic_image']
+        with patch.object(capabilities, '_has_module', side_effect=lambda name: name == 'brotli'):
+            state = self.web('get_state')
+            self.assertEqual(state['capabilities']['features'], dict.fromkeys(
+                ('dynamic_image', 'live_stats', 'live_report', 'wordcloud', 'qr_login'), False,
+            ))
+            self.assertEqual(state['capabilities']['segmenter'], 'builtin')
+            self.assertIsNone(state['groups'][self.sid]['dynamic_image'])
+            self.assertIs(state['bot']['dynamic_image'], False)
+            self.assertIs(state['bot']['save_dynamic_image'], False)
+            with patch.object(bili_api, 'qr_generate') as request:
+                with self.assertRaisesRegex(webui._InvalidRequest, '安装 qrcode 后启用'):
+                    self.web('qr_generate')
+                request.assert_not_called()
+            for payload in ({'dynamic_image': True}, {'save_dynamic_image': True}):
+                with self.assertRaisesRegex(webui._InvalidRequest, '安装 Pillow 后启用'):
+                    self.web('save_bot', **payload)
+            for value in ('on', True):
+                with self.assertRaisesRegex(webui._InvalidRequest, '安装 Pillow 后启用'):
+                    self.web('save_group', sid=self.sid, dynamic_image=value)
+            for value in (1, [], {}):
+                with self.assertRaises(webui._InvalidRequest):
+                    self.web('save_group', sid=self.sid, dynamic_image=value)
+            poll = dict(state['bot']['poll'], max_sockets=32)
+            with self.assertRaisesRegex(webui._InvalidRequest, '安装 websocket-client 后启用'):
+                self.web('save_bot', poll=poll)
+            changed = self.web('save_bot', poll={**poll, 'max_sockets': 0})
+            self.assertEqual(changed['bot']['poll']['max_sockets'], 0)
+            self.assertIs(changed['bot']['dynamic_image'], False)
+            self.assertFalse(message.parse_action('push dynamic_img on')[0])
+            self.assertFalse(self.command('.bpush push dynamic_img on', 'owner'))
+            self.assertFalse(self.command('.bpush 推送 动态图片 默认', 'owner'))
+            self.assertNotIn('dynamic_img', self.command('.bpush help push')[0])
+            self.assertNotIn('help stats', self.command('.bpush help')[0])
+            self.assertFalse(self.command('.bpush help 统计'))
+            self.assertIsNone(self.web('get_state')['groups'][self.sid]['dynamic_image'])
+
+        login = {'url': 'https://www.bilibili.com/', 'qrcode_key': 'offline-fixture'}
+        with patch.object(bili_api, 'qr_generate', return_value=(login, None)):
+            with patch.object(capabilities, '_has_module', side_effect=lambda name: name == 'qrcode'):
+                qr = self.web('qr_generate')['qr']
+                self.assertTrue(qr['image'].startswith('data:image/svg+xml;base64,'))
+            qr = self.web('qr_generate')['qr']
+            self.assertTrue(qr['image'].startswith('data:image/png;base64,'))
+        with patch.object(capabilities, '_has_module', return_value=True):
+            state = self.web('save_bot', dynamic_image=True, save_dynamic_image=True)
+            self.assertIs(state['bot']['dynamic_image'], True)
+            self.assertIs(state['bot']['save_dynamic_image'], True)
+            self.assertEqual(state['capabilities']['segmenter'], 'jieba')
+            for mode, expected in (('on', True), ('off', False), ('inherit', None), (False, False), (None, None)):
+                state = self.web('save_group', sid=self.sid, dynamic_image=mode)
+                self.assertIs(state['groups'][self.sid]['dynamic_image'], expected)
+
+    def test_help_sections_and_copy(self):
+        with patch.object(capabilities, '_has_module', return_value=True):
+            main_help, = self.command('.bpush help')
+            self.assertEqual([main_help], self.command('.bpush 帮助'))
+            self.assertLessEqual(len(main_help.splitlines()), 10)
+            self.assertIn('.bpush help sub', main_help)
+            self.assertIn('.bpush help push', main_help)
+            self.assertIn('.bpush help stats', main_help)
+            self.assertIn('.bpush status', self.command('.bpush help 统计')[0])
+            for name in ('sub', '订阅'):
+                text, = self.command(f'.bpush help {name}')
+                self.assertIn('.bpush up add <UID>', text)
+                self.assertIn('.bpush up sub <UID>', text)
+                self.assertIn('.bpush test <UID>', text)
+                self.assertNotIn('dynamic_img', text)
+            for name in ('push', '推送'):
+                text, = self.command(f'.bpush 帮助 {name}')
+                self.assertIn('dynamic_img on|off|auto', text)
+                self.assertIn('.bpush atall on|off', text)
+            self.assertIn('权限', self.command('.bpush push dynamic_img on')[0])
+            for mode, value in (('on', True), ('off', False), ('auto', None), ('on', True), ('默认', None)):
+                self.command(f'.bpush push 动态图片 {mode}', 'owner')
+                self.assertIs(store.rooms(BOT)['groups'][self.sid]['dynamic_image'], value)
+
+        with self.assertRaisesRegex(webui._InvalidRequest, 'B站个人空间数字 UID'):
+            self.web('add_up', uid='https://live.bilibili.com/1024')
+        with self.assertRaisesRegex(webui._InvalidRequest, '单个 Cookie 字段值'):
+            self.web('save_global', cookie={'sessdata': 'field=a; other=b'})
+        for source in ('message_custom.py', 'webui.py', 'webui/index.html'):
+            text = (PLUGIN / source).read_text(encoding='utf-8')
+            self.assertNotRegex(text, r'不是直播间号|不要粘贴|不用手抄|0\s*=\s*不(?:放宽|重试)')
+
+    def test_dynamic_png(self):
+        from PIL import Image
+
+        tmp = Path(self.temp_dir)
+        name = 'https://t.bilibili.com/198'
+        text = fake_bili.dynamic('198', 1764000123)
+        text['modules']['module_dynamic']['desc']['text'] = (
+            '开场 #测试话题# @某位主播\n\n' + '完整正文 Python 3.12 与中文混排。' * 70
+        )
+        pictures = fake_bili.dynamic('199', 1764000124)
+        urls = [f'https://i0.hdslb.com/bfs/dynamic/{index}.png' for index in range(10)]
+        paths = {}
+        colors = []
+        for index, url in enumerate(urls):
+            path = tmp / f'{index}.png'
+            color = (60 + index * 16, 35, 190)
+            with Image.new('RGB', (80 + index, 52), color) as img:
+                img.save(path)
+            paths[url] = path
+            colors.append(color)
+        pictures['modules']['module_dynamic']['major'] = {'draw': {'items': [{'src': url} for url in urls]}}
+        forward = fake_bili.dynamic('200', 1764000125)
+        forward.update(type='DYNAMIC_TYPE_FORWARD', orig=pictures)
+        opus = bili_api._opus_item({'opus_id': '201', 'content': '降级动态', 'cover': {'url': urls[9]}})
+        archived = tmp / 'archive'
+        with (patch.object(bili_api, 'download_image', side_effect=paths.get) as download,
+              patch.object(bili_api, 'release_image') as release):
+            for item, expected in ((text, []), (pictures, urls[:9]), (forward, urls[:9]), (opus, urls[9:])):
+                with self.subTest(kind=item['type'], entry=item['id_str']):
+                    path = dynamic_render.render_dynamic_card(item, fallback_name='备用昵称', link=name,
+                                                              archive_dir=archived)
+                    self.assertIsInstance(path, Path)
+                    self.assertEqual(path.parent.resolve(), (config.IMAGE_ROOT.parent / 'generated').resolve())
+                    with Image.open(path) as img:
+                        self.assertEqual(img.format, 'PNG')
+                        self.assertEqual(img.width, 880)
+                        self.assertLessEqual(img.height, 3400)
+                        if item is text:
+                            self.assertGreater(img.height, 900)
+                        if expected:
+                            palette = {color for _, color in img.convert('RGB').getcolors(1_000_000)}
+                            self.assertTrue(all(colors[urls.index(url)] in palette for url in expected))
+                    self.assertEqual((archived / path.name).read_bytes(), path.read_bytes())
+                    self.assertEqual([call.args[0] for call in download.call_args_list], expected)
+                    self.assertEqual([call.args[0] for call in release.call_args_list],
+                                     [paths[url] for url in expected])
+                    download.reset_mock()
+                    release.reset_mock()
+
+    def test_local_image_adapters(self):
+        root = config.IMAGE_ROOT.parent / 'generated'
+        root.mkdir(parents=True)
+        path = root / '插画,卡片.png'
+        path.write_bytes(b'local fixture')
+        link = 'https://t.bilibili.com/198'
+        fields = {'name': '碧诗', 'link': link}
+        op = SimpleNamespace(send=Mock(return_value={'retcode': 0}))
+        with patch.object(sender, '_event', return_value=op):
+            self.assertTrue(sender.send(self.proc, BOT, GROUP, 'dynamic', fields, local_image=path))
+        self.assertEqual(op.send.call_args.args[2], f'[OP:image,file={path.resolve().as_uri()}]\n【B站动态】碧诗\n{link}')
+
+        qq_target = dict(GROUP, sdk='qqGuildv2_link', platform='qqGuild', chat_type='qq_group')
+        markdown = Mock(side_effect=({'active': True}, {'active': False}))
+        qq = SimpleNamespace(indeAPI=SimpleNamespace(create_markdown_message=markdown))
+        para = SimpleNamespace(image=lambda **kw: ('image', kw['file']), text=lambda text: ('text', text))
+        api = SimpleNamespace(PARA=para, Message_templet=lambda _, parts: parts)
+        plain = Mock(return_value={'active': True})
+        sdk = SimpleNamespace(event_action=SimpleNamespace(send_qq_msg=plain))
+        with (patch.object(sender, '_event', return_value=qq),
+              patch.object(sender.OlivOS, 'messageAPI', api, create=True),
+              patch.object(sender.OlivOS, 'qqGuildv2SDK', sdk, create=True)):
+            for _ in range(2):
+                self.assertTrue(sender.send_local_image(self.proc, BOT, qq_target, path, f'【B站动态】碧诗\n{link}'))
+            mark = markdown.call_args.kwargs
+            self.assertEqual(mark['local_images'], {'cover': f'{config.PLUGIN_NAME}/generated/{path.name}'})
+            self.assertIn(link, mark['markdown']['content'])
+            self.assertFalse(plain.call_args.kwargs['allow_markdown'])
+            parts = plain.call_args.args[2]
+            self.assertIn(('image', str(path.resolve())), parts)
+            self.assertIn(link, ''.join(text for kind, text in parts if kind == 'text'))
+
+        request = SimpleNamespace(data=SimpleNamespace(), do_api=Mock(side_effect=(
+            SimpleNamespace(body='{"status":"failed","retcode":100}'),
+            SimpleNamespace(body={'status': 'ok', 'retcode': 0}),
+        )))
+        v11_event = SimpleNamespace(platform={'model': 'v11'}, plugin_info={'control_queue': object()}, send=Mock())
+        sdk_v11 = SimpleNamespace(
+            api=SimpleNamespace(send_msg=lambda _: request), get_SDK_bot_info_from_Event=lambda e: e,
+            paraMsgMap=(), formatMessage=lambda chunk, mode: chunk,
+        )
+        adapter = SimpleNamespace(gCheckList=('v11',))
+        api.Message_templet = lambda *args: SimpleNamespace(get=lambda _: args[-1])
+        with (patch.object(sender, '_event', return_value=v11_event),
+              patch.object(sender.OlivOS, 'onebotV11LinkServerAPI', adapter, create=True),
+              patch.object(sender.OlivOS, 'onebotSDK', sdk_v11, create=True),
+              patch.object(sender.OlivOS, 'messageAPI', api, create=True)):
+            self.assertFalse(sender.send_local_image(self.proc, BOT, GROUP, path))
+            self.assertTrue(sender.send_local_image(self.proc, BOT, GROUP, path))
+        self.assertIn(path.as_uri(), request.data.message)
+        v11_event.send.assert_not_called()
+
+        op.send.return_value = None
+        with (patch.object(sender, '_local_leases', {}), patch.object(sender.time, 'monotonic', return_value=100),
+              patch.object(sender, '_event', return_value=op)):
+            self.assertTrue(sender.send_local_image(self.proc, BOT, GROUP, path))
+            sender.release_local_image(path)
+            self.assertTrue(path.is_file())
+            with patch.object(sender.time, 'monotonic', return_value=221):
+                sender.reap_local_images()
+            self.assertFalse(path.exists())
+
+    def test_dynamic_delivery_reuse_and_fallback(self):
+        on, off = (dict(GROUP, group_id=str(number)) for number in (987, 654))
+        for target in (GROUP, on, off):
+            self.assertEqual(function.add_up(BOT, '2', target)[0], 'added')
+        with store.edit_rooms(BOT) as data:
+            del data['groups'][self.sid]['dynamic_image']  # 模拟旧 rooms.json。
+            data['groups'][function.sid_for(on)]['dynamic_image'] = True
+            data['groups'][function.sid_for(off)]['dynamic_image'] = False
+        with store.edit_bot(BOT) as settings:
+            settings.update(dynamic_image=True, save_dynamic_image=True)
+        room = store.rooms(BOT)['rooms']['2']
+        job = notify._Job(BOT, '2', 'dynamic', room['resolved_at'], time.time() + 1)
+        item = fake_bili.dynamic('198', 1764000123)
+        item['modules']['module_dynamic']['major'] = {'draw': {'items': [{'src': fake_bili.VIDEO_URL}]}}
+        notices, *_ = notify._record({}, deepcopy(room), notify._Result(job, 0, [item]))
+        notice, = notices
+        destinations = tuple(notify._targets(room, job))
+        engine = notify._Engine.__new__(notify._Engine)
+        engine.proc = self.proc
+        engine.closed = notify.Event()
+        sent = []
+
+        def send(_mode, group_id, text, **kwargs):
+            sent.append((group_id, text))
+            if group_id == on['group_id'] and 'file=file:' in text:
+                return {'status': 'failed', 'retcode': 100}
+            return {'status': 'ok', 'retcode': 0}
+
+        event = SimpleNamespace(send=send)
+        original = dynamic_render.render_dynamic_card
+        with (patch.object(engine.closed, 'wait', return_value=False),
+              patch.object(sender, '_event', return_value=event),
+              patch.object(bili_api, 'download_image', return_value=None),
+              patch.object(dynamic_render, 'render_dynamic_card', wraps=original) as render):
+            engine._deliver(job, destinations, (notice,), False)
+            render.assert_called_once()
+            self.assertIs(render.call_args.args[0], item)
+        first, second, fallback, text_group = sent
+        self.assertEqual(first[1], second[1])
+        self.assertIn('【B站动态】碧诗\nhttps://t.bilibili.com/198', first[1])
+        self.assertIn(fake_bili.VIDEO_URL, fallback[1])
+        self.assertEqual(fallback[1], text_group[1])
+        generated = config.IMAGE_ROOT.parent / 'generated'
+        self.assertFalse(list(generated.glob('*.png')))
+        self.assertEqual(len(list(config.DATA_ROOT.glob('dynamics/*.png'))), 1)
+
+        sent.clear()
+        with (patch.object(sender, '_event', return_value=event),
+              patch.object(bili_api, 'download_image', return_value=None),
+              patch.object(bili_api, 'dynamics', return_value=([item], None))):
+            self.assertEqual(notify.test_push(self.proc, BOT, '2', 'dynamic', targets=(GROUP,)), 'ok')
+        self.assertEqual(len(sent), 1)
+        self.assertIn('file=file:', sent[0][1])
+        self.assertIn('[测试] 【B站动态】碧诗', sent[0][1])
+        self.assertFalse(list(generated.glob('*.png')))
+
+        sent.clear()
+        with (patch.object(notify, 'sleep'), patch.object(sender, '_event', return_value=event),
+              patch.object(bili_api, 'dynamics', return_value=([item], None)),
+              patch.object(dynamic_render, 'render_dynamic_card', side_effect=OSError) as render):
+            self.assertEqual(notify.test_push(self.proc, BOT, '2', 'dynamic'), 'ok')
+            render.assert_called_once()
+        self.assertEqual(len(sent), 3)
+        self.assertTrue(all('[测试]' in text and fake_bili.VIDEO_URL in text for _, text in sent))
+
+        with store.edit_bot(BOT) as settings:
+            settings['dynamic_image'] = False
+        with (patch.object(sender, '_event', return_value=event),
+              patch.object(dynamic_render, 'render_dynamic_card') as render):
+            self.assertEqual(notify.test_push(self.proc, BOT, '2', 'dynamic', targets=(GROUP,)), 'ok')
+            render.assert_not_called()
 
 
 class ChainSuite(unittest.TestCase):
@@ -857,6 +1164,710 @@ class ChainSuite(unittest.TestCase):
             self.assertIsNone(err)
 
 
+class PhaseTwoSuite(Suite):
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(live_stats.close)
+
+    def test_brotli_dispatch_and_fans(self):
+        def packet(data, version):
+            return struct.pack('>IHHII', 16 + len(data), 16, version, 5, 1) + data
+
+        first = packet(b'{"cmd":"LIVE"}', 0)
+        second = packet(b'{"cmd":"DANMU_MSG:4"}', 1)
+        valid = packet(livesocket.brotli.compress(first + first + second), 3)
+        invalid = packet(b'bad brotli', 3)
+        broken_header = struct.pack('>IHHII', 0, 0, 1, 5, 1)
+        self.assertFalse(livesocket.parse_packet(broken_header))
+        self.assertEqual(livesocket.parse_packet(invalid + valid),
+                         [{'cmd': 'LIVE'}, {'cmd': 'LIVE'}, {'cmd': 'DANMU_MSG:4'}])
+        with patch.object(livesocket, 'brotli', None):
+            self.assertEqual(livesocket.parse_packet(valid + first), [{'cmd': 'LIVE'}])
+        received = []
+
+        def on_message(msg):
+            received.append(msg['cmd'])
+            if len(received) == 1:
+                raise RuntimeError
+
+        states, logs = [], []
+        watcher = livesocket.LiveWatcher('1024', states.append, logs.append, on_message)
+        self.assertEqual(json.loads(watcher._auth_payload('', '', 0))['protover'], 3)
+        watcher._dispatch_messages(livesocket.parse_packet(valid))
+        self.assertEqual(states, ['live'])
+        self.assertEqual(received, ['LIVE', 'LIVE', 'DANMU_MSG:4'])
+        self.assertIn('RuntimeError', logs[0])
+
+        with patch.object(bili_api, 'request_json', return_value=({'follower': 1234}, None)) as fetch:
+            self.assertEqual(bili_api.fans_count(2), (1234, None))
+            self.assertEqual(fetch.call_args.args, (bili_api._RELATION_STAT,))
+            self.assertEqual(fetch.call_args.kwargs['params'], {'vmid': '2'})
+            self.assertIs(fetch.call_args.kwargs['quiet'], True)
+        with patch.object(bili_api, 'request_json', return_value=({'follower': 1.5}, None)):
+            self.assertEqual(bili_api.fans_count(2), (None, bili_api._FORMAT))
+
+    def test_stats_events_and_persistence(self):
+        sid, resumed = live_stats.on_live_start('2', '1024', start_at=1000, fans_start=100)
+        self.assertFalse(resumed)
+        viewer = {'uid': 7, 'uname': '小粉丝'}
+
+        def emit(cmd, **data):
+            live_stats.record_event('2', '1024', {'cmd': cmd, 'data': data}, now=1061)
+
+        for kind, text in ((0, '晚安'), (1, '[表情]')):
+            live_stats.record_event('2', '1024', {
+                'cmd': 'DANMU_MSG:4:0:2:2:2:0', 'info': [[0] * 12 + [kind], text, [7, '小粉丝']],
+            }, now=1061)
+        emit('SEND_GIFT', **viewer, giftId=1, giftName='测试盲盒', num=2, coin_type='gold', total_coin=3503,
+             blind_gift={'original_gift_price': 1001})
+        emit('COMBO_SEND', **viewer, gift_id=1, total_num=2, combo_total_coin=3503)
+        emit('SEND_GIFT', **viewer, giftId=2, giftName='测试付费礼物', num=1, coin_type='gold', total_coin=203)
+        emit('SEND_GIFT', **viewer, giftId=3, giftName='测试免费礼物', num=4, coin_type='silver', total_coin=400)
+        emit('SUPER_CHAT_MESSAGE', uid=7, user_info={'uname': '小粉丝'}, price=30)
+        for _ in range(2):
+            emit('GUARD_BUY', **viewer, guard_level=3, start_time=1050, num=2, price=198000)
+        # uid=7、uname=小粉丝、msg_type=1，附加未知定长字段检验 wire 跳过规则。
+        name = '小粉丝'.encode()
+        pb = b'\x08\x07\x12' + bytes([len(name)]) + name + b'\x28\x01\xa5\x06\x01\x02\x03\x04'
+        encoded = base64.b64encode(pb).decode()
+        self.assertEqual(live_stats.decode_interact_v2(encoded), {'uid': 7, 'uname': '小粉丝', 'msg_type': 1})
+        emit('INTERACT_WORD_V2', pb=encoded)
+        emit('INTERACT_WORD_V2', pb='!')
+        for kind in (1, 2, 3):
+            emit('INTERACT_WORD', **viewer, msg_type=kind)
+        emit('ENTRY_EFFECT', uid=8, copy_writing='欢迎 <%新观众%> 进入直播间')
+        emit('LIKE_INFO_V3_UPDATE', click_count=500)
+        emit('LIKE_INFO_V3_CLICK', **viewer, like_count=2)
+        emit('LIKE_INFO_V3_UPDATE', click_count=505)
+        emit('LIKE_INFO_V3_UPDATE', click_count=504)
+        emit('ONLINE_RANK_COUNT', count=55)
+        emit('ONLINE_RANK_COUNT', count=40)
+        emit('WATCHED_CHANGE', num=100)
+        emit('WATCHED_CHANGE', num=87)
+
+        latest = live_stats.room_summary('2', '1024')['session']
+        expected = {'danmu': 2, 'text_danmu': 1, 'emoticon_danmu': 1, 'free_count': 4,
+                    'gift_gold': 2205, 'sc_gold': 30000, 'guard_gold': 396000, 'gold': 428205,
+                    'entry': 3, 'unique_entry': 2, 'follow': 1, 'share': 1, 'like': 5,
+                    'online_peak': 55, 'watched_peak': 100}
+        self.assertEqual({key: latest[key] for key in expected}, expected)
+        detail = live_stats.session_detail(sid)
+        self.assertEqual([detail[key] for key in ('box_cost', 'box_payout', 'box_profit')], [2002, 3503, 1501])
+        self.assertEqual(detail['guard_levels'], {1: 0, 2: 0, 3: 2})
+        self.assertEqual([row['text'] for row in detail['danmu_rows']], ['晚安'])
+        self.assertEqual(detail['minutes'], [{'minute': 1020, 'danmu': 2, 'gold': 428205, 'online_peak': 55,
+                                              'entry': 3}])
+        self.assertEqual(live_stats.room_ranking('2', 'box')[0]['value'], 1501)
+        self.assertEqual(live_stats.room_ranking('2', 'like')[0]['value'], 2)
+        user = live_stats.user_summary('2', user_name='小粉丝')
+        self.assertEqual(user['uid'], '7')
+        self.assertEqual(user['ranks']['session']['danmu'], 1)
+        live_stats.on_live_end('1024', end_at=1080, grace_seconds=0)
+        self.assertEqual(live_stats.finalize_due(now=1081, fans_fetcher=lambda uid: (102, None)), [sid])
+        ended = live_stats.room_summary('2')['session']
+        self.assertEqual((ended['fans_start'], ended['fans_end'], ended['duration']), (100, 102, 80))
+        with closing(sqlite3.connect(store.ROOT / 'stats.db')) as db:
+            self.assertEqual(db.execute('PRAGMA journal_mode').fetchone(), ('wal',))
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM session_danmu').fetchone(), (1,))
+        live_stats.cleanup_danmu(30)
+        with closing(sqlite3.connect(store.ROOT / 'stats.db')) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM session_danmu').fetchone(), (0,))
+        self.assertEqual(live_stats.room_summary('2')['total']['danmu'], 2)
+
+    def test_stats_resume_and_scoped_likes(self):
+        first, _ = live_stats.on_live_start('2', '1024', start_at=1000)
+        live_stats.on_live_end('1024', end_at=1100, grace_seconds=120)
+        self.assertEqual(live_stats.room_summary('2')['session']['status'], 'pending_end')
+        self.assertEqual(live_stats.finalize_due(now=1219), [])
+        self.assertEqual(live_stats.on_live_start('2', '1024', start_at=1219), (first, True))
+        self.assertEqual(live_stats.on_live_start('2', '1024', start_at=1219), (first, True))
+        self.assertEqual(live_stats.finalize_due(now=1221), [])
+        live_stats.on_live_end('1024', end_at=1300, grace_seconds=120)
+        second, resumed = live_stats.on_live_start('2', '1024', start_at=1421)
+        self.assertFalse(resumed)
+        self.assertNotEqual(first, second)
+        self.assertEqual(live_stats.finalize_due(now=1422), [first])
+        self.assertEqual(live_stats.finalize_due(now=1423), [])
+        for count in (505, 507):
+            live_stats.record_event('2', '1024', {'cmd': 'LIKE_INFO_V3_UPDATE', 'data': {'click_count': count}},
+                                    now=1424)
+        summary = live_stats.room_summary('2')
+        self.assertEqual(summary['session']['like'], 2)
+        self.assertEqual(summary['total']['sessions'], 2)
+        live_stats.on_live_end('1024', end_at=1500, grace_seconds=0)
+        self.assertEqual(live_stats.finalize_due(now=1501), [second])
+        third, resumed = live_stats.on_live_start('2', '1024', start_at=1502)
+        self.assertFalse(resumed)
+        self.assertNotIn(third, (first, second))
+        live_stats.on_live_end('1024', end_at=1503, grace_seconds=0)
+        fourth, resumed = live_stats.on_live_start('2', '1024', start_at=1503)
+        self.assertFalse(resumed)
+        self.assertNotEqual(fourth, third)
+        self.assertEqual(live_stats.finalize_due(now=1504), [third])
+
+    def test_stats_background_flush(self):
+        live_stats.on_live_start('2', '1024', start_at=1000)
+        event = {'cmd': 'DANMU_MSG', 'info': [[0], '批量采集', [7, '观众']]}
+        with closing(sqlite3.connect(store.ROOT / 'stats.db')) as reader:
+            def wait_count(expected):
+                deadline = time.monotonic() + 2
+                while True:
+                    count, = reader.execute('SELECT COUNT(*) FROM session_danmu').fetchone()
+                    if count >= expected or time.monotonic() >= deadline:
+                        self.assertEqual(count, expected)
+                        return
+                    time.sleep(0.01)
+
+            with patch.object(live_stats, '_BATCH_SECONDS', 30):
+                for _ in range(50):
+                    live_stats.record_event('2', '1024', event, now=1001)
+                wait_count(50)
+            with patch.object(live_stats, '_BATCH_SECONDS', 0.02):
+                live_stats.record_event('2', '1024', event, now=1002)
+                wait_count(51)
+
+        live_stats.record_event('3', '1025', event, now=1200, active=True)
+        summary = live_stats.room_summary('3')['session']
+        self.assertEqual((summary['status'], summary['danmu']), ('live', 1))
+
+    def test_stats_group_commands(self):
+        self.command('.bpush up add 2', 'owner')
+        live_stats.on_live_start('2', '1024', uname='碧诗')
+        live_stats.record_event('2', '1024', {
+            'cmd': 'SEND_GIFT',
+            'data': {'uid': 7, 'uname': '小粉丝', 'giftId': 1, 'giftName': '礼物',
+                     'coin_type': 'gold', 'num': 1, 'total_coin': 1234},
+        })
+        live_stats.record_event('2', '1024', {'cmd': 'DANMU_MSG', 'info': [[0], '好', [7, '小粉丝']]})
+        clock = Mock(return_value=time.monotonic())
+        with patch.object(message, 'time', SimpleNamespace(monotonic=clock, time=time.time)):
+            self.assertIn('7', self.command('.bpush 绑定 7')[0])
+            me, = self.command('.bpush me')
+            self.assertIn('小粉丝', me)
+            self.assertIn('1.234', me)
+            blocked, = self.command('.bpush room', user_id='10003')
+            self.assertIn('10', blocked)
+            clock.return_value += 10
+            self.assertIn('1.234', self.command('.bpush 房间统计')[0])
+            clock.return_value += 10
+            self.assertIn('小粉丝', self.command('.bpush rank 弹幕')[0])
+            self.command('.bpush up add 3', 'owner')
+            clock.return_value += 10
+            self.assertIn('主播', self.command('.bpush room')[0])
+            self.assertIn('1.234', self.command('.bpush room 碧')[0])
+            clock.return_value += 10
+            self.assertIn('小粉丝', self.command('.bpush rank 弹幕 总榜 2')[0])
+            clock.return_value += 10
+            self.assertIn('小粉丝', self.command('.bpush 个人统计 小粉丝 2')[0])
+
+            with store.edit_bot(BOT) as settings:
+                settings['live_stats']['hide_revenue'] = True
+            for command in ('room 2', 'me 7 2'):
+                clock.return_value += 10
+                reply, = self.command(f'.bpush {command}')
+                self.assertNotIn('1.234', reply)
+                self.assertNotIn('¥', reply)
+            clock.return_value += 10
+            self.assertIn('隐私', self.command('.bpush rank 礼物 本场 2')[0])
+
+        with patch.object(capabilities, '_has_module', side_effect=lambda name: name != 'websocket'):
+            self.assertNotIn('help stats', self.command('.bpush help')[0])
+            for command in ('room 2', 'me 7 2', 'rank 弹幕', '绑定 7', 'help 统计'):
+                self.assertIsNone(message.parse_action(command)[0])
+                self.assertFalse(self.command(f'.bpush {command}'))
+
+    def test_stats_notify_lifecycle(self):
+        second_bot = 'another-bot'
+        self.proc.Proc_data['bot_info_dict'][second_bot] = None
+        for bot in (BOT, second_bot):
+            self.assertEqual(function.add_up(bot, '2', GROUP)[0], 'added')
+            with store.edit_rooms(bot) as data:
+                data['rooms']['2']['runtime']['live_status'] = 0
+        delivered, finalized = [], []
+        finished = Event()
+
+        def on_finalized(session_id):
+            finalized.append(session_id)
+            finished.set()
+
+        notify.start(self.proc, on_session_finalized=on_finalized)
+        engine = notify._engine
+        try:
+            with patch.object(livesocket.LiveWatcher, 'start'):
+                engine._sync_watchers()
+            watcher, = engine.watchers.values()
+            self.assertEqual(watcher.room_id, '1024')
+            stamp = int(time.time()) - 300
+
+            def apply(at, live, start_at):
+                for bot in (BOT, second_bot):
+                    mount = store.rooms(bot)['rooms']['2']['resolved_at']
+                    job = notify._Job(bot, '2', 'live', mount, time.time())
+                    payload = dict(fake_bili.LIVE, live_status=int(live), live_time=start_at)
+                    engine._apply(notify._Result(job, at, payload))
+
+            with patch.object(engine, '_deliver', side_effect=lambda job, _, notices, risk: delivered.extend(
+                (job.bot, notice.kind) for notice in notices
+            )):
+                apply(stamp, True, stamp)
+                watcher._dispatch_messages([{'cmd': 'DANMU_MSG', 'info': [[0], '一次', [7, '小粉丝']]}])
+                original = live_stats.room_summary('2')['session']
+                self.assertEqual(original['danmu'], 1)
+                apply(stamp + 10, False, 0)
+                apply(stamp + 15, True, stamp + 15)
+                self.assertEqual(live_stats.room_summary('2')['session']['id'], original['id'])
+                self.assertEqual([bot for bot, kind in delivered if kind == 'start'], [BOT, second_bot])
+                apply(stamp + 20, False, 0)
+            with patch.object(bili_api, 'fans_count', side_effect=[(100, None), (103, None)]):
+                engine._maintain_stats()
+            self.assertTrue(finished.wait(3))
+            self.assertEqual(finalized, [original['id']])
+            ended = live_stats.room_summary('2')['session']
+            self.assertEqual((ended['status'], ended['fans_start'], ended['fans_end']), ('ended', 100, 103))
+        finally:
+            notify.stop(self.proc)
+
+    def test_stats_webui_validation(self):
+        stats = {'enabled': True, 'reconnect_grace_seconds': 0, 'query_cooldown_seconds': 0,
+                 'danmu_retention_days': 1, 'hide_revenue': True}
+        with patch.object(capabilities, '_has_module', return_value=True):
+            webui._save_bot({'live_stats': stats}, BOT)
+            expected = {**config.BOT_DEFAULT['live_stats'], **stats}
+            self.assertEqual(store.bot_config(BOT)['live_stats'], expected)
+            with self.assertRaises(webui._InvalidRequest):
+                webui._save_bot({'live_stats': dict(stats, danmu_retention_days=0)}, BOT)
+        with patch.object(capabilities, '_has_module', side_effect=lambda name: name != 'websocket'):
+            with self.assertRaisesRegex(webui._InvalidRequest, '安装 websocket-client 后启用'):
+                webui._save_bot({'live_stats': dict(stats, enabled=False), 'enable': False}, BOT)
+            self.assertTrue(store.bot_config(BOT)['enable'])
+            self.assertEqual(store.bot_config(BOT)['live_stats'], expected)
+
+
+class PhaseThreeSuite(PhaseOneSuite):
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(live_stats.close)
+        self.enterContext(patch.object(message, '_stats_last', {}))
+        self.enterContext(patch.object(wordcloud_render, 'jieba', None))
+
+    def session(self, start, duration=None, *, words=None, paid=False, uid='2', room_id='1024', viewer='观众七'):
+        session_id, _ = live_stats.on_live_start(uid, room_id, uname='碧诗', title='晨间工坊', area='虚拟主播',
+                                                 start_at=start, fans_start=105)
+        for index, text in enumerate(words or ()):
+            now = start + (5 if index < 3 else min(duration or 360, 340) - 1)
+            live_stats.record_event(uid, room_id, {
+                'cmd': 'DANMU_MSG', 'info': [[0], text, [index % 2 + 7, viewer]],
+            }, now=now)
+        if paid:
+            def emit(cmd, **attrs):
+                event = {'cmd': cmd, 'data': {'uid': 7, 'uname': viewer, **attrs}}
+                live_stats.record_event(uid, room_id, event, now=start + 10)
+
+            emit('SEND_GIFT', giftId=1, giftName='妙想火花', num=2, coin_type='gold', total_coin=96300,
+                 blind_gift={'original_gift_price': 9900, 'original_gift_name': '星夜盲盒'})
+            emit('SEND_GIFT', giftId=2, giftName='羽毛', num=4, coin_type='silver', total_coin=100)
+            emit('SUPER_CHAT_MESSAGE', price=30)
+            emit('GUARD_BUY', guard_level=3, num=2, total_coin=396000)
+            emit('INTERACT_WORD', msg_type=1)
+            emit('ONLINE_RANK_COUNT', count=93)
+            emit('WATCHED_CHANGE', num=142)
+            live_stats.record_event(uid, room_id, {
+                'cmd': 'DANMU_MSG', 'info': [[0] * 12 + [1], '[表情]', [8, '观众八']],
+            }, now=start + 70)
+        if duration is not None:
+            live_stats.on_live_end(room_id, end_at=start + duration, grace_seconds=0)
+        return session_id
+
+    def png(self, source, *, size=None):
+        from PIL import Image
+
+        with Image.open(source) as image:
+            self.assertEqual(image.format, 'PNG')
+            self.assertEqual(image.width, 960)
+            if size is not None:
+                self.assertEqual(image.size, size)
+            result = image.height
+            image.verify()
+            return result
+
+    def test_report_png_privacy_and_sparse(self):
+        from PIL import ImageDraw
+
+        full = self.session(10_000, 420, words=['奇思妙想'] * 6, paid=True)
+        sparse = self.session(11_000, 60, words=['早安'], viewer='观***')
+        live_stats.finalize_due(now=12_000, fans_fetcher=lambda _: (109, None))
+        actual_text = ImageDraw.ImageDraw.text
+
+        def render(session_id, **kwargs):
+            labels = []
+
+            def capture(draw, xy, text, *args, **options):
+                labels.append(text)
+                return actual_text(draw, xy, text, *args, **options)
+
+            with patch.object(ImageDraw.ImageDraw, 'text', capture):
+                path = report_render.render_live_report(live_stats.session_detail(session_id), **kwargs)
+            self.assertIsNotNone(path)
+            try:
+                return self.png(path), ' '.join(labels)
+            finally:
+                sender.release_local_image(path)
+
+        height, text = render(full)
+        for marker in ('碧诗', '已结束', '晨间工坊', '净增粉丝', '弹幕', '峰值', '盲盒', '妙想火花',
+                       '醒目留言', '大航海', '观众七'):
+            self.assertIn(marker, text)
+        self.assertIn('¥', text)
+        self.assertNotIn('登录', text)
+        private_height, text = render(full, hide_revenue=True)
+        for marker in ('¥', '盲盒', '醒目留言', '妙想火花', '礼物贡献榜'):
+            self.assertNotIn(marker, text)
+        for marker in ('礼物', '大航海', '观众七', '舰长'):
+            self.assertIn(marker, text)
+        sparse_height, text = render(sparse)
+        for marker in ('盲盒', '礼物分析', '醒目留言', '大航海'):
+            self.assertNotIn(marker, text)
+        self.assertIn('登录', text)
+        self.assertLess(sparse_height, private_height)
+        self.assertLess(private_height, height)
+
+    def test_wordcloud_engines_and_png(self):
+        rows = [{'uid': '7', 'text': '刷屏词'}] * 50
+        rows += [{'uid': str(index), 'text': '冰雪列车 [热词系列_赞] https://example.net/path 🙂'}
+                 for index in range(8, 16)]
+        rows += [{'uid': '8', 'text': '哈哈哈哈 233333 66666 草草草 wwwww 某停用词'}]
+        options = {'stopwords': ['某停用词'], 'custom_words': ['冰雪列车', '刷屏词', '某停用词']}
+        detail = {'uname': '碧诗', 'start_at': 1000, 'end_at': 1200, 'danmu_rows': rows}
+        for engine in ('builtin', 'jieba'):
+            with self.subTest(engine=engine):
+                tokenizer = None
+                if engine == 'jieba':
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings('ignore', message=r'.*pkg_resources.*')
+                            tokenizer = importlib.import_module('jieba')
+                    except ImportError:
+                        # 可选增强库缺席时，离线替身仅提供该库的现有接口。
+                        tokenizer = SimpleNamespace(Tokenizer=lambda: SimpleNamespace(
+                            add_word=lambda *args, **kw: None, cut=lambda text, **kw: iter(text.split()),
+                        ))
+                with patch.object(wordcloud_render, 'jieba', tokenizer):
+                    terms, analyzed, used = wordcloud_render.extract_terms(rows, **options)
+                    self.assertEqual(used, engine)
+                    self.assertEqual(analyzed, len(rows))
+                    self.assertEqual(terms[0][:2], ('冰雪列车', 8))
+                    terms = {word: (raw, score) for word, raw, score in terms}
+                    self.assertEqual(terms['刷屏词'][0], 50)
+                    self.assertLess(terms['刷屏词'][1], terms['冰雪列车'][1])
+                    self.assertGreater(terms['刷屏词'][1], 3)
+                    self.assertTrue({'哈哈', '2333', '666', '草', 'www'} <= terms.keys())
+                    self.assertFalse({'某停用词', '热词系列', 'example', '🙂', '哈哈哈哈'} & terms.keys())
+                    path = wordcloud_render.render_wordcloud(detail, **options)
+                    self.assertIsNotNone(path)
+                    try:
+                        self.png(path, size=(960, 700))
+                    finally:
+                        sender.release_local_image(path)
+        empty = {**detail, 'danmu_rows': [{'uid': '7', 'text': '！！！ [热词系列_赞] https://example.org 🙂'}]}
+        self.assertIsNone(wordcloud_render.render_wordcloud(empty))
+
+    def test_auto_images_async_routing_and_archive(self):
+        second_bot = 'other-bot'
+        self.proc.Proc_data['bot_info_dict'][second_bot] = self.proc.Proc_data['bot_info_dict'][BOT]
+        groups = [dict(GROUP, group_id=str(int(GROUP['group_id']) + index)) for index in range(4)]
+        for bot, mounts in ((BOT, groups), (second_bot, groups[:1])):
+            for group in mounts:
+                self.assertEqual(function.add_up(bot, '2', group)[0], 'added')
+            with store.edit_bot(bot) as settings:
+                settings['send_interval_seconds'] = 0
+                settings['poll']['max_sockets'] = 0  # 场次由离线事件写入，维护线程只负责封账。
+                if bot == second_bot:
+                    settings['live_stats'].update(auto_report=False, auto_wordcloud=False, save_report_image=True)
+                else:
+                    settings['disabled_group_list'] = [function.sid_for(groups[3])]
+        with store.edit_rooms(BOT) as data:
+            del data['groups'][self.sid]['report']  # 旧配置继承 Bot 开关。
+            data['groups'][function.sid_for(groups[1])]['cloud'] = False
+            data['groups'][function.sid_for(groups[2])]['report'] = False
+        with store.edit_rooms(second_bot) as data:
+            data['groups'][self.sid].update(report=True, cloud=True)
+
+        stamp = int(time.time()) - 1600
+        below_minutes = self.session(stamp, 120, words=['冰雪列车'] * 6)
+        below_danmu = self.session(stamp + 200, 240, words=['冰雪列车'] * 2)
+        qualifies = self.session(stamp + 500, 180, words=['冰雪列车'] * 5)
+        render = function.render_session_image
+        rendering, resume = Event(), Event()
+        rendered, deliveries = [], []
+
+        def gated_render(kind, detail, settings):
+            rendered.append((kind, detail['id']))
+            rendering.set()
+            if not resume.wait(3):
+                raise AssertionError('封账维护线程被渲染阻塞')
+            return render(kind, detail, settings)
+
+        def deliver(Proc, bot, target, path, caption, *, still_current):
+            if not still_current() or not path.is_file():
+                return False
+            deliveries.append((bot, target['group_id'], caption.partition(' · ')[0], path))
+            return True
+
+        notify.start(self.proc)
+        engine = notify._engine
+        try:
+            with (patch.object(bili_api, 'fans_count', return_value=(108, None)),
+                  patch.object(bili_api, 'live_detail', return_value=(None, (-1, 'offline'))),
+                  patch.object(function, 'render_session_image', side_effect=gated_render),
+                  patch.object(sender, 'send_local_image', side_effect=deliver)):
+                try:
+                    engine._maintain_stats()
+                    self.assertTrue(rendering.wait(3))
+                    notify.tick(self.proc)
+                    self.assertEqual(deliveries, [])
+                finally:
+                    resume.set()
+                with engine.condition:
+                    self.assertTrue(engine.condition.wait_for(lambda: not engine.finalizing
+                                                              and not engine.finalized_sessions, timeout=5))
+                self.assertCountEqual(rendered, [('report', qualifies), ('cloud', qualifies)])
+                expected = [(BOT, groups[0]['group_id'], label) for label in ('直播报告', '弹幕词云')]
+                expected += [(BOT, groups[1]['group_id'], '直播报告'), (BOT, groups[2]['group_id'], '弹幕词云')]
+                expected += [(second_bot, groups[0]['group_id'], label) for label in ('直播报告', '弹幕词云')]
+                self.assertCountEqual([item[:3] for item in deliveries], expected)
+                paths = {item[3] for item in deliveries}
+                self.assertEqual(len(paths), 2)
+                self.assertFalse(any(path.exists() for path in paths))
+                archive = config.DATA_ROOT / 'reports' / '2'
+                self.assertEqual({path.name for path in archive.glob('*.png')}, {path.name for path in paths})
+                for path in archive.glob('*.png'):
+                    self.png(path)
+                self.assertTrue(all(live_stats.session_detail(sid)['status'] == 'ended'
+                                    for sid in (below_minutes, below_danmu)))
+
+                with store.edit_bot(BOT) as settings:
+                    settings['live_stats'].update(min_report_minutes=0, min_report_danmu=0)
+                with store.edit_bot(second_bot) as settings:
+                    settings['live_stats'].update(min_report_minutes=0, min_report_danmu=0, hide_revenue=True,
+                                                  wordcloud_limit=20)
+                deliveries.clear()
+                short = self.session(stamp + 1000, 20, words=['冰雪列车'])
+                engine._maintain_stats()
+                with engine.condition:
+                    self.assertTrue(engine.condition.wait_for(lambda: not engine.finalizing
+                                                              and not engine.finalized_sessions, timeout=5))
+                self.assertCountEqual([item for item in rendered if item[1] == short],
+                                      [('report', short), ('cloud', short)] * 2)
+                for label in ('直播报告', '弹幕词云'):
+                    by_bot = {bot: path for bot, _, title, path in deliveries if title == label}
+                    self.assertEqual(set(by_bot), {BOT, second_bot})
+                    self.assertNotEqual(by_bot[BOT], by_bot[second_bot])
+        finally:
+            notify.stop(self.proc)
+
+    def test_image_commands_and_help_gates(self):
+        self.command('.bpush up add 2', 'owner')
+        self.assertIn('场次', self.command('.bpush report')[0])
+        self.session(time.time() - 20)
+        self.assertIn('文字弹幕', self.command('.bpush cloud')[0])
+        live_stats.record_event('2', '1024', {'cmd': 'DANMU_MSG', 'info': [[0], '冰雪列车', [7, '小粉丝']]})
+        clock = Mock(return_value=time.monotonic())
+        sent = []
+
+        def send(Proc, bot, target, path, caption):
+            sent.append((path, caption, self.png(path)))
+            return True
+
+        with (patch.object(sender, 'send_local_image', side_effect=send),
+              patch.object(message, 'time', SimpleNamespace(monotonic=clock, time=time.time))):
+            self.assertFalse(self.command('.bpush report'))
+            self.assertIn('10 秒', self.command('.bpush 词云', user_id='10002')[0])
+            clock.return_value += 10
+            self.assertFalse(self.command('.bpush cloud 2'))
+            clock.return_value += 10
+            self.assertFalse(self.command('.bpush 直播报告 2'))
+        self.assertEqual([caption for _, caption, _ in sent], ['直播报告 · 碧诗', '弹幕词云 · 碧诗', '直播报告 · 碧诗'])
+        self.assertEqual(sent[1][2], 700)
+        self.assertFalse(any(path.exists() for path, _, _ in sent))
+        self.assertIn('权限', self.command('.bpush push report off')[0])
+        for kind, cn in (('report', '直播报告'), ('cloud', '弹幕词云')):
+            for command, value in ((f'push {kind} on', True), (f'推送 {cn} off', False), (f'push {kind} auto', None)):
+                self.assertIn(cn, self.command(f'.bpush {command}', 'owner')[0])
+                self.assertIs(store.rooms(BOT)['groups'][self.sid][kind], value)
+        self.assertIn('report [主播]', self.command('.bpush help stats')[0])
+        self.assertIn('push cloud', self.command('.bpush help push')[0])
+        with patch.object(capabilities, '_has_module', side_effect=lambda name: name != 'PIL'):
+            for command in ('report', 'cloud', '直播报告', '词云', 'push report on', '推送 弹幕词云 off'):
+                self.assertIsNone(message.parse_action(command)[0])
+                self.assertFalse(self.command(f'.bpush {command}', 'owner'))
+            self.assertNotIn('report', self.command('.bpush help stats')[0])
+            self.assertNotIn('cloud', self.command('.bpush help push')[0])
+            self.assertIn('room [主播]', self.command('.bpush help stats')[0])
+        code = '''
+import sys
+from selftest import offline_plugin
+sys.modules['PIL'] = sys.modules['jieba'] = None
+with offline_plugin():
+    from BiliBiliNotify import report_render, wordcloud_render
+    assert report_render.render_live_report({}) is None
+    assert wordcloud_render.render_wordcloud({}) is None
+    assert wordcloud_render.extract_terms([{'uid': '7', 'text': '哈哈哈哈'}])[0][0][0] == '哈哈'
+'''
+        result = subprocess.run([sys.executable, '-c', code], cwd=PLUGIN / 'tests',
+                                capture_output=True, encoding='utf-8', timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_web_sessions_preview_and_settings(self):
+        self.command('.bpush up add 2', 'owner')
+        self.command('.bpush up add 3', 'owner')
+        stamp = int(time.time()) - 1200
+        ids = [self.session(stamp + index * 90, 45, words=['冰雪列车'], paid=index == 10) for index in range(11)]
+        self.session(stamp + 1000, 45, uid='3', room_id='2048')
+        live_stats.finalize_due(now=stamp + 1100)
+        sessions = self.web('list_sessions', uid='2')['sessions']
+        self.assertEqual([row['id'] for row in sessions], ids[:0:-1])
+        self.assertEqual((sessions[0]['duration'], sessions[0]['online_peak'], sessions[0]['danmu']), (45, 93, 2))
+        self.assertGreater(sessions[0]['gold'], 0)
+        self.assertEqual([row['id'] for row in live_stats.list_sessions('2', limit=2)], ids[:-3:-1])
+        for kind in ('report', 'cloud'):
+            image = self.web('preview_session_image', uid='2', session_id=ids[-1], kind=kind)['image']
+            self.assertTrue(image.startswith('data:image/png;base64,'))
+            self.png(io.BytesIO(base64.b64decode(image.partition(',')[2], validate=True)))
+            with self.assertRaises(webui._InvalidRequest):
+                self.web('preview_session_image', uid='3', session_id=ids[-1], kind=kind)
+        with self.assertRaises(webui._InvalidRequest):
+            self.web('list_sessions', uid='999')
+        self.assertFalse(list(config.IMAGE_ROOT.parent.rglob('*.png')))
+        stats = self.web('save_bot', live_stats={
+            'hide_revenue': True, 'auto_report': True, 'auto_wordcloud': True, 'save_report_image': True,
+            'min_report_minutes': 120, 'min_report_danmu': 0, 'wordcloud_limit': 10,
+            'wordcloud_stopwords': ['  一般  ', '', '一般'], 'wordcloud_words': [' 冰雪列车 ', '冰雪列车'],
+        })['bot']['live_stats']
+        self.assertEqual(stats['min_report_minutes'], 120)
+        self.assertEqual(stats['wordcloud_stopwords'], ['一般'])
+        self.assertEqual(stats['wordcloud_words'], ['冰雪列车'])
+        self.assertNotIn('gold', self.web('list_sessions', uid='2')['sessions'][0])
+        for field, value in (('min_report_minutes', 121), ('min_report_danmu', 1001), ('wordcloud_limit', 301),
+                             ('wordcloud_words', '冰雪列车'), ('wordcloud_stopwords', [12]),
+                             ('wordcloud_words', ['词' * 33]),
+                             ('wordcloud_stopwords', [f'词{index}' for index in range(201)])):
+            with self.assertRaises(webui._InvalidRequest):
+                self.web('save_bot', live_stats={field: value})
+        for kind in ('report', 'cloud'):
+            for mode in ('on', 'off', 'inherit'):
+                group = self.web('save_group', sid=self.sid, **{kind: mode})['groups'][self.sid]
+                self.assertEqual(group[kind], mode)
+        huge = Path(self.temp_dir) / 'oversize.png'
+        huge.write_bytes(b'X' * (2 * 1024 * 1024 + 1))
+        with patch.object(function, 'render_session_image', return_value=huge) as render:
+            with self.assertRaisesRegex(webui._InvalidRequest, '2 MiB'):
+                self.web('preview_session_image', uid='2', session_id=ids[-1], kind='report')
+            self.assertTrue(render.call_args.args[2]['hide_revenue'])
+        self.assertFalse(huge.exists())
+        with patch.object(capabilities, '_has_module', side_effect=lambda name: name != 'PIL'):
+            self.assertEqual(len(self.web('list_sessions', uid='2')['sessions']), 10)
+            for kind, key in (('report', 'auto_report'), ('cloud', 'auto_wordcloud')):
+                with self.assertRaisesRegex(webui._InvalidRequest, '安装 Pillow'):
+                    self.web('preview_session_image', uid='2', session_id=ids[-1], kind=kind)
+                with self.assertRaisesRegex(webui._InvalidRequest, '安装 Pillow'):
+                    self.web('save_group', sid=self.sid, **{kind: 'on'})
+                with self.assertRaisesRegex(webui._InvalidRequest, '安装 Pillow'):
+                    self.web('save_bot', live_stats={key: True})
+                self.assertFalse(self.web('save_bot', live_stats={key: False})['bot']['live_stats'][key])
+            with self.assertRaisesRegex(webui._InvalidRequest, '安装 Pillow'):
+                self.web('save_bot', live_stats={'save_report_image': True})
+
+    def test_sourcery_audit_regressions(self):
+        from PIL import Image, ImageDraw
+        from BiliBiliNotify import render_base
+
+        # 1. OneBot V11 _send_local_op 必须移除 user_id 并确保 group_id 为字符串（与 OlivOS-2 POST 契约对齐）。
+        root = config.IMAGE_ROOT.parent / 'generated'
+        root.mkdir(parents=True, exist_ok=True)
+        local_png = root / 'audit-check.png'
+        with Image.new('RGB', (16, 16), '#ffffff') as img:
+            img.save(local_png)
+        request = SimpleNamespace(data=SimpleNamespace(user_id=-1), do_api=Mock(
+            return_value=SimpleNamespace(body={'status': 'ok', 'retcode': 0}),
+        ))
+        v11_event = SimpleNamespace(platform={'model': 'v11'}, plugin_info={'control_queue': object()}, send=Mock())
+        sdk_v11 = SimpleNamespace(
+            api=SimpleNamespace(send_msg=lambda _: request), get_SDK_bot_info_from_Event=lambda e: e,
+            paraMsgMap=(), formatMessage=lambda chunk, mode: chunk,
+        )
+        api = SimpleNamespace(Message_templet=lambda *args: SimpleNamespace(get=lambda _: args[-1]))
+        with (patch.object(sender, '_event', return_value=v11_event),
+              patch.object(sender.OlivOS, 'onebotV11LinkServerAPI', SimpleNamespace(gCheckList=('v11',)), create=True),
+              patch.object(sender.OlivOS, 'onebotSDK', sdk_v11, create=True),
+              patch.object(sender.OlivOS, 'messageAPI', api, create=True)):
+            self.assertTrue(sender.send_local_image(self.proc, BOT, GROUP, local_png))
+        self.assertFalse(hasattr(request.data, 'user_id'))
+        self.assertIsInstance(request.data.group_id, str)
+
+        # 2. Brotli 与 zlib 解压炸弹上限守卫。
+        def packet(data, version):
+            return struct.pack('>IHHII', 16 + len(data), 16, version, 5, 1) + data
+
+        payload = packet(b'{"cmd":"DANMU_MSG","pad":"' + b'x' * 120 + b'"}', 0)
+        z_frame = packet(livesocket.zlib.compress(payload), 2)
+        b_frame = packet(livesocket.brotli.compress(payload), 3)
+        with patch.object(livesocket, '_MAX_DECOMPRESSED', 64):
+            self.assertEqual(livesocket.parse_packet(z_frame), [])
+            self.assertEqual(livesocket.parse_packet(b_frame), [])
+
+        # 3. 词云能力门控与非 dict 入参守卫。
+        self.assertIsNone(wordcloud_render.render_wordcloud(None))
+        with patch.object(capabilities, '_has_module', side_effect=lambda name: name != 'PIL'):
+            self.assertIsNone(wordcloud_render.render_wordcloud({
+                'uname': '碧诗', 'danmu_rows': [{'uid': '7', 'text': '冰雪列车'}],
+            }))
+
+        # 4. 直播报告异常时间戳、未知大航海等级、45 条上舰上限截断与精确营收格式。
+        self.assertEqual(report_render._stamp(-999999999999), '—')
+        many_guards = [{'uid': str(i), 'uname': f'舰长{i}', 'guard_level': 3 if i else 99,
+                        'months': 1, 'gold': 198000} for i in range(45)]
+        detail = {
+            'uid': '2', 'uname': '碧诗', 'title': '审计场次', 'area': '虚拟主播', 'status': 'ended',
+            'start_at': -999999999999, 'end_at': 1000, 'duration': 600,
+            'danmu': 5, 'interactors': 2, 'online_peak': 10, 'watched_peak': 20,
+            'entry': 3, 'like': 4, 'follow': 1, 'share': 0, 'gold': 1234560,
+            'guards': many_guards, 'guard_levels': {1: 0, 2: 0, 3: 44},
+            'gifts': [], 'minutes': [], 'rankings': {},
+        }
+        texts = []
+        actual_text = ImageDraw.ImageDraw.text
+
+        def capture_text(draw, xy, text, *args, **kwargs):
+            texts.append(text)
+            return actual_text(draw, xy, text, *args, **kwargs)
+
+        with patch.object(ImageDraw.ImageDraw, 'text', capture_text):
+            report_path = report_render.render_live_report(detail)
+        self.assertIsNotNone(report_path)
+        try:
+            height = self.png(report_path)
+            self.assertLess(height, 2600)
+            joined = ' '.join(texts)
+            self.assertIn('¥1,234.56', joined)
+            self.assertIn('另有 15 条上舰记录', joined)
+        finally:
+            sender.release_local_image(report_path)
+
+        # 5. render_base.save_generated_png 拒绝目录穿越 subdir。
+        with Image.new('RGB', (4, 4), '#fff') as tiny:
+            with self.assertRaises(ValueError):
+                render_base.save_generated_png(tiny, subdir='../escape')
+
+        # 6. 不完整 push dynamic_img 路由至 push 分流帮助；session_detail 为 None 时安全回退。
+        self.command('.bpush up add 2', 'owner')
+        help_reply, = self.command('.bpush push dynamic_img', 'owner')
+        self.assertIn('dynamic_img', help_reply)
+        with (patch.object(live_stats, 'current_session_id', return_value=999),
+              patch.object(live_stats, 'session_detail', return_value=None)):
+            reply, = self.command('.bpush report')
+            self.assertIn('场次', reply)
+
+
 CASES = (
     (Suite, 'test_commands', '命令解析'), (Suite, 'test_binding', 'UID 两级绑定与群订阅'), (Suite, 'test_permissions', '权限'),
     (Suite, 'test_storage', '存储原子性与损坏归档'), (Suite, 'test_live', '直播状态机'), (Suite, 'test_dynamics', '动态去重及过滤'),
@@ -870,13 +1881,32 @@ CASES = (
     (ChainSuite, 'test_live_three_chain_and_normalization', '直播三步探测与单间字段对齐'),
     (ChainSuite, 'test_probe_api_webui_and_redaction', 'WebUI 手动自检、冷却解除与凭据脱敏'),
     (ChainSuite, 'test_multi_account_and_follow_guard', '多账号扫码保存切换、头像脱敏与自动关注'),
+    (PhaseOneSuite, 'test_capabilities_and_webui', '能力探测、WebUI 门控与三态配置'),
+    (PhaseOneSuite, 'test_help_sections_and_copy', '分流帮助、群命令权限与正向文案'),
+    (PhaseOneSuite, 'test_dynamic_png', '动态 PNG：长正文、九宫格、转发与 Opus'),
+    (PhaseOneSuite, 'test_local_image_adapters', '双平台本地图、QQ 降级与 OneBot 队列清理'),
+    (PhaseOneSuite, 'test_dynamic_delivery_reuse_and_fallback', '群动态图片复用、存档与失败回退'),
+    (PhaseTwoSuite, 'test_brotli_dispatch_and_fans', 'Brotli 弹幕帧、事件回调隔离与粉丝快照接口'),
+    (PhaseTwoSuite, 'test_stats_events_and_persistence', '直播全事件计量、WAL 持久化及弹幕清理'),
+    (PhaseTwoSuite, 'test_stats_resume_and_scoped_likes', '断流续接、过期封账及跨场点赞增量'),
+    (PhaseTwoSuite, 'test_stats_background_flush', '事件达到数量或计时阈值时后台提交、直播中途补建'),
+    (PhaseTwoSuite, 'test_stats_webui_validation', 'WebUI 统计配置与缺依赖写入拦截'),
+    (PhaseTwoSuite, 'test_stats_group_commands', '群统计查询、昵称匹配、共享冷却及营收隐私'),
+    (PhaseTwoSuite, 'test_stats_notify_lifecycle', '共享直播间采集、断流开播去重与封账回调'),
+    (PhaseThreeSuite, 'test_report_png_privacy_and_sparse', '报告 PNG：完整场次、稀疏板块与营收隐私'),
+    (PhaseThreeSuite, 'test_wordcloud_engines_and_png', '词云 PNG：双分词、清洗、热词与同观众降权'),
+    (PhaseThreeSuite, 'test_auto_images_async_routing_and_archive', '异步封账推送：分群路由与阈值、复用及存档'),
+    (PhaseThreeSuite, 'test_image_commands_and_help_gates', '群报告与词云查询、管理三态、帮助与缺依赖门控'),
+    (PhaseThreeSuite, 'test_web_sessions_preview_and_settings', 'WebUI 历史、预览权限与体积、统计配置门控'),
+    (PhaseThreeSuite, 'test_sourcery_audit_regressions', 'Sourcery 审计缺陷回归：V11 POST、解压上限、报告边界与路由'),
 )
 
 
 if __name__ == '__main__':
     with offline_plugin():
         from BiliBiliNotify import (
-            bili_api, config, function, livesocket, main, message, notify, sender, store, utils, webui,
+            bili_api, capabilities, config, dynamic_render, function, live_stats, livesocket, main, message,
+            notify, report_render, sender, store, utils, webui, wordcloud_render,
         )
 
         failed = []

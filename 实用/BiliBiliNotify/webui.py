@@ -1,6 +1,7 @@
 """通过 OlivOS 菜单事件提供订阅推送管理面板。"""
 
 import base64
+import io
 import re
 import time
 from datetime import date
@@ -8,7 +9,7 @@ from urllib.parse import urlsplit
 
 import OlivOS
 
-from . import bili_api, config, function, notify, store
+from . import bili_api, capabilities, config, function, live_stats, notify, sender, store
 
 _GROUP_TYPES = {('onebot', 'qq'): 'group', ('qqGuildv2_link', 'qqGuild'): 'qq_group'}
 _POLL_LABELS = {
@@ -19,8 +20,33 @@ _POLL_LABELS = {
     'max_sockets': '直播间长连接上限',
     'live_relaxed_seconds': '长连接在线时的直播轮询间隔',
 }
+_SOCKET_POLL_MAX = {'max_sockets': 32, 'live_relaxed_seconds': 3600}
+_IMAGE_SETTINGS = {'dynamic_image': '动态图片卡片', 'save_dynamic_image': '动态图片卡片存档'}
+_IMAGE_MODES = {'inherit': None, 'on': True, 'off': False}
+_MODE_NAMES = {value: mode for mode, value in _IMAGE_MODES.items()}
+_STATS_BOOLS = {
+    'enabled': '直播数据统计',
+    'hide_revenue': '隐藏营收金额与付费排行',
+    'save_report_image': '场次图片存档',
+}
+_STATS_LIMITS = {
+    'reconnect_grace_seconds': ('断流续接宽限', 0, None),
+    'query_cooldown_seconds': ('群查询冷却', 0, None),
+    'danmu_retention_days': ('弹幕原文保留天数', 1, None),
+    'min_report_minutes': ('自动推送最短直播时长', 0, 120),
+    'min_report_danmu': ('自动推送最少弹幕数', 0, 1000),
+    'wordcloud_limit': ('词云最大词数', 10, 300),
+}
+_WORD_LISTS = {'wordcloud_stopwords': '自定义停用词', 'wordcloud_words': '自定义热词'}
+_MAX_WORDS = 200
+_MAX_WORD_LENGTH = 32
 _IMAGES = {'.jpg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp', '.avif': 'avif', '.bmp': 'bmp'}
 _MAX_PREVIEW = 512 * 1024
+_MAX_SESSION_PREVIEW = 2 * 1024 * 1024
+_SESSION_FIELDS = frozenset((
+    'id', 'room_id', 'uname', 'title', 'area', 'status', 'start_at', 'end_at', 'duration',
+    'danmu', 'online_peak', 'interactors',
+))
 _GLOBAL_ACTIONS = {'get_state', 'save_global', 'refresh_buvid', 'probe_api',
                    'qr_generate', 'qr_poll', 'account_sync', 'switch_account', 'remove_account'}
 
@@ -43,7 +69,7 @@ def _list(value, label):
 
 def _text(value, label):
     if not isinstance(value, str) or any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise _InvalidRequest(f'{label}必须为不含控制字符的文本。')
+        raise _InvalidRequest(f'请用单行纯文本填写{label}。')
     return value.strip()
 
 
@@ -55,9 +81,36 @@ def _bool(value, label):
 
 def _int(value, label, minimum, maximum=None):
     if type(value) is not int or value < minimum or (maximum is not None and value > maximum):
-        span = f'{minimum} 至 {maximum} 的整数' if maximum is not None else f'不小于 {minimum} 的整数'
+        span = f'{minimum} 至 {maximum} 的整数' if maximum is not None else f'{minimum} 或更大的整数'
         raise _InvalidRequest(f'{label}必须为 {span}。')
     return value
+
+
+def _require_feature(feature):
+    if not capabilities.can(feature):
+        raise _InvalidRequest(capabilities.hint(feature))
+
+
+def _image_override(value):
+    if isinstance(value, str) and value in _IMAGE_MODES:
+        value = _IMAGE_MODES[value]
+    if value is not None and type(value) is not bool:
+        raise _InvalidRequest('请选择动态图片模式：跟随本账号、开启图片或文字模式。')
+    if value is True:
+        _require_feature('dynamic_image')
+    return value
+
+
+def _session_image_override(value, feature, label):
+    if not isinstance(value, str) or value not in _IMAGE_MODES:
+        raise _InvalidRequest(f'请选择{label}模式：跟随本账号、开启或关闭。')
+    if value == 'on':
+        _require_feature(feature)
+    return _IMAGE_MODES[value]
+
+
+def _session_image_mode(value):
+    return _MODE_NAMES[value if type(value) is bool else None]
 
 
 def _flags(value, label):
@@ -75,7 +128,7 @@ def _kind(payload, choices=config.KINDS):
 def _uid(value):
     uid = _text(value, '主播 UID')
     if not re.fullmatch(r'[0-9]{1,20}', uid) or not uid.strip('0'):
-        raise _InvalidRequest('请输入有效的数字 UID，不是直播间号。')
+        raise _InvalidRequest('请输入 B站个人空间数字 UID。')
     return uid.lstrip('0')
 
 
@@ -113,18 +166,18 @@ def _group_target(payload, bot_hash, bot_info, *, create=False):
     target = _target(payload.get('sid'))
     sid = function.sid_for(target)
     if (target['sdk'], target['platform']) != _bot_pair(bot_info):
-        raise _InvalidRequest('群的平台与所选 Bot 不匹配。')
+        raise _InvalidRequest('请选择与当前 Bot 平台一致的群。')
     saved = store.rooms(bot_hash)['groups'].get(sid)
     if saved is not None:
         if not _group_matches(saved, target):
-            raise _InvalidRequest('频道不支持群订阅，请选用 QQ 群。')
+            raise _InvalidRequest('群订阅适用于 QQ 群，请选择 QQ 群。')
     elif not create:
-        raise _InvalidRequest('群尚未登记，请先到「群订阅」添加。')
+        raise _InvalidRequest('请先到「群订阅」登记该群。')
     elif target['chat_type'] == 'qq_group':
         # QQ 官方群与频道共用 SDK，只有宿主确认见过的 QQ 群才能新建。
         group = OlivOS.qqGuildv2SDK.qqStore.get_group(bot_hash, target['group_id'])
         if not group or group.get('state') != 'active':
-            raise _InvalidRequest('未识别到此 QQ 群，请先在群内向 Bot 发送消息，再核对群 OpenID。')
+            raise _InvalidRequest('请先在 QQ 群内向 Bot 发送消息，再填写该群的 OpenID。')
     return sid, target
 
 
@@ -250,10 +303,13 @@ def _view_group(sid, group, pair, disabled, today):
             'sdk': sdk, 'platform': platform, 'chat_type': _GROUP_TYPES[pair], 'group_id': group_id,
         })
     )
+    dynamic_image = group.get('dynamic_image')
     return {
         'group_id': group_id,
         'platform': group['platform'],
         'push': group['push'],
+        'dynamic_image': dynamic_image if type(dynamic_image) is bool else None,
+        **{kind: _session_image_mode(group.get(kind)) for kind in config.LIVE_IMAGES},
         'at_all': group['at_all'],
         'used': quota['used'] if quota['date'] == today else 0,
         'last_at_live_time': quota['last_at_live_time'],
@@ -272,6 +328,7 @@ def _state(bots, bot_hash):
         'bot_hash': bot_hash,
         'global': _global_view(),
         'bot': None,
+        'capabilities': capabilities.snapshot(),
         'rooms': {},
         'groups': {},
         'status': None,
@@ -320,7 +377,7 @@ def _whitelist(value):
         entry = _obj(raw, '白名单条目')
         platform = entry.get('platform')
         if platform not in ('qq', 'qqGuild'):
-            raise _InvalidRequest('白名单平台只能是 OneBot QQ 或 QQ 官方群。')
+            raise _InvalidRequest('请选择 OneBot QQ 或 QQ 官方群作为白名单平台。')
         user_id = _id(entry.get('user_id'), platform, '白名单用户 ID')
         key = (platform, user_id.casefold())
         if key not in seen:
@@ -334,7 +391,7 @@ def _save_global(payload):
     if 'user_agent' in payload:
         changes['user_agent'] = _text(payload['user_agent'], 'User-Agent')
         if any(ord(char) > 255 for char in changes['user_agent']):
-            raise _InvalidRequest('User-Agent 只能包含 HTTP 请求头支持的字符。')
+            raise _InvalidRequest('请输入由 HTTP 请求头支持的字符组成的 User-Agent。')
     if 'proxy' in payload:
         changes['proxy'] = _proxy(payload['proxy'])
     if 'whitelist' in payload:
@@ -350,7 +407,7 @@ def _save_global(payload):
             else:
                 value = _text(cookie[key], key)
                 if any(not 33 <= ord(char) <= 126 or char == ';' for char in value):
-                    raise _InvalidRequest(f'{key} 只接受单个 Cookie 字段值，不要粘贴整段 Cookie。')
+                    raise _InvalidRequest(f'请输入 {key} 的单个 Cookie 字段值。')
                 credentials[key] = value
     changed_network = False
     with store.edit_global() as settings:
@@ -381,14 +438,40 @@ def _disabled_list(value):
     return list(dict.fromkeys(function.sid_for(_target(sid)) for sid in _list(value, '禁用群列表')))
 
 
-def _update_bot(bot_hash, changes):
-    with store.edit_bot(bot_hash) as settings:
-        if any(settings[key] != value for key, value in changes.items()):
-            settings.update(changes, meta={'updated_at': int(time.time())})
+def _word_list(value, label):
+    values = _list(value, label)
+    if len(values) > _MAX_WORDS:
+        raise _InvalidRequest(f'{label}最多填写 {_MAX_WORDS} 项。')
+    words = dict.fromkeys(_text(word.strip() if isinstance(word, str) else word, label) for word in values)
+    if any(len(word) > _MAX_WORD_LENGTH or re.search(r'[\ud800-\udfff]', word) for word in words):
+        raise _InvalidRequest(f'请用最多 {_MAX_WORD_LENGTH} 字的有效文本填写每个{label}条目。')
+    return [word for word in words if word]
+
+
+def _stats_changes(value):
+    _require_feature('live_stats')
+    stats = _obj(value, '直播数据统计与实时查询')
+    changes = {key: _bool(stats[key], label) for key, label in _STATS_BOOLS.items() if key in stats}
+    for key, (label, minimum, maximum) in _STATS_LIMITS.items():
+        if key in stats:
+            changes[key] = _int(stats[key], label, minimum, maximum)
+    for feature, key, label in config.LIVE_IMAGES.values():
+        if key in stats:
+            changes[key] = _bool(stats[key], f'自动推送{label}')
+            if changes[key]:
+                _require_feature(feature)
+    if changes.get('save_report_image') and not (capabilities.can('live_report') or capabilities.can('wordcloud')):
+        _require_feature('live_report')
+    for key, label in _WORD_LISTS.items():
+        if key in stats:
+            changes[key] = _word_list(stats[key], label)
+    return changes
 
 
 def _save_bot(payload, bot_hash):
     changes = {}
+    if 'live_stats' in payload:
+        changes['live_stats'] = _stats_changes(payload['live_stats'])
     if 'enable' in payload:
         changes['enable'] = _bool(payload['enable'], 'Bot 总开关')
     if 'prefix_list' in payload:
@@ -400,15 +483,11 @@ def _save_bot(payload, bot_hash):
             'dynamic_seconds': _int(poll.get('dynamic_seconds'), _POLL_LABELS['dynamic_seconds'], 1),
             'video_seconds': _int(poll.get('video_seconds'), _POLL_LABELS['video_seconds'], 1),
             'max_concurrent': _int(poll.get('max_concurrent'), _POLL_LABELS['max_concurrent'], 1, 32),
-            # 0 表示关闭长连接、完全用轮询
-            'max_sockets': _int(poll.get('max_sockets'), _POLL_LABELS['max_sockets'], 0, 32),
-            'live_relaxed_seconds': _int(poll.get('live_relaxed_seconds'),
-                                         _POLL_LABELS['live_relaxed_seconds'], 0, 3600),
+            **{key: _int(poll[key], _POLL_LABELS[key], 0, limit)
+               for key, limit in _SOCKET_POLL_MAX.items() if key in poll},
         }
     if 'retry' in payload:
-        retry = payload['retry']
-        if not isinstance(retry, dict):
-            raise ValueError('重试必须是 JSON 对象')
+        retry = _obj(payload['retry'], '重试设置')
         changes['retry'] = {
             'max_times': _int(retry.get('max_times'), '重试次数', 0, 10),
             'interval_ms': _int(retry.get('interval_ms'), '重试间隔', 0, 60000),
@@ -418,7 +497,7 @@ def _save_bot(payload, bot_hash):
     if 'dynamic_source' in payload:
         source = payload['dynamic_source']
         if source not in ('follow', 'poll'):
-            raise _InvalidRequest('动态来源只能是 follow 或 poll。')
+            raise _InvalidRequest('请选择关注流触发（follow）或逐主播轮询（poll）。')
         changes['dynamic_source'] = source
     if 'at_all' in payload:
         at_all = _obj(payload['at_all'], '@全体设置')
@@ -435,11 +514,27 @@ def _save_bot(payload, bot_hash):
         changes['at_subscribers']['live'] = _bool(subscribers.get('live'), '开播 @订阅者')
     if 'push_default' in payload:
         changes['push_default'] = _flags(payload['push_default'], '新群推送默认设置')
+    for key, label in _IMAGE_SETTINGS.items():
+        if key in payload:
+            changes[key] = _bool(payload[key], label)
+            if changes[key]:
+                _require_feature('dynamic_image')
     if 'send_interval_seconds' in payload:
         changes['send_interval_seconds'] = _int(payload['send_interval_seconds'], '连续发送间隔', 1)
     if 'disabled_group_list' in payload:
         changes['disabled_group_list'] = _disabled_list(payload['disabled_group_list'])
-    _update_bot(bot_hash, changes)
+    with store.edit_bot(bot_hash) as settings:
+        if 'live_stats' in changes:
+            changes['live_stats'] = {**settings['live_stats'], **changes['live_stats']}
+        if 'poll' in changes:
+            poll = changes['poll']
+            saved = settings['poll']
+            # 兼容旧面板回传已保存的长连接设置；缺少依赖时仍可将其清零。
+            if any(poll[key] and poll[key] != saved[key] for key in _SOCKET_POLL_MAX if key in poll):
+                _require_feature('live_stats')
+            changes['poll'] = {**saved, **poll}
+        if any(settings[key] != value for key, value in changes.items()):
+            settings.update(changes, meta={'updated_at': int(time.time())})
 
 
 def _save_group(payload, bot_hash, bot_info):
@@ -447,7 +542,13 @@ def _save_group(payload, bot_hash, bot_info):
     push = _flags(payload['push'], '群推送') if 'push' in payload else None
     at_all = _bool(payload['at_all'], '@全体') if 'at_all' in payload else None
     disabled = _bool(payload['disabled'], '禁用群') if 'disabled' in payload else None
-    if push is not None or at_all is not None or sid not in store.rooms(bot_hash)['groups']:
+    overrides = {}
+    if 'dynamic_image' in payload:
+        overrides['dynamic_image'] = _image_override(payload['dynamic_image'])
+    for kind, (feature, _, label) in config.LIVE_IMAGES.items():
+        if kind in payload:
+            overrides[kind] = _session_image_override(payload[kind], feature, label)
+    if overrides or push is not None or at_all is not None or sid not in store.rooms(bot_hash)['groups']:
         settings = store.bot_config(bot_hash)
         with store.edit_rooms(bot_hash) as data:
             group = function.ensure_group(data, settings, target)
@@ -455,6 +556,7 @@ def _save_group(payload, bot_hash, bot_info):
                 group['push'] = push
             if at_all is not None:
                 group['at_all'] = at_all
+            group.update(overrides)
     if disabled is not None:
         with store.edit_bot(bot_hash) as settings:
             disabled_sids = settings['disabled_group_list']
@@ -508,8 +610,8 @@ def _up_action(action, payload, Proc, bot_hash, bot_info):
         result = notify.test_push(Proc, bot_hash, uid, _kind(payload), targets)
         errors = {
             'missing': '主播已移除，请刷新后重试。',
-            'empty': '没有可推送的内容或接收群，请确认 Bot 已启用、已关联群且群未被禁用。',
-            'failed': '测试推送未全部成功，请查看「运行状态」中的日志。',
+            'empty': '请确认有可推送的内容、Bot 处于启用状态，并已关联启用的接收群。',
+            'failed': '部分或全部测试推送失败，请查看「运行状态」中的日志。',
         }
         if result != 'ok':
             raise _InvalidRequest(errors[result])
@@ -518,43 +620,96 @@ def _up_action(action, payload, Proc, bot_hash, bot_info):
 def _cover(bot_hash, uid):
     cover_url = store.rooms(bot_hash)['rooms'].get(uid, {}).get('runtime', {}).get('last_cover')
     if not cover_url:
-        raise _InvalidRequest('暂未取得直播封面，请等待下一次成功检查。')
+        raise _InvalidRequest('直播封面将在下一次成功检查后可用。')
     path = bili_api.download_image(cover_url)
     if path is None:
-        raise _InvalidRequest('无法载入封面，请稍后再试。')
+        raise _InvalidRequest('载入封面失败，请稍后再试。')
     try:
         image_type = _IMAGES.get(path.suffix.lower())
         if not image_type:
-            raise _InvalidRequest('此封面格式无法安全预览。')
+            raise _InvalidRequest('面板支持预览 JPEG、PNG、GIF、WebP、AVIF 与 BMP 封面。')
         with path.open('rb') as file:
             content = file.read(_MAX_PREVIEW + 1)
         # 回包会在宿主的事件缓冲中保留，限制单次预览体积。
         if len(content) > _MAX_PREVIEW:
-            raise _InvalidRequest('封面超过面板预览上限（512 KiB），不影响实际推送。')
+            raise _InvalidRequest('封面超过 512 KiB；该上限仅适用于面板预览。')
         encoded = base64.b64encode(content).decode('ascii')
         return {'image': f'data:image/{image_type};base64,{encoded}'}
     except OSError:
-        raise _InvalidRequest('无法读取封面缓存，请稍后再试。') from None
+        raise _InvalidRequest('读取封面缓存失败，请稍后再试。') from None
     finally:
         bili_api.release_image(path)
 
 
-def _qr_image(url):
-    """把登录地址渲染成二维码 PNG，直接内联给前端（不走外链）。"""
-    try:
-        import base64
-        import io
+def _session_room(payload, bot_hash):
+    uid = _uid(payload.get('uid'))
+    room = store.rooms(bot_hash)['rooms'].get(uid)
+    if room is None:
+        raise _InvalidRequest('请在当前 Bot 的「主播管理」中选择已添加的主播。')
+    return uid, room
 
-        import qrcode
-    except ImportError:
-        raise _InvalidRequest('服务器缺少 qrcode 库，无法生成二维码；可以直接手填 Cookie。')
-    image = qrcode.make(url)
+
+def _list_sessions(payload, bot_hash):
+    _require_feature('live_stats')
+    uid, _ = _session_room(payload, bot_hash)
+    hide_revenue = store.bot_config(bot_hash)['live_stats']['hide_revenue']
+    rows = live_stats.list_sessions(uid, limit=10)
+    return {'sessions': [
+        {key: value for key, value in row.items() if key in _SESSION_FIELDS or (key == 'gold' and not hide_revenue)}
+        for row in rows
+    ]}
+
+
+def _preview_session_image(payload, bot_hash):
+    kind = payload.get('kind')
+    if not isinstance(kind, str) or kind not in config.LIVE_IMAGES:
+        raise _InvalidRequest('请选择直播报告或弹幕词云。')
+    feature, _, label = config.LIVE_IMAGES[kind]
+    _require_feature(feature)
+    uid, room = _session_room(payload, bot_hash)
+    session_id = _int(payload.get('session_id'), '场次 ID', 1, 2**63 - 1)
+    detail = live_stats.session_detail(session_id, uid=uid, include_danmu=kind == 'cloud')
+    if detail is None:
+        raise _InvalidRequest('请展开此主播的历史场次，选择一场直播。')
+    if kind == 'report':
+        detail['avatar_url'] = room['runtime'].get('avatar_url', '')
+    settings = store.bot_config(bot_hash)['live_stats']
+    path = function.render_session_image(kind, detail, settings, archive_dir=None)
+    if path is None:
+        raise _InvalidRequest(f'当前场次暂无可预览的{label}。')
+    try:
+        with path.open('rb') as file:
+            if file.seek(0, io.SEEK_END) > _MAX_SESSION_PREVIEW:
+                raise _InvalidRequest('图片预览上限为 2 MiB，请选择其他场次。')
+            file.seek(0)
+            content = file.read(_MAX_SESSION_PREVIEW)
+        if not content:
+            raise _InvalidRequest(f'请重新生成{label}预览。')
+        return {'image': 'data:image/png;base64,' + base64.b64encode(content).decode('ascii')}
+    except OSError:
+        raise _InvalidRequest('读取预览图片失败，请重新生成。') from None
+    finally:
+        sender.release_local_image(path)
+
+
+def _qr_image(url):
+    """渲染登录二维码并内联给前端。"""
+    import qrcode
+
     buffer = io.BytesIO()
-    image.save(buffer, format='PNG')
-    return 'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+    if capabilities.can('dynamic_image'):
+        qrcode.make(url).save(buffer)
+        mime = 'image/png'
+    else:
+        from qrcode.image.svg import SvgPathFillImage
+
+        qrcode.make(url, image_factory=SvgPathFillImage).save(buffer)
+        mime = 'image/svg+xml'
+    return f'data:{mime};base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
 
 
 def _qr_generate():
+    _require_feature('qr_login')
     data, error = bili_api.qr_generate()
     if error:
         raise _InvalidRequest('申请二维码失败（%s）：%s' % (error[0], error[1]))
@@ -579,7 +734,7 @@ def _qr_poll(payload):
                                              'message': str(data.get('message') or '')}}}
     pairs = bili_api.parse_login_cookie(str(data.get('url') or ''))
     if not pairs.get('sessdata'):
-        raise _InvalidRequest('登录成功但没拿到 SESSDATA，请重试。')
+        raise _InvalidRequest('登录凭据返回异常（缺少 SESSDATA），请重新扫码。')
     now = int(time.time())
     with store.edit_global() as settings:
         settings['cookie']['sessdata'] = pairs['sessdata']
@@ -717,7 +872,7 @@ def dispatch(payload, Proc):
         uid = _uid(payload.get('uid', '2'))
         mode = payload.get('mode', 'cascade')
         if mode not in ('cascade', 'full'):
-            raise _InvalidRequest('自检模式只能是 cascade 或 full。')
+            raise _InvalidRequest('请选择级联检查（cascade）或完整检查（full）。')
         bypass = _bool(payload.get('bypass_cooldown', True), '跳过冷却')
         room_id = ''
         if bot_hash:
@@ -728,8 +883,12 @@ def dispatch(payload, Proc):
         return {'ok': True, 'state': probe}
     elif action == 'get_cover':
         return {'ok': True, 'state': _cover(bot_hash, _uid(payload.get('uid')))}
+    elif action == 'list_sessions':
+        return {'ok': True, 'state': _list_sessions(payload, bot_hash)}
+    elif action == 'preview_session_image':
+        return {'ok': True, 'state': _preview_session_image(payload, bot_hash)}
     elif action != 'get_state':
-        raise _InvalidRequest('无法识别此面板操作，请刷新页面后重试。')
+        raise _InvalidRequest('请刷新页面后选择有效的面板操作。')
     return {'ok': True, 'state': _state(bots, bot_hash)}
 
 
