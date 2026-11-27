@@ -333,15 +333,9 @@ class _Notice:
     live_time: int = 0
 
 
-def _request(uid, kind):
+def _request(uid, kind, room_id=''):
     if kind == 'live':
-        data, error = bili_api.live_status((uid,))
-        if error is not None:
-            return None, error
-        payload = data.get(uid)
-        if not payload or 'live_status' not in payload:
-            return None, (-1, '直播接口未返回该主播状态')
-        return payload, None
+        return bili_api.live_detail(uid, room_id=room_id)
     return (bili_api.dynamics if kind == 'dynamic' else bili_api.videos)(uid)
 
 
@@ -393,13 +387,16 @@ class _Engine:
         self.maintainer.start()
 
     def close(self):
-        self._close_watchers()
         with self.condition:
             self.closed.set()
+            watchers = list(self.watchers.values())
+            self.watchers.clear()
             self.polls.clear()
             self.results.clear()
             self.applies.clear()
             self.condition.notify_all()
+        for watcher, _ in watchers:
+            watcher.stop()
         self.dispatcher.join()
         # 旧代只等已经进入的持久化事务，不等失联 API 或节流等待。
         with self.write_lock:
@@ -429,15 +426,16 @@ class _Engine:
             self.condition.notify()
 
     def _maintain(self):
-        """后台维护：每 5 秒看一次，具体节奏由 _sync_* 各自节流。"""
+        """后台维护：每 5 秒看一次，具体节奏由 _sync_* 各自节流。
+
+        绝不持 self.condition 做网络请求或启停长连接，避免阻塞 1 秒一次的宿主 bili_tick。
+        """
         while not self.closed.wait(_MAINTAIN_SECONDS):
             try:
-                with self.condition:
-                    if self.closed.is_set():
-                        return
-                    self._sync_watchers()
-                    self._sync_follow(time())
-                    self.condition.notify()
+                if self.closed.is_set():
+                    return
+                self._sync_watchers()
+                self._sync_follow(time())
             except Exception as error:  # noqa: BLE001 - 维护线程不能因为一次异常退出
                 store.log(self.proc, f'维护线程异常：{type(error).__name__}', level=3)
 
@@ -445,14 +443,14 @@ class _Engine:
         store.log(self.proc, message, 3)
 
     def _sync_watchers(self):
-        """补齐/回收直播间长连接。调用方持 self.condition，30 秒最多跑一次。"""
+        """补齐/回收直播间长连接。30 秒最多跑一次，socket 启停全在锁外。"""
         now = time()
         if now - self.watcher_sync_at < _WATCHER_SYNC_SECONDS:
             return
         self.watcher_sync_at = now
         limit = 0
         wanted = {}
-        for bot in self.order:
+        for bot in tuple(self.accounts):
             settings = store.bot_config(bot)
             if not settings.get('enable', True):
                 continue
@@ -467,29 +465,42 @@ class _Engine:
                 wanted[(bot, uid)] = str(room['room_id'])
         for key in [key for key in self.follow_seen if key[0] not in self.accounts]:
             self.follow_seen.pop(key, None)
-        for key in list(self.watchers):
-            watcher, room_id = self.watchers[key]
-            if key not in wanted or wanted[key] != room_id:
+        to_stop = []
+        to_start = []
+        with self.condition:
+            if self.closed.is_set():
+                return
+            for key in list(self.watchers):
+                watcher, room_id = self.watchers[key]
+                if key not in wanted or wanted[key] != room_id:
+                    to_stop.append(watcher)
+                    del self.watchers[key]
+            if limit > 0:
+                for (bot, uid), room_id in wanted.items():
+                    if len(self.watchers) >= limit:
+                        break
+                    if (bot, uid) in self.watchers:
+                        continue
+                    watcher = livesocket.LiveWatcher(
+                        room_id, lambda kind, b=bot, u=uid: self._trigger(b, u, 'live'), self._watch_log)
+                    self.watchers[(bot, uid)] = (watcher, room_id)
+                    to_start.append(watcher)
+        for watcher in to_stop:
+            watcher.stop()
+        for watcher in to_start:
+            if self.closed.is_set():
                 watcher.stop()
-                del self.watchers[key]
-        if limit <= 0:
-            return
-        for (bot, uid), room_id in wanted.items():
-            if len(self.watchers) >= limit:
-                break
-            if (bot, uid) in self.watchers:
-                continue
-            watcher = livesocket.LiveWatcher(
-                room_id, lambda kind, b=bot, u=uid: self._trigger(b, u, 'live'), self._watch_log)
-            watcher.start()
-            self.watchers[(bot, uid)] = (watcher, room_id)
+            else:
+                watcher.start()
 
     def _sync_follow(self, now):
         """关注流触发：一条请求知道「关注的人里谁发了新动态」，详情仍走 opus。
 
         未关注的目标 UP 不在 cards 里，自动继续用逐 UP 轮询，不影响功能。
+        网络请求全程在 self.condition 锁外执行，避免阻塞宿主 tick。
         """
-        for bot in self.order:
+        due_bots = []
+        for bot in tuple(self.accounts):
             settings = store.bot_config(bot)
             if not settings.get('enable', True) or settings.get('dynamic_source') != 'follow':
                 continue
@@ -497,9 +508,14 @@ class _Engine:
             if now - self.follow_sync_at.get(bot, 0) < seconds:
                 continue
             self.follow_sync_at[bot] = now
-            ids, error = bili_api.follow_max_ids()
-            if error or not isinstance(ids, dict):
-                continue
+            due_bots.append(bot)
+        if not due_bots or self.closed.is_set():
+            return
+        # follow_max_ids 查的是全局共享 SESSDATA 的关注流，一轮最多只发一次请求。
+        ids, error = bili_api.follow_max_ids()
+        if error or not isinstance(ids, dict) or self.closed.is_set():
+            return
+        for bot in due_bots:
             for uid in list((store.rooms(bot)['rooms'] or {})):
                 dynamic_id = ids.get(uid)
                 if not dynamic_id:
@@ -512,9 +528,11 @@ class _Engine:
                     self._trigger(bot, uid, 'dynamic')
 
     def _close_watchers(self):
-        for watcher, _ in self.watchers.values():
+        with self.condition:
+            watchers = list(self.watchers.values())
+            self.watchers.clear()
+        for watcher, _ in watchers:
             watcher.stop()
-        self.watchers.clear()
 
     def _trigger(self, bot, uid, kind):
         """长连接事件触发的即时检查：绕过轮询间隔，但仍走同一条状态机。"""
@@ -643,7 +661,7 @@ class _Engine:
             cooldown_due = not last_detail or time() - last_detail >= _DETAIL_COOLDOWN
             if not changed and not cooldown_due:
                 return _Result(job, int(time()), error=error, detail=False, nav_count=nav_count)
-        payload, error = _request(job.uid, job.kind)
+        payload, error = _request(job.uid, job.kind, room_id=str(room.get('room_id') or ''))
         return _Result(job, int(time()), payload, error, nav_count=nav_count)
 
     def _apply(self, result):
@@ -732,14 +750,22 @@ class _Engine:
                             self.proc, job.bot, target, TEXT['risk_warning'], still_current=still_current,
                         )
                     else:
-                        at_all = kind == 'start' and group.get('at_all') and self._claim(job, sid, added_at, notice)
-                        current = self._target(job, sid, added_at)
-                        if current is None:
-                            continue
-                        settings, group, target = current
-                        at_all = bool(at_all and group.get('at_all'))
-                        if kind == 'start' and group.get('at_all') and not at_all and target.get('sdk') == 'onebot':
-                            _send_log(self.proc, job, sid, kind, 'at_all_quota_exhausted')
+                        at_all = False
+                        if kind == 'start' and group.get('at_all'):
+                            # 锁外查询机器人在群内的管理权限；非管理或无法确认时跳过 @全体 且不扣配额。
+                            if not sender.bot_is_group_admin(self.proc, job.bot, target):
+                                _send_log(self.proc, job, sid, kind, 'at_all_not_admin')
+                            elif not still_current():
+                                continue
+                            else:
+                                at_all = bool(self._claim(job, sid, added_at, notice))
+                                current = self._target(job, sid, added_at)
+                                if current is None:
+                                    continue
+                                settings, group, target = current
+                                at_all = bool(at_all and group.get('at_all'))
+                                if group.get('at_all') and not at_all and target.get('sdk') == 'onebot':
+                                    _send_log(self.proc, job, sid, kind, 'at_all_quota_exhausted')
                         mention = kind == 'start' and settings.get('at_subscribers', {}).get('live', True)
                         subscribers = target.get('subscribers', ()) if mention else ()
                         success = sender.send(self.proc, job.bot, target, kind, notice.fields, image=notice.image,
@@ -890,7 +916,8 @@ def status(bot_hash):
     streak = max(_risk_count(data, kind) for kind in _KINDS)
     stats = {'ticks': 0, 'workers': 0, 'queue': 0, 'running': 0, 'last_checks': checks,
              'blocked': streak >= _RISK_THRESHOLD, 'count_412': streak,
-             'backing_off': any(backoff.values()), 'kind_backoff': backoff}
+             'backing_off': any(backoff.values()), 'kind_backoff': backoff,
+             'channels': bili_api.channel_health(), 'logged_in': bili_api.logged_in()}
     engine = _engine
     if engine is not None:
         with engine.condition:
@@ -912,7 +939,7 @@ def test_push(Proc, bot_hash, uid, kind, targets=None):
     if not settings.get('enable', True) or not any(_group_allowed(settings, target) for _, target in destinations):
         return 'empty'
     try:
-        payload, error = _request(uid, kind)
+        payload, error = _request(uid, kind, room_id=str(room.get('room_id') or ''))
         if error:
             code, message = error
             store.log(Proc, f'bot={bot_hash} uid={uid} kind={kind} 测试请求失败 code={code} {message}', 3)

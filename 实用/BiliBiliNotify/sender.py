@@ -9,6 +9,7 @@ import OlivOS
 from . import bili_api, config, message_custom, store
 
 _QQ = 'qqGuildv2_link'
+_ADMIN_ROLES = frozenset(('owner', 'admin', 'sub_admin'))
 _LIMIT = 4000
 _COVER = '{{cover}}'
 _QQ_ALL = '<qqbot-at-everyone />'
@@ -180,6 +181,15 @@ def _op_ok(result):
     return result.get('active') is True or status in ('ok', 'async')
 
 
+def _op_rejected(result):
+    """仅协议端明确返回非成功状态码时判定为拒收，超时或空回包不触发重发。"""
+    if not isinstance(result, dict) or _op_ok(result):
+        return False
+    details = result.get('data') if isinstance(result.get('data'), dict) else {}
+    code = details.get('retcode', result.get('retcode'))
+    return isinstance(code, int) and code not in (0, 1)
+
+
 def _qq_plain(event, chat_id, parts):
     # adapter/qqGuild/qqGuildv2SDKGroup.py: Event.send 会自动尝试 Markdown，降级必须显式关掉它。
     message = OlivOS.messageAPI.Message_templet('olivos_para', parts)
@@ -251,6 +261,66 @@ def _supported(target):
     return _group_id(target) and (target.get('sdk') != _QQ or target.get('chat_type') == 'qq_group')
 
 
+def event_bot_is_group_admin(event, chat_id, *, sdk=None, proc=None):
+    """确认机器人自身在目标群是否为群主或管理员；失败或无法确认时保守返回 False。"""
+    chat_id = str(chat_id or '').strip()
+    if event is None or not chat_id:
+        return False
+    platform = getattr(event, 'platform', None)
+    sdk = sdk or (platform.get('sdk', '') if isinstance(platform, dict) else '')
+    if sdk == _QQ:
+        action = getattr(getattr(OlivOS, 'qqGuildv2SDK', None), 'event_action', None)
+        if action is None:
+            return False
+        try:
+            # adapter/qqGuild/qqGuildv2SDKGroup.py: get_qq_group_bot_state 返回机器人自身的 member_role。
+            result = action.get_qq_group_bot_state(event, chat_id)
+        except Exception as error:
+            store.log(proc, f'读取 QQ 群机器人身份失败：{type(error).__name__}', level=3)
+            return False
+        if not isinstance(result, dict) or result.get('active') is not True:
+            return False
+        data = result.get('data')
+        response = data.get('response') if isinstance(data, dict) else None
+        if isinstance(response, dict) and isinstance(response.get('data'), dict):
+            response = response['data']
+        if not isinstance(response, dict):
+            return False
+        return str(response.get('member_role') or '').strip().lower() in _ADMIN_ROLES
+
+    base_info = getattr(event, 'base_info', None)
+    bot_info = getattr(event, 'bot_info', None)
+    bot_id = base_info.get('self_id') if isinstance(base_info, dict) else None
+    if bot_id in (None, '', -1, '-1'):
+        bot_id = getattr(bot_info, 'id', None)
+    self_id = str(bot_id).strip() if bot_id is not None else ''
+    if not self_id or self_id == '-1':
+        return False
+    try:
+        # core/core/API.py: Event.get_group_member_info；no_cache=True 避免读到过期的普通成员缓存。
+        result = event.get_group_member_info(group_id=chat_id, user_id=self_id, no_cache=True)
+    except Exception as error:
+        store.log(proc, f'读取群内机器人角色失败：{type(error).__name__}', level=3)
+        return False
+    if not isinstance(result, dict) or result.get('active') is not True:
+        return False
+    info = result.get('data') or result.get('member') or result
+    if not isinstance(info, dict):
+        return False
+    return str(info.get('role') or '').strip().lower() in _ADMIN_ROLES
+
+
+def bot_is_group_admin(proc, bot_hash, target):
+    if not _supported(target):
+        return False
+    try:
+        event = _event(proc, bot_hash, target)
+    except Exception as error:
+        store.log(proc, f'构建群权限检查事件失败：{type(error).__name__}', level=3)
+        return False
+    return event_bot_is_group_admin(event, _group_id(target), sdk=target.get('sdk'), proc=proc)
+
+
 def send(proc, bot_hash, target, kind, fields, *, image='', at_all=False, subscribers=(), test=False,
          interval=3, still_current=None):
     if not _supported(target) or not _current(still_current):
@@ -271,20 +341,30 @@ def send(proc, bot_hash, target, kind, fields, *, image='', at_all=False, subscr
                 # 普通图文里图片是独立段，额外换行会顶出一行空白，这里不留。
                 image_segment = f'[OP:image,file={url}]'
         chunks = _render(kind, fields, sdk, image_segment, at_all, subscribers, test)
-        for index, chunk in enumerate(chunks):
+        index = 0
+        while index < len(chunks):
             if index:
                 time.sleep(interval)
             if not _current(still_current):
                 return False
+            chunk = chunks[index]
             if sdk == _QQ:
                 if not _qq_send(proc, event, chat_id, chunk, path, still_current):
                     return False
             else:
                 # core/core/API.py: Event.send 主动队列接口，message_mode_tx 是 olivos_string。
                 result = event.send('group', chat_id, chunk, flag_log=False)
+                if index == 0 and kind == 'start' and at_all and _op_rejected(result):
+                    store.log(proc, f'OP 推送含 @全体 被拒绝：{_result_details(result)}，回退为不 @全体 重发', level=3)
+                    at_all = False
+                    chunks = _render(kind, fields, sdk, image_segment, False, subscribers, test)
+                    if not _current(still_current):
+                        return False
+                    result = event.send('group', chat_id, chunks[0], flag_log=False)
                 if not _op_ok(result):
                     store.log(proc, f'OP 推送失败：{_result_details(result)}', level=3)
                     return False
+            index += 1
         return bool(chunks)
     except Exception as error:
         # 宿主适配器异常是外部边界；异常原文可能含响应内容或地址。

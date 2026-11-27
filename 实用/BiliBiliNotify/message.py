@@ -1,7 +1,7 @@
 from datetime import date
 import time
 
-from . import config, function, notify, store, utils
+from . import config, function, notify, sender, store, utils
 from .message_custom import TEXT
 
 TOP_ALIASES = {'主播': 'up', '帮助': 'help', '推送': 'push', '全体': 'atall', '状态': 'status', '测试': 'test'}
@@ -108,7 +108,7 @@ def _overview(action, bot_hash, sid, user_id, settings, target, prefix):
     return '\n'.join(lines)
 
 
-def _group_switch(action, args, bot_hash, target, settings, prefix):
+def _group_switch(action, args, bot_hash, target, settings, prefix, plugin_event=None):
     if action == 'push':
         kind = KINDS_BY_LABEL.get(args[0], args[0].lower())
         if kind not in config.KINDS:
@@ -129,7 +129,12 @@ def _group_switch(action, args, bot_hash, target, settings, prefix):
         return True, TEXT['atall_off']
     at_all = settings['at_all']
     qq = TEXT['atall_qq_once' if at_all['guild_at_once'] else 'atall_qq_any']
-    return True, TEXT['atall_on'].format(limit=at_all['daily_limit'], qq=qq)
+    reply = TEXT['atall_on'].format(limit=at_all['daily_limit'], qq=qq)
+    if plugin_event is not None and not sender.event_bot_is_group_admin(
+        plugin_event, target['group_id'], sdk=target['sdk'],
+    ):
+        reply += '\n' + TEXT['atall_not_admin_hint']
+    return True, reply
 
 
 def _up_command(action, args, bot_hash, target, user_id, prefix, Proc):
@@ -213,7 +218,7 @@ def handle_message(plugin_event, Proc):
     if action in ('help', 'list', 'subs', 'status'):
         success, text = True, _overview(action, config_bot_hash, sid, user_id, settings, target, prefix)
     elif action in ('push', 'atall'):
-        success, text = _group_switch(action, args, config_bot_hash, target, settings, prefix)
+        success, text = _group_switch(action, args, config_bot_hash, target, settings, prefix, plugin_event)
     else:
         success, text = _up_command(action, args, config_bot_hash, target, user_id, prefix, Proc)
     if success and sid not in store.rooms(config_bot_hash)['groups']:

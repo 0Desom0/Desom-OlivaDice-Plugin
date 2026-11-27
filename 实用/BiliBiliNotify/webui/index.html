@@ -64,7 +64,7 @@
         button, input, select, textarea { font: inherit; }
         button, summary, select { cursor: pointer; }
         button:disabled, :disabled { cursor: not-allowed; opacity: .62; }
-        button, input:not([type="checkbox"]), select, textarea, summary {
+        button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, summary {
             border: 1px solid var(--line);
             border-radius: 9px;
             color: var(--text);
@@ -76,8 +76,8 @@
         button.primary:hover:not(:disabled) { background: #8c2045; }
         button.danger { color: var(--error); }
         button.micro { padding: 4px 9px; min-height: 30px; font-size: 13px; }
-        input:not([type="checkbox"]), select, textarea { width: 100%; min-height: 40px; padding: 7px 10px; }
-        input[type="checkbox"] { accent-color: var(--action); width: 17px; height: 17px; margin: 0; }
+        input:not([type="checkbox"]):not([type="radio"]), select, textarea { width: 100%; min-height: 40px; padding: 7px 10px; }
+        input[type="checkbox"], input[type="radio"] { accent-color: var(--action); width: 17px; height: 17px; margin: 0; }
         input::placeholder, textarea::placeholder { color: var(--muted); opacity: .85; }
         textarea { resize: vertical; }
         :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
@@ -134,6 +134,9 @@
         .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 11px 15px; }
         .metric span:first-child { display: block; color: var(--muted); font-size: 13px; }
         .metric strong { display: block; font-size: 24px; font-variant-numeric: tabular-nums; line-height: 1.4; }
+        .metric-health { cursor: pointer; }
+        .metric-health:hover { background: var(--soft); }
+        .metric-note { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.3; }
         .pill {
             display: inline-flex;
             align-items: center;
@@ -213,9 +216,59 @@
         .chip button:hover:not(:disabled) { color: var(--error); background: var(--error-bg); }
         fieldset { border: 1px solid var(--line); border-radius: 10px; margin: 0; padding: 10px 12px; }
         legend { padding: 0 5px; font-weight: 650; }
-        .probe-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
-        .probe-result, .check-item { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; }
-        .probe-result output, .check-item small { display: block; margin-top: 4px; }
+        .probe-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; }
+        .probe-controls .field { flex: 1 1 200px; max-width: 280px; }
+        .mode-group { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 40px; }
+        .mode-option {
+            display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px;
+            border: 1px solid var(--line); border-radius: 9px; background: var(--soft);
+            font-size: 13px; font-weight: 600; cursor: pointer;
+        }
+        .probe-bar-right { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+        .probe-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .probe-card {
+            display: grid; gap: 10px; align-content: start;
+            padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+        }
+        .probe-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+        .probe-head-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .probe-summary { font-size: 13px; color: var(--muted); min-height: 20px; }
+        .probe-summary.is-bad { color: var(--error); }
+        .chain-list { display: grid; gap: 6px; }
+        .chain-step {
+            padding: 8px 10px; border: 1px solid var(--line); border-left-width: 3px;
+            border-radius: 9px; background: var(--soft); display: grid; gap: 3px;
+        }
+        .chain-step.is-ok { border-left-color: var(--good); }
+        .chain-step.is-fail { border-left-color: var(--error); }
+        .chain-step.is-skipped { opacity: .68; }
+        .chain-step-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+        .chain-step-name { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 650; }
+        .chain-mark {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 18px; height: 18px; border-radius: 50%; font-size: 11px; font-weight: 800;
+            background: var(--panel); color: var(--muted); flex-shrink: 0;
+        }
+        .chain-step.is-ok .chain-mark { background: var(--good-bg); color: var(--good); }
+        .chain-step.is-fail .chain-mark { background: var(--error-bg); color: var(--error); }
+        .chain-step-meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+        .chain-step.is-fail .chain-step-meta { color: var(--error); }
+        .chain-arrow { font-size: 11px; color: var(--muted); padding-left: 14px; line-height: 1.2; }
+        .chain-tag {
+            display: inline-block; margin-left: 5px; padding: 1px 6px; border-radius: 10px;
+            font-size: 11px; font-weight: 650; vertical-align: middle;
+            color: var(--warning); background: var(--warning-bg);
+        }
+        .channel-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
+        .channel-card {
+            display: grid; gap: 6px; align-content: start;
+            padding: 12px 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--soft);
+        }
+        .channel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .filter-group { display: inline-flex; gap: 6px; }
+        .filter-group button[aria-pressed="true"] { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+        .check-item { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; }
+        .check-item small { display: block; margin-top: 4px; }
         .add-bar { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 11px; }
         .add-bar .form-row { flex: 0 1 390px; }
         .add-bar p { margin-top: 4px; }
@@ -257,10 +310,11 @@
         .logs li:last-child { border-bottom: 0; }
         @media (max-width: 765px) {
             main { width: calc(100% - 28px); padding-top: 22px; }
-            .grid { grid-template-columns: minmax(0, 1fr); }
+            .grid, .probe-grid, .channel-grid { grid-template-columns: minmax(0, 1fr); }
+            .probe-bar-right { margin-left: 0; }
         }
         @media (max-width: 440px) {
-            .summary-grid, .metrics, .probe-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .summary-grid, .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .credential-grid { grid-template-columns: minmax(0, 1fr); }
             .panel { padding: 14px; }
             .tabs button { padding-inline: 11px; }
@@ -298,7 +352,11 @@
             <article class="metric"><span>主播</span><strong id="total-ups">—</strong></article>
             <article class="metric"><span>群</span><strong id="total-groups">—</strong></article>
             <article class="metric"><span>今日 @全体</span><strong id="total-at">—</strong></article>
-            <article class="metric"><span>风控状态</span><span class="pill" id="risk">待连接</span></article>
+            <article class="metric metric-health" id="health-card" tabindex="0" role="button" aria-label="查看通道健康详情">
+                <span>通道健康</span>
+                <span class="pill" id="risk">待连接</span>
+                <small id="risk-detail" class="metric-note" hidden></small>
+            </article>
         </div>
         <nav class="tabs" role="tablist" aria-label="订阅推送设置">
             <button type="button" role="tab" id="tab-global" aria-controls="global" aria-selected="true">总账号</button>
@@ -360,14 +418,28 @@
                         </div>
                     </div>
                 </article>
-                <article class="panel stack">
+                <article class="panel stack" id="probe-panel">
                     <div class="panel-heading">
-                        <div><h2>连接诊断</h2><p class="muted">自检使用已保存的总账号配置，逐个检查四个接口。</p></div>
+                        <div>
+                            <h2>连接诊断 · 三链条级联自检</h2>
+                            <p class="muted">链 1 失败自动进入链 2，链 2 失败进入链 3；任一链成功即整体可用。手动自检默认绕过运行期冷却真实探活，测通自动恢复。</p>
+                        </div>
                         <div class="row"><span id="buvid-time" class="muted"></span><button type="button" id="buvid-refresh">刷新 buvid</button></div>
                     </div>
-                    <form id="probe-form" class="form-row">
-                        <label class="field"><span class="field-label">自检 UID</span><input id="probe-uid" inputmode="numeric" value="2" required></label>
-                        <button type="submit">运行接口自检</button>
+                    <form id="probe-form" class="probe-controls">
+                        <label class="field">
+                            <span class="field-label">自检 UID（优先选已添加主播）</span>
+                            <input id="probe-uid" list="probe-uid-list" inputmode="numeric" value="2" placeholder="输入数字 UID 或从列表选择" required>
+                            <datalist id="probe-uid-list"></datalist>
+                        </label>
+                        <div class="mode-group" role="radiogroup" aria-label="自检模式">
+                            <label class="mode-option"><input type="radio" name="probe-mode" value="cascade" checked> 级联短路（省请求）</label>
+                            <label class="mode-option"><input type="radio" name="probe-mode" value="full"> 完整排查全部链条</label>
+                        </div>
+                        <div class="probe-bar-right">
+                            <button type="submit" id="probe-all" class="primary">一键全部自检</button>
+                            <small id="probe-checked-at" class="muted">尚未自检</small>
+                        </div>
                     </form>
                     <div id="probe-results" class="probe-grid"></div>
                 </article>
@@ -406,7 +478,7 @@
                                 </label>
                             </div>
                             <label class="switch"><input type="checkbox" id="auto-follow"> 添加主播时自动关注它（默认开；需要先登录，未登录会自动跳过）</label>
-                            <p class="muted">动态检测分两层：<strong>触发</strong>决定隔多久去问一次（关注流触发或逐主播轮询）；<strong>取数</strong>会自动选通道——空间动态 → 关注流 → opus 动态流，只有被风控时才降级，同一条动态只推一次。</p>
+                            <p class="muted">动态与视频均采用三级级联通道：<strong>链 1 关注流</strong>（仅已登录时启用，未登录自动跳过）→ <strong>链 2 空间接口</strong>（风控冷却 60 秒）→ <strong>链 3 兜底通道</strong>（Opus / WBI 搜索），前链失败或未命中时自动降级，同一条内容只推一次。</p>
                             <div class="fields" hidden>
                             </div>
                             <p class="muted">长连接和轮询是配合关系：<strong>长连接</strong>负责秒级发现开播/下播（每台最多连「长连接上限」个直播间）；<strong>轮询</strong>是安全网，长连接没连上、超出上限或临时断线时按上面的间隔继续检查。两者同时工作，同一次开播只会推送一条。</p>
@@ -461,7 +533,10 @@
             </section>
             <section id="status" role="tabpanel" aria-labelledby="tab-status" class="stack" hidden>
                 <article class="panel stack">
-                    <h2>调度与检查</h2>
+                    <div class="panel-heading">
+                        <div><h2>调度与检查</h2><p class="muted">展示当前 Bot 调度计数与最近一次轮询检查时刻。</p></div>
+                        <button type="button" id="goto-probe">手动自检</button>
+                    </div>
                     <div class="metrics">
                         <div class="metric"><span>Tick</span><strong id="ticks">—</strong></div>
                         <div class="metric"><span>工作线程</span><strong id="workers">—</strong></div>
@@ -470,8 +545,23 @@
                     </div>
                     <dl class="checks" id="last-checks"></dl>
                 </article>
+                <article class="panel stack" id="channel-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>实时通道状态</h2>
+                            <p class="muted">直接复用真实轮询结果，不额外发请求；如需立即测试风控是否恢复，请点上方「手动自检」。</p>
+                        </div>
+                    </div>
+                    <div id="channel-cards" class="channel-grid"></div>
+                </article>
                 <article class="panel stack">
-                    <h2>最近 20 条日志</h2>
+                    <div class="panel-heading">
+                        <div><h2>最近 20 条日志</h2><p class="muted">降级成功不再刷屏，仅记录通道切换、恢复、全链失败及推送异常。</p></div>
+                        <div class="filter-group" role="group" aria-label="日志筛选">
+                            <button type="button" id="log-filter-all" class="micro" aria-pressed="true">全部</button>
+                            <button type="button" id="log-filter-warn" class="micro" aria-pressed="false">仅异常</button>
+                        </div>
+                    </div>
                     <p id="logs-empty" class="empty">暂无通知日志。</p>
                     <ol id="logs" class="logs"></ol>
                 </article>
@@ -484,7 +574,27 @@
 
         const EVENT = 'BiliBiliNotify_WebUI_Config';
         const kinds = { live: '直播', dynamic: '动态', video: '视频' };
-        const probes = { ...kinds, nav: '空间统计' };
+        const probes = { dynamic: '动态', video: '视频', live: '直播', nav: '空间统计' };
+        const probeSkeletons = {
+            dynamic: [
+                { index: 1, label: '关注流（全部动态）', hint: '仅已登录时启用，未登录自动跳过' },
+                { index: 2, label: '空间动态流', hint: '风控时自动冷却 60 秒' },
+                { index: 3, label: 'Opus 动态流', hint: '二级降级兜底通道' },
+            ],
+            video: [
+                { index: 1, label: '关注流（视频投稿）', hint: '仅已登录时启用，未登录自动跳过' },
+                { index: 2, label: '空间投稿 WBI', hint: '风控时自动冷却 60 秒' },
+                { index: 3, label: 'WBI 搜索兜底', hint: '按昵称检索并用 UID 精确过滤' },
+            ],
+            live: [
+                { index: 1, label: '批量直播状态', hint: '主通道，免登录且最稳定' },
+                { index: 2, label: '单间直播信息', hint: '批量接口失败时按房间号降级' },
+                { index: 3, label: '弹幕长连接鉴权', hint: '校验秒级开播推送建连能力' },
+            ],
+            nav: [
+                { index: 1, label: '空间统计 navnum', hint: '辅助轻探测，查看投稿数与动态数' },
+            ],
+        };
         const accountPanels = new Set(['bot', 'ups', 'groups']);
         const pending = new Map();
         const expanded = new Set();
@@ -494,6 +604,9 @@
         let sequence = 0;
         let activePanel = 'global';
         let busy = false;
+        let probeBusy = false;
+        let probeUidTouched = false;
+        let logFilter = 'all';
         let state;
         let whitelistDraft = [];
         let prefixDraft = [];
@@ -614,7 +727,7 @@
         }
 
         async function perform(job, success = '') {
-            if (busy) return false;
+            if (busy || probeBusy) return false;
             const focused = document.activeElement;
             busy = true;
             $('content').inert = true;
@@ -662,6 +775,14 @@
             return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
         }
 
+        function clockHms(seconds) {
+            if (!seconds) return '—';
+            const date = new Date(seconds * 1000);
+            if (Number.isNaN(date.getTime())) return '—';
+            const pad = (value) => String(value).padStart(2, '0');
+            return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+        }
+
         function platformName(platform) {
             return ({ qq: 'OneBot QQ', qqGuild: 'QQ 官方群' })[platform] || platform || '未知平台';
         }
@@ -705,7 +826,10 @@
                 resetGlobal: !switching, resetBot: true,
                 beforeRender() {
                     cover = undefined;
-                    if (switching) expanded.clear();
+                    if (switching) {
+                        expanded.clear();
+                        probeUidTouched = false;
+                    }
                 },
             });
         }
@@ -713,6 +837,18 @@
         $('refresh').addEventListener('click', () => {
             if ((globalDirty || botDirty) && !window.confirm('放弃未保存的修改并刷新？')) return;
             reload(state?.bot_hash || '');
+        });
+
+        function openHealthDetail() {
+            if (!state) return;
+            showPanel('status');
+        }
+        $('health-card').addEventListener('click', openHealthDetail);
+        $('health-card').addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                openHealthDetail();
+            }
         });
 
         function renderPicker() {
@@ -724,7 +860,7 @@
             options.replaceChildren();
             for (const bot of state.bots) {
                 const option = button('', '', () => {
-                    if (busy) return;
+                    if (busy || probeBusy) return;
                     if (bot.hash !== state.bot_hash && botDirty && !window.confirm('放弃本账号未保存的修改并切换？')) {
                         return;
                     }
@@ -756,18 +892,61 @@
             $('total-groups').textContent = state.bot ? groups.length : '—';
             $('total-at').textContent = state.bot ? groups.reduce((sum, group) => sum + (group.used || 0), 0) : '—';
             const risk = $('risk');
+            const detail = $('risk-detail');
             risk.className = 'pill';
+            detail.hidden = true;
+            detail.textContent = '';
+            const channels = state.status?.channels || {};
+            const degraded = [];
+            const failed = [];
+            let hasOk = false;
+            for (const [kind, title] of Object.entries(kinds)) {
+                const info = channels[kind];
+                if (!info) continue;
+                if (info.overall === 'failed') failed.push(title);
+                else if (info.overall === 'degraded') degraded.push(`${title}走链${info.active_chain}`);
+                else if (info.overall === 'ok') hasOk = true;
+            }
             if (!state.status) {
                 risk.textContent = '待选 Bot';
             } else if (state.status.blocked) {
-                risk.textContent = '412 风控';
+                risk.textContent = '全链风控';
                 risk.classList.add('bad');
+                detail.textContent = '连续 412，点此排查';
+                detail.hidden = false;
+            } else if (failed.length) {
+                risk.textContent = '通道异常';
+                risk.classList.add('bad');
+                detail.textContent = `${failed.join('、')}失败`;
+                detail.hidden = false;
             } else if (state.status.backing_off) {
                 risk.textContent = '退避中';
                 risk.classList.add('warn');
+            } else if (degraded.length) {
+                risk.textContent = '降级可用';
+                risk.classList.add('warn');
+                detail.textContent = degraded.join(' · ');
+                detail.hidden = false;
+            } else if (hasOk) {
+                risk.textContent = '主链正常';
+                risk.classList.add('good');
             } else {
                 risk.textContent = '正常';
                 risk.classList.add('good');
+            }
+        }
+
+        function syncProbeUidOptions() {
+            const list = $('probe-uid-list');
+            list.replaceChildren();
+            const rooms = Object.values(state?.rooms || {});
+            for (const room of rooms) {
+                const option = el('option', '', `${room.name}（UID ${room.uid}）`);
+                option.value = room.uid;
+                list.append(option);
+            }
+            if (!probeUidTouched) {
+                $('probe-uid').value = rooms.length ? rooms[0].uid : '2';
             }
         }
 
@@ -777,6 +956,7 @@
             renderPicker();
             renderSummary();
             renderGlobal();
+            syncProbeUidOptions();
             if (state.bot) {
                 renderBot();
                 renderUps();
@@ -926,34 +1106,178 @@
         });
 
         $('buvid-refresh').addEventListener('click', () => action({ action: 'refresh_buvid' }, '已重新领取 buvid。'));
-        const probeResults = new Map();
+        $('probe-uid').addEventListener('input', () => { probeUidTouched = true; });
+
+        const probeCards = new Map();
+        const probeStates = new Map();
+
+        function probeMode() {
+            return document.querySelector('input[name="probe-mode"]:checked')?.value === 'full' ? 'full' : 'cascade';
+        }
+
+        function setProbeDisabled(disabled) {
+            $('probe-uid').disabled = disabled;
+            $('probe-all').disabled = disabled;
+            $('refresh').disabled = disabled;
+            $('buvid-refresh').disabled = disabled;
+            for (const radio of document.querySelectorAll('input[name="probe-mode"]')) radio.disabled = disabled;
+            for (const btn of document.querySelectorAll('#global-form button[type="submit"], #bot-form button[type="submit"]')) {
+                btn.disabled = disabled;
+            }
+            for (const card of probeCards.values()) card.recheck.disabled = disabled;
+        }
+
+        function renderProbeCard(kind, data, phase = 'idle') {
+            const card = probeCards.get(kind);
+            if (!card) return;
+            card.pill.className = 'pill';
+            card.summary.className = 'probe-summary';
+            card.steps.replaceChildren();
+            if (phase === 'queued') {
+                card.pill.textContent = '排队中';
+                card.summary.textContent = '等待上一项检查结束…';
+            } else if (phase === 'running') {
+                card.pill.textContent = '检测中…';
+                card.pill.classList.add('warn');
+                card.summary.textContent = '正在按链条顺序探测接口…';
+            } else if (!data) {
+                card.pill.textContent = '未自检';
+                card.summary.textContent = '点右上角「重检」或「一键全部自检」开始探测。';
+            } else if (data.errorMessage) {
+                card.pill.textContent = '请求失败';
+                card.pill.classList.add('bad');
+                card.summary.classList.add('is-bad');
+                card.summary.textContent = data.errorMessage;
+            } else if (data.overall === 'ok') {
+                card.pill.textContent = kind === 'nav' ? '正常' : '主链正常';
+                card.pill.classList.add('good');
+                card.summary.textContent = data.summary || '主链可用';
+            } else if (data.overall === 'degraded') {
+                card.pill.textContent = '降级可用';
+                card.pill.classList.add('warn');
+                card.summary.textContent = data.summary || `降级命中链 ${data.active_chain}`;
+            } else {
+                card.pill.textContent = '全链失败';
+                card.pill.classList.add('bad');
+                card.summary.classList.add('is-bad');
+                card.summary.textContent = data.summary || '全部链条均不可用';
+            }
+
+            const steps = Array.isArray(data?.steps) && data.steps.length ? data.steps : null;
+            if (!steps) {
+                for (const skeleton of probeSkeletons[kind] || []) {
+                    const row = el('div', 'chain-step');
+                    const top = el('div', 'chain-step-top');
+                    const name = el('span', 'chain-step-name');
+                    name.append(el('span', 'chain-mark', '·'), el('span', '', `链 ${skeleton.index} · ${skeleton.label}`));
+                    top.append(name, el('small', 'muted', phase === 'running' ? '探测中' : '待检测'));
+                    row.append(top, el('div', 'chain-step-meta', skeleton.hint));
+                    card.steps.append(row);
+                }
+                return;
+            }
+
+            steps.forEach((step, idx) => {
+                if (idx > 0 && steps[idx - 1].status === 'fail' && step.status !== 'skipped') {
+                    card.steps.append(el('div', 'chain-arrow', data.mode === 'full' ? '↓ 继续排查' : '↓ 自动降级'));
+                }
+                const cls = step.status === 'ok' ? 'is-ok' : step.status === 'fail' ? 'is-fail' : 'is-skipped';
+                const mark = step.status === 'ok' ? '✓' : step.status === 'fail' ? '✗' : '—';
+                const row = el('div', `chain-step ${cls}`);
+                const top = el('div', 'chain-step-top');
+                const name = el('span', 'chain-step-name');
+                name.append(el('span', 'chain-mark', mark), el('span', '', `链 ${step.index} · ${step.label}`));
+                const timing = step.status === 'skipped' ? '已跳过' : `${step.elapsed_ms ?? 0}ms`;
+                top.append(name, el('small', 'muted mono', timing));
+                const meta = step.status === 'skipped'
+                    ? (step.summary || '已跳过')
+                    : (step.code !== null && step.code !== undefined
+                        ? `code ${step.code} · ${step.summary || ''}`
+                        : (step.summary || ''));
+                row.append(top, el('div', 'chain-step-meta mono', meta));
+                card.steps.append(row);
+            });
+        }
+
         for (const [kind, title] of Object.entries(probes)) {
-            const card = el('div', 'probe-result');
-            const result = el('output', 'muted', '未检查');
-            card.append(el('strong', '', title), result);
-            $('probe-results').append(card);
-            probeResults.set(kind, result);
+            const box = el('section', 'probe-card');
+            const head = el('header', 'probe-head');
+            const left = el('div', 'probe-head-left');
+            const pill = el('span', 'pill', '未自检');
+            left.append(el('h3', '', title), pill);
+            const recheck = button('重检', 'micro', () => runProbe([kind]));
+            recheck.setAttribute('aria-label', `重新检查${title}链条`);
+            head.append(left, recheck);
+            const summary = el('div', 'probe-summary', '');
+            const steps = el('div', 'chain-list');
+            box.append(head, summary, steps);
+            $('probe-results').append(box);
+            probeCards.set(kind, { box, pill, recheck, summary, steps });
+            renderProbeCard(kind, null, 'idle');
+        }
+
+        async function runProbe(targetKinds) {
+            if (busy || probeBusy) return;
+            const uid = userId($('probe-uid').value, 'qq');
+            if (!uid) {
+                notice('自检 UID 必须是有效的数字 UID。', 'error');
+                $('probe-uid').focus();
+                return;
+            }
+            const mode = probeMode();
+            probeBusy = true;
+            setProbeDisabled(true);
+            notice(targetKinds.length > 1 ? '正在依次自检四组通道，期间可自由滚动查看结果…' : `正在自检「${probes[targetKinds[0]]}」…`);
+            for (const kind of targetKinds) renderProbeCard(kind, probeStates.get(kind), 'queued');
+            let okCount = 0;
+            let degradedCount = 0;
+            let failCount = 0;
+            let latestAt = 0;
+            try {
+                for (const kind of targetKinds) {
+                    renderProbeCard(kind, probeStates.get(kind), 'running');
+                    try {
+                        const result = await request({
+                            action: 'probe_api', bot_hash: state?.bot_hash || '',
+                            uid, kind, mode, bypass_cooldown: true,
+                        });
+                        probeStates.set(kind, result);
+                        renderProbeCard(kind, result, 'done');
+                        latestAt = Math.max(latestAt, result.checked_at || 0);
+                        if (result.success) {
+                            okCount += 1;
+                            if (result.overall === 'degraded') degradedCount += 1;
+                        } else {
+                            failCount += 1;
+                        }
+                        if (result.channels && state?.status) {
+                            state.status.channels = result.channels;
+                            renderSummary();
+                            renderChannels();
+                        }
+                    } catch (error) {
+                        const failed = { errorMessage: error.message };
+                        probeStates.set(kind, failed);
+                        renderProbeCard(kind, failed, 'done');
+                        failCount += 1;
+                    }
+                }
+                if (latestAt) $('probe-checked-at').textContent = `上次自检：${clockHms(latestAt)}`;
+                if (failCount === 0) {
+                    const extra = degradedCount ? `（其中 ${degradedCount} 项降级可用）` : '（全部主链正常）';
+                    notice(`自检完成：${okCount}/${targetKinds.length} 可用${extra}。`, 'success');
+                } else {
+                    notice(`自检完成：${okCount} 项可用，${failCount} 项全链失败，请检查 Cookie 或网络出口。`, 'error');
+                }
+            } finally {
+                probeBusy = false;
+                setProbeDisabled(false);
+            }
         }
 
         $('probe-form').addEventListener('submit', (event) => {
             event.preventDefault();
-            const uid = userId($('probe-uid').value, 'qq');
-            if (!uid) {
-                notice('自检 UID 必须是有效的数字 UID。', 'error');
-                return;
-            }
-            perform(async () => {
-                for (const result of probeResults.values()) result.textContent = '待检查';
-                for (const [kind, result] of probeResults) {
-                    result.textContent = '检查中…';
-                    try {
-                        const probe = await request({ action: 'probe_api', bot_hash: state.bot_hash, uid, kind });
-                        result.textContent = `code ${probe.code} · ${probe.summary}`;
-                    } catch (error) {
-                        result.textContent = error.message;
-                    }
-                }
-            }, '接口自检结束。');
+            runProbe(Object.keys(probes));
         });
 
         function checkbox(text, current, onChange, hideText = false) {
@@ -1120,7 +1444,14 @@
                     flags.append(immediateFlag(title, room.enabled[kind], `up:${room.uid}:${kind}`,
                         (value) => ({ action: 'toggle_up', uid: room.uid, kind, value })));
                     const check = el('div', 'check-item');
-                    check.append(el('strong', '', title), el('time', '', clock(room.last_checks[kind])));
+                    const titleEl = el('strong', '', title);
+                    const chain = room.last_chains?.[kind];
+                    if (!room.last_errors[kind] && chain && chain.chain > 1) {
+                        const tag = el('span', 'chain-tag', `链 ${chain.chain}`);
+                        tag.title = `当前走链 ${chain.chain} · ${chain.label || ''}`;
+                        titleEl.append(tag);
+                    }
+                    check.append(titleEl, el('time', '', clock(room.last_checks[kind])));
                     if (room.last_errors[kind]) check.append(el('small', 'error', room.last_errors[kind]));
                     checks.append(check);
                 }
@@ -1337,6 +1668,73 @@
             });
         });
 
+        $('goto-probe').addEventListener('click', () => {
+            showPanel('global');
+            $('probe-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            $('probe-all').focus({ preventScroll: true });
+        });
+
+        function setLogFilter(mode) {
+            logFilter = mode;
+            $('log-filter-all').setAttribute('aria-pressed', String(mode === 'all'));
+            $('log-filter-warn').setAttribute('aria-pressed', String(mode === 'warn'));
+            if (state) renderLogs();
+        }
+        $('log-filter-all').addEventListener('click', () => setLogFilter('all'));
+        $('log-filter-warn').addEventListener('click', () => setLogFilter('warn'));
+
+        function renderChannels() {
+            const container = $('channel-cards');
+            container.replaceChildren();
+            const channels = state?.status?.channels || {};
+            for (const [kind, title] of Object.entries(kinds)) {
+                const info = channels[kind] || { overall: 'idle', active_chain: 0, active_label: '', cooldown_left: 0, updated_at: 0, note: '' };
+                const card = el('div', 'channel-card');
+                const head = el('div', 'channel-head');
+                const pill = el('span', 'pill');
+                if (info.overall === 'ok') {
+                    pill.textContent = '主链正常';
+                    pill.classList.add('good');
+                } else if (info.overall === 'degraded') {
+                    pill.textContent = '降级可用';
+                    pill.classList.add('warn');
+                } else if (info.overall === 'failed') {
+                    pill.textContent = '全链失败';
+                    pill.classList.add('bad');
+                } else {
+                    pill.textContent = '待首轮';
+                }
+                head.append(el('strong', '', title), pill);
+                const activeText = info.active_chain
+                    ? `当前通道：链 ${info.active_chain} · ${info.active_label || ''}`
+                    : (info.overall === 'failed' ? '当前无可用通道' : '尚未执行轮询或自检');
+                card.append(head, el('small', '', activeText));
+                const metaParts = [];
+                if (info.cooldown_left > 0) metaParts.push(`冷却剩余 ${info.cooldown_left}s`);
+                if (info.note) metaParts.push(info.note);
+                if (metaParts.length) card.append(el('small', 'muted', metaParts.join(' · ')));
+                card.append(el('small', 'muted mono', `更新于 ${clock(info.updated_at)}`));
+                container.append(card);
+            }
+        }
+
+        function renderLogs() {
+            const logs = $('logs');
+            logs.replaceChildren();
+            const warnPattern = /失败|风控|异常|412|退避|降级|错误|code=-/;
+            const entries = (state?.logs || []).slice().reverse().filter((line) => (
+                logFilter === 'all' || warnPattern.test(line)
+            ));
+            $('logs-empty').hidden = entries.length > 0;
+            $('logs-empty').textContent = logFilter === 'warn' ? '暂无异常日志。' : '暂无通知日志。';
+            for (const line of entries) {
+                const text = line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, (timestamp) => {
+                    return clock(new Date(timestamp).getTime() / 1000);
+                });
+                logs.append(el('li', 'mono', text));
+            }
+        }
+
         function renderStatus() {
             const status = state.status;
             for (const key of ['ticks', 'workers', 'queue']) $(key).textContent = status?.[key] ?? '—';
@@ -1350,15 +1748,8 @@
                 item.append(el('dt', '', `最近${title}检查`), el('dd', 'mono', check));
                 checks.append(item);
             }
-            const logs = $('logs');
-            logs.replaceChildren();
-            $('logs-empty').hidden = state.logs.length > 0;
-            for (const line of state.logs.slice().reverse()) {
-                const text = line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, (timestamp) => {
-                    return clock(new Date(timestamp).getTime() / 1000);
-                });
-                logs.append(el('li', 'mono', text));
-            }
+            renderChannels();
+            renderLogs();
         }
 
         reload('');

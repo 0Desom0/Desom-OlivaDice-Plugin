@@ -57,6 +57,7 @@ TEXT = {
     'atall_qq_once': 'qqGuild 每次开播只 @ 一次',
     'atall_qq_any': 'qqGuild 不限制每次开播的次数',
     'atall_off': '本群 @全体 已关闭。',
+    'atall_not_admin_hint': '注意：当前未检测到机器人是本群管理员，开播推送时将跳过 @全体（其余内容照常发送）；设为管理员后自动生效。',
     'status': 'BiliBiliNotify 运行中\n· 主播 {total} 个 / 本群 {local} 个\n{checks}\n· 今日 @全体：{used}/{limit}',
     'last_check': '· 上次{label}检查：{elapsed}',
     'never': '尚未检查',

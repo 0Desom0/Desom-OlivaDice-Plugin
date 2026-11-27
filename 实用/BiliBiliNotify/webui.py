@@ -144,6 +144,7 @@ def _global_view():
     # 凭据只发布已配置状态；不发送原文、片段、缓存 Cookie 或代理地址。
     return {
         'cookie': {key: bool(settings['cookie'][key]) for key in config.GLOBAL_DEFAULT['cookie']},
+        'logged_in': bili_api.logged_in(),
         'user_agent': settings['user_agent'],
         'proxy': bool(settings['proxy']),
         'whitelist': settings['whitelist'],
@@ -167,6 +168,7 @@ def _view_room(bot_hash, uid, room):
         'has_cover': bool(runtime['last_cover']),
         'last_checks': {kind: check['last_check_at'] for kind, check in checks.items()},
         'last_errors': {kind: check.get('last_error', '') for kind, check in checks.items()},
+        'last_chains': {kind: bili_api.uid_chain(uid, kind) for kind in config.KINDS},
         'targets': {
             sid: {**{kind: target[kind] for kind in config.KINDS}, 'subscribers': target['subscribers']}
             for sid, target in room['targets'].items()
@@ -287,11 +289,17 @@ def _save_global(payload):
                 if any(not 33 <= ord(char) <= 126 or char == ';' for char in value):
                     raise _InvalidRequest(f'{key} 只接受单个 Cookie 字段值，不要粘贴整段 Cookie。')
                 credentials[key] = value
+    changed_network = False
     with store.edit_global() as settings:
         updated_cookie = {**settings['cookie'], **credentials}
         if updated_cookie != settings['cookie'] or any(settings[key] != value for key, value in changes.items()):
+            changed_network = updated_cookie != settings['cookie'] or (
+                'proxy' in changes and changes['proxy'] != settings['proxy']
+            )
             settings.update(changes, cookie=updated_cookie,
                             meta={'updated_at': int(time.time()), 'updated_by': 'WebUI'})
+    if changed_network:
+        bili_api.reset_channel_state()
 
 
 def _prefixes(value):
@@ -511,6 +519,7 @@ def _qr_poll(payload):
         # 旧指纹属于上一个会话，清掉让下一次请求重新领。
         settings['buvid_cache'] = {'cookie': '', 'fetched_at': 0.0}
         settings['meta'] = {'updated_at': int(time.time()), 'updated_by': '扫码登录'}
+    bili_api.reset_channel_state()
     return {'ok': True, 'state': {'qr': {'status': 0, 'message': '登录成功',
                                          'uid': pairs.get('dede_user_id', '')}}}
 
@@ -546,9 +555,20 @@ def dispatch(payload, Proc):
         if error:
             raise _InvalidRequest(f'领取指纹失败（{error[0]}）：{error[1]}。请检查网络和代理设置。')
     elif action == 'probe_api':
-        # 只返回请求层的安全摘要，不返回接口响应体。
-        probe = bili_api.probe(_kind(payload, (*config.KINDS, 'nav')), _uid(payload.get('uid', '2')))
-        return {'ok': True, 'state': {'code': probe['code'], 'summary': probe['summary']}}
+        # 只返回请求层的安全摘要与分链状态，不返回接口响应体或任何凭据。
+        kind = _kind(payload, (*config.KINDS, 'nav'))
+        uid = _uid(payload.get('uid', '2'))
+        mode = payload.get('mode', 'cascade')
+        if mode not in ('cascade', 'full'):
+            raise _InvalidRequest('自检模式只能是 cascade 或 full。')
+        bypass = _bool(payload.get('bypass_cooldown', True), '跳过冷却')
+        room_id = ''
+        if bot_hash:
+            room = store.rooms(bot_hash)['rooms'].get(uid)
+            if isinstance(room, dict):
+                room_id = str(room.get('room_id') or '')
+        probe = bili_api.probe(kind, uid, mode=mode, bypass_cooldown=bypass, room_id=room_id)
+        return {'ok': True, 'state': probe}
     elif action == 'get_cover':
         return {'ok': True, 'state': _cover(bot_hash, _uid(payload.get('uid')))}
     elif action != 'get_state':
