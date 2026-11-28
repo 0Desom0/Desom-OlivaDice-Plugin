@@ -165,6 +165,89 @@ def get_pure_love_candidate_list(group_member_list_data, today_wife_records, use
         res.append(member)
     return res
 
+def _is_qqguild_event(plugin_event):
+    """判断当前事件是否属于 qqGuild 平台（含 qqGuildv2_link 与 qqGuild_link）。"""
+    try:
+        platform = plugin_event.platform
+        if not isinstance(platform, dict):
+            return False
+        sdk = str(platform.get('sdk', '')).strip().lower()
+        plat = str(platform.get('platform', '')).strip().lower()
+    except Exception:
+        return False
+    return plat == 'qqguild' or sdk in ('qqguildv2_link', 'qqguild_link')
+
+
+def _get_bot_self_ids(plugin_event):
+    """收集当前机器人在本事件中的所有自身 ID（AppID / self_id / sub_self_id / sub_self_open_id）。"""
+    ids = set()
+    base_info = getattr(plugin_event, 'base_info', None)
+    if isinstance(base_info, dict):
+        val = base_info.get('self_id')
+        if val is not None and str(val).strip() != '':
+            ids.add(str(val).strip())
+    bot_info = getattr(plugin_event, 'bot_info', None)
+    if bot_info is not None:
+        val = getattr(bot_info, 'id', None)
+        if val is not None and str(val).strip() != '':
+            ids.add(str(val).strip())
+    data = getattr(plugin_event, 'data', None)
+    extend = getattr(data, 'extend', None) if data is not None else None
+    if isinstance(extend, dict):
+        for key in ('sub_self_id', 'sub_self_open_id'):
+            val = extend.get(key)
+            if val is not None and str(val).strip() != '':
+                ids.add(str(val).strip())
+    return ids
+
+
+def _get_qqguild_self_avatar_info(plugin_event):
+    """读取 qqGuildv2 机器人自身的真实 OpenID 与（可选）getMe 头像地址。"""
+    self_open_id = ''
+    self_avatar_url = ''
+    data = getattr(plugin_event, 'data', None)
+    extend = getattr(data, 'extend', None) if data is not None else None
+    if isinstance(extend, dict):
+        val = extend.get('sub_self_open_id')
+        if val is not None and str(val).strip() != '':
+            self_open_id = str(val).strip()
+
+    bot_info = getattr(plugin_event, 'bot_info', None)
+    bot_hash = str(getattr(bot_info, 'hash', '') or '').strip()
+    if bot_hash != '':
+        if self_open_id == '':
+            proc = getattr(plugin_event, 'Proc', None)
+            proc_data = getattr(proc, 'Proc_data', None) if proc is not None else None
+            if isinstance(proc_data, dict):
+                openid_map = proc_data.get('qqGuildv2_self_openid')
+                if isinstance(openid_map, dict):
+                    val = openid_map.get(bot_hash)
+                    if val is not None and str(val).strip() != '':
+                        self_open_id = str(val).strip()
+
+        qq_sdk = getattr(OlivOS, 'qqGuildv2SDK', None)
+        qq_common = getattr(qq_sdk, 'qqGuildv2SDKCommon', None) if qq_sdk is not None else None
+        if self_open_id == '':
+            for container in (qq_sdk, qq_common):
+                openid_map = getattr(container, 'sdkSubSelfOpenInfo', None)
+                if isinstance(openid_map, dict):
+                    val = openid_map.get(bot_hash)
+                    if val is not None and str(val).strip() != '':
+                        self_open_id = str(val).strip()
+                        break
+        for container in (qq_sdk, qq_common):
+            self_map = getattr(container, 'sdkSelfInfo', None)
+            if isinstance(self_map, dict):
+                info = self_map.get(bot_hash)
+                if isinstance(info, dict):
+                    avatar = str(info.get('avatar') or '').strip()
+                    if avatar.startswith(('http://', 'https://')):
+                        self_avatar_url = avatar
+                        break
+
+    return self_open_id, self_avatar_url
+
+
 def build_avatar_url(plugin_event, user_id):
     """按平台生成头像地址：官方机器人用 AppID+OpenID，其余沿用 QQ 号接口。"""
     target_id = str(user_id).strip()
@@ -173,10 +256,32 @@ def build_avatar_url(plugin_event, user_id):
     except Exception:
         sdk = ''
     if sdk == 'qqguildv2_link':
-        try:
-            appid = str(plugin_event.bot_info.id).strip()
-        except Exception:
-            appid = ''
+        raw_appid = getattr(getattr(plugin_event, 'bot_info', None), 'id', None)
+        appid = str(raw_appid).strip() if raw_appid is not None else ''
+        non_openid_self_ids = set()
+        if appid != '':
+            non_openid_self_ids.add(appid)
+        base_info = getattr(plugin_event, 'base_info', None)
+        if isinstance(base_info, dict):
+            val = base_info.get('self_id')
+            if val is not None and str(val).strip() != '':
+                non_openid_self_ids.add(str(val).strip())
+        data = getattr(plugin_event, 'data', None)
+        extend = getattr(data, 'extend', None) if data is not None else None
+        if isinstance(extend, dict):
+            val = extend.get('sub_self_id')
+            if val is not None and str(val).strip() != '':
+                non_openid_self_ids.add(str(val).strip())
+
+        # 抽到机器人自身时，成员列表里的 user_id 可能是 AppID 或 sub_self_id 而非 OpenID；
+        # 直接拼 qqapp/{appid}/{appid}/0 会返回默认企鹅图，需改用机器人自身的 OpenID。
+        if target_id != '' and target_id in non_openid_self_ids:
+            self_open_id, self_avatar_url = _get_qqguild_self_avatar_info(plugin_event)
+            if appid.isdecimal() and self_open_id != '' and self_open_id not in non_openid_self_ids:
+                return f'https://q.qlogo.cn/qqapp/{appid}/{self_open_id}/0'
+            if self_avatar_url != '':
+                return self_avatar_url
+
         # 官方机器人下 user_id 即 openid，AppID 为纯数字；任一缺失则回退旧接口
         if appid.isdecimal() and target_id != '':
             return f'https://q.qlogo.cn/qqapp/{appid}/{target_id}/0'
@@ -194,15 +299,17 @@ def reply_today_wife_result(plugin_event, replyMsg, dictStrCustom, dictTValue, w
         return
 
     url = build_avatar_url(plugin_event, wife_qq)
-    if str(wife_qq) == str(plugin_event.base_info['self_id']):
+    wife_id_str = str(wife_qq).strip()
+    if wife_id_str in _get_bot_self_ids(plugin_event):
         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['jrlpRobot'], dictTValue)
-    elif str(wife_qq) == str(plugin_event.data.user_id):
+    elif wife_id_str == str(plugin_event.data.user_id).strip():
         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['jrlpSelf'], dictTValue)
     else:
         tmp_reply_str = OlivaDiceCore.msgCustomManager.formatReplySTR(dictStrCustom['jrlpFirst'], dictTValue)
 
     if tmp_reply_str != None:
-        replyMsg(plugin_event, f"[CQ:image,file={url}]" + tmp_reply_str)
+        sep = '\n' if _is_qqguild_event(plugin_event) else ''
+        replyMsg(plugin_event, f"[CQ:image,file={url}]{sep}" + tmp_reply_str)
 
 def unity_reply(plugin_event, Proc):
     OlivaDiceCore.userConfig.setMsgCount()
