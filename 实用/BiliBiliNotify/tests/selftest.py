@@ -514,7 +514,7 @@ class PhaseOneSuite(Suite):
             ))
             self.assertEqual(state['capabilities']['segmenter'], 'builtin')
             self.assertIsNone(state['groups'][self.sid]['dynamic_image'])
-            self.assertIs(state['bot']['dynamic_image'], False)
+            self.assertIs(state['bot']['dynamic_image'], True)
             self.assertIs(state['bot']['save_dynamic_image'], False)
             with patch.object(bili_api, 'qr_generate') as request:
                 with self.assertRaisesRegex(webui._InvalidRequest, '安装 qrcode 后启用'):
@@ -534,7 +534,7 @@ class PhaseOneSuite(Suite):
                 self.web('save_bot', poll=poll)
             changed = self.web('save_bot', poll={**poll, 'max_sockets': 0})
             self.assertEqual(changed['bot']['poll']['max_sockets'], 0)
-            self.assertIs(changed['bot']['dynamic_image'], False)
+            self.assertIs(changed['bot']['dynamic_image'], True)
             self.assertFalse(message.parse_action('push dynamic_img on')[0])
             self.assertFalse(self.command('.bpush push dynamic_img on', 'owner'))
             self.assertFalse(self.command('.bpush 推送 动态图片 默认', 'owner'))
@@ -1993,6 +1993,95 @@ with offline_plugin():
         )
         self.assertEqual(with_stats['duration'], '2小时')
 
+    def test_blocked_charging_dynamic_and_default_image_mode(self):
+        from PIL import Image
+
+        # 1. 动态图片卡片默认开启；单张竖长图上限放宽至 1200px。
+        self.assertIs(config.BOT_DEFAULT['dynamic_image'], True)
+        tall_path = Path(self.temp_dir) / 'tall.png'
+        with Image.new('RGB', (600, 1800), (40, 110, 180)) as img:
+            img.save(tall_path)
+        tall_item = fake_bili.dynamic('301', 1764000301)
+        tall_item['modules']['module_dynamic']['major'] = {
+            'draw': {'items': [{'src': 'https://i0.hdslb.com/bfs/dynamic/tall.png'}]},
+        }
+        with (patch.object(bili_api, 'download_image', return_value=tall_path),
+              patch.object(bili_api, 'release_image')):
+            card_path = dynamic_render.render_dynamic_card(tall_item)
+        self.assertIsInstance(card_path, Path)
+        with Image.open(card_path) as img:
+            self.assertEqual(img.width, 880)
+            self.assertGreater(img.height, 1300)
+            self.assertLessEqual(img.height, 3400)
+        sender.release_local_image(card_path)
+
+        # 2. 充电专属动态（MAJOR_TYPE_BLOCKED）：卡片版 + 纯文字版 + 转发原动态均正确展示档位与提示。
+        blocked_item = {
+            'id_str': '1275693617225138192',
+            'type': 'DYNAMIC_TYPE_DRAW',
+            'modules': {
+                'module_author': {'name': '卡古娅Official', 'pub_ts': 1764322920},
+                'module_dynamic': {
+                    'desc': None,
+                    'major': {
+                        'type': 'MAJOR_TYPE_BLOCKED',
+                        'blocked': {
+                            'blocked_type': 1,
+                            'title': '',
+                            'hint_message': '卡啵啵❤️专属动态\n加入当前UP主的6元档包月充电即可解锁观看',
+                            'button': {'text': '6元充电'},
+                        },
+                        'draw': None,
+                    },
+                },
+            },
+        }
+        info = dynamic_render.blocked_info(blocked_item['modules']['module_dynamic']['major'])
+        self.assertEqual(info['badge'], '6元充电动态')
+        self.assertEqual(info['button_text'], '6元充电')
+        self.assertIn('6元档包月充电', info['hint'])
+
+        with (patch.object(bili_api, 'download_image', return_value=None),
+              patch.object(bili_api, 'release_image')):
+            blocked_card = dynamic_render.render_dynamic_card(blocked_item)
+        self.assertIsInstance(blocked_card, Path)
+        with Image.open(blocked_card) as img:
+            self.assertEqual(img.format, 'PNG')
+            self.assertEqual(img.width, 880)
+            self.assertGreater(img.height, 420)
+            palette = {color for _, color in img.convert('RGB').getcolors(1_000_000)}
+            self.assertIn((255, 244, 247), palette)
+            self.assertIn((251, 114, 153), palette)
+        sender.release_local_image(blocked_card)
+
+        name, fields, image = notify._feed_fields('dynamic', blocked_item)
+        self.assertEqual(name, '卡古娅Official')
+        self.assertEqual(image, '')
+        self.assertIn('6元充电动态', fields['body'])
+        self.assertIn('加入当前UP主的6元档包月充电即可解锁观看', fields['body'])
+        op_text = ''.join(sender._render('dynamic', {**fields, 'name': name}, 'onebot', '', False, (), False))
+        md_text = ''.join(sender._render('dynamic', {**fields, 'name': name}, 'qqGuildv2_link', '', False, (), False))
+        self.assertIn('6元充电动态', op_text)
+        self.assertIn('6元充电动态', md_text)
+
+        forwarded = fake_bili.dynamic('302', 1764322980)
+        forwarded.update(type='DYNAMIC_TYPE_FORWARD', orig=blocked_item)
+        forwarded['modules']['module_dynamic']['desc']['text'] = '快来看'
+        _, fwd_fields, _ = notify._feed_fields('dynamic', forwarded)
+        self.assertIn('转发 卡古娅Official：6元充电动态：卡啵啵', fwd_fields['body'])
+        with (patch.object(bili_api, 'download_image', return_value=None),
+              patch.object(bili_api, 'release_image')):
+            fwd_card = dynamic_render.render_dynamic_card(forwarded)
+        self.assertIsInstance(fwd_card, Path)
+        sender.release_local_image(fwd_card)
+
+        # 3. 空间动态流（链 2）携带 listOnlyfans，可正常拉到充电专属动态。
+        with patch.object(bili_api, 'request_json', return_value=({'items': [blocked_item]}, None)) as req:
+            items, err = bili_api._space_dynamics('2095352140')
+        self.assertIsNone(err)
+        self.assertEqual(len(items), 1)
+        self.assertIn('listOnlyfans', req.call_args.kwargs['params']['features'])
+
 
 CASES = (
     (Suite, 'test_commands', '命令解析'), (Suite, 'test_binding', 'UID 两级绑定与群订阅'), (Suite, 'test_permissions', '权限'),
@@ -2028,6 +2117,7 @@ CASES = (
     (PhaseThreeSuite, 'test_bot_nicknames_and_sync', 'WebUI Bot 选择器昵称解析与异步登录信息同步'),
     (PhaseThreeSuite, 'test_opk_eager_module_preload', 'OPK 生命周期：启动期预加载全部插件子模块防延迟导入失败'),
     (PhaseThreeSuite, 'test_push_newlines_and_end_duration', '推送方框换行与下播直播时长计算及缺失隐藏'),
+    (PhaseThreeSuite, 'test_blocked_charging_dynamic_and_default_image_mode', '充电专属动态卡片与文本支持、竖长图放宽与默认开启卡片'),
 )
 
 

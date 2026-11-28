@@ -636,7 +636,9 @@ def _follow_feed_for_uid(uid, kind, *, bypass_cache=False, quiet=True):
 
 def _space_dynamics(uid, *, quiet=True):
     data, error = request_json(
-        _DYNAMIC, params={'host_mid': str(uid), 'offset': '', 'features': 'itemOpusStyle'}, quiet=quiet,
+        _DYNAMIC,
+        params={'host_mid': str(uid), 'offset': '', 'features': 'itemOpusStyle,listOnlyfans,onlyfansAssetsV2'},
+        quiet=quiet,
     )
     if isinstance(data, dict):
         # 空主页会省略 items；非列表则是接口结构异常，不当作空结果。

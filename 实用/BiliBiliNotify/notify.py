@@ -269,7 +269,7 @@ def _major_images(major):
 
 
 def _orig_text(orig):
-    """原动态的一句话概要：视频标题 / 专栏标题 / opus 正文 / 普通动态正文。"""
+    """原动态的一句话概要：视频标题 / 专栏标题 / opus 正文 / 普通动态正文 / 充电锁定提示。"""
     modules = orig.get('modules') or {}
     dynamic = modules.get('module_dynamic') or {}
     major = dynamic.get('major') or {}
@@ -284,7 +284,23 @@ def _orig_text(orig):
     ):
         if text:
             return text[:40]
+    if blocked := dynamic_render.blocked_info(major):
+        first_line = next((line.strip() for line in blocked['hint'].splitlines() if line.strip()), '')
+        summary = f"{blocked['badge']}：{first_line}" if first_line else blocked['badge']
+        return summary[:40]
     return ''
+
+
+def _blocked_body(major):
+    blocked = dynamic_render.blocked_info(major)
+    if blocked is None:
+        return ''
+    parts = [blocked['badge']]
+    if blocked['title'] and blocked['title'] != blocked['hint']:
+        parts.append(blocked['title'])
+    if blocked['hint']:
+        parts.append(blocked['hint'])
+    return '\n'.join(parts)
 
 
 def _feed_fields(kind, item):
@@ -308,6 +324,8 @@ def _feed_fields(kind, item):
         *(_major_images(orig_major)),
     ])
     body = (dynamic.get('desc') or {}).get('text') or (opus.get('summary') or {}).get('text') or ''
+    if blocked_text := _blocked_body(major):
+        body = f'{body}\n{blocked_text}' if body else blocked_text
     if item.get('type') == 'DYNAMIC_TYPE_FORWARD' and orig:
         orig_author = str((orig_modules.get('module_author') or {}).get('name') or '')
         detail = _orig_text(orig)

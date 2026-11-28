@@ -30,6 +30,11 @@ _PANEL = '#ffffff'
 _INSET = '#f4f7fb'
 _BORDER = '#d9e4ef'
 _TINT = '#e5f4fa'
+_CHARGE_BG = '#fff4f7'
+_CHARGE_BORDER = '#f4c6d7'
+_CHARGE_TEXT = '#c03761'
+_CHARGE_PILL = '#fb7299'
+_VARIATION_SELECTORS = '\ufe0e\ufe0f'
 _TYPES = {
     'DYNAMIC_TYPE_WORD': '文字动态',
     'DYNAMIC_TYPE_DRAW': '图文动态',
@@ -139,7 +144,7 @@ def _draw_line(draw, at, value, width, font, fill=_TEXT):
         rb.draw_text(draw, at, lines[0], font, fill)
 
 
-def _header(canvas, draw, left, top, width, author, label, fallback_name, nested):
+def _header(canvas, draw, left, top, width, author, label, fallback_name, nested, *, badge_style=None):
     size = _ORIGINAL_AVATAR if nested else _AVATAR
     name_font = rb.get_font(26 if nested else 34, bold=True)
     note_font = rb.get_font(18 if nested else 22)
@@ -150,12 +155,13 @@ def _header(canvas, draw, left, top, width, author, label, fallback_name, nested
         avatar = rb.make_circle_avatar(path, size, name)
     with avatar:
         canvas.paste(avatar, (left, top), avatar)
+    badge_fill, badge_color = badge_style if badge_style is not None else (_TINT, _LINK)
     badge_width = round(rb.text_width(draw, label, badge_font)) + 26
     badge_left = left + width - badge_width
     badge_top = top + (size - 34) // 2
     badge = (badge_left, badge_top, left + width, badge_top + 34)
-    rb.draw_rounded_rect(draw, badge, radius=17, fill=_TINT)
-    rb.draw_centered_text(draw, badge, label, badge_font, _LINK)
+    rb.draw_rounded_rect(draw, badge, radius=17, fill=badge_fill)
+    rb.draw_centered_text(draw, badge, label, badge_font, badge_color)
     text_left = left + size + (14 if nested else 18)
     text_width = badge_left - text_left - 14
     name_top = top if published else top + (12 if nested else 15)
@@ -198,7 +204,7 @@ def _gallery(major, width, nested):
     if not urls:
         return None
     if len(urls) == 1:
-        image = _load_image(urls[0], lambda source: rb.contain_image(source, (width, 520 if nested else 630)))
+        image = _load_image(urls[0], lambda source: rb.contain_image(source, (width, 720 if nested else 1200)))
         if image is None:
             return None
         return _Gallery([((width - image.width) // 2, 0, image.width, image.height, image)], image.height)
@@ -281,6 +287,133 @@ def _preview(major):
     return None
 
 
+def blocked_info(major):
+    """解析充电专属等锁定动态（MAJOR_TYPE_BLOCKED）的档位徽章与提示文案。"""
+    major = _mapping(major)
+    blocked = _mapping(major.get('blocked'))
+    if not blocked and _text(major.get('type')) != 'MAJOR_TYPE_BLOCKED':
+        return None
+    button = _mapping(blocked.get('button'))
+    button_text = _text(button.get('text')).strip()
+    title = _text(blocked.get('title')).strip()
+    hint = _text(blocked.get('hint_message')).strip()
+    blocked_type = blocked.get('blocked_type')
+    if button_text:
+        badge = button_text if button_text.endswith('动态') else f'{button_text}动态'
+    elif blocked_type == 1:
+        badge = '充电动态'
+    else:
+        badge = '专属动态'
+    if not (title or hint):
+        hint = '加入充电即可解锁观看此动态' if '充电' in badge else '当前动态需要解锁后查看'
+    return {
+        'badge': badge,
+        'title': title,
+        'hint': hint,
+        'button_text': button_text or ('充电解锁' if '充电' in badge else '前往解锁'),
+        'blocked_type': blocked_type,
+    }
+
+
+def _clean_display_text(value, font=None):
+    text = value.translate({ord(ch): None for ch in _VARIATION_SELECTORS})
+    if font is None or rb.Image is None:
+        return text
+    try:
+        notdef = bytes(font.getmask('\uffff'))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return text
+    kept = []
+    for ch in text:
+        if ch in '\r\n\t ':
+            kept.append(ch)
+            continue
+        try:
+            if bytes(font.getmask(ch)) == notdef:
+                continue
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+        kept.append(ch)
+    return ''.join(kept)
+
+
+@dataclass(slots=True)
+class _BlockedCard:
+    pill: str
+    heading: list
+    detail: list
+    nested: bool
+    height: int
+
+    def draw(self, canvas, draw, left, top, width):
+        box = (left, top, left + width - 1, top + self.height - 1)
+        rb.draw_rounded_rect(draw, box, radius=16, fill=_CHARGE_BG, outline=_CHARGE_BORDER)
+        pad_x = 20 if self.nested else 24
+        y = top + (16 if self.nested else 20)
+        pill_font = rb.get_font(17 if self.nested else 19, bold=True)
+        pill_h = 28 if self.nested else 32
+        pill_w = round(rb.text_width(draw, self.pill, pill_font)) + 24
+        pill_box = (left + pad_x, y, left + pad_x + pill_w, y + pill_h)
+        rb.draw_rounded_rect(draw, pill_box, radius=pill_h // 2, fill=_CHARGE_PILL)
+        rb.draw_centered_text(draw, pill_box, self.pill, pill_font, 'white')
+        sub = '充电专属内容' if '充电' in self.pill else '专属锁定内容'
+        sub_font = rb.get_font(17 if self.nested else 19)
+        rb.draw_text(draw, (pill_box[2] + 12, y + (pill_h - (18 if self.nested else 20)) // 2 - 2),
+                     sub, sub_font, _CHARGE_TEXT)
+        y += pill_h + (12 if self.nested else 14)
+        if self.heading:
+            head_font = rb.get_font(22 if self.nested else 25, bold=True)
+            head_step = 30 if self.nested else 35
+            for line in self.heading:
+                rb.draw_text(draw, (left + pad_x, y), line, head_font, _TEXT)
+                y += head_step
+            if self.detail:
+                y += 4
+        if self.detail:
+            detail_font = rb.get_font(19 if self.nested else 21)
+            detail_step = 26 if self.nested else 30
+            for line in self.detail:
+                rb.draw_text(draw, (left + pad_x, y), line, detail_font, _MUTED)
+                y += detail_step
+
+
+def _blocked_card(draw, major, width, nested):
+    info = blocked_info(major)
+    if info is None:
+        return None
+    pad_x = 20 if nested else 24
+    inner_w = max(80, width - 2 * pad_x)
+    head_font = rb.get_font(22 if nested else 25, bold=True)
+    detail_font = rb.get_font(19 if nested else 21)
+    pill_font = rb.get_font(17 if nested else 19, bold=True)
+    raw_lines = [line.strip() for line in _clean_display_text(info['hint'], head_font).splitlines() if line.strip()]
+    title = _clean_display_text(info['title'], head_font).strip()
+    if title:
+        head_src = title
+        detail_src = '\n'.join(
+            line.strip() for line in _clean_display_text(info['hint'], detail_font).splitlines() if line.strip()
+        )
+    elif len(raw_lines) >= 2:
+        head_src = raw_lines[0]
+        detail_lines = [
+            line.strip() for line in _clean_display_text(info['hint'], detail_font).splitlines() if line.strip()
+        ]
+        detail_src = '\n'.join(detail_lines[1:])
+    else:
+        head_src = raw_lines[0] if raw_lines else ''
+        detail_src = ''
+    heading = rb.wrap_text(draw, head_src, head_font, inner_w, max_lines=3) if head_src else []
+    detail = rb.wrap_text(draw, detail_src, detail_font, inner_w, max_lines=4) if detail_src else []
+    pad_y = 16 if nested else 20
+    pill_h = 28 if nested else 32
+    head_step = 30 if nested else 35
+    detail_step = 26 if nested else 30
+    height = pad_y * 2 + pill_h + (12 if nested else 14) + len(heading) * head_step + len(detail) * detail_step
+    if heading and detail:
+        height += 4
+    return _BlockedCard(_clean_display_text(info['button_text'], pill_font), heading, detail, nested, height)
+
+
 @dataclass(slots=True)
 class _Post:
     author: dict
@@ -292,6 +425,8 @@ class _Post:
     title: list
     gallery: _Gallery | None
     preview: _Preview | None
+    blocked: _BlockedCard | None = None
+    badge_style: tuple | None = None
 
     @property
     def line_height(self):
@@ -310,7 +445,7 @@ class _Post:
         header = _ORIGINAL_AVATAR if self.nested else _AVATAR
         title = _SECTION_GAP + len(self.title) * self.line_height if self.title else 0
         return header + title + sum(
-            block.height + _SECTION_GAP for block in (self.gallery, self.preview) if block is not None
+            block.height + _SECTION_GAP for block in (self.gallery, self.preview, self.blocked) if block is not None
         )
 
     @property
@@ -323,7 +458,8 @@ class _Post:
             self.body = rb.limit_lines(draw, self.body, self.body_font, self.width, max_lines=limit)
 
     def draw(self, canvas, draw, left, top):
-        top = _header(canvas, draw, left, top, self.width, self.author, self.label, self.display_name, self.nested)
+        top = _header(canvas, draw, left, top, self.width, self.author, self.label, self.display_name, self.nested,
+                      badge_style=self.badge_style)
         if self.title:
             font = self.title_font
             top += _SECTION_GAP
@@ -344,6 +480,10 @@ class _Post:
             top += _SECTION_GAP
             self.preview.draw(canvas, draw, left, top, self.width)
             top += self.preview.height
+        if self.blocked is not None:
+            top += _SECTION_GAP
+            self.blocked.draw(canvas, draw, left, top, self.width)
+            top += self.blocked.height
         return top
 
 
@@ -358,12 +498,18 @@ def _prepare_post(draw, item, width, *, fallback_name='', nested=False):
         desc = _mapping(opus.get('summary'))
     if not desc and (tip := _text(_mapping(major.get('none')).get('tips'))):
         desc = {'text': tip}
-    label = _TYPES.get(_text(item.get('type')), '')
+    blocked = blocked_info(major)
+    label = blocked['badge'] if blocked else _TYPES.get(_text(item.get('type')), '')
+    badge_style = (_CHARGE_BG, _CHARGE_TEXT) if blocked else None
     if nested:
         label = f'原动态 · {label}' if label and label != '原动态' else '原动态'
     else:
         label = label or '发布动态'
-    post = _Post(author, label, fallback_name, nested, width, [], [], _gallery(major, width, nested), _preview(major))
+    post = _Post(
+        author, label, fallback_name, nested, width, [], [],
+        _gallery(major, width, nested), _preview(major),
+        _blocked_card(draw, major, width, nested), badge_style,
+    )
     title = _text(opus.get('title'))
     if title and title != desc.get('text'):
         post.title = rb.wrap_text(draw, title, post.title_font, width, max_lines=2)

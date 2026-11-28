@@ -51,7 +51,7 @@ BOT_DEFAULT = {
     # 默认开，但只有登录态（SESSDATA + bili_jct）才真正调用；未登录时静默跳过。
     'auto_follow': True,
     'push_default': dict.fromkeys(KINDS, True),
-    'dynamic_image': False,
+    'dynamic_image': True,
     'save_dynamic_image': False,
     'live_stats': {
         'enabled': True,
