@@ -650,7 +650,7 @@ class PhaseOneSuite(Suite):
         op = SimpleNamespace(send=Mock(return_value={'retcode': 0}))
         with patch.object(sender, '_event', return_value=op):
             self.assertTrue(sender.send(self.proc, BOT, GROUP, 'dynamic', fields, local_image=path))
-        self.assertEqual(op.send.call_args.args[2], f'[OP:image,file={path.resolve().as_uri()}]\n【B站动态】\n碧诗\n{link}')
+        self.assertEqual(op.send.call_args.args[2], f'[OP:image,file={path.resolve().as_uri()}]')
 
         qq_target = dict(GROUP, sdk='qqGuildv2_link', platform='qqGuild', chat_type='qq_group')
         markdown = Mock(side_effect=({'active': True}, {'active': False}))
@@ -663,14 +663,13 @@ class PhaseOneSuite(Suite):
               patch.object(sender.OlivOS, 'messageAPI', api, create=True),
               patch.object(sender.OlivOS, 'qqGuildv2SDK', sdk, create=True)):
             for _ in range(2):
-                self.assertTrue(sender.send_local_image(self.proc, BOT, qq_target, path, f'【B站动态】\n碧诗\n{link}'))
+                self.assertTrue(sender.send(self.proc, BOT, qq_target, 'dynamic', fields, local_image=path))
             mark = markdown.call_args.kwargs
             self.assertEqual(mark['local_images'], {'cover': f'{config.PLUGIN_NAME}/generated/{path.name}'})
-            self.assertIn(link, mark['markdown']['content'])
+            self.assertEqual(mark['markdown']['content'], '{{cover}}')
             self.assertFalse(plain.call_args.kwargs['allow_markdown'])
             parts = plain.call_args.args[2]
-            self.assertIn(('image', str(path.resolve())), parts)
-            self.assertIn(link, ''.join(text for kind, text in parts if kind == 'text'))
+            self.assertEqual(parts, [('image', str(path.resolve()))])
 
         request = SimpleNamespace(data=SimpleNamespace(), do_api=Mock(side_effect=(
             SimpleNamespace(body='{"status":"failed","retcode":100}'),
@@ -741,7 +740,8 @@ class PhaseOneSuite(Suite):
             self.assertIs(render.call_args.args[0], item)
         first, second, fallback, text_group = sent
         self.assertEqual(first[1], second[1])
-        self.assertIn('【B站动态】\n碧诗\nhttps://t.bilibili.com/198', first[1])
+        self.assertRegex(first[1], r'^\[OP:image,file=file:[^\]]+\]$')
+        self.assertNotIn('【B站动态】', first[1])
         self.assertIn(fake_bili.VIDEO_URL, fallback[1])
         self.assertEqual(fallback[1], text_group[1])
         generated = config.IMAGE_ROOT.parent / 'generated'
@@ -754,8 +754,9 @@ class PhaseOneSuite(Suite):
               patch.object(bili_api, 'dynamics', return_value=([item], None))):
             self.assertEqual(notify.test_push(self.proc, BOT, '2', 'dynamic', targets=(GROUP,)), 'ok')
         self.assertEqual(len(sent), 1)
-        self.assertIn('file=file:', sent[0][1])
-        self.assertIn('[测试] 【B站动态】\n碧诗', sent[0][1])
+        self.assertRegex(sent[0][1], r'^\[OP:image,file=file:[^\]]+\]$')
+        self.assertNotIn('【B站动态】', sent[0][1])
+        self.assertNotIn('[测试]', sent[0][1])
         self.assertFalse(list(generated.glob('*.png')))
 
         sent.clear()
@@ -1610,7 +1611,9 @@ class PhaseThreeSuite(PhaseOneSuite):
         def deliver(Proc, bot, target, path, caption, *, still_current):
             if not still_current() or not path.is_file():
                 return False
-            deliveries.append((bot, target['group_id'], caption.partition(' · ')[0], path))
+            self.assertEqual(caption, '')
+            label = '直播报告' if 'live-report-' in path.name else '弹幕词云'
+            deliveries.append((bot, target['group_id'], label, path))
             return True
 
         notify.start(self.proc)
@@ -1686,7 +1689,10 @@ class PhaseThreeSuite(PhaseOneSuite):
             self.assertFalse(self.command('.bpush cloud 2'))
             clock.return_value += 10
             self.assertFalse(self.command('.bpush 直播报告 2'))
-        self.assertEqual([caption for _, caption, _ in sent], ['直播报告 · 碧诗', '弹幕词云 · 碧诗', '直播报告 · 碧诗'])
+        self.assertEqual([caption for _, caption, _ in sent], ['', '', ''])
+        self.assertIn('live-report-', sent[0][0].name)
+        self.assertIn('wordcloud-', sent[1][0].name)
+        self.assertIn('live-report-', sent[2][0].name)
         self.assertEqual(sent[1][2], 700)
         self.assertFalse(any(path.exists() for path, _, _ in sent))
         self.assertIn('权限', self.command('.bpush push report off')[0])

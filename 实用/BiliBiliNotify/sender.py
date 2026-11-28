@@ -435,9 +435,7 @@ def send_local_image(proc, bot_hash, target, image_path, caption='', *, test=Fal
 def send(proc, bot_hash, target, kind, fields, *, image='', at_all=False, subscribers=(), test=False,
          interval=3, still_current=None, local_image=None):
     if local_image is not None:
-        name = ' '.join(str(fields.get('name') or '').splitlines())
-        caption = f"【B站动态】\n{name}\n{fields.get('link') or ''}"
-        return send_local_image(proc, bot_hash, target, local_image, caption, test=test, still_current=still_current)
+        return send_local_image(proc, bot_hash, target, local_image, '', test=test, still_current=still_current)
     if not _supported(target) or not _current(still_current):
         return False
     sdk = target['sdk']

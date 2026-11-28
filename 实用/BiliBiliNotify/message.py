@@ -389,10 +389,7 @@ def _image_stats(kind, uid, room, settings, Proc, bot_hash, target):
     if path is None:
         return False, TEXT['stats_empty_cloud' if kind == 'cloud' else 'stats_image_failed']
     try:
-        label = config.LIVE_IMAGES[kind][2]
-        name = detail['uname'] or _streamer_name(bot_hash, uid) or f'UID {uid}'
-        caption = TEXT['session_image_caption'].format(label=label, name=' '.join(name.splitlines()))
-        success = sender.send_local_image(Proc, bot_hash, target, path, caption)
+        success = sender.send_local_image(Proc, bot_hash, target, path, '')
         return success, '' if success else TEXT['stats_image_failed']
     finally:
         sender.release_local_image(path)

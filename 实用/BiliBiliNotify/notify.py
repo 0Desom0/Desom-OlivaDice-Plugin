@@ -672,11 +672,8 @@ class _Engine:
                             latest = self._session_target(job, sid, added, kind, detail)
                             return latest is not None and _session_image_key(kind, latest[0]['live_stats']) == key
 
-                        label = config.LIVE_IMAGES[kind][2]
-                        name = detail['uname'] or function.names.get((bot, uid)) or f'UID {uid}'
-                        caption = TEXT['session_image_caption'].format(label=label, name=' '.join(name.splitlines()))
                         sent = sender.send_local_image(
-                            self.proc, bot, target, path, caption, still_current=still_current,
+                            self.proc, bot, target, path, '', still_current=still_current,
                         )
                         attempted = True
                         if not sent and still_current():
